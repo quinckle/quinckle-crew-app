@@ -1,9 +1,10 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, FlatList, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { FlatList, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useAuth } from '../../context/AuthContext';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { QuinckleColors } from '../../constants/Colors';
+import { ThemedDialog } from '../../components/ui/themed-dialog';
 
 type TableStatus = 'available' | 'occupied' | 'reserved';
 
@@ -20,6 +21,17 @@ export default function StaffDashboard() {
   const [tables, setTables] = useState(INITIAL_TABLES);
   const [activeFilter, setActiveFilter] = useState<'all' | TableStatus>('all');
   const [searchText, setSearchText] = useState('');
+  const [dialog, setDialog] = useState<{
+    visible: boolean;
+    title: string;
+    message: string;
+    actions: Array<{ label: string; onPress: () => void; variant?: 'default' | 'danger' }>;
+  }>({
+    visible: false,
+    title: '',
+    message: '',
+    actions: [],
+  });
 
   const counts = useMemo(() => {
     const available = tables.filter((table) => table.status === 'available').length;
@@ -40,12 +52,35 @@ export default function StaffDashboard() {
     });
   }, [tables, activeFilter, searchText]);
 
+  const closeDialog = () => {
+    setDialog((prev) => ({ ...prev, visible: false }));
+  };
+
+  const showDialog = (
+    title: string,
+    message: string,
+    actions: Array<{ label: string; onPress: () => void; variant?: 'default' | 'danger' }>,
+  ) => {
+    setDialog({
+      visible: true,
+      title,
+      message,
+      actions: actions.map((action) => ({
+        ...action,
+        onPress: () => {
+          closeDialog();
+          action.onPress();
+        },
+      })),
+    });
+  };
+
   const handleTablePress = (tableNum: number, currentStatus: TableStatus) => {
     if (currentStatus === 'available') {
-      Alert.alert("New Session", `Start a new session for Table ${tableNum}?`, [
-        { text: "Cancel", style: "cancel" },
+      showDialog('New Session', `Start a new session for Table ${tableNum}?`, [
+        { label: 'Cancel', onPress: () => {} },
         {
-          text: "Start",
+          label: 'Start',
           onPress: () => {
             updateTableStatus(tableNum, 'occupied');
             router.push({
@@ -53,7 +88,7 @@ export default function StaffDashboard() {
               params: { tableId: String(tableNum) },
             });
           },
-        }
+        },
       ]);
     } else {
       router.push({
@@ -72,7 +107,7 @@ export default function StaffDashboard() {
       handleTablePress(tableNum, 'available');
       return;
     }
-    Alert.alert('Marked Clean', `Table ${tableNum} is ready for new guests.`);
+    showDialog('Marked Clean', `Table ${tableNum} is ready for new guests.`, [{ label: 'OK', onPress: () => {} }]);
     updateTableStatus(tableNum, 'available');
   };
 
@@ -82,16 +117,20 @@ export default function StaffDashboard() {
     return { label: 'Available', color: QuinckleColors.success };
   };
 
+  const handleLogout = () => {
+    logout();
+    router.replace('/login');
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.topBar}>
-        <Ionicons name="menu" size={22} color={QuinckleColors.textPrimary} />
         <Text style={styles.topTitle}>QuinckleCrew: Live Tables</Text>
         <View style={styles.topIcons}>
-          <TouchableOpacity onPress={() => Alert.alert('Search', 'Use the search bar below to find tables.')}>
+          <TouchableOpacity onPress={() => showDialog('Search', 'Use the search bar below to find tables.', [{ label: 'OK', onPress: () => {} }])}>
             <Ionicons name="search" size={20} color={QuinckleColors.textPrimary} />
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => Alert.alert('Logout', 'Do you want to exit staff mode?', [{ text: 'Cancel' }, { text: 'Logout', style: 'destructive', onPress: logout }])}>
+          <TouchableOpacity onPress={handleLogout}>
             <Ionicons name="log-out-outline" size={20} color={QuinckleColors.textPrimary} />
           </TouchableOpacity>
         </View>
@@ -159,9 +198,6 @@ export default function StaffDashboard() {
                 <TouchableOpacity style={styles.actionBtn} onPress={() => handleQuickAction(item.number, 'clean')}>
                   <Text style={styles.actionText}>MARK CLEAN</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.openBtn} onPress={() => handleTablePress(item.number, item.status)}>
-                  <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textPrimary} />
-                </TouchableOpacity>
               </View>
             </View>
           );
@@ -174,22 +210,25 @@ export default function StaffDashboard() {
         }
       />
 
-      <TouchableOpacity style={styles.walkInCta} onPress={() => Alert.alert('Walk-In', 'Start a new walk-in flow.')}>
-        <Ionicons name="add" size={16} color={QuinckleColors.primary} />
-        <Text style={styles.walkInText}>WALK-IN</Text>
-      </TouchableOpacity>
-
       {/* Legacy header kept for quick rollback during iteration */}
       <View style={styles.legacyHeaderHide}>
         <View>
           <Text style={styles.header}>Floor Overview</Text>
           <Text style={styles.subtitle}>Manage active dining sessions</Text>
         </View>
-        <TouchableOpacity style={styles.logoutBtn} onPress={logout}>
+        <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
           <Ionicons name="log-out-outline" size={18} color={QuinckleColors.danger} />
           <Text style={styles.logoutText}>Logout</Text>
         </TouchableOpacity>
       </View>
+
+      <ThemedDialog
+        visible={dialog.visible}
+        title={dialog.title}
+        message={dialog.message}
+        actions={dialog.actions}
+        onClose={closeDialog}
+      />
     </View>
   );
 }
@@ -202,7 +241,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 14,
   },
-  topTitle: { color: QuinckleColors.textPrimary, fontSize: 30, fontWeight: '600', flex: 1, marginLeft: 10 },
+  topTitle: { color: QuinckleColors.textPrimary, fontSize: 20, fontWeight: '700', flex: 1 },
   topIcons: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   floorMeta: {
     color: QuinckleColors.textPrimary,
@@ -286,30 +325,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   actionText: { color: QuinckleColors.textPrimary, fontSize: 12, fontWeight: '600' },
-  openBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: QuinckleColors.primary,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  walkInCta: {
-    position: 'absolute',
-    right: 18,
-    bottom: 18,
-    backgroundColor: QuinckleColors.surface,
-    borderColor: QuinckleColors.border,
-    borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 999,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    elevation: 4,
-  },
-  walkInText: { color: QuinckleColors.primary, fontWeight: '700', fontSize: 14 },
   emptyState: {
     alignItems: 'center',
     justifyContent: 'center',
