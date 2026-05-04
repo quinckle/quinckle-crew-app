@@ -130,7 +130,14 @@ export default function StaffDashboard() {
           <TouchableOpacity onPress={() => showDialog('Search', 'Use the search bar below to find tables.', [{ label: 'OK', onPress: () => {} }])}>
             <Ionicons name="search" size={20} color={QuinckleColors.textPrimary} />
           </TouchableOpacity>
-          <TouchableOpacity onPress={handleLogout}>
+          <TouchableOpacity
+            onPress={() =>
+              showDialog('Logout', 'Are you sure you want to log out?', [
+                { label: 'Cancel', onPress: () => {} },
+                { label: 'Logout', variant: 'danger', onPress: handleLogout },
+              ])
+            }
+          >
             <Ionicons name="log-out-outline" size={20} color={QuinckleColors.textPrimary} />
           </TouchableOpacity>
         </View>
@@ -240,6 +247,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 14,
+    backgroundColor: `${QuinckleColors.surface}CC`,
+    borderWidth: 1,
+    borderColor: `${QuinckleColors.border}CC`,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
   topTitle: { color: QuinckleColors.textPrimary, fontSize: 20, fontWeight: '700', flex: 1 },
   topIcons: { flexDirection: 'row', alignItems: 'center', gap: 12 },
@@ -257,7 +270,7 @@ const styles = StyleSheet.create({
   chip: {
     borderWidth: 1,
     borderColor: QuinckleColors.border,
-    backgroundColor: QuinckleColors.surface,
+    backgroundColor: `${QuinckleColors.surface}CC`,
     borderRadius: 999,
     paddingHorizontal: 10,
     paddingVertical: 8,
@@ -286,12 +299,13 @@ const styles = StyleSheet.create({
   },
   listContent: { paddingBottom: 92 },
   tableCard: {
-    backgroundColor: QuinckleColors.surface,
+    backgroundColor: `${QuinckleColors.surface}D9`,
     borderWidth: 1,
     borderColor: QuinckleColors.border,
     borderRadius: 16,
     padding: 14,
     marginBottom: 10,
+    elevation: 2,
   },
   cardTopRow: {
     flexDirection: 'row',
