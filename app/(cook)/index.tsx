@@ -3,6 +3,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import { FlatList, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { QuinckleColors } from '../../constants/Colors';
 import { useAuth } from '../../context/AuthContext';
 
@@ -48,6 +49,7 @@ export default function CookDashboard() {
   const [orders, setOrders] = useState(INITIAL_KITCHEN_ORDERS);
   const [activeFilter, setActiveFilter] = useState<'all' | KitchenStatus>('all');
   const [searchText, setSearchText] = useState('');
+  const [logoutDialogVisible, setLogoutDialogVisible] = useState(false);
 
   const handleLogout = () => {
     logout();
@@ -122,7 +124,7 @@ export default function CookDashboard() {
           <TouchableOpacity onPress={() => {}}>
             <Ionicons name="search" size={20} color={QuinckleColors.textPrimary} />
           </TouchableOpacity>
-          <TouchableOpacity onPress={handleLogout}>
+          <TouchableOpacity onPress={() => setLogoutDialogVisible(true)}>
             <Ionicons name="log-out-outline" size={20} color={QuinckleColors.textPrimary} />
           </TouchableOpacity>
         </View>
@@ -219,6 +221,17 @@ export default function CookDashboard() {
             <Text style={styles.emptyText}>No tickets in this queue.</Text>
           </View>
         }
+      />
+
+      <ThemedDialog
+        visible={logoutDialogVisible}
+        title="Logout"
+        message="Are you sure you want to log out?"
+        actions={[
+          { label: 'Cancel', onPress: () => setLogoutDialogVisible(false) },
+          { label: 'Logout', variant: 'danger', onPress: handleLogout },
+        ]}
+        onClose={() => setLogoutDialogVisible(false)}
       />
 
     </View>
