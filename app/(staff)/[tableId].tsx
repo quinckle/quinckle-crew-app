@@ -1,20 +1,48 @@
 // app/(staff)/[tableId].tsx
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { QuinckleColors } from '../../constants/Colors';
 
-const MOCK_ORDERS = [
-  { id: '1', name: 'Chicken Biryani', status: 'prepared', price: 250 },
-  { id: '2', name: 'Garlic Naan', status: 'preparing', price: 50 },
-  { id: '3', name: 'Cold Coffee', status: 'served', price: 120 },
-];
+type ItemStatus = 'queued' | 'preparing' | 'prepared' | 'served';
+type TableState = 'occupied' | 'reserved' | 'available';
+
+type OrderItem = {
+  id: string;
+  name: string;
+  status: ItemStatus;
+  price: number;
+};
+
+const TABLE_ORDER_DATA: Record<string, { tableState: TableState; orders: OrderItem[] }> = {
+  '2': {
+    tableState: 'occupied',
+    orders: [
+      { id: '2-1', name: 'Chicken Biryani', status: 'prepared', price: 250 },
+      { id: '2-2', name: 'Garlic Naan', status: 'preparing', price: 50 },
+      { id: '2-3', name: 'Cold Coffee', status: 'served', price: 120 },
+    ],
+  },
+  '4': {
+    tableState: 'reserved',
+    orders: [
+      { id: '4-1', name: 'Paneer Tikka', status: 'queued', price: 220 },
+      { id: '4-2', name: 'Butter Naan', status: 'queued', price: 45 },
+      { id: '4-3', name: 'Lemon Soda', status: 'preparing', price: 90 },
+    ],
+  },
+};
 
 export default function TableDetail() {
   const { tableId } = useLocalSearchParams();
   const router = useRouter();
-  const [orders, setOrders] = useState(MOCK_ORDERS);
+  const normalizedTableId = Array.isArray(tableId) ? tableId[0] : tableId;
+  const tableData = useMemo(
+    () => TABLE_ORDER_DATA[String(normalizedTableId)] ?? { tableState: 'available' as TableState, orders: [] },
+    [normalizedTableId],
+  );
+  const [orders, setOrders] = useState<OrderItem[]>(tableData.orders);
 
   const handleServe = (id: string) => {
     setOrders(prev => prev.map(item => 
@@ -22,6 +50,20 @@ export default function TableDetail() {
     ));
   };
   const totalAmount = orders.reduce((sum, item) => sum + item.price, 0);
+
+  const getStatusColor = (status: ItemStatus) => {
+    if (status === 'prepared') return QuinckleColors.success;
+    if (status === 'preparing') return QuinckleColors.warning;
+    if (status === 'queued') return QuinckleColors.primary;
+    return QuinckleColors.info;
+  };
+
+  const subtitleText =
+    tableData.tableState === 'reserved'
+      ? 'Reserved table pre-orders'
+      : tableData.tableState === 'occupied'
+        ? 'Live order status'
+        : 'No active orders for this table';
 
   return (
     <View style={styles.container}>
@@ -32,8 +74,8 @@ export default function TableDetail() {
 
       <View style={styles.titleRow}>
         <View>
-          <Text style={styles.title}>Table {tableId}</Text>
-          <Text style={styles.subtitle}>Live order status</Text>
+          <Text style={styles.title}>Table {normalizedTableId}</Text>
+          <Text style={styles.subtitle}>{subtitleText}</Text>
         </View>
         <View style={styles.billPill}>
           <Ionicons name="cash-outline" size={16} color={QuinckleColors.primary} />
@@ -45,6 +87,7 @@ export default function TableDetail() {
         data={orders}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
+        ListEmptyComponent={<Text style={styles.emptyText}>No items ordered yet.</Text>}
         renderItem={({ item }) => (
           <View style={styles.orderItem}>
             <View>
@@ -52,14 +95,7 @@ export default function TableDetail() {
               <Text style={styles.itemPrice}>Rs {item.price}</Text>
               <Text style={[
                 styles.statusText, 
-                {
-                  color:
-                    item.status === 'prepared'
-                      ? QuinckleColors.success
-                      : item.status === 'preparing'
-                        ? QuinckleColors.warning
-                        : QuinckleColors.info,
-                }
+                { color: getStatusColor(item.status) }
               ]}>
                 {item.status.toUpperCase()}
               </Text>
@@ -122,5 +158,6 @@ const styles = StyleSheet.create({
   statusText: { fontSize: 12, fontWeight: 'bold', marginTop: 4 },
   serveBtn: { backgroundColor: QuinckleColors.primary, paddingVertical: 8, paddingHorizontal: 15, borderRadius: 8 },
   serveBtnText: { color: QuinckleColors.textPrimary, fontWeight: 'bold' },
-  checkIcon: { padding: 8 }
+  checkIcon: { padding: 8 },
+  emptyText: { color: QuinckleColors.textSecondary, textAlign: 'center', paddingVertical: 30 },
 });

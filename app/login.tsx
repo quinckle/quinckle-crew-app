@@ -4,19 +4,10 @@ import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { QuinckleColors } from '../constants/Colors';
-import { useAuth } from '../context/AuthContext';
 
 export default function LoginScreen() {
-  const { login } = useAuth();
-
-  const handleLogin = (role: 'staff' | 'cook') => {
-    login(role);
-    // Redirect to the respective role's dashboard
-    if (role === 'staff') {
-      router.replace('/(staff)');
-    } else {
-      router.replace('/(cook)');
-    }
+  const handleRoleSelect = (role: 'staff' | 'cook') => {
+    router.push(`/credential?role=${role}` as never);
   };
 
   return (
@@ -31,7 +22,7 @@ export default function LoginScreen() {
 
       <TouchableOpacity 
         style={[styles.button, styles.staffButton]} 
-        onPress={() => handleLogin('staff')}
+        onPress={() => handleRoleSelect('staff')}
         activeOpacity={0.85}
       >
         <Ionicons name="people" size={18} color={QuinckleColors.textPrimary} />
@@ -41,7 +32,7 @@ export default function LoginScreen() {
 
       <TouchableOpacity 
         style={[styles.button, styles.cookButton]} 
-        onPress={() => handleLogin('cook')}
+        onPress={() => handleRoleSelect('cook')}
         activeOpacity={0.85}
       >
         <Ionicons name="flame" size={18} color={QuinckleColors.primary} />

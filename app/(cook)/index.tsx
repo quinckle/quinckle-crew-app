@@ -130,9 +130,23 @@ export default function CookDashboard() {
         </View>
       </View>
 
-      <Text style={styles.floorMeta}>
-        Grill Room Kitchen | Active: {counts.active} | New: {counts.new + counts.urgent}
-      </Text>
+      <View style={styles.summaryCard}>
+        <Text style={styles.summaryTitle}>Grill Room Kitchen</Text>
+        <View style={styles.summaryStatsRow}>
+          <View style={styles.summaryStatPill}>
+            <Ionicons name="file-tray-outline" size={12} color={QuinckleColors.textSecondary} />
+            <Text style={styles.summaryStatText}>Tickets: {counts.all}</Text>
+          </View>
+          <View style={styles.summaryStatPill}>
+            <Ionicons name="flame-outline" size={12} color={QuinckleColors.primary} />
+            <Text style={styles.summaryStatText}>Active: {counts.active}</Text>
+          </View>
+          <View style={styles.summaryStatPill}>
+            <Ionicons name="sparkles-outline" size={12} color={QuinckleColors.success} />
+            <Text style={styles.summaryStatText}>New: {counts.new + counts.urgent}</Text>
+          </View>
+        </View>
+      </View>
 
       <View style={styles.filterRow}>
         {[
@@ -254,11 +268,41 @@ const styles = StyleSheet.create({
   },
   header: { color: QuinckleColors.textPrimary, fontSize: 20, fontWeight: '700', flex: 1 },
   topIcons: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  floorMeta: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 24,
-    fontWeight: '500',
+  summaryCard: {
+    backgroundColor: `${QuinckleColors.surface}CC`,
+    borderWidth: 1,
+    borderColor: `${QuinckleColors.border}CC`,
+    borderRadius: 14,
+    padding: 12,
     marginBottom: 12,
+  },
+  summaryTitle: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 22,
+    fontWeight: '700',
+    marginBottom: 10,
+  },
+  summaryStatsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  summaryStatPill: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    backgroundColor: QuinckleColors.surfaceHover,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    borderRadius: 999,
+    paddingVertical: 7,
+    paddingHorizontal: 8,
+  },
+  summaryStatText: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 11,
+    fontWeight: '600',
   },
   filterRow: {
     flexDirection: 'row',

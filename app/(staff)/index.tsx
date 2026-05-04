@@ -143,9 +143,23 @@ export default function StaffDashboard() {
         </View>
       </View>
 
-      <Text style={styles.floorMeta}>
-        The Grill Room | T: {counts.all} | C: {counts.occupied} | Avail: {counts.available}
-      </Text>
+      <View style={styles.summaryCard}>
+        <Text style={styles.summaryTitle}>The Grill Room</Text>
+        <View style={styles.summaryStatsRow}>
+          <View style={styles.summaryStatPill}>
+            <Ionicons name="grid-outline" size={12} color={QuinckleColors.textSecondary} />
+            <Text style={styles.summaryStatText}>Tables: {counts.all}</Text>
+          </View>
+          <View style={styles.summaryStatPill}>
+            <Ionicons name="restaurant-outline" size={12} color={QuinckleColors.primary} />
+            <Text style={styles.summaryStatText}>Occupied: {counts.occupied}</Text>
+          </View>
+          <View style={styles.summaryStatPill}>
+            <Ionicons name="checkmark-circle-outline" size={12} color={QuinckleColors.success} />
+            <Text style={styles.summaryStatText}>Available: {counts.available}</Text>
+          </View>
+        </View>
+      </View>
 
       <View style={styles.filterRow}>
         {[
@@ -182,7 +196,11 @@ export default function StaffDashboard() {
         renderItem={({ item }) => {
           const statusMeta = getStatusMeta(item.status);
           return (
-            <View style={styles.tableCard}>
+            <TouchableOpacity
+              style={styles.tableCard}
+              onPress={() => handleTablePress(item.number, item.status)}
+              activeOpacity={0.9}
+            >
               <View style={styles.cardTopRow}>
                 <View>
                   <Text style={styles.tableTitle}>T{item.number}</Text>
@@ -206,7 +224,7 @@ export default function StaffDashboard() {
                   <Text style={styles.actionText}>MARK CLEAN</Text>
                 </TouchableOpacity>
               </View>
-            </View>
+            </TouchableOpacity>
           );
         }}
         ListEmptyComponent={
@@ -256,11 +274,41 @@ const styles = StyleSheet.create({
   },
   topTitle: { color: QuinckleColors.textPrimary, fontSize: 20, fontWeight: '700', flex: 1 },
   topIcons: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  floorMeta: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 24,
-    fontWeight: '500',
+  summaryCard: {
+    backgroundColor: `${QuinckleColors.surface}CC`,
+    borderWidth: 1,
+    borderColor: `${QuinckleColors.border}CC`,
+    borderRadius: 14,
+    padding: 12,
     marginBottom: 12,
+  },
+  summaryTitle: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 22,
+    fontWeight: '700',
+    marginBottom: 10,
+  },
+  summaryStatsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  summaryStatPill: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    backgroundColor: QuinckleColors.surfaceHover,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    borderRadius: 999,
+    paddingVertical: 7,
+    paddingHorizontal: 8,
+  },
+  summaryStatText: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 11,
+    fontWeight: '600',
   },
   filterRow: {
     flexDirection: 'row',
