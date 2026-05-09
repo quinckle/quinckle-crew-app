@@ -63,6 +63,11 @@
 ### 5. Payment Processing (`/api/payments`)
 
 **POST /api/payments/cash**
-* [cite_start]**Description:** The user can pay the bill to a Staff by cash[cite: 12]. [cite_start]The staff will have the option to mark the order as paid by cash[cite: 13].
+* [cite_start]**Description:** The user can pay the bill to a Staff by cash[cite: 12], [cite_start]The staff will have the option to mark the order as paid by cash[cite: 13].
 * **Request:** `{ "order_id": "uuid", "staff_id": "uuid", "amount": "decimal" }`
 * **Response:** Marks the order as paid. [cite_start]The admin will be able to see which Staff member collected how much cash[cite: 14].
+
+
+
+
+
