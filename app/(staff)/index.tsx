@@ -1,3 +1,4 @@
+// app/(staff)/index.tsx
 import React, { useMemo, useState } from 'react';
 import { FlatList, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useAuth } from '../../context/AuthContext';
@@ -26,35 +27,24 @@ export default function StaffDashboard() {
     title: string;
     message: string;
     actions: Array<{ label: string; onPress: () => void; variant?: 'default' | 'danger' }>;
-  }>({
-    visible: false,
-    title: '',
-    message: '',
-    actions: [],
-  });
+  }>({ visible: false, title: '', message: '', actions: [] });
 
-  const counts = useMemo(() => {
-    const available = tables.filter((table) => table.status === 'available').length;
-    const occupied = tables.filter((table) => table.status === 'occupied').length;
-    const reserved = tables.filter((table) => table.status === 'reserved').length;
-    return { available, occupied, reserved, all: tables.length };
-  }, [tables]);
+  const counts = useMemo(() => ({
+    available: tables.filter((t) => t.status === 'available').length,
+    occupied: tables.filter((t) => t.status === 'occupied').length,
+    reserved: tables.filter((t) => t.status === 'reserved').length,
+    all: tables.length,
+  }), [tables]);
 
-  const filteredTables = useMemo(() => {
-    return tables.filter((table) => {
-      const matchesFilter = activeFilter === 'all' ? true : table.status === activeFilter;
-      const query = searchText.trim().toLowerCase();
-      const matchesSearch =
-        !query ||
-        String(table.number).includes(query) ||
-        table.location.toLowerCase().includes(query);
-      return matchesFilter && matchesSearch;
-    });
-  }, [tables, activeFilter, searchText]);
+  const filteredTables = useMemo(() => tables.filter((table) => {
+    const matchesFilter = activeFilter === 'all' || table.status === activeFilter;
+    const query = searchText.trim().toLowerCase();
+    const matchesSearch =
+      !query || String(table.number).includes(query) || table.location.toLowerCase().includes(query);
+    return matchesFilter && matchesSearch;
+  }), [tables, activeFilter, searchText]);
 
-  const closeDialog = () => {
-    setDialog((prev) => ({ ...prev, visible: false }));
-  };
+  const closeDialog = () => setDialog((prev) => ({ ...prev, visible: false }));
 
   const showDialog = (
     title: string,
@@ -67,12 +57,15 @@ export default function StaffDashboard() {
       message,
       actions: actions.map((action) => ({
         ...action,
-        onPress: () => {
-          closeDialog();
-          action.onPress();
-        },
+        onPress: () => { closeDialog(); action.onPress(); },
       })),
     });
+  };
+
+  const updateTableStatus = (tableNum: number, nextStatus: TableStatus) => {
+    setTables((prev) =>
+      prev.map((table) => (table.number === tableNum ? { ...table, status: nextStatus } : table)),
+    );
   };
 
   const handleTablePress = (tableNum: number, currentStatus: TableStatus) => {
@@ -83,31 +76,20 @@ export default function StaffDashboard() {
           label: 'Start',
           onPress: () => {
             updateTableStatus(tableNum, 'occupied');
-            router.push({
-              pathname: '/(staff)/[tableId]',
-              params: { tableId: String(tableNum) },
-            });
+            router.push({ pathname: '/(staff)/[tableId]', params: { tableId: String(tableNum) } });
           },
         },
       ]);
     } else {
-      router.push({
-        pathname: '/(staff)/[tableId]',
-        params: { tableId: String(tableNum) },
-      });
+      router.push({ pathname: '/(staff)/[tableId]', params: { tableId: String(tableNum) } });
     }
-  };
-
-  const updateTableStatus = (tableNum: number, nextStatus: TableStatus) => {
-    setTables((prev) => prev.map((table) => (table.number === tableNum ? { ...table, status: nextStatus } : table)));
   };
 
   const handleQuickAction = (tableNum: number, action: 'assign' | 'clean') => {
-    if (action === 'assign') {
-      handleTablePress(tableNum, 'available');
-      return;
-    }
-    showDialog('Marked Clean', `Table ${tableNum} is ready for new guests.`, [{ label: 'OK', onPress: () => {} }]);
+    if (action === 'assign') { handleTablePress(tableNum, 'available'); return; }
+    showDialog('Marked Clean', `Table ${tableNum} is ready for new guests.`, [
+      { label: 'OK', onPress: () => {} },
+    ]);
     updateTableStatus(tableNum, 'available');
   };
 
@@ -122,14 +104,19 @@ export default function StaffDashboard() {
     router.replace('/login');
   };
 
+  const FILTER_CHIPS = [
+    { key: 'all', label: `All (${counts.all})` },
+    { key: 'available', label: `Available (${counts.available})` },
+    { key: 'occupied', label: `Occupied (${counts.occupied})` },
+    { key: 'reserved', label: `Reserved (${counts.reserved})` },
+  ] as const;
+
   return (
     <View style={styles.container}>
+      {/* Top bar */}
       <View style={styles.topBar}>
         <Text style={styles.topTitle}>QuinckleCrew: Live Tables</Text>
         <View style={styles.topIcons}>
-          <TouchableOpacity onPress={() => showDialog('Search', 'Use the search bar below to find tables.', [{ label: 'OK', onPress: () => {} }])}>
-            <Ionicons name="search" size={20} color={QuinckleColors.textPrimary} />
-          </TouchableOpacity>
           <TouchableOpacity
             onPress={() =>
               showDialog('Logout', 'Are you sure you want to log out?', [
@@ -138,57 +125,63 @@ export default function StaffDashboard() {
               ])
             }
           >
-            <Ionicons name="log-out-outline" size={20} color={QuinckleColors.textPrimary} />
+            <Ionicons name="log-out-outline" size={20} color={QuinckleColors.textSecondary} />
           </TouchableOpacity>
         </View>
       </View>
 
+      {/* Summary card */}
       <View style={styles.summaryCard}>
         <Text style={styles.summaryTitle}>The Grill Room</Text>
         <View style={styles.summaryStatsRow}>
-          <View style={styles.summaryStatPill}>
+          <View style={styles.statPill}>
             <Ionicons name="grid-outline" size={12} color={QuinckleColors.textSecondary} />
-            <Text style={styles.summaryStatText}>Tables: {counts.all}</Text>
+            <Text style={styles.statText}>Tables: {counts.all}</Text>
           </View>
-          <View style={styles.summaryStatPill}>
+          <View style={styles.statPill}>
             <Ionicons name="restaurant-outline" size={12} color={QuinckleColors.primary} />
-            <Text style={styles.summaryStatText}>Occupied: {counts.occupied}</Text>
+            <Text style={styles.statText}>Occupied: {counts.occupied}</Text>
           </View>
-          <View style={styles.summaryStatPill}>
+          <View style={styles.statPill}>
             <Ionicons name="checkmark-circle-outline" size={12} color={QuinckleColors.success} />
-            <Text style={styles.summaryStatText}>Available: {counts.available}</Text>
+            <Text style={styles.statText}>Free: {counts.available}</Text>
           </View>
         </View>
       </View>
 
+      {/* Filter chips */}
       <View style={styles.filterRow}>
-        {[
-          { key: 'all', label: `All (${counts.all})` },
-          { key: 'available', label: `Available (${counts.available})` },
-          { key: 'occupied', label: `Occupied (${counts.occupied})` },
-          { key: 'reserved', label: `Reserved (${counts.reserved})` },
-        ].map((chip) => (
+        {FILTER_CHIPS.map((chip) => (
           <TouchableOpacity
             key={chip.key}
             style={[styles.chip, activeFilter === chip.key && styles.chipActive]}
             onPress={() => setActiveFilter(chip.key as 'all' | TableStatus)}
           >
-            <Text style={[styles.chipText, activeFilter === chip.key && styles.chipTextActive]}>{chip.label}</Text>
+            <Text style={[styles.chipText, activeFilter === chip.key && styles.chipTextActive]}>
+              {chip.label}
+            </Text>
           </TouchableOpacity>
         ))}
       </View>
 
+      {/* Search */}
       <View style={styles.searchWrap}>
-        <Ionicons name="search" size={18} color={QuinckleColors.textSecondary} />
+        <Ionicons name="search" size={16} color={QuinckleColors.textSecondary} />
         <TextInput
           value={searchText}
           onChangeText={setSearchText}
-          placeholder="Search Table Number..."
+          placeholder="Search by table number or location…"
           placeholderTextColor={QuinckleColors.textSecondary}
           style={styles.searchInput}
         />
+        {searchText.length > 0 && (
+          <TouchableOpacity onPress={() => setSearchText('')}>
+            <Ionicons name="close-circle" size={16} color={QuinckleColors.textSecondary} />
+          </TouchableOpacity>
+        )}
       </View>
 
+      {/* Table list */}
       <FlatList
         data={filteredTables}
         keyExtractor={(item) => item.id}
@@ -199,29 +192,40 @@ export default function StaffDashboard() {
             <TouchableOpacity
               style={styles.tableCard}
               onPress={() => handleTablePress(item.number, item.status)}
-              activeOpacity={0.9}
+              activeOpacity={0.88}
             >
               <View style={styles.cardTopRow}>
                 <View>
                   <Text style={styles.tableTitle}>T{item.number}</Text>
                   <View style={styles.metaRow}>
-                    <Ionicons name="location-outline" size={14} color={QuinckleColors.textSecondary} />
+                    <Ionicons name="location-outline" size={13} color={QuinckleColors.textSecondary} />
                     <Text style={styles.metaText}>{item.location}</Text>
-                    <Ionicons name="people-outline" size={14} color={QuinckleColors.textSecondary} />
-                    <Text style={styles.metaText}>{item.seats} Seats</Text>
+                    <Ionicons name="people-outline" size={13} color={QuinckleColors.textSecondary} />
+                    <Text style={styles.metaText}>{item.seats} seats</Text>
                   </View>
                 </View>
-                <View style={[styles.statusPill, { backgroundColor: `${statusMeta.color}22` }]}>
-                  <Text style={[styles.statusPillText, { color: statusMeta.color }]}>{statusMeta.label}</Text>
+                <View style={[styles.statusPill, { backgroundColor: `${statusMeta.color}18` }]}>
+                  <View style={[styles.statusDot, { backgroundColor: statusMeta.color }]} />
+                  <Text style={[styles.statusPillText, { color: statusMeta.color }]}>
+                    {statusMeta.label}
+                  </Text>
                 </View>
               </View>
 
               <View style={styles.cardActions}>
-                <TouchableOpacity style={styles.actionBtn} onPress={() => handleQuickAction(item.number, 'assign')}>
-                  <Text style={styles.actionText}>ASSIGN GUEST</Text>
+                <TouchableOpacity
+                  style={styles.actionBtn}
+                  onPress={() => handleQuickAction(item.number, 'assign')}
+                >
+                  <Ionicons name="person-add-outline" size={13} color={QuinckleColors.textSecondary} />
+                  <Text style={styles.actionText}>Assign Guest</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.actionBtn} onPress={() => handleQuickAction(item.number, 'clean')}>
-                  <Text style={styles.actionText}>MARK CLEAN</Text>
+                <TouchableOpacity
+                  style={styles.actionBtn}
+                  onPress={() => handleQuickAction(item.number, 'clean')}
+                >
+                  <Ionicons name="sparkles-outline" size={13} color={QuinckleColors.textSecondary} />
+                  <Text style={styles.actionText}>Mark Clean</Text>
                 </TouchableOpacity>
               </View>
             </TouchableOpacity>
@@ -229,23 +233,11 @@ export default function StaffDashboard() {
         }}
         ListEmptyComponent={
           <View style={styles.emptyState}>
-            <Ionicons name="search-outline" size={26} color={QuinckleColors.textSecondary} />
+            <Ionicons name="search-outline" size={28} color={QuinckleColors.textSecondary} />
             <Text style={styles.emptyText}>No tables match this filter.</Text>
           </View>
         }
       />
-
-      {/* Legacy header kept for quick rollback during iteration */}
-      <View style={styles.legacyHeaderHide}>
-        <View>
-          <Text style={styles.header}>Floor Overview</Text>
-          <Text style={styles.subtitle}>Manage active dining sessions</Text>
-        </View>
-        <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
-          <Ionicons name="log-out-outline" size={18} color={QuinckleColors.danger} />
-          <Text style={styles.logoutText}>Logout</Text>
-        </TouchableOpacity>
-      </View>
 
       <ThemedDialog
         visible={dialog.visible}
@@ -259,147 +251,136 @@ export default function StaffDashboard() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingHorizontal: 14, paddingTop: 52, backgroundColor: QuinckleColors.background },
+  container: {
+    flex: 1,
+    paddingHorizontal: 14,
+    paddingTop: 52,
+    backgroundColor: QuinckleColors.background,
+  },
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 14,
-    backgroundColor: `${QuinckleColors.surface}CC`,
+    marginBottom: 12,
+    backgroundColor: 'rgba(255,255,255,0.05)',
     borderWidth: 1,
-    borderColor: `${QuinckleColors.border}CC`,
+    borderColor: 'rgba(255,255,255,0.09)',
     borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
   },
-  topTitle: { color: QuinckleColors.textPrimary, fontSize: 20, fontWeight: '700', flex: 1 },
-  topIcons: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  topTitle: { color: QuinckleColors.textPrimary, fontSize: 17, fontWeight: '700', flex: 1 },
+  topIcons: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   summaryCard: {
-    backgroundColor: `${QuinckleColors.surface}CC`,
+    backgroundColor: 'rgba(243,93,59,0.06)',
     borderWidth: 1,
-    borderColor: `${QuinckleColors.border}CC`,
+    borderColor: 'rgba(243,93,59,0.14)',
     borderRadius: 14,
-    padding: 12,
+    padding: 14,
     marginBottom: 12,
   },
   summaryTitle: {
     color: QuinckleColors.textPrimary,
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '700',
     marginBottom: 10,
+    letterSpacing: -0.3,
   },
-  summaryStatsRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  summaryStatPill: {
+  summaryStatsRow: { flexDirection: 'row', gap: 8 },
+  statPill: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
-    backgroundColor: QuinckleColors.surfaceHover,
+    gap: 5,
+    backgroundColor: 'rgba(255,255,255,0.06)',
     borderWidth: 1,
-    borderColor: QuinckleColors.border,
+    borderColor: 'rgba(255,255,255,0.08)',
     borderRadius: 999,
     paddingVertical: 7,
-    paddingHorizontal: 8,
+    paddingHorizontal: 6,
   },
-  summaryStatText: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  filterRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 12,
-  },
+  statText: { color: QuinckleColors.textPrimary, fontSize: 11, fontWeight: '600' },
+  filterRow: { flexDirection: 'row', gap: 7, marginBottom: 12 },
   chip: {
     borderWidth: 1,
-    borderColor: QuinckleColors.border,
-    backgroundColor: `${QuinckleColors.surface}CC`,
+    borderColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.04)',
     borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
   },
   chipActive: {
-    borderColor: QuinckleColors.primary,
-    backgroundColor: `${QuinckleColors.primary}22`,
+    borderColor: 'rgba(243,93,59,0.45)',
+    backgroundColor: 'rgba(243,93,59,0.13)',
   },
   chipText: { color: QuinckleColors.textSecondary, fontSize: 12, fontWeight: '500' },
-  chipTextActive: { color: QuinckleColors.primary },
+  chipTextActive: { color: QuinckleColors.primary, fontWeight: '600' },
   searchWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: QuinckleColors.surface,
-    borderColor: QuinckleColors.border,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderColor: 'rgba(255,255,255,0.08)',
     borderWidth: 1,
-    borderRadius: 14,
+    borderRadius: 12,
     paddingHorizontal: 12,
     marginBottom: 12,
+    gap: 8,
   },
   searchInput: {
     flex: 1,
     color: QuinckleColors.textPrimary,
     paddingVertical: 10,
-    paddingHorizontal: 8,
+    fontSize: 14,
   },
-  listContent: { paddingBottom: 92 },
+  listContent: { paddingBottom: 30 },
   tableCard: {
-    backgroundColor: `${QuinckleColors.surface}D9`,
+    backgroundColor: 'rgba(255,255,255,0.05)',
     borderWidth: 1,
-    borderColor: QuinckleColors.border,
+    borderColor: 'rgba(255,255,255,0.09)',
     borderRadius: 16,
     padding: 14,
     marginBottom: 10,
-    elevation: 2,
   },
   cardTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: 10,
+    marginBottom: 12,
   },
-  tableTitle: { fontSize: 28, fontWeight: '700', color: QuinckleColors.textPrimary },
-  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
-  metaText: { color: QuinckleColors.textSecondary, fontSize: 12, marginRight: 6 },
+  tableTitle: { fontSize: 26, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.5 },
+  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 3 },
+  metaText: { color: QuinckleColors.textSecondary, fontSize: 12, marginRight: 4 },
   statusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
     borderRadius: 999,
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
+  statusDot: { width: 6, height: 6, borderRadius: 3 },
   statusPillText: { fontWeight: '600', fontSize: 12 },
   cardActions: {
     borderTopWidth: 1,
-    borderTopColor: QuinckleColors.border,
+    borderTopColor: 'rgba(255,255,255,0.07)',
     paddingTop: 10,
     flexDirection: 'row',
-    alignItems: 'center',
     gap: 8,
   },
   actionBtn: {
     flex: 1,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-  actionText: { color: QuinckleColors.textPrimary, fontSize: 12, fontWeight: '600' },
-  emptyState: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 40,
-    gap: 6,
+    gap: 5,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    paddingVertical: 9,
+    backgroundColor: 'rgba(255,255,255,0.03)',
   },
-  emptyText: { color: QuinckleColors.textSecondary },
-  legacyHeaderHide: {
-    height: 0,
-    overflow: 'hidden',
-  },
-  header: { fontSize: 20, fontWeight: '700', color: QuinckleColors.textPrimary },
-  subtitle: { color: QuinckleColors.textSecondary },
-  logoutBtn: { flexDirection: 'row', alignItems: 'center' },
-  logoutText: { color: QuinckleColors.danger, fontWeight: '600' },
+  actionText: { color: QuinckleColors.textSecondary, fontSize: 12, fontWeight: '600' },
+  emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 44, gap: 8 },
+  emptyText: { color: QuinckleColors.textSecondary, fontSize: 14 },
 });

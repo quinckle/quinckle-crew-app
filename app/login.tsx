@@ -6,39 +6,51 @@ import { Ionicons } from '@expo/vector-icons';
 import { QuinckleColors } from '../constants/Colors';
 
 export default function LoginScreen() {
-  const handleRoleSelect = (role: 'staff' | 'cook') => {
-    router.push(`/credential?role=${role}` as never);
-  };
-
   return (
     <View style={styles.container}>
-      <View style={styles.brandWrap}>
+      <View style={styles.brand}>
         <View style={styles.logoBadge}>
-          <Ionicons name="restaurant" size={28} color={QuinckleColors.textPrimary} />
+          <Ionicons name="restaurant" size={30} color="#fff" />
         </View>
-        <Text style={styles.title}>QuinckleCrew</Text>
-        <Text style={styles.subtitle}>Select your role to continue</Text>
+        <Text style={styles.appName}>QuinckleCrew</Text>
+        <Text style={styles.tagline}>Restaurant crew coordination</Text>
       </View>
 
-      <TouchableOpacity 
-        style={[styles.button, styles.staffButton]} 
-        onPress={() => handleRoleSelect('staff')}
-        activeOpacity={0.85}
-      >
-        <Ionicons name="people" size={18} color={QuinckleColors.textPrimary} />
-        <Text style={styles.buttonText}>Login as Staff</Text>
-        <Ionicons name="arrow-forward" size={18} color={QuinckleColors.textPrimary} />
-      </TouchableOpacity>
+      <View style={styles.card}>
+        <Text style={styles.sectionLabel}>Select your role</Text>
 
-      <TouchableOpacity 
-        style={[styles.button, styles.cookButton]} 
-        onPress={() => handleRoleSelect('cook')}
-        activeOpacity={0.85}
-      >
-        <Ionicons name="flame" size={18} color={QuinckleColors.primary} />
-        <Text style={[styles.buttonText, styles.cookButtonText]}>Login as Cook</Text>
-        <Ionicons name="arrow-forward" size={18} color={QuinckleColors.primary} />
-      </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.roleRow, styles.roleRowStaff]}
+          onPress={() => router.push('/credential?role=staff' as never)}
+          activeOpacity={0.8}
+        >
+          <View style={styles.roleIconStaff}>
+            <Ionicons name="people" size={20} color={QuinckleColors.primary} />
+          </View>
+          <View style={styles.roleInfo}>
+            <Text style={styles.roleName}>Staff</Text>
+            <Text style={styles.roleDesc}>Manage tables & serve guests</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textSecondary} />
+        </TouchableOpacity>
+
+        <View style={styles.separator} />
+
+        <TouchableOpacity
+          style={[styles.roleRow, styles.roleRowCook]}
+          onPress={() => router.push('/credential?role=cook' as never)}
+          activeOpacity={0.8}
+        >
+          <View style={styles.roleIconCook}>
+            <Ionicons name="flame" size={20} color="#fff" />
+          </View>
+          <View style={styles.roleInfo}>
+            <Text style={styles.roleName}>Cook</Text>
+            <Text style={styles.roleDesc}>Handle kitchen order tickets</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textSecondary} />
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
@@ -50,56 +62,81 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: QuinckleColors.background,
     paddingHorizontal: 20,
+    gap: 28,
   },
-  brandWrap: {
-    width: '100%',
-    alignItems: 'center',
-    marginBottom: 36,
-  },
+  brand: { alignItems: 'center', gap: 8 },
   logoBadge: {
-    width: 64,
-    height: 64,
-    borderRadius: 20,
+    width: 70,
+    height: 70,
+    borderRadius: 22,
     backgroundColor: QuinckleColors.primary,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 6,
+    elevation: 8,
+    shadowColor: QuinckleColors.primary,
+    shadowOpacity: 0.45,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 6 },
   },
-  title: {
-    fontSize: 36,
-    fontWeight: 'bold',
-    marginBottom: 10,
-    color: QuinckleColors.primary,
-  },
-  subtitle: {
-    fontSize: 16,
-    color: QuinckleColors.textSecondary,
-    marginBottom: 40,
-    textAlign: 'center',
-  },
-  button: {
-    width: '100%',
-    padding: 18,
-    borderRadius: 14,
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 15,
-  },
-  staffButton: {
-    backgroundColor: QuinckleColors.primary,
-  },
-  cookButton: {
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: QuinckleColors.primary,
-  },
-  buttonText: {
+  appName: {
+    fontSize: 32,
+    fontWeight: '700',
     color: QuinckleColors.textPrimary,
-    fontSize: 17,
-    fontWeight: '600',
+    letterSpacing: -0.5,
   },
-  cookButtonText: {
-    color: QuinckleColors.primary,
+  tagline: { fontSize: 14, color: QuinckleColors.textSecondary },
+  card: {
+    width: '100%',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.09)',
+    borderRadius: 20,
+    padding: 16,
+    gap: 4,
+  },
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: QuinckleColors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginBottom: 8,
+    paddingHorizontal: 2,
+  },
+  roleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+  },
+  roleRowStaff: { backgroundColor: 'rgba(243,93,59,0.07)' },
+  roleRowCook: { backgroundColor: 'rgba(255,255,255,0.03)' },
+  roleIconStaff: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    backgroundColor: 'rgba(243,93,59,0.16)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  roleIconCook: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    backgroundColor: QuinckleColors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  roleInfo: { flex: 1, gap: 2 },
+  roleName: { fontSize: 16, fontWeight: '600', color: QuinckleColors.textPrimary },
+  roleDesc: { fontSize: 12, color: QuinckleColors.textSecondary },
+  separator: {
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    marginHorizontal: 2,
+    marginVertical: 2,
   },
 });
