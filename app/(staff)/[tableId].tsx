@@ -1,12 +1,13 @@
 // app/(staff)/[tableId].tsx
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
-import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { FlatList, StyleSheet, Text, TouchableOpacity, View, ScrollView, Modal, Animated } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QuinckleColors } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 
-type ItemStatus = 'queued' | 'preparing' | 'prepared' | 'served';
+type ItemStatus = 'prep' | 'ready' | 'served';
 type TableState = 'occupied' | 'reserved' | 'available';
 
 type OrderItem = {
@@ -14,15 +15,18 @@ type OrderItem = {
   name: string;
   status: ItemStatus;
   price: number;
+  orderedAt: string;
 };
 
 const TABLE_ORDER_DATA: Record<string, { tableState: TableState; orders: OrderItem[] }> = {
   '2': {
     tableState: 'occupied',
     orders: [
-      { id: '2-1', name: 'Chicken Biryani', status: 'prepared', price: 250 },
-      { id: '2-2', name: 'Garlic Naan', status: 'preparing', price: 50 },
-      { id: '2-3', name: 'Cold Coffee', status: 'served', price: 120 },
+      { id: '2-1', name: 'Chicken Biryani', status: 'ready', price: 250, orderedAt: '14:15' },
+      { id: '2-2', name: 'Garlic Naan', status: 'prep', price: 50, orderedAt: '14:18' },
+      { id: '2-3', name: 'Cold Coffee', status: 'ready', price: 120, orderedAt: '14:22' },
+      { id: '2-4', name: 'Butter Chicken', status: 'ready', price: 320, orderedAt: '14:25' },
+      { id: '2-5', name: 'Dal Makhani', status: 'prep', price: 180, orderedAt: '14:30' },
     ],
   },
   '4': {
@@ -36,15 +40,18 @@ const TABLE_ORDER_DATA: Record<string, { tableState: TableState; orders: OrderIt
 };
 
 const STATUS_META: Record<ItemStatus, { label: string; color: string }> = {
-  queued: { label: 'Queued', color: QuinckleColors.primary },
-  preparing: { label: 'Preparing', color: QuinckleColors.warning },
-  prepared: { label: 'Ready', color: QuinckleColors.success },
+  prep: { label: 'Prep', color: QuinckleColors.warning },
+  ready: { label: 'Ready', color: QuinckleColors.success },
   served: { label: 'Served', color: QuinckleColors.info },
 };
 
 export default function TableDetail() {
+  const insets = useSafeAreaInsets();
   const { tableId } = useLocalSearchParams();
   const router = useRouter();
+  const [timeLeft, setTimeLeft] = useState(45); // 45 minutes mock
+  const totalTime = 60;
+  const progress = timeLeft / totalTime;
   const normalizedTableId = Array.isArray(tableId) ? tableId[0] : tableId;
 
   const tableData = useMemo(
@@ -58,6 +65,7 @@ export default function TableDetail() {
 
   const [orders, setOrders] = useState<OrderItem[]>(tableData.orders);
   const [isPaid, setIsPaid] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
   const [dialog, setDialog] = useState<{
     visible: boolean;
     title: string;
@@ -86,13 +94,47 @@ export default function TableDetail() {
     });
   };
 
-  const handleServe = (id: string) => {
+  const handleServe = (itemId: string) => {
     setOrders((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, status: 'served' } : item)),
+      prev.map((order) => (order.id === itemId ? { ...order, status: 'served' } : order)),
+    );
+  };
+
+  const handleUndoServe = (itemId: string) => {
+    const item = orders.find(o => o.id === itemId);
+    if (!item) return;
+
+    showDialog(
+      'Undo Served',
+      `Mark "${item.name}" back as Ready?`,
+      [
+        { label: 'Cancel', onPress: () => {} },
+        { 
+          label: 'Yes, Undo', 
+          onPress: () => {
+            setOrders(prev => prev.map(o => o.id === itemId ? { ...o, status: 'ready' } : o));
+          }
+        },
+      ]
     );
   };
 
   const totalAmount = orders.reduce((sum, item) => sum + item.price, 0);
+
+  const servedCount = useMemo(() => orders.filter(o => o.status === 'served').length, [orders]);
+  const totalCount = orders.length;
+  const serviceProgress = totalCount > 0 ? servedCount / totalCount : 0;
+  
+  const progressAnim = React.useRef(new Animated.Value(serviceProgress)).current;
+
+  React.useEffect(() => {
+    Animated.spring(progressAnim, {
+      toValue: serviceProgress,
+      useNativeDriver: false,
+      bounciness: 4,
+      speed: 12,
+    }).start();
+  }, [serviceProgress]);
 
   const handleCollectCash = () => {
     if (isPaid) return;
@@ -121,34 +163,61 @@ export default function TableDetail() {
     );
   };
 
-  const subtitleText =
-    tableData.tableState === 'reserved'
-      ? 'Reserved — pre-orders'
-      : tableData.tableState === 'occupied'
-        ? 'Live order status'
-        : 'No active orders';
-
   return (
-    <View style={styles.container}>
-      <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-        <Ionicons name="chevron-back" size={18} color={QuinckleColors.primary} />
-        <Text style={styles.backText}>Floor</Text>
+    <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
+      <View style={styles.header}>
+        <View style={styles.headerLeft}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.backCircle}>
+            <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
+          </TouchableOpacity>
+          <View>
+            <Text style={styles.tableTitle}>T{String(normalizedTableId).padStart(2, '0')}</Text>
+            <Text style={styles.sinceText}>since 14:15</Text>
+          </View>
+        </View>
+
+        <View style={styles.headerRight}>
+          <View style={styles.countdownBox}>
+            <Text style={styles.timeLabel}>{timeLeft}m left</Text>
+            <View style={styles.progressTrack}>
+              <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
+            </View>
+          </View>
+          
+          <TouchableOpacity style={styles.moreBtn}>
+            <Ionicons name="ellipsis-vertical" size={20} color="rgba(255,255,255,0.4)" />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <TouchableOpacity 
+        style={styles.manualOrderBtn}
+        onPress={() => router.push({
+          pathname: '/(staff)/menu',
+          params: { tableId: normalizedTableId }
+        })}
+      >
+        <Ionicons name="add-circle" size={18} color="#fff" />
+        <Text style={styles.manualOrderText}>Manual Order Taking</Text>
       </TouchableOpacity>
 
-      <View style={styles.titleRow}>
-        <View>
-          <Text style={styles.title}>Table {normalizedTableId}</Text>
-          <Text style={styles.subtitle}>{subtitleText}</Text>
+      <View style={styles.sectionHeader}>
+        <View style={styles.sectionTitleRow}>
+          <Text style={styles.sectionTitle}>Active Orders</Text>
+          <Text style={styles.progressText}>{servedCount}/{totalCount} Served</Text>
         </View>
-        <View style={[styles.billPill, isPaid && styles.billPillPaid]}>
-          <Ionicons
-            name={isPaid ? 'checkmark-circle' : 'cash-outline'}
-            size={15}
-            color={isPaid ? QuinckleColors.success : QuinckleColors.primary}
+        <View style={styles.serviceProgressTrack}>
+          <Animated.View 
+            style={[
+              styles.serviceProgressFill, 
+              { 
+                width: progressAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: ['0%', '100%'],
+                }) 
+              }
+            ]} 
           />
-          <Text style={[styles.billAmount, isPaid && styles.billAmountPaid]}>
-            {isPaid ? 'Paid' : `Rs ${totalAmount}`}
-          </Text>
         </View>
       </View>
 
@@ -158,56 +227,120 @@ export default function TableDetail() {
         contentContainerStyle={styles.listContent}
         ListEmptyComponent={<Text style={styles.emptyText}>No items ordered yet.</Text>}
         renderItem={({ item }) => {
-          const meta = STATUS_META[item.status];
+          const isServed = item.status === 'served';
+          const isReady = item.status === 'ready';
+          
           return (
-            <View style={styles.orderCard}>
-              <View style={styles.orderInfo}>
-                <Text style={styles.itemName}>{item.name}</Text>
-                <Text style={styles.itemPrice}>Rs {item.price}</Text>
-              </View>
-              <View style={styles.orderRight}>
-                <View style={[styles.statusPill, { backgroundColor: `${meta.color}18` }]}>
-                  <Text style={[styles.statusText, { color: meta.color }]}>{meta.label}</Text>
+            <TouchableOpacity 
+              style={[styles.orderItemRow, isServed && { opacity: 0.5 }]}
+              onPress={() => {
+                if (isReady) handleServe(item.id);
+                else if (isServed) handleUndoServe(item.id);
+              }}
+              disabled={item.status === 'prep'}
+              activeOpacity={0.7}
+            >
+              <View style={styles.orderItemLeft}>
+                <View style={[
+                  styles.checkCircle, 
+                  isReady && styles.checkCircleReady,
+                  isServed && styles.checkCircleServed
+                ]}>
+                  {isServed && (
+                    <Ionicons name="checkmark" size={16} color="#fff" />
+                  )}
                 </View>
-                {item.status === 'prepared' && (
-                  <TouchableOpacity style={styles.serveBtn} onPress={() => handleServe(item.id)}>
-                    <Text style={styles.serveBtnText}>SERVE</Text>
-                  </TouchableOpacity>
-                )}
-                {item.status === 'served' && (
-                  <Ionicons name="checkmark-circle" size={22} color={QuinckleColors.success} />
-                )}
+                <View>
+                  <Text style={[
+                    styles.itemName, 
+                    isServed && { textDecorationLine: 'line-through', color: 'rgba(255,255,255,0.3)' }
+                  ]}>
+                    {item.name}
+                  </Text>
+                  <View style={styles.itemMetaRow}>
+                    <Text style={styles.itemPrice}>₹{item.price}</Text>
+                    <Text style={styles.itemDot}>•</Text>
+                    <Text style={styles.orderedAtText}>{item.orderedAt}</Text>
+                  </View>
+                </View>
               </View>
-            </View>
+
+              <View style={[
+                styles.statusTag, 
+                { backgroundColor: isServed ? 'transparent' : (isReady ? 'rgba(34,197,94,0.1)' : 'rgba(245,158,11,0.1)') }
+              ]}>
+                <Text style={[
+                  styles.statusTagText, 
+                  { color: isServed ? 'rgba(255,255,255,0.2)' : (isReady ? '#22c55e' : '#f59e0b') }
+                ]}>
+                  {isServed ? 'Served' : (item.status === 'prep' ? 'Preparing' : 'Ready')}
+                </Text>
+              </View>
+            </TouchableOpacity>
           );
         }}
       />
 
-      {/* Bottom action bar */}
-      <View style={styles.bottomBar}>
-        <TouchableOpacity
-          style={[styles.bottomBtn, isPaid ? styles.bottomBtnPaid : styles.bottomBtnCash]}
-          onPress={handleCollectCash}
-          disabled={isPaid}
-          activeOpacity={0.82}
-        >
-          <Ionicons
-            name={isPaid ? 'checkmark-circle' : 'cash-outline'}
-            size={16}
-            color={isPaid ? QuinckleColors.success : '#fff'}
-          />
-          <Text style={[styles.bottomBtnLabel, isPaid && styles.bottomBtnLabelPaid]}>
-            {isPaid ? 'Cash Collected' : 'Collect Cash'}
-          </Text>
-        </TouchableOpacity>
+      {/* Integrated Bill Accordion */}
+      <View style={[styles.bottomBar, isExpanded && styles.bottomBarExpanded]}>
+        {isExpanded && (
+          <View style={styles.accordionContent}>
+            <View style={styles.billHeader}>
+              <Text style={styles.billTitle}>Bill Details</Text>
+              <TouchableOpacity onPress={() => setIsExpanded(false)}>
+                <Ionicons name="chevron-down" size={20} color="rgba(255,255,255,0.4)" />
+              </TouchableOpacity>
+            </View>
 
-        <TouchableOpacity
-          style={[styles.bottomBtn, styles.bottomBtnEnd]}
-          onPress={handleEndSession}
-          activeOpacity={0.82}
+            <View style={styles.billItemsContainer}>
+              {orders.map((item) => (
+                <View key={item.id} style={styles.billItemRow}>
+                  <Text style={styles.billItemName}>{item.name}</Text>
+                  <Text style={styles.billItemPrice}>₹{item.price}</Text>
+                </View>
+              ))}
+            </View>
+
+            <View style={styles.billDivider} />
+
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryLabel}>Subtotal</Text>
+              <Text style={styles.summaryValue}>₹{totalAmount}</Text>
+            </View>
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryLabel}>GST (5%)</Text>
+              <Text style={styles.summaryValue}>₹{(totalAmount * 0.05).toFixed(2)}</Text>
+            </View>
+            
+            <View style={[styles.summaryRow, { marginTop: 12, marginBottom: 20 }]}>
+              <Text style={styles.grandTotalLabel}>Grand Total</Text>
+              <Text style={styles.grandTotalValue}>₹{(totalAmount * 1.05).toFixed(2)}</Text>
+            </View>
+          </View>
+        )}
+
+        <TouchableOpacity 
+          style={styles.totalRow}
+          activeOpacity={0.85}
+          onPress={() => setIsExpanded(!isExpanded)}
         >
-          <Ionicons name="log-out-outline" size={16} color={QuinckleColors.danger} />
-          <Text style={[styles.bottomBtnLabel, styles.bottomBtnLabelEnd]}>End Session</Text>
+          <View>
+            <Text style={styles.totalLabel}>Total Payable</Text>
+            <View style={[styles.paidBadge, isPaid ? styles.paidBadgeActive : styles.paidBadgeInactive]}>
+              <Text style={[styles.paidBadgeText, isPaid ? styles.paidBadgeTextActive : styles.paidBadgeTextInactive]}>
+                {isPaid ? 'PAYMENT SETTLED' : 'PAYMENT PENDING'}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.totalValueContainer}>
+            <Text style={styles.totalValue}>₹{(totalAmount * 1.05).toFixed(0)}</Text>
+            <Ionicons 
+              name={isExpanded ? "chevron-down" : "chevron-up"} 
+              size={18} 
+              color={QuinckleColors.primary} 
+              style={{ marginLeft: 8 }}
+            />
+          </View>
         </TouchableOpacity>
       </View>
 
@@ -226,115 +359,317 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: QuinckleColors.background,
-    paddingTop: 56,
     paddingHorizontal: 16,
   },
-  backBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    alignSelf: 'flex-start',
-    marginBottom: 14,
-  },
-  backText: { color: QuinckleColors.primary, fontSize: 14, fontWeight: '600' },
-  titleRow: {
+  header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 24,
   },
-  title: {
-    fontSize: 30,
-    fontWeight: '700',
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  backCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  tableTitle: {
+    fontSize: 24,
+    fontWeight: '800',
     color: QuinckleColors.textPrimary,
     letterSpacing: -0.5,
   },
-  subtitle: { fontSize: 13, color: QuinckleColors.textSecondary, marginTop: 2 },
-  billPill: {
-    backgroundColor: 'rgba(243,93,59,0.10)',
-    borderWidth: 1,
-    borderColor: 'rgba(243,93,59,0.28)',
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+  sinceText: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.4)',
+    fontWeight: '600',
+    marginTop: 1,
+  },
+  headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 16,
   },
-  billPillPaid: {
-    backgroundColor: 'rgba(16,185,129,0.10)',
-    borderColor: 'rgba(16,185,129,0.30)',
+  moreBtn: {
+    padding: 4,
+    marginRight: -4,
   },
-  billAmount: { color: QuinckleColors.primary, fontWeight: '700', fontSize: 13 },
-  billAmountPaid: { color: QuinckleColors.success },
-  listContent: { paddingBottom: 108 },
-  orderCard: {
+  countdownBox: {
+    alignItems: 'flex-end',
+    gap: 6,
+  },
+  timeLabel: {
+    fontSize: 13,
+    color: QuinckleColors.primary,
+    fontWeight: '700',
+  },
+  progressTrack: {
+    width: 80,
+    height: 4,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: QuinckleColors.primary,
+    borderRadius: 2,
+  },
+  listContent: { paddingBottom: 160 },
+  manualOrderBtn: {
+    backgroundColor: QuinckleColors.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 14,
+    gap: 8,
+    marginBottom: 24,
+    shadowColor: QuinckleColors.primary,
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+  },
+  manualOrderText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  sectionHeader: {
+    marginBottom: 20,
+  },
+  sectionTitleRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 14,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderRadius: 14,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.09)',
+    marginBottom: 8,
   },
-  orderInfo: { flex: 1, gap: 4 },
-  itemName: { fontSize: 16, fontWeight: '500', color: QuinckleColors.textPrimary },
-  itemPrice: { fontSize: 13, color: QuinckleColors.textSecondary },
-  orderRight: { alignItems: 'flex-end', gap: 8 },
-  statusPill: { borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4 },
-  statusText: { fontSize: 11, fontWeight: '700', letterSpacing: 0.2 },
-  serveBtn: {
+  sectionTitle: {
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  progressText: {
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  serviceProgressTrack: {
+    height: 4,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  serviceProgressFill: {
+    height: '100%',
+    backgroundColor: '#22c55e',
+    borderRadius: 2,
+  },
+  orderItemRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
+  },
+  orderItemLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  checkCircle: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkCircleReady: {
+    borderColor: QuinckleColors.primary,
+  },
+  checkCircleServed: {
     backgroundColor: QuinckleColors.primary,
-    paddingVertical: 7,
-    paddingHorizontal: 14,
-    borderRadius: 8,
+    borderColor: QuinckleColors.primary,
   },
-  serveBtnText: { color: '#fff', fontWeight: '700', fontSize: 12 },
-  emptyText: { color: QuinckleColors.textSecondary, textAlign: 'center', paddingVertical: 30 },
+  itemName: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  itemPrice: {
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  itemMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  itemDot: {
+    color: 'rgba(255,255,255,0.2)',
+    marginHorizontal: 6,
+    fontSize: 10,
+  },
+  orderedAtText: {
+    color: 'rgba(255,255,255,0.25)',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  statusTag: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  statusTagText: {
+    fontSize: 10,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
   bottomBar: {
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
-    flexDirection: 'row',
-    gap: 10,
-    paddingHorizontal: 16,
-    paddingBottom: 30,
-    paddingTop: 12,
-    backgroundColor: `${QuinckleColors.background}F2`,
+    paddingHorizontal: 24,
+    paddingBottom: 40,
+    paddingTop: 20,
+    backgroundColor: '#0A0A0A',
     borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.07)',
+    borderTopColor: 'rgba(255,255,255,0.08)',
   },
-  bottomBtn: {
-    flex: 1,
+  bottomBarExpanded: {
+    paddingTop: 24,
+    borderTopLeftRadius: 32,
+    borderTopRightRadius: 32,
+    backgroundColor: '#111',
+  },
+  totalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  totalLabel: {
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 14,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  totalValueContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 7,
-    paddingVertical: 13,
-    borderRadius: 14,
+  },
+  totalValue: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 28,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+  paidBadge: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginTop: 4,
     borderWidth: 1,
   },
-  bottomBtnCash: {
-    backgroundColor: QuinckleColors.primary,
-    borderColor: QuinckleColors.primary,
-    elevation: 4,
-    shadowColor: QuinckleColors.primary,
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 3 },
+  paidBadgeActive: {
+    backgroundColor: 'rgba(59,130,246,0.1)',
+    borderColor: 'rgba(59,130,246,0.3)',
   },
-  bottomBtnPaid: {
-    backgroundColor: 'rgba(16,185,129,0.10)',
-    borderColor: 'rgba(16,185,129,0.30)',
+  paidBadgeInactive: {
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderColor: 'rgba(255,255,255,0.08)',
   },
-  bottomBtnEnd: {
-    backgroundColor: 'rgba(239,68,68,0.08)',
-    borderColor: 'rgba(239,68,68,0.28)',
+  paidBadgeText: {
+    fontSize: 8,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
-  bottomBtnLabel: { color: '#fff', fontWeight: '700', fontSize: 13 },
-  bottomBtnLabelPaid: { color: QuinckleColors.success },
-  bottomBtnLabelEnd: { color: QuinckleColors.danger },
+  paidBadgeTextActive: {
+    color: '#3B82F6',
+  },
+  paidBadgeTextInactive: {
+    color: 'rgba(255,255,255,0.2)',
+  },
+  accordionContent: {
+    marginBottom: 24,
+  },
+  billHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  billTitle: {
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 1.5,
+  },
+  billItemsContainer: {
+    maxHeight: 180,
+  },
+  billItemRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+  },
+  billItemName: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  billItemPrice: {
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  billDivider: {
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    marginVertical: 16,
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  summaryLabel: {
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  summaryValue: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  grandTotalLabel: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  grandTotalValue: {
+    color: QuinckleColors.primary,
+    fontSize: 20,
+    fontWeight: '800',
+  },
 });

@@ -10,8 +10,11 @@ export default function RootLayout() {
         <Stack
           screenOptions={{
             headerShown: false,
-            animation: 'fade_from_bottom',
-            animationDuration: 180,
+            animation: 'slide_from_right',
+            animationDuration: 250,
+            gestureEnabled: true,
+            gestureDirection: 'horizontal',
+            contentStyle: { backgroundColor: '#050505' },
           }}
         />
       </AuthProvider>
