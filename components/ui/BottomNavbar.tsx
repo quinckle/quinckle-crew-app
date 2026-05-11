@@ -1,7 +1,8 @@
 import React from 'react';
-import { StyleSheet, TouchableOpacity, View, SafeAreaView } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { QuinckleColors } from '../../constants/Colors';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { QuinckleColors, Spacing, Typography } from '../../constants/Colors';
 
 type NavItem = 'tables' | 'menu' | 'orders' | 'activity';
 
@@ -10,60 +11,37 @@ interface BottomNavbarProps {
   onTabChange: (tab: NavItem) => void;
 }
 
+const TABS: { key: NavItem; label: string; icon: keyof typeof Ionicons.glyphMap; iconActive: keyof typeof Ionicons.glyphMap }[] = [
+  { key: 'orders', label: 'Orders', icon: 'receipt-outline', iconActive: 'receipt' },
+  { key: 'tables', label: 'Tables', icon: 'grid-outline', iconActive: 'grid' },
+  { key: 'menu', label: 'Menu', icon: 'restaurant-outline', iconActive: 'restaurant' },
+];
+
 export function BottomNavbar({ activeTab, onTabChange }: BottomNavbarProps) {
+  const insets = useSafeAreaInsets();
+
   return (
-    <View style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.navContent}>
-          <TouchableOpacity 
-            style={styles.navBtn} 
-            onPress={() => onTabChange('tables')}
-            activeOpacity={0.7}
-          >
-            <Ionicons 
-              name={activeTab === 'tables' ? "grid" : "grid-outline"} 
-              size={24} 
-              color={activeTab === 'tables' ? QuinckleColors.primary : QuinckleColors.textSecondary} 
-            />
-          </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={styles.navBtn} 
-            onPress={() => onTabChange('menu')}
-            activeOpacity={0.7}
-          >
-            <Ionicons 
-              name={activeTab === 'menu' ? "book" : "book-outline"} 
-              size={24} 
-              color={activeTab === 'menu' ? QuinckleColors.primary : QuinckleColors.textSecondary} 
-            />
-          </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={styles.navBtn} 
-            onPress={() => onTabChange('orders')}
-            activeOpacity={0.7}
-          >
-            <Ionicons 
-              name={activeTab === 'orders' ? "list" : "list-outline"} 
-              size={24} 
-              color={activeTab === 'orders' ? QuinckleColors.primary : QuinckleColors.textSecondary} 
-            />
-          </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={styles.navBtn} 
-            onPress={() => onTabChange('activity')}
-            activeOpacity={0.7}
-          >
-            <Ionicons 
-              name={activeTab === 'activity' ? "pulse" : "pulse-outline"} 
-              size={24} 
-              color={activeTab === 'activity' ? QuinckleColors.primary : QuinckleColors.textSecondary} 
-            />
-          </TouchableOpacity>
-        </View>
-      </SafeAreaView>
+    <View style={[styles.container, { paddingBottom: Math.max(insets.bottom, Spacing.sm) }]}>
+      <View style={styles.row}>
+        {TABS.map((tab) => {
+          const isActive = activeTab === tab.key;
+          return (
+            <TouchableOpacity
+              key={tab.key}
+              style={styles.btn}
+              onPress={() => onTabChange(tab.key)}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name={isActive ? tab.iconActive : tab.icon}
+                size={22}
+                color={isActive ? QuinckleColors.primary : QuinckleColors.textTertiary}
+              />
+              <Text style={[styles.label, isActive && styles.labelActive]}>{tab.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
     </View>
   );
 }
@@ -74,24 +52,30 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: '#0A0A0A', // Deep solid black
+    backgroundColor: QuinckleColors.background,
     borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.08)',
+    borderTopColor: QuinckleColors.border,
+    paddingTop: Spacing.sm,
   },
-  safeArea: {
-    width: '100%',
-  },
-  navContent: {
+  row: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
-    height: 64,
-    paddingHorizontal: 20,
+    paddingHorizontal: Spacing.lg,
   },
-  navBtn: {
+  btn: {
     flex: 1,
-    height: '100%',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 4,
+    paddingVertical: Spacing.sm,
+  },
+  label: {
+    ...Typography.micro,
+    color: QuinckleColors.textTertiary,
+  },
+  labelActive: {
+    color: QuinckleColors.primary,
+    fontWeight: '600',
   },
 });

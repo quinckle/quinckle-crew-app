@@ -1,21 +1,19 @@
-// app/credential.tsx
 import { Ionicons } from '@expo/vector-icons';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router } from 'expo-router';
 import React, { useRef, useState } from 'react';
 import {
+  Animated,
+  KeyboardAvoidingView,
+  Platform,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  Animated,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
-import { QuinckleColors } from '../constants/Colors';
+import { QuinckleColors, Radius, Spacing, Typography } from '../constants/Colors';
 import { useAuth } from '../context/AuthContext';
 
 const OTP_LENGTH = 6;
@@ -25,12 +23,11 @@ export default function CredentialScreen() {
   const insets = useSafeAreaInsets();
   const { login } = useAuth();
 
-  const [step, setStep] = useState<1 | 2>(1); // 1: Phone, 2: OTP
+  const [step, setStep] = useState<1 | 2>(1);
   const [phone, setPhone] = useState('');
   const [otp, setOtp] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-
   const [isFocused, setIsFocused] = useState(false);
 
   const inputBorderAnim = useRef(new Animated.Value(0)).current;
@@ -38,74 +35,53 @@ export default function CredentialScreen() {
   const cursorOpacity = useRef(new Animated.Value(1)).current;
   const digitAnims = useRef(Array.from({ length: OTP_LENGTH }, () => new Animated.Value(1))).current;
 
-  // Blinking cursor logic
   React.useEffect(() => {
     if (isFocused && step === 2) {
       const blink = Animated.loop(
         Animated.sequence([
-          Animated.timing(cursorOpacity, {
-            toValue: 0,
-            duration: BLINK_DURATION,
-            useNativeDriver: true,
-          }),
-          Animated.timing(cursorOpacity, {
-            toValue: 1,
-            duration: BLINK_DURATION,
-            useNativeDriver: true,
-          }),
-        ])
+          Animated.timing(cursorOpacity, { toValue: 0, duration: BLINK_DURATION, useNativeDriver: true }),
+          Animated.timing(cursorOpacity, { toValue: 1, duration: BLINK_DURATION, useNativeDriver: true }),
+        ]),
       );
       blink.start();
       return () => blink.stop();
     }
-  }, [isFocused, step]);
+  }, [isFocused, step, cursorOpacity]);
 
   const animateDigit = (index: number) => {
     digitAnims[index].setValue(1.1);
-    Animated.spring(digitAnims[index], {
-      toValue: 1,
-      friction: 4,
-      useNativeDriver: true,
-    }).start();
+    Animated.spring(digitAnims[index], { toValue: 1, friction: 4, useNativeDriver: true }).start();
   };
 
   const handleFocus = () => {
     setIsFocused(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    Animated.timing(inputBorderAnim, {
-      toValue: 1,
-      duration: 200,
-      useNativeDriver: false,
-    }).start();
+    Animated.timing(inputBorderAnim, { toValue: 1, duration: 200, useNativeDriver: false }).start();
   };
 
   const handleBlur = () => {
     setIsFocused(false);
-    Animated.timing(inputBorderAnim, {
-      toValue: 0,
-      duration: 200,
-      useNativeDriver: false,
-    }).start();
+    Animated.timing(inputBorderAnim, { toValue: 0, duration: 200, useNativeDriver: false }).start();
   };
 
   const borderColor = inputBorderAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: ['rgba(255,255,255,0.08)', QuinckleColors.primary],
+    outputRange: [QuinckleColors.border, QuinckleColors.primary],
   });
 
   const isPhoneValid = phone.length >= 10;
   const isOtpValid = otp.length === OTP_LENGTH;
+  const ctaDisabled = (step === 1 ? !isPhoneValid : !isOtpValid) || isLoading;
 
   const handleNext = () => {
     if (step === 1) {
       if (!isPhoneValid) return;
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       setIsLoading(true);
-      // Simulate API call to send OTP
       setTimeout(() => {
         setIsLoading(false);
         setStep(2);
-      }, 800);
+      }, 700);
     } else {
       if (!isOtpValid) return;
       handleVerify();
@@ -129,7 +105,6 @@ export default function CredentialScreen() {
 
     setTimeout(() => {
       setIsLoading(false);
-      // Simulate validation failure if OTP is not '123456' for demonstration
       if (otp !== '123456') {
         setError('The verification code is incorrect. Please try again.');
         triggerShake();
@@ -139,7 +114,7 @@ export default function CredentialScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       login('staff');
       router.replace('/(staff)');
-    }, 1200);
+    }, 900);
   };
 
   return (
@@ -149,13 +124,17 @@ export default function CredentialScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         <View style={styles.content}>
-          {/* ── Back Button ── */}
           <TouchableOpacity
             style={styles.backBtn}
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              if (step === 2) setStep(1);
-              else router.back();
+              if (step === 2) {
+                setStep(1);
+                setOtp('');
+                setError('');
+              } else {
+                router.back();
+              }
             }}
             activeOpacity={0.7}
           >
@@ -163,20 +142,18 @@ export default function CredentialScreen() {
             <Text style={styles.backText}>Back</Text>
           </TouchableOpacity>
 
-          {/* ── Header ── */}
           <View style={styles.header}>
-            <Text style={styles.title}>{step === 1 ? 'Mobile Number' : 'Verify OTP'}</Text>
+            <Text style={styles.title}>{step === 1 ? 'Enter Mobile' : 'Verify OTP'}</Text>
             <Text style={styles.subtitle}>
               {step === 1
-                ? 'Enter your registered number to receive\na verification code'
-                : `We've sent a 6-digit code to\n+91 ${phone}`}
+                ? 'We will send a one-time code to your\nregistered number.'
+                : `A 6-digit code was sent to\n+91 ${phone}.`}
             </Text>
           </View>
 
-          {/* ── Input Section ── */}
           <View style={styles.inputSection}>
             <Text style={styles.fieldLabel}>
-              {step === 1 ? 'Mobile Number' : 'One-Time Password'}
+              {step === 1 ? 'Mobile Number' : 'One-Time Code'}
             </Text>
 
             {step === 1 ? (
@@ -195,7 +172,7 @@ export default function CredentialScreen() {
                     }
                   }}
                   placeholder="00000 00000"
-                  placeholderTextColor="rgba(161,161,170,0.4)"
+                  placeholderTextColor={QuinckleColors.textMuted}
                   style={styles.phoneInput}
                   keyboardType="phone-pad"
                   maxLength={10}
@@ -256,15 +233,13 @@ export default function CredentialScreen() {
             )}
           </View>
 
-          {/* ── Resend (Only for OTP) ── */}
           {step === 2 && (
             <TouchableOpacity style={styles.resendRow} activeOpacity={0.7}>
-              <Text style={styles.resendText}>Didn't receive the code? </Text>
+              <Text style={styles.resendText}>Didn&apos;t receive the code? </Text>
               <Text style={styles.resendLink}>Resend OTP</Text>
             </TouchableOpacity>
           )}
 
-          {/* ── Error Display ── */}
           {error ? (
             <View style={styles.errorRow}>
               <Ionicons name="alert-circle" size={16} color={QuinckleColors.danger} />
@@ -272,19 +247,18 @@ export default function CredentialScreen() {
             </View>
           ) : null}
 
-          {/* ── CTA Button ── */}
+          <View style={{ flex: 1 }} />
+
           <TouchableOpacity
-            style={[
-              styles.ctaButton,
-              ((step === 1 && !isPhoneValid) || (step === 2 && !isOtpValid)) && styles.ctaDisabled,
-            ]}
+            style={[styles.ctaButton, ctaDisabled && styles.ctaDisabled]}
             onPress={handleNext}
             activeOpacity={0.85}
-            disabled={((step === 1 && !isPhoneValid) || (step === 2 && !isOtpValid)) || isLoading}
+            disabled={ctaDisabled}
           >
             <Text style={styles.ctaText}>
-              {isLoading ? 'Processing…' : (step === 1 ? 'Get Verification Code' : 'Verify & Continue')}
+              {isLoading ? 'Processing…' : step === 1 ? 'Send Code' : 'Verify & Continue'}
             </Text>
+            {!isLoading && <Ionicons name="arrow-forward" size={18} color="#fff" />}
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
@@ -299,101 +273,94 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-    paddingHorizontal: 24,
-    paddingBottom: 40,
+    paddingHorizontal: Spacing.xxl,
+    paddingBottom: Spacing.huge,
   },
 
-  /* ── Back ── */
   backBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: Spacing.xs,
     alignSelf: 'flex-start',
-    paddingTop: 12,
-    paddingBottom: 8,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.sm,
   },
   backText: {
     color: QuinckleColors.textSecondary,
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '500',
   },
 
-  /* ── Header ── */
   header: {
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 40,
-    marginBottom: 36,
-  },
-  otpIconCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: 'rgba(243,93,59,0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(243,93,59,0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 8,
+    gap: Spacing.sm,
+    marginTop: Spacing.xxxl,
+    marginBottom: Spacing.xxxl,
   },
   title: {
-    fontSize: 26,
+    fontSize: 30,
     fontWeight: '700',
     color: QuinckleColors.textPrimary,
-    letterSpacing: -0.5,
+    letterSpacing: -0.7,
   },
   subtitle: {
-    fontSize: 14,
+    ...Typography.body,
     color: QuinckleColors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 21,
-  },
-  phoneHighlight: {
-    color: QuinckleColors.textPrimary,
-    fontWeight: '600',
+    lineHeight: 22,
   },
 
-  /* ── Input ── */
   inputSection: {
-    gap: 8,
-    marginBottom: 16,
+    gap: Spacing.sm,
+    marginBottom: Spacing.lg,
   },
   fieldLabel: {
-    color: QuinckleColors.textSecondary,
-    fontSize: 12,
+    color: QuinckleColors.textTertiary,
+    fontSize: 11,
     fontWeight: '600',
     textTransform: 'uppercase',
     letterSpacing: 0.8,
-    marginLeft: 2,
   },
   phoneInputWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    backgroundColor: QuinckleColors.surfaceMuted,
     borderWidth: 1,
-    borderRadius: 16,
-    height: 64,
-    paddingRight: 16,
+    borderRadius: Radius.lg,
+    height: 60,
+    paddingRight: Spacing.lg,
   },
   countryCodeBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingLeft: 16,
-    gap: 12,
+    paddingLeft: Spacing.lg,
+    gap: Spacing.md,
   },
   inputDivider: {
     width: 1,
-    height: 24,
-    backgroundColor: 'rgba(255,255,255,0.1)',
+    height: 22,
+    backgroundColor: QuinckleColors.borderStrong,
   },
   phoneInput: {
     flex: 1,
     color: QuinckleColors.textPrimary,
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '600',
-    paddingLeft: 12,
+    paddingLeft: Spacing.md,
     letterSpacing: 1,
   },
+  countryCodeText: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  validBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: QuinckleColors.success,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
   otpContainer: {
     width: '100%',
     height: 60,
@@ -415,62 +382,48 @@ const styles = StyleSheet.create({
   otpBox: {
     width: 48,
     height: 56,
-    borderRadius: 12,
+    borderRadius: Radius.md,
     borderWidth: 1.5,
-    borderColor: 'rgba(255,255,255,0.08)',
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surfaceMuted,
     justifyContent: 'center',
     alignItems: 'center',
   },
   otpBoxActive: {
     borderColor: QuinckleColors.primary,
-    backgroundColor: 'rgba(243,93,59,0.05)',
+    backgroundColor: QuinckleColors.primarySoft,
   },
   otpBoxFilled: {
-    borderColor: 'rgba(255,255,255,0.2)',
+    borderColor: QuinckleColors.borderStrong,
   },
   otpBoxText: {
     color: QuinckleColors.textPrimary,
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: '700',
   },
   cursor: {
     position: 'absolute',
     width: 2,
-    height: 24,
+    height: 22,
     backgroundColor: QuinckleColors.primary,
   },
-  countryCodeText: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 18,
-    fontWeight: '600',
-  },
-  validBadge: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: QuinckleColors.success,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
 
-  /* ── Error ── */
   errorRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    marginBottom: 12,
+    gap: Spacing.xs,
+    marginTop: Spacing.sm,
   },
   errorText: {
     color: QuinckleColors.danger,
     fontSize: 13,
+    fontWeight: '500',
   },
 
-  /* ── Resend ── */
   resendRow: {
     flexDirection: 'row',
     justifyContent: 'center',
-    marginBottom: 28,
+    marginTop: Spacing.lg,
   },
   resendText: {
     fontSize: 13,
@@ -482,23 +435,24 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
-  /* ── CTA ── */
   ctaButton: {
     backgroundColor: QuinckleColors.primary,
-    borderRadius: 14,
-    height: 52,
+    borderRadius: Radius.lg,
+    height: 54,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
+    gap: Spacing.sm,
   },
   ctaDisabled: {
-    backgroundColor: QuinckleColors.textSecondary,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
   },
   ctaText: {
     color: '#fff',
     fontSize: 16,
-    fontWeight: '500',
+    fontWeight: '600',
     letterSpacing: 0.2,
   },
 });

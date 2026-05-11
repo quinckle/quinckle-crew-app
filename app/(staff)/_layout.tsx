@@ -1,4 +1,5 @@
 import { Stack } from 'expo-router';
+import { QuinckleColors } from '../../constants/Colors';
 
 export default function StaffLayout() {
   return (
@@ -9,7 +10,7 @@ export default function StaffLayout() {
         animationDuration: 250,
         gestureEnabled: true,
         gestureDirection: 'horizontal',
-        contentStyle: { backgroundColor: '#050505' },
+        contentStyle: { backgroundColor: QuinckleColors.background },
       }}
     >
       <Stack.Screen name="index" />

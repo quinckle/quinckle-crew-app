@@ -1,18 +1,17 @@
-import React, { useState, useMemo } from 'react';
-import { 
-  StyleSheet, 
-  Text, 
-  View, 
-  TouchableOpacity, 
-  TextInput, 
-  FlatList, 
+import React, { useMemo, useState } from 'react';
+import {
+  FlatList,
   ScrollView,
-  SafeAreaView 
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { QuinckleColors } from '../../constants/Colors';
+import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 
 type MenuItem = {
   id: string;
@@ -43,7 +42,7 @@ export default function OrderMenu() {
   const [cart, setCart] = useState<Record<string, number>>({});
 
   const filteredMenu = useMemo(() => {
-    return MENU_DATA.filter(item => {
+    return MENU_DATA.filter((item) => {
       const matchesSearch = item.name.toLowerCase().includes(searchText.toLowerCase());
       const matchesCategory = activeCategory === 'All' || item.category === activeCategory;
       return matchesSearch && matchesCategory;
@@ -51,7 +50,7 @@ export default function OrderMenu() {
   }, [searchText, activeCategory]);
 
   const addToCart = (id: string) => {
-    setCart(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }));
+    setCart((prev) => ({ ...prev, [id]: (prev[id] || 0) + 1 }));
   };
 
   const removeFromCart = (id: string) => {
@@ -64,64 +63,70 @@ export default function OrderMenu() {
 
   const cartCount = Object.values(cart).reduce((a, b) => a + b, 0);
   const cartTotal = Object.entries(cart).reduce((sum, [id, qty]) => {
-    const item = MENU_DATA.find(m => m.id === id);
+    const item = MENU_DATA.find((m) => m.id === id);
     return sum + (item?.price || 0) * qty;
   }, 0);
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
-      {/* Header */}
+    <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backCircle}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} activeOpacity={0.7}>
           <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
         </TouchableOpacity>
-        <View>
+        <View style={{ flex: 1 }}>
           <Text style={styles.headerTitle}>Take Order</Text>
-          <Text style={styles.headerSubtitle}>Table T{tableId || '02'}</Text>
+          <Text style={styles.headerSubtitle}>Table T{String(tableId || '02').padStart(2, '0')}</Text>
         </View>
       </View>
 
-      {/* Search */}
       <View style={styles.searchContainer}>
-        <Ionicons name="search" size={18} color="rgba(255,255,255,0.3)" />
+        <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
         <TextInput
           style={styles.searchInput}
-          placeholder="Search menu items..."
-          placeholderTextColor="rgba(255,255,255,0.3)"
+          placeholder="Search menu items…"
+          placeholderTextColor={QuinckleColors.textTertiary}
           value={searchText}
           onChangeText={setSearchText}
         />
+        {searchText.length > 0 && (
+          <TouchableOpacity onPress={() => setSearchText('')}>
+            <Ionicons name="close-circle" size={16} color={QuinckleColors.textTertiary} />
+          </TouchableOpacity>
+        )}
       </View>
 
-      {/* Categories */}
-      <View style={styles.categoriesWrapper}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoriesScroll}>
-          {CATEGORIES.map(cat => (
-            <TouchableOpacity 
-              key={cat} 
-              style={[styles.categoryPill, activeCategory === cat && styles.categoryPillActive]}
-              onPress={() => setActiveCategory(cat)}
-            >
-              <Text style={[styles.categoryText, activeCategory === cat && styles.categoryTextActive]}>
-                {cat}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.chipScroll}
+        style={styles.chipRow}
+      >
+        {CATEGORIES.map((cat) => (
+          <TouchableOpacity
+            key={cat}
+            style={[styles.chip, activeCategory === cat && styles.chipActive]}
+            onPress={() => setActiveCategory(cat)}
+          >
+            <Text style={[styles.chipText, activeCategory === cat && styles.chipTextActive]}>{cat}</Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
 
-      {/* Menu List */}
       <FlatList
         data={filteredMenu}
-        keyExtractor={item => item.id}
-        contentContainerStyle={styles.listContent}
+        keyExtractor={(item) => item.id}
+        contentContainerStyle={[styles.listContent, { paddingBottom: cartCount > 0 ? 130 : Spacing.xxl }]}
         renderItem={({ item }) => (
           <View style={styles.menuItemCard}>
             <View style={styles.itemInfo}>
               <Text style={styles.itemName}>{item.name}</Text>
-              <Text style={styles.itemPrice}>₹{item.price}</Text>
+              <View style={styles.itemMeta}>
+                <Text style={styles.itemCategory}>{item.category}</Text>
+                <Text style={styles.itemDot}>·</Text>
+                <Text style={styles.itemPrice}>₹{item.price}</Text>
+              </View>
             </View>
-            
+
             {cart[item.id] ? (
               <View style={styles.qtyContainer}>
                 <TouchableOpacity onPress={() => removeFromCart(item.id)} style={styles.qtyBtn}>
@@ -133,25 +138,32 @@ export default function OrderMenu() {
                 </TouchableOpacity>
               </View>
             ) : (
-              <TouchableOpacity onPress={() => addToCart(item.id)} style={styles.addBtn}>
-                <Ionicons name="add" size={18} color={QuinckleColors.primary} />
-                <Text style={styles.addBtnText}>ADD</Text>
+              <TouchableOpacity onPress={() => addToCart(item.id)} style={styles.addBtn} activeOpacity={0.85}>
+                <Ionicons name="add" size={16} color={QuinckleColors.primary} />
+                <Text style={styles.addBtnText}>Add</Text>
               </TouchableOpacity>
             )}
           </View>
         )}
+        ListEmptyComponent={
+          <View style={styles.emptyState}>
+            <Ionicons name="search-outline" size={28} color={QuinckleColors.textTertiary} />
+            <Text style={styles.emptyText}>No items match your search.</Text>
+          </View>
+        }
       />
 
-      {/* Cart Summary Footer */}
       {cartCount > 0 && (
-        <View style={[styles.cartFooter, { paddingBottom: insets.bottom + 16 }]}>
-          <TouchableOpacity 
+        <View style={[styles.cartFooter, { paddingBottom: insets.bottom + Spacing.lg }]}>
+          <TouchableOpacity
             style={styles.confirmBtn}
             onPress={() => router.back()}
-            activeOpacity={0.9}
+            activeOpacity={0.85}
           >
             <View>
-              <Text style={styles.cartCountText}>{cartCount} items</Text>
+              <Text style={styles.cartCountText}>
+                {cartCount} {cartCount === 1 ? 'item' : 'items'}
+              </Text>
               <Text style={styles.cartTotalText}>₹{cartTotal}</Text>
             </View>
             <View style={styles.cartAction}>
@@ -168,129 +180,150 @@ export default function OrderMenu() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#050505',
+    backgroundColor: QuinckleColors.background,
+    paddingHorizontal: Spacing.lg,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    gap: 12,
+    gap: Spacing.md,
+    marginBottom: Spacing.lg,
   },
-  backCircle: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+  iconBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: Radius.md,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
   },
   headerTitle: {
     color: QuinckleColors.textPrimary,
     fontSize: 20,
-    fontWeight: '800',
+    fontWeight: '700',
+    letterSpacing: -0.3,
   },
   headerSubtitle: {
-    color: 'rgba(255,255,255,0.4)',
+    color: QuinckleColors.textTertiary,
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '500',
+    marginTop: 2,
   },
+
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    marginHorizontal: 16,
-    marginVertical: 12,
-    paddingHorizontal: 12,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    paddingHorizontal: Spacing.md,
     height: 44,
-    borderRadius: 12,
+    borderRadius: Radius.md,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
+    borderColor: QuinckleColors.border,
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
   },
   searchInput: {
     flex: 1,
-    color: '#fff',
-    marginLeft: 10,
+    color: QuinckleColors.textPrimary,
     fontSize: 14,
   },
-  categoriesWrapper: {
-    marginBottom: 8,
+
+  chipRow: {
+    marginBottom: Spacing.md,
+    flexGrow: 0,
   },
-  categoriesScroll: {
-    paddingHorizontal: 16,
-    gap: 8,
+  chipScroll: {
+    gap: Spacing.sm,
+    paddingRight: Spacing.lg,
   },
-  categoryPill: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+  chip: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 7,
+    borderRadius: Radius.pill,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
   },
-  categoryPillActive: {
-    backgroundColor: QuinckleColors.primary,
+  chipActive: {
+    backgroundColor: QuinckleColors.primarySoft,
+    borderColor: QuinckleColors.primarySoftBorder,
   },
-  categoryText: {
-    color: 'rgba(255,255,255,0.5)',
+  chipText: {
+    color: QuinckleColors.textSecondary,
     fontSize: 13,
+    fontWeight: '500',
+  },
+  chipTextActive: {
+    color: QuinckleColors.primary,
     fontWeight: '600',
   },
-  categoryTextActive: {
-    color: '#fff',
-  },
+
   listContent: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 100,
+    gap: Spacing.sm,
   },
   menuItemCard: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
+    backgroundColor: QuinckleColors.surface,
+    borderRadius: Radius.md,
+    padding: Spacing.lg,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: QuinckleColors.border,
   },
   itemInfo: {
     flex: 1,
-    gap: 4,
   },
   itemName: {
     color: QuinckleColors.textPrimary,
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  itemPrice: {
-    color: QuinckleColors.primary,
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '600',
   },
+  itemMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+  },
+  itemCategory: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  itemDot: {
+    color: QuinckleColors.textMuted,
+    fontSize: 11,
+  },
+  itemPrice: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+
   addBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(243,93,59,0.1)',
-    paddingHorizontal: 12,
+    backgroundColor: QuinckleColors.primarySoft,
+    paddingHorizontal: Spacing.md,
     paddingVertical: 8,
-    borderRadius: 10,
+    borderRadius: Radius.sm,
     borderWidth: 1,
-    borderColor: 'rgba(243,93,59,0.2)',
+    borderColor: QuinckleColors.primarySoftBorder,
     gap: 4,
   },
   addBtnText: {
     color: QuinckleColors.primary,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 13,
+    fontWeight: '600',
   },
   qtyContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: Spacing.md,
     backgroundColor: QuinckleColors.primary,
-    borderRadius: 10,
+    borderRadius: Radius.sm,
     padding: 4,
   },
   qtyBtn: {
@@ -302,42 +335,54 @@ const styles = StyleSheet.create({
   qtyText: {
     color: '#fff',
     fontSize: 14,
-    fontWeight: '800',
+    fontWeight: '700',
+    minWidth: 14,
+    textAlign: 'center',
   },
+
+  emptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing.huge,
+    gap: Spacing.md,
+  },
+  emptyText: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 14,
+  },
+
   cartFooter: {
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: '#0A0A0A',
-    paddingTop: 16,
-    paddingHorizontal: 16,
+    backgroundColor: QuinckleColors.background,
+    paddingTop: Spacing.md,
+    paddingHorizontal: Spacing.lg,
     borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.08)',
+    borderTopColor: QuinckleColors.border,
   },
   confirmBtn: {
     backgroundColor: QuinckleColors.primary,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 20,
+    paddingHorizontal: Spacing.xl,
     paddingVertical: 14,
-    borderRadius: 16,
-    shadowColor: QuinckleColors.primary,
-    shadowOpacity: 0.3,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
+    borderRadius: Radius.md,
   },
   cartCountText: {
-    color: 'rgba(255,255,255,0.8)',
-    fontSize: 10,
-    fontWeight: '700',
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 11,
+    fontWeight: '600',
     textTransform: 'uppercase',
+    letterSpacing: 0.6,
   },
   cartTotalText: {
     color: '#fff',
     fontSize: 18,
-    fontWeight: '800',
+    fontWeight: '700',
+    marginTop: 1,
   },
   cartAction: {
     flexDirection: 'row',
@@ -346,7 +391,7 @@ const styles = StyleSheet.create({
   },
   cartActionText: {
     color: '#fff',
-    fontSize: 15,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

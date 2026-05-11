@@ -1,17 +1,38 @@
-import React, { useMemo, useState } from 'react';
-import { FlatList, Image, StyleSheet, Text, TextInput, TouchableOpacity, View, Platform } from 'react-native';
-import Constants from 'expo-constants';
+import React, { useMemo, useState, useEffect } from 'react';
+import {
+  FlatList,
+  Image,
+  LayoutAnimation,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { useAuth } from '../../context/AuthContext';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { QuinckleColors } from '../../constants/Colors';
+import * as Haptics from 'expo-haptics';
+import * as Notifications from 'expo-notifications';
+import { Audio } from 'expo-av';
+import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { BottomNavbar } from '../../components/ui/BottomNavbar';
-import { Modal, ScrollView } from 'react-native';
+import { PICKUP_LAYOUT_PRESET, PickupCard, PickupSegmented } from '../../components/ui/pickup';
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
 
 type NavItem = 'tables' | 'menu' | 'orders' | 'activity' | 'profile' | 'cash_ledger';
-type TableStatus = 'available' | 'occupied' | 'reserved' | 'offline' | 'paid';
+type TableStatus = 'available' | 'occupied' | 'offline';
 
 type Table = {
   id: string;
@@ -35,51 +56,35 @@ const MENU_DATA_INITIAL = [
   { id: '9', name: 'Special Salad', price: 150, category: 'Appetizers', available: true },
 ];
 
-const READY_ORDERS_MOCK = [
-  { 
-    id: 'o1', 
-    tableNo: 'T02', 
-    items: [
-      { id: 'i1', name: 'Chicken Biryani', qty: 2, orderedAt: '14:05', status: 'ready' }
-    ] 
-  },
-  { 
-    id: 'o2', 
-    tableNo: 'T05', 
-    items: [
-      { id: 'i2', name: 'Cold Coffee', qty: 1, orderedAt: '14:15', status: 'ready' },
-      { id: 'i3', name: 'Lemon Soda', qty: 1, orderedAt: '14:16', status: 'ready' }
-    ] 
-  },
-  { 
-    id: 'o3', 
-    tableNo: 'T01', 
-    items: [
-      { id: 'i4', name: 'Paneer Tikka', qty: 1, orderedAt: '14:20', status: 'ready' }
-    ] 
-  },
+type PickupItem = { id: string; name: string; qty: number; orderedAt: string; isServed: boolean };
+type PickupOrder = { id: string; tableNo: string; items: PickupItem[]; completedAt?: string };
+
+const READY_ORDERS_INITIAL: PickupOrder[] = [
+  { id: 'o1', tableNo: 'T02', items: [{ id: 'i1', name: 'Chicken Biryani', qty: 2, orderedAt: '14:05', isServed: false }] },
+  { id: 'o2', tableNo: 'T05', items: [
+    { id: 'i2', name: 'Cold Coffee', qty: 1, orderedAt: '14:15', isServed: false },
+    { id: 'i3', name: 'Lemon Soda', qty: 1, orderedAt: '14:16', isServed: false },
+  ]},
+  { id: 'o3', tableNo: 'T01', items: [{ id: 'i4', name: 'Paneer Tikka', qty: 1, orderedAt: '14:20', isServed: false }] },
+  { id: 'o4', tableNo: 'T04', items: [
+    { id: 'i5', name: 'Butter Chicken', qty: 1, orderedAt: '13:30', isServed: true },
+    { id: 'i6', name: 'Garlic Naan', qty: 2, orderedAt: '13:31', isServed: true },
+  ], completedAt: '13:55' },
 ];
 
 const ACTIVITY_DATA = [
-  { id: '1', type: 'payment', message: 'Collected cash of ₹2,050 from Table T01', date: '10 May', time: '14:20', icon: 'cash-outline', color: '#22c55e' },
-  { id: '2', type: 'status', message: 'Marked Table T03 as free', date: '10 May', time: '14:15', icon: 'checkmark-circle-outline', color: '#3B82F6' },
-  { id: '3', type: 'session', message: 'Started new session at Table T02', date: '10 May', time: '14:05', icon: 'play-outline', color: '#F35D3B' },
-  { id: '4', type: 'menu', message: 'Marked "Chocolate Brownie" as out of stock', date: '09 May', time: '13:50', icon: 'alert-circle-outline', color: '#ef4444' },
-  { id: '5', type: 'payment', message: 'Collected cash of ₹1,280 from Table T05', date: '09 May', time: '13:30', icon: 'cash-outline', color: '#22c55e' },
-  { id: '6', type: 'status', message: 'Marked Table T11 as offline', date: '09 May', time: '13:10', icon: 'power-outline', color: 'rgba(255,255,255,0.4)' },
-];
-
-const CASH_COLLECTIONS_MOCK = [
-  { id: 'c1', tableNo: 'T01', amount: 2050, time: '14:20', date: '10 May' },
-  { id: 'c2', tableNo: 'T05', amount: 1280, time: '13:30', date: '09 May' },
-  { id: 'c3', tableNo: 'T03', amount: 3420, time: '12:45', date: '09 May' },
-  { id: 'c4', tableNo: 'T11', amount: 890, time: '11:15', date: '09 May' },
+  { id: '1', message: 'Collected ₹2,050 cash from Table T01', date: '10 May', time: '14:20' },
+  { id: '2', message: 'Marked Table T03 as free', date: '10 May', time: '14:15' },
+  { id: '3', message: 'Started new session at Table T02', date: '10 May', time: '14:05' },
+  { id: '4', message: 'Marked “Chocolate Brownie” as out of stock', date: '09 May', time: '13:50' },
+  { id: '5', message: 'Collected ₹1,280 cash from Table T05', date: '09 May', time: '13:30' },
+  { id: '6', message: 'Marked Table T11 as offline', date: '09 May', time: '13:10' },
 ];
 
 const INITIAL_TABLES: Table[] = [
   { id: '1', number: 1, status: 'occupied', seats: 4, billAmount: 2050, since: '14:15', location: 'Main Hall' },
   { id: '2', number: 2, status: 'occupied', seats: 2, billAmount: 1280, since: '14:40', location: 'Window' },
-  { id: '3', number: 3, status: 'paid', seats: 2, billAmount: 420, location: 'Bar Side' },
+  { id: '3', number: 3, status: 'available', seats: 2, location: 'Bar Side' },
   { id: '4', number: 4, status: 'occupied', seats: 4, billAmount: 3420, since: '13:30', location: 'Corner' },
   { id: '5', number: 5, status: 'available', seats: 2, location: 'Terrace' },
   { id: '6', number: 6, status: 'offline', seats: 4, location: 'Garden' },
@@ -91,29 +96,234 @@ const INITIAL_TABLES: Table[] = [
   { id: '12', number: 12, status: 'available', seats: 4, location: 'Window' },
 ];
 
+const STATUS_META: Record<TableStatus, { label: string; color: string }> = {
+  available: { label: 'Available', color: QuinckleColors.success },
+  occupied: { label: 'Occupied', color: QuinckleColors.primary },
+  offline: { label: 'Offline', color: QuinckleColors.textTertiary },
+};
+
 export default function StaffDashboard() {
   const insets = useSafeAreaInsets();
   const { logout } = useAuth();
-  const [activeTab, setActiveTab] = useState<NavItem>('orders');
+  const [activeTab, setActiveTab] = useState<NavItem>('tables');
   const [expandedDate, setExpandedDate] = useState<string | null>(null);
   const [filterVisible, setFilterVisible] = useState(false);
   const [tables, setTables] = useState<Table[]>(INITIAL_TABLES);
   const [menuData, setMenuData] = useState(MENU_DATA_INITIAL);
   const [activeFilter, setActiveFilter] = useState<'all' | TableStatus | string>('all');
+  const [menuFilter, setMenuFilter] = useState('All');
   const [searchText, setSearchText] = useState('');
   const [isOnline, setIsOnline] = useState(true);
+  const [pickupOrders, setPickupOrders] = useState<PickupOrder[]>(READY_ORDERS_INITIAL);
+  const [ordersSubTab, setOrdersSubTab] = useState<'active' | 'completed'>('active');
+  const [completingIds, setCompletingIds] = useState<string[]>([]);
+  const [shiftStart, setShiftStart] = useState<Date | null>(new Date(Date.now() - 4.5 * 60 * 60 * 1000)); // Mock: Started 4.5h ago
+  const [activeDuration, setActiveDuration] = useState("04h 30m");
+  const [shiftPeriod, setShiftPeriod] = useState<'today' | 'week'>('today');
+  const [shiftLogs, setShiftLogs] = useState([
+    { d: 'Mon', t: '09:30 - 18:30', h: 9.0 },
+    { d: 'Tue', t: '10:00 - 18:00', h: 8.0 },
+    { d: 'Wed', t: '09:00 - 17:00', h: 8.0 },
+  ]);
+
+  // Timer to update active duration
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isOnline && shiftStart) {
+      const updateDuration = () => {
+        const diff = Date.now() - shiftStart.getTime();
+        const hours = Math.floor(diff / (1000 * 60 * 60));
+        const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+        setActiveDuration(`${String(hours).padStart(2, '0')}h ${String(mins).padStart(2, '0')}m`);
+      };
+      
+      updateDuration();
+      interval = setInterval(updateDuration, 60000); // Update every minute
+    } else {
+      setActiveDuration("--");
+    }
+    return () => clearInterval(interval);
+  }, [isOnline, shiftStart]);
+
+  const handleToggleOnline = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    if (isOnline) {
+      // Clocking out: Add current session to logs if it's significant
+      if (shiftStart) {
+        const diff = Date.now() - shiftStart.getTime();
+        const hours = diff / (1000 * 60 * 60);
+        if (hours > 0.05) { // Only log if > 3 mins
+          const startTimeStr = `${String(shiftStart.getHours()).padStart(2, '0')}:${String(shiftStart.getMinutes()).padStart(2, '0')}`;
+          const endTimeStr = formatNow();
+          const dayStr = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date().getDay()];
+          setShiftLogs(prev => [...prev, { d: dayStr, t: `${startTimeStr} - ${endTimeStr}`, h: parseFloat(hours.toFixed(1)) }]);
+        }
+      }
+      setShiftStart(null);
+    } else {
+      // Clocking in
+      setShiftStart(new Date());
+    }
+    setIsOnline(!isOnline);
+  };
+
+  const chartData = useMemo(() => {
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const currentDayIndex = (new Date().getDay() + 6) % 7; // 0=Mon, 6=Sun
+    
+    return days.map((day, i) => {
+      let hours = 0;
+      if (i === currentDayIndex) {
+        // Today
+        const sessionHours = (isOnline && shiftStart) ? (Date.now() - shiftStart.getTime()) / (1000 * 60 * 60) : 0;
+        hours = sessionHours;
+      } else {
+        // From logs
+        const log = shiftLogs.find(l => l.d === day);
+        hours = log ? log.h : 0;
+      }
+      // Scale: 12 hours is 100% height
+      const percentage = Math.min((hours / 12) * 100, 100);
+      return { day, percentage, isToday: i === currentDayIndex, label: day[0] };
+    });
+  }, [shiftLogs, shiftStart, isOnline]);
+
+  const totalTodayHours = useMemo(() => {
+    const dayStr = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date().getDay()];
+    const logsToday = shiftLogs.filter(l => l.d === dayStr || (l.d === 'Today' && dayStr === dayStr)); // Handle 'Today' label
+    const completedHours = logsToday.reduce((acc, curr) => acc + curr.h, 0);
+    const activeHours = (isOnline && shiftStart) ? (Date.now() - shiftStart.getTime()) / (1000 * 60 * 60) : 0;
+    const total = completedHours + activeHours;
+    const h = Math.floor(total);
+    const m = Math.floor((total - h) * 60);
+    return `${String(h).padStart(2, '0')}h ${String(m).padStart(2, '0')}m`;
+  }, [shiftLogs, isOnline, shiftStart]);
+
+  useEffect(() => {
+    (async () => {
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
+      if (existingStatus !== 'granted') {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+      if (finalStatus !== 'granted') {
+        console.warn('Failed to get push token for push notification!');
+      }
+    })();
+  }, []);
+
+  const simulateNewOrder = async () => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    
+    try {
+      // Play a premium, soft "Ding" style chime (elevator arrival sound)
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: 'https://upload.wikimedia.org/wikipedia/commons/b/b5/Elevator_ding.ogg' },
+        { shouldPlay: true }
+      );
+    } catch (e) {
+      console.warn('Could not play in-app sound', e);
+    }
+
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: "🛎 New Order Ready!",
+        body: "Table T08 - 2x Paneer Tikka is ready for pickup.",
+        sound: true,
+      },
+      trigger: null,
+    });
+  };
+
+  const formatNow = () => {
+    const now = new Date();
+    return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  };
+
+  const togglePickupItem = (orderId: string, itemId: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+    let didCompleteAll = false;
+    let didReopen = false;
+
+    setPickupOrders((prev) =>
+      prev.map((order) => {
+        if (order.id !== orderId) return order;
+        const items = order.items.map((it) =>
+          it.id === itemId ? { ...it, isServed: !it.isServed } : it,
+        );
+        const allServed = items.every((it) => it.isServed);
+        const wasComplete = !!order.completedAt;
+        const next: PickupOrder = { ...order, items };
+
+        if (!allServed && wasComplete) {
+          next.completedAt = undefined;
+          didReopen = true;
+        }
+        if (allServed && !wasComplete) {
+          didCompleteAll = true;
+        }
+        return next;
+      }),
+    );
+
+    if (didCompleteAll) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setCompletingIds((prev) => (prev.includes(orderId) ? prev : [...prev, orderId]));
+    }
+
+    if (didReopen) {
+      setCompletingIds((prev) => prev.filter((id) => id !== orderId));
+    }
+  };
+
+  const handleCompletionFinished = (orderId: string) => {
+    LayoutAnimation.configureNext(PICKUP_LAYOUT_PRESET);
+    setPickupOrders((prev) =>
+      prev.map((o) => (o.id === orderId ? { ...o, completedAt: formatNow() } : o)),
+    );
+    setCompletingIds((prev) => prev.filter((id) => id !== orderId));
+  };
+
+  const reopenOrder = (orderId: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    LayoutAnimation.configureNext(PICKUP_LAYOUT_PRESET);
+    setPickupOrders((prev) =>
+      prev.map((order) =>
+        order.id === orderId
+          ? {
+              ...order,
+              completedAt: undefined,
+              items: order.items.map((it, idx) => (idx === 0 ? { ...it, isServed: false } : it)),
+            }
+          : order,
+      ),
+    );
+    setOrdersSubTab('active');
+  };
+
+  const activePickupOrders = useMemo(
+    () => pickupOrders.filter((o) => !o.completedAt),
+    [pickupOrders],
+  );
+  const completedPickupOrders = useMemo(
+    () =>
+      pickupOrders
+        .filter((o) => !!o.completedAt)
+        .sort((a, b) => (b.completedAt ?? '').localeCompare(a.completedAt ?? '')),
+    [pickupOrders],
+  );
   const [dialog, setDialog] = useState<{
     visible: boolean;
     title: string;
     message: string;
-    actions: Array<{ label: string; onPress: () => void; variant?: 'default' | 'danger' }>;
+    actions: { label: string; onPress: () => void; variant?: 'default' | 'danger' | 'primary' }[];
   }>({ visible: false, title: '', message: '', actions: [] });
 
   const counts = useMemo(() => ({
     available: tables.filter((t) => t.status === 'available').length,
     occupied: tables.filter((t) => t.status === 'occupied').length,
-    paid: tables.filter((t) => t.status === 'paid').length,
-    reserved: tables.filter((t) => t.status === 'reserved').length,
     offline: tables.filter((t) => t.status === 'offline').length,
     all: tables.length,
   }), [tables]);
@@ -131,7 +341,7 @@ export default function StaffDashboard() {
   const showDialog = (
     title: string,
     message: string,
-    actions: Array<{ label: string; onPress: () => void; variant?: 'default' | 'danger' }>,
+    actions: { label: string; onPress: () => void; variant?: 'default' | 'danger' | 'primary' }[],
   ) => {
     setDialog({
       visible: true,
@@ -145,47 +355,28 @@ export default function StaffDashboard() {
   };
 
   const updateTableStatus = (tableNum: number, nextStatus: TableStatus) => {
-    setTables((prev) =>
-      prev.map((table) => (table.number === tableNum ? { ...table, status: nextStatus } : table)),
-    );
+    setTables((prev) => prev.map((t) => (t.number === tableNum ? { ...t, status: nextStatus } : t)));
   };
 
   const handleTablePress = (tableNum: number, currentStatus: TableStatus) => {
     if (currentStatus === 'offline') {
       showDialog(
         'Table Offline',
-        `Table T${String(tableNum).padStart(2, '0')} is currently offline. Make it available?`,
+        `Make Table T${String(tableNum).padStart(2, '0')} available again?`,
         [
           { label: 'Cancel', onPress: () => {} },
-          { 
-            label: 'Make Available', 
-            onPress: () => updateTableStatus(tableNum, 'available'),
-          },
-        ]
-      );
-      return;
-    }
-
-    if (currentStatus === 'paid') {
-      showDialog(
-        'Table Paid',
-        `Bill settled for Table T${String(tableNum).padStart(2, '0')}. Free up table now?`,
-        [
-          { label: 'Not Yet', onPress: () => {} },
-          { 
-            label: 'Clean & Free Table', 
-            onPress: () => updateTableStatus(tableNum, 'available'),
-          },
-        ]
+          { label: 'Make Available', variant: 'primary', onPress: () => updateTableStatus(tableNum, 'available') },
+        ],
       );
       return;
     }
 
     if (currentStatus === 'available') {
-      showDialog('New Session', `Start a new session for Table ${tableNum}?`, [
-        { label: 'Cancel', onPress: () => { } },
+      showDialog(`New Session`, `Start a new session for Table T${String(tableNum).padStart(2, '0')}?`, [
+        { label: 'Cancel', onPress: () => {} },
         {
-          label: 'Start',
+          label: 'Start Session',
+          variant: 'primary',
           onPress: () => {
             updateTableStatus(tableNum, 'occupied');
             router.push({ pathname: '/(staff)/[tableId]', params: { tableId: String(tableNum) } });
@@ -198,7 +389,7 @@ export default function StaffDashboard() {
   };
 
   const handleLongPress = (tableId: string, status: TableStatus) => {
-    const table = tables.find(t => t.id === tableId);
+    const table = tables.find((t) => t.id === tableId);
     if (!table) return;
     const tableNum = table.number;
     if (status === 'available') {
@@ -207,12 +398,8 @@ export default function StaffDashboard() {
         `Mark Table T${String(tableNum).padStart(2, '0')} as offline? It will be hidden from new guest assignments.`,
         [
           { label: 'Cancel', onPress: () => {} },
-          { 
-            label: 'Mark Offline', 
-            variant: 'danger',
-            onPress: () => updateTableStatus(tableNum, 'offline'),
-          },
-        ]
+          { label: 'Mark Offline', variant: 'danger', onPress: () => updateTableStatus(tableNum, 'offline') },
+        ],
       );
     } else if (status === 'offline') {
       showDialog(
@@ -220,102 +407,88 @@ export default function StaffDashboard() {
         `Make Table T${String(tableNum).padStart(2, '0')} available for guests?`,
         [
           { label: 'Cancel', onPress: () => {} },
-          { 
-            label: 'Make Available', 
-            onPress: () => updateTableStatus(tableNum, 'available'),
-          },
-        ]
+          { label: 'Make Available', variant: 'primary', onPress: () => updateTableStatus(tableNum, 'available') },
+        ],
       );
     }
   };
 
-  const getStatusMeta = (status: TableStatus) => {
-    if (status === 'occupied') return { label: 'Occupied', color: '#F35D3B' };
-    if (status === 'paid') return { label: 'Paid', color: '#3B82F6' };
-    if (status === 'reserved') return { label: 'Reserved', color: QuinckleColors.warning };
-    if (status === 'offline') return { label: 'Offline', color: 'rgba(255,255,255,0.4)' };
-    return { label: 'Available', color: '#22c55e' };
-  };
-
   const handleLogout = () => {
+    // Automated clock-out on logout
+    if (isOnline && shiftStart) {
+      const diff = Date.now() - shiftStart.getTime();
+      const hours = diff / (1000 * 60 * 60);
+      const startTimeStr = `${String(shiftStart.getHours()).padStart(2, '0')}:${String(shiftStart.getMinutes()).padStart(2, '0')}`;
+      const endTimeStr = formatNow();
+      console.log(`Auto clock-out: ${startTimeStr} - ${endTimeStr} (${hours.toFixed(1)}h)`);
+    }
+    
     logout();
     router.replace('/login');
   };
 
   const FILTER_CHIPS = [
-    { key: 'all', label: `All (${counts.all})` },
-    { key: 'available', label: `Available (${counts.available})` },
-    { key: 'occupied', label: `Occupied (${counts.occupied})` },
-    { key: 'paid', label: `Paid (${counts.paid})` },
-    { key: 'reserved', label: `Reserved (${counts.reserved})` },
+    { key: 'all', label: 'All', count: counts.all },
+    { key: 'available', label: 'Available', count: counts.available },
+    { key: 'occupied', label: 'Occupied', count: counts.occupied },
   ] as const;
 
+  const showHeader = activeTab !== 'profile' && activeTab !== 'cash_ledger' && activeTab !== 'activity';
+
   return (
-    <View style={[styles.container, { paddingTop: insets.top + 6 }]}>
-      {/* Header */}
-      {activeTab !== 'profile' && activeTab !== 'cash_ledger' && (
+    <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
+      {showHeader && (
         <View style={styles.topBar}>
           <View style={styles.brandGroup}>
             <Text style={styles.brandTitle}>The Grill Room</Text>
-            <View style={[styles.onlineBadge, !isOnline && styles.offlineBadge]}>
-              <Text style={styles.onlineText}>{isOnline ? 'Online' : 'Offline'}</Text>
+            <View style={styles.statusRow}>
+              <View style={[styles.statusDot, { backgroundColor: isOnline ? QuinckleColors.success : QuinckleColors.textTertiary }]} />
+              <Text style={styles.statusText}>{isOnline ? 'Online' : 'Off-duty'}</Text>
             </View>
           </View>
 
-          <View style={styles.rightActions}>
-            <TouchableOpacity 
-              style={styles.userIconContainer} 
-              onPress={() => setActiveTab('profile')}
-              activeOpacity={0.7}
-            >
-              <Image 
-                source={{ uri: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?q=80&w=200&h=200&auto=format&fit=crop' }} 
-                style={styles.headerUserImage} 
-              />
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            style={styles.avatarBtn}
+            onPress={() => setActiveTab('profile')}
+            activeOpacity={0.7}
+          >
+            <Image
+              source={{ uri: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?q=80&w=200&h=200&auto=format&fit=crop' }}
+              style={styles.avatarImage}
+            />
+          </TouchableOpacity>
         </View>
       )}
 
-      {/* Main Content */}
       {activeTab === 'tables' ? (
         <>
-          {/* Combined Controls Row */}
           <View style={styles.controlsRow}>
             <View style={styles.searchBox}>
-              <Ionicons name="search" size={14} color={QuinckleColors.textSecondary} />
+              <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
               <TextInput
                 value={searchText}
                 onChangeText={setSearchText}
-                placeholder="Search…"
-                placeholderTextColor={QuinckleColors.textSecondary}
+                placeholder="Search tables…"
+                placeholderTextColor={QuinckleColors.textTertiary}
                 style={styles.searchInput}
               />
             </View>
 
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.filterDropdown}
               onPress={() => setFilterVisible(true)}
               activeOpacity={0.7}
             >
+              <Ionicons name="filter" size={14} color={QuinckleColors.textPrimary} />
               <Text style={styles.filterValueText}>
-                {FILTER_CHIPS.find(c => c.key === activeFilter)?.label.split(' ')[0]}
+                {FILTER_CHIPS.find((c) => c.key === activeFilter)?.label}
               </Text>
-              <Ionicons name="chevron-down" size={14} color={QuinckleColors.primary} />
+              <Ionicons name="chevron-down" size={13} color={QuinckleColors.textTertiary} />
             </TouchableOpacity>
           </View>
 
-          <Modal
-            visible={filterVisible}
-            transparent
-            animationType="fade"
-            onRequestClose={() => setFilterVisible(false)}
-          >
-            <TouchableOpacity 
-              style={styles.modalOverlay} 
-              activeOpacity={1} 
-              onPress={() => setFilterVisible(false)}
-            >
+          <Modal visible={filterVisible} transparent animationType="fade" onRequestClose={() => setFilterVisible(false)}>
+            <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setFilterVisible(false)}>
               <View style={styles.dropdownMenu}>
                 <Text style={styles.menuLabel}>Filter Tables</Text>
                 {FILTER_CHIPS.map((chip) => (
@@ -330,9 +503,7 @@ export default function StaffDashboard() {
                     <Text style={[styles.menuItemText, activeFilter === chip.key && styles.menuItemTextActive]}>
                       {chip.label}
                     </Text>
-                    {activeFilter === chip.key && (
-                      <Ionicons name="checkmark" size={16} color={QuinckleColors.primary} />
-                    )}
+                    <Text style={styles.menuItemCount}>{chip.count}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -340,106 +511,106 @@ export default function StaffDashboard() {
           </Modal>
 
           <FlatList
-            key="grid-view"
             data={filteredTables}
             keyExtractor={(item) => item.id}
             numColumns={2}
             columnWrapperStyle={styles.columnWrapper}
             contentContainerStyle={styles.listContent}
             renderItem={({ item }) => {
-              const statusMeta = getStatusMeta(item.status);
+              const meta = STATUS_META[item.status] || STATUS_META.available;
               return (
                 <TouchableOpacity
                   style={[styles.tableCard, item.status === 'offline' && styles.offlineCard]}
                   onPress={() => handleTablePress(item.number, item.status)}
                   onLongPress={() => handleLongPress(item.id, item.status)}
-                  activeOpacity={0.88}
+                  activeOpacity={0.85}
                   delayLongPress={500}
                 >
                   <View style={styles.cardHeader}>
                     <View>
                       <Text style={styles.tableTitle}>T{String(item.number).padStart(2, '0')}</Text>
                       <View style={styles.seatsRow}>
-                        <Ionicons name="people-outline" size={11} color="rgba(255,255,255,0.4)" />
+                        <Ionicons name="people-outline" size={11} color={QuinckleColors.textTertiary} />
                         <Text style={styles.seatsText}>{item.seats} seats</Text>
                       </View>
                     </View>
-                    <View style={styles.statusIndicatorGroup}>
-                      <View style={[styles.statusDot, { backgroundColor: statusMeta.color }]} />
-                      <Text style={[styles.statusLabel, { color: statusMeta.color }]}>{statusMeta.label}</Text>
+                    <View style={[styles.statusPill, { backgroundColor: `${meta.color}1F`, borderColor: `${meta.color}40` }]}>
+                      <View style={[styles.statusPillDot, { backgroundColor: meta.color }]} />
+                      <Text style={[styles.statusPillText, { color: meta.color }]}>{meta.label}</Text>
                     </View>
                   </View>
 
-                  <View style={styles.cardBottomRow}>
-                    <View style={styles.cardMain}>
-                      {item.status === 'occupied' ? (
-                        <View>
-                          <Text style={styles.billAmount}>₹{item.billAmount || '___'}</Text>
-                          <Text style={styles.billSubtitle}>since {item.since}</Text>
-                        </View>
-                      ) : item.status === 'available' ? (
-                        <View style={styles.actionPrompt}>
-                          <Ionicons name="add" size={14} color="rgba(255,255,255,0.4)" />
-                          <Text style={styles.actionPromptText}>Start session</Text>
-                        </View>
-                      ) : (
-                        <Text style={styles.actionPromptText}>Marked offline</Text>
-                      )}
-                    </View>
-                    <Ionicons 
-                      name="arrow-forward-outline" 
-                      size={14} 
-                      color="rgba(255,255,255,0.2)" 
-                      style={{ transform: [{ rotate: '-45deg' }], marginTop: 4 }} 
-                    />
+                  <View style={styles.cardBottom}>
+                    {item.status === 'occupied' ? (
+                      <View>
+                        <Text style={styles.billAmount}>₹{item.billAmount?.toLocaleString() || '—'}</Text>
+                        <Text style={styles.billSubtitle}>since {item.since}</Text>
+                      </View>
+                    ) : item.status === 'available' ? (
+                      <View style={styles.actionPrompt}>
+                        <Ionicons name="add" size={13} color={QuinckleColors.textTertiary} />
+                        <Text style={styles.actionPromptText}>Start session</Text>
+                      </View>
+                    ) : (
+                      <Text style={styles.actionPromptText}>Marked offline</Text>
+                    )}
                   </View>
                 </TouchableOpacity>
               );
             }}
+            ListEmptyComponent={
+              <View style={styles.emptyState}>
+                <Ionicons name="grid-outline" size={28} color={QuinckleColors.textTertiary} />
+                <Text style={styles.emptyText}>No tables match this filter.</Text>
+              </View>
+            }
           />
         </>
       ) : activeTab === 'menu' ? (
         <View style={styles.tabContent}>
-          <View style={styles.menuSearchContainer}>
-            <Ionicons name="search" size={18} color="rgba(255,255,255,0.3)" />
+          <View style={styles.searchBoxFull}>
+            <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
             <TextInput
-              style={styles.menuSearchInput}
-              placeholder="Search items to toggle availability..."
-              placeholderTextColor="rgba(255,255,255,0.3)"
+              style={styles.searchInput}
+              placeholder="Search menu items…"
+              placeholderTextColor={QuinckleColors.textTertiary}
               value={searchText}
               onChangeText={setSearchText}
             />
           </View>
 
-          <View style={styles.menuCategories}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.menuCatScroll}>
-              {['All', 'Appetizers', 'Mains', 'Beverages', 'Desserts'].map(cat => (
-                <TouchableOpacity 
-                  key={cat} 
-                  style={[styles.menuCatPill, activeFilter === cat && styles.menuCatPillActive]}
-                  onPress={() => setActiveFilter(cat)}
-                >
-                  <Text style={[styles.menuCatText, activeFilter === cat && styles.menuCatTextActive]}>{cat}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.chipScroll}
+            style={styles.chipRow}
+          >
+            {['All', 'Appetizers', 'Mains', 'Beverages', 'Desserts'].map((cat) => (
+              <TouchableOpacity
+                key={cat}
+                style={[styles.chip, menuFilter === cat && styles.chipActive]}
+                onPress={() => setMenuFilter(cat)}
+              >
+                <Text style={[styles.chipText, menuFilter === cat && styles.chipTextActive]}>{cat}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
 
           <FlatList
-            data={menuData.filter(item => 
-              (activeFilter === 'All' || item.category === activeFilter) &&
-              (item.name.toLowerCase().includes(searchText.toLowerCase()))
+            data={menuData.filter((item) =>
+              (menuFilter === 'All' || item.category === menuFilter) &&
+              item.name.toLowerCase().includes(searchText.toLowerCase()),
             )}
-            keyExtractor={item => item.id}
+            keyExtractor={(item) => item.id}
             contentContainerStyle={styles.menuListContent}
             renderItem={({ item }) => (
               <View style={styles.menuItemRow}>
                 <View style={styles.menuItemLeft}>
                   {item.image ? (
-                    <Image source={{ uri: item.image }} style={[styles.menuItemImage, !item.available && { opacity: 0.4 }]} />
+                    <Image source={{ uri: item.image }} style={[styles.menuItemImage, !item.available && styles.dimmed]} />
                   ) : (
-                    <View style={[styles.menuItemImagePlaceholder, !item.available && { opacity: 0.4 }]}>
-                      <Ionicons name="fast-food-outline" size={20} color="rgba(255,255,255,0.2)" />
+                    <View style={[styles.menuItemImagePlaceholder, !item.available && styles.dimmed]}>
+                      <Ionicons name="fast-food-outline" size={20} color={QuinckleColors.textTertiary} />
                     </View>
                   )}
                   <View style={styles.menuItemInfo}>
@@ -447,10 +618,8 @@ export default function StaffDashboard() {
                     <Text style={styles.menuItemPrice}>₹{item.price}</Text>
                   </View>
                 </View>
-                <TouchableOpacity 
-                  onPress={() => {
-                    setMenuData(prev => prev.map(m => m.id === item.id ? { ...m, available: !m.available } : m));
-                  }}
+                <TouchableOpacity
+                  onPress={() => setMenuData((prev) => prev.map((m) => (m.id === item.id ? { ...m, available: !m.available } : m)))}
                   style={[styles.toggleBase, item.available ? styles.toggleOn : styles.toggleOff]}
                 >
                   <View style={[styles.toggleCircle, item.available ? styles.toggleCircleOn : styles.toggleCircleOff]} />
@@ -461,168 +630,255 @@ export default function StaffDashboard() {
         </View>
       ) : activeTab === 'orders' ? (
         <View style={styles.tabContent}>
+          <View style={[styles.sectionHeading, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}>
+            <View>
+              <Text style={styles.sectionTitle}>Kitchen Pickup</Text>
+              <Text style={styles.sectionSubtitle}>Tap a tick to mark items served</Text>
+            </View>
+            <TouchableOpacity onPress={simulateNewOrder} style={{ padding: 8, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 8 }}>
+              <Ionicons name="notifications-outline" size={20} color={QuinckleColors.primary} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.segmentWrap}>
+            <PickupSegmented
+              items={[
+                { key: 'active', label: 'Active', count: activePickupOrders.length },
+                { key: 'completed', label: 'Completed', count: completedPickupOrders.length },
+              ]}
+              active={ordersSubTab}
+              onChange={(key) => setOrdersSubTab(key as 'active' | 'completed')}
+            />
+          </View>
+
           <FlatList
-            data={READY_ORDERS_MOCK}
-            keyExtractor={item => item.id}
-            contentContainerStyle={styles.ordersListContent}
+            data={ordersSubTab === 'active' ? activePickupOrders : completedPickupOrders}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={styles.orderListContent}
             renderItem={({ item }) => (
-              <View style={styles.tableOrderCard}>
-                <View style={styles.tableOrderHeader}>
-                  <View style={styles.tableOrderBadge}>
-                    <Text style={styles.tableOrderBadgeText}>{item.tableNo}</Text>
-                  </View>
-                  <Text style={styles.tableOrderReadyCount}>{item.items.length} items ready</Text>
-                </View>
-                <View style={styles.nestedOrdersList}>
-                  {item.items.map(orderItem => (
-                    <TouchableOpacity 
-                      key={orderItem.id} 
-                      style={styles.nestedOrderItem}
-                      onPress={() => {
-                        showDialog('Serve Item', `Mark ${orderItem.name} as served?`, [
-                          { label: 'Cancel', onPress: () => {} },
-                          { label: 'Mark Served', onPress: () => {} },
-                        ]);
-                      }}
-                    >
-                      <View style={styles.nestedOrderLeft}>
-                        <Text style={styles.nestedOrderQty}>{orderItem.qty}x</Text>
-                        <View>
-                          <Text style={styles.nestedOrderName}>{orderItem.name}</Text>
-                          <Text style={styles.nestedOrderTime}>{orderItem.orderedAt}</Text>
-                        </View>
-                      </View>
-                      <View style={styles.serviceCircleSmall}>
-                        <Ionicons name="ellipse-outline" size={20} color={QuinckleColors.primary} />
-                      </View>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </View>
+              <PickupCard
+                order={item}
+                isCompleting={completingIds.includes(item.id)}
+                onToggleItem={(itemId) => togglePickupItem(item.id, itemId)}
+                onCompletionFinished={() => handleCompletionFinished(item.id)}
+                onReopen={item.completedAt ? () => reopenOrder(item.id) : undefined}
+              />
             )}
-            ListHeaderComponent={
-              <View style={styles.activityHeader}>
-                <Text style={styles.activityTitle}>Kitchen Pickup</Text>
-              </View>
-            }
-          />
-        </View>
-      ) : activeTab === 'activity' ? (
-        <View style={styles.tabContent}>
-          <FlatList
-            data={ACTIVITY_DATA}
-            keyExtractor={item => item.id}
-            contentContainerStyle={styles.activityListContent}
-            renderItem={({ item }) => (
-              <View style={styles.activityItem}>
-                <View style={styles.activityInfo}>
-                  <Text style={styles.activityMessage}>{item.message}</Text>
-                  <View style={styles.activityTimeCol}>
-                    <Text style={styles.activityDate}>{item.date}</Text>
-                    <Text style={styles.activityTime}>{item.time}</Text>
-                  </View>
-                </View>
-              </View>
-            )}
-            ListHeaderComponent={
-              <View style={styles.activityHeader}>
-                <Text style={styles.activityTitle}>Recent Updates</Text>
+            ListEmptyComponent={
+              <View style={styles.emptyOrders}>
+                <Text style={styles.emptyOrdersText}>
+                  {ordersSubTab === 'active'
+                    ? 'All caught up — kitchen has nothing pending.'
+                    : 'Completed orders show up here.'}
+                </Text>
               </View>
             }
           />
         </View>
       ) : activeTab === 'profile' ? (
         <ScrollView style={styles.tabContent} contentContainerStyle={styles.profileContent}>
-          {/* Back Navigation */}
-          <TouchableOpacity 
-            style={styles.profileBackBtn} 
-            onPress={() => setActiveTab('tables')}
-          >
-            <Ionicons name="arrow-back" size={24} color="#fff" />
-          </TouchableOpacity>
+          <View style={styles.profileHeaderRow}>
+            <TouchableOpacity style={styles.iconBtn} onPress={() => setActiveTab('tables')}>
+              <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
+            </TouchableOpacity>
+            <Text style={styles.screenTitle}>Profile</Text>
+            <View style={styles.iconBtnPlaceholder} />
+          </View>
 
-          {/* Profile Photo */}
-          <View style={styles.profileHeader}>
-            <TouchableOpacity style={styles.profileImageContainer} activeOpacity={0.9}>
-              <Image 
-                source={{ uri: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?q=80&w=200&h=200&auto=format&fit=crop' }} 
-                style={styles.profileImage} 
+          <View style={styles.profileHero}>
+            <View style={styles.profileImageContainer}>
+              <Image
+                source={{ uri: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?q=80&w=200&h=200&auto=format&fit=crop' }}
+                style={styles.profileImage}
               />
               <View style={styles.uploadBadge}>
-                <Ionicons name="camera" size={14} color="#fff" />
+                <Ionicons name="camera" size={12} color="#fff" />
               </View>
-            </TouchableOpacity>
+            </View>
             <Text style={styles.profileName}>Koustab Chakraborty</Text>
             <Text style={styles.profilePhone}>+91 98765 43210</Text>
           </View>
 
-          {/* Duty Status Toggle */}
-          <View style={styles.dutyStatusCard}>
-            <View style={styles.dutyInfo}>
-              <Text style={styles.dutyLabel}>Duty Status</Text>
-              <Text style={styles.dutySubtext}>{isOnline ? 'You are currently receiving orders' : 'You are currently off-duty'}</Text>
-            </View>
-            <TouchableOpacity 
-              onPress={() => setIsOnline(!isOnline)}
-              style={[styles.toggleBase, isOnline ? styles.toggleOn : styles.toggleOff]}
-            >
-              <View style={[styles.toggleCircle, isOnline ? styles.toggleCircleOn : styles.toggleCircleOff]} />
-            </TouchableOpacity>
-          </View>
-
-          {/* Linked Venue Info */}
-          <View style={styles.venueLinkCard}>
-            <View style={styles.venueIconContainer}>
-              <Image 
-                source={{ uri: 'https://images.unsplash.com/photo-1544148103-0773bf10d330?q=80&w=100&h=100&auto=format&fit=crop' }} 
-                style={styles.venueLogo} 
-              />
-            </View>
-            <View style={styles.venueInfo}>
-              <Text style={styles.venueLabel}>Linked Restaurant</Text>
-              <Text style={styles.venueName}>The Grill Room</Text>
-              <Text style={styles.venueId}>ID: QNK-7782-GR</Text>
-            </View>
-          </View>
-
-          {/* Action Grid */}
-          <View style={styles.profileActionGrid}>
-            <TouchableOpacity 
-              style={[styles.profileActionBtn, styles.fullWidthAction]}
-              onPress={() => setActiveTab('cash_ledger')}
-            >
-              <View style={styles.cashActionContent}>
-                <View style={styles.profileActionIcon}>
-                  <Ionicons name="wallet-outline" size={22} color="#fff" />
-                </View>
-                <View>
-                  <Text style={styles.profileActionText}>Total Cash Collected</Text>
-                  <Text style={styles.cashValue}>₹48,250</Text>
-                </View>
+          <View style={styles.card}>
+            <View style={styles.dutyRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.cardTitle}>Duty Status</Text>
+                <Text style={styles.cardSubtitle}>
+                  {isOnline ? 'Receiving live orders' : 'Currently off-duty'}
+                </Text>
               </View>
-              <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.2)" />
-            </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleToggleOnline}
+                style={[styles.toggleBase, isOnline ? styles.toggleOn : styles.toggleOff]}
+              >
+                <View style={[styles.toggleCircle, isOnline ? styles.toggleCircleOn : styles.toggleCircleOff]} />
+              </TouchableOpacity>
+            </View>
           </View>
 
-          <View style={styles.profileFooter}>
-            <Text style={styles.adminContactText}>Contact your registered restaurant administration to update profile details or schedules.</Text>
+          <View style={styles.card}>
+            <View style={styles.shiftStatsRow}>
+              <View style={styles.shiftStatItem}>
+                <Text style={styles.shiftStatLabel}>Today's Hours</Text>
+                <Text style={styles.shiftStatValue}>{totalTodayHours}</Text>
+              </View>
+              <View style={styles.shiftStatDivider} />
+              <View style={styles.shiftStatItem}>
+                <Text style={styles.shiftStatLabel}>Current Session</Text>
+                <Text style={[styles.shiftStatValue, isOnline && { color: QuinckleColors.success }]}>
+                  {activeDuration}
+                </Text>
+              </View>
+            </View>
           </View>
 
-          <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
-            <Text style={styles.logoutBtnText}>Logout Session</Text>
+          <View style={styles.card}>
+            <View style={styles.venueRow}>
+              <Image
+                source={{ uri: 'https://images.unsplash.com/photo-1544148103-0773bf10d330?q=80&w=100&h=100&auto=format&fit=crop' }}
+                style={styles.venueLogo}
+              />
+              <View style={styles.venueInfo}>
+                <Text style={styles.venueLabel}>Linked Restaurant</Text>
+                <Text style={styles.venueName}>The Grill Room</Text>
+                <Text style={styles.venueId}>QNK-7782-GR</Text>
+              </View>
+            </View>
+          </View>
+
+          <TouchableOpacity style={styles.card} onPress={() => setActiveTab('cash_ledger')} activeOpacity={0.7}>
+            <View style={styles.cashRow}>
+              <View style={styles.cashIcon}>
+                <Ionicons name="wallet-outline" size={20} color={QuinckleColors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.cardTitle}>Cash Collected</Text>
+                <Text style={styles.cashValue}>₹48,250</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
+            </View>
+          </TouchableOpacity>
+
+          <View style={styles.card}>
+            <View style={styles.cardHeaderRow}>
+              <View>
+                <Text style={styles.cardTitle}>Shift Insights</Text>
+                <Text style={styles.cardSubtitle}>
+                  {shiftPeriod === 'today' ? "Today's session details" : "Performance this week"}
+                </Text>
+              </View>
+              <View style={styles.periodPicker}>
+                <TouchableOpacity 
+                  onPress={() => setShiftPeriod('today')}
+                  style={[styles.periodBtn, shiftPeriod === 'today' && styles.periodBtnActive]}
+                >
+                  <Text style={[styles.periodBtnText, shiftPeriod === 'today' && styles.periodBtnTextActive]}>Today</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  onPress={() => setShiftPeriod('week')}
+                  style={[styles.periodBtn, shiftPeriod === 'week' && styles.periodBtnActive]}
+                >
+                  <Text style={[styles.periodBtnText, shiftPeriod === 'week' && styles.periodBtnTextActive]}>Week</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+            
+            <View style={styles.weeklyGrid}>
+              {chartData.map((data, i) => {
+                return (
+                  <View key={i} style={styles.dayColumn}>
+                    <View style={styles.dayBarTrack}>
+                      <View style={[
+                        styles.dayBar, 
+                        { height: `${data.percentage}%` },
+                        data.isToday ? { backgroundColor: QuinckleColors.primary } : { backgroundColor: QuinckleColors.primarySoftBorder }
+                      ]} />
+                    </View>
+                    <Text style={[styles.dayLabel, data.isToday && { color: QuinckleColors.primary, fontWeight: '700' }]}>
+                      {data.label}
+                    </Text>
+                  </View>
+                );
+              })}
+            </View>
+            
+            <View style={styles.timingDetails}>
+              {shiftPeriod === 'today' ? (
+                <View style={styles.todayTiming}>
+                  <View style={styles.timingRow}>
+                    <Ionicons name="time-outline" size={14} color={QuinckleColors.textTertiary} />
+                    <Text style={styles.timingText}>Shift Started: <Text style={styles.timingVal}>
+                      {shiftStart ? `${String(shiftStart.getHours()).padStart(2, '0')}:${String(shiftStart.getMinutes()).padStart(2, '0')} ${shiftStart.getHours() >= 12 ? 'PM' : 'AM'}` : '--:--'}
+                    </Text></Text>
+                  </View>
+                  <View style={styles.timingRow}>
+                    <Ionicons name="log-out-outline" size={14} color={QuinckleColors.textTertiary} />
+                    <Text style={styles.timingText}>Current Session: <Text style={styles.timingVal}>{activeDuration}</Text></Text>
+                  </View>
+                  <View style={styles.timingDivider} />
+                  <Text style={styles.timingSummary}>
+                    {isOnline 
+                      ? `You are currently ${activeDuration} into your shift. Keep it up!` 
+                      : "You are currently off-duty. Your timings will appear here once you go online."}
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.weekTiming}>
+                  {shiftLogs.map((log, idx) => (
+                    <View key={idx} style={styles.weekLogItem}>
+                      <Text style={styles.weekLogDay}>{log.d}</Text>
+                      <Text style={styles.weekLogTime}>{log.t}</Text>
+                      <Text style={styles.weekLogHours}>{log.h}h</Text>
+                    </View>
+                  ))}
+                  {isOnline && (
+                    <View style={styles.weekLogItem}>
+                      <Text style={[styles.weekLogDay, { color: QuinckleColors.primary }]}>Today</Text>
+                      <Text style={styles.weekLogTime}>Active Session</Text>
+                      <Text style={styles.weekLogHours}>{activeDuration}</Text>
+                    </View>
+                  )}
+                  <View style={styles.weekSubtotal}>
+                    <Text style={styles.subtotalLabel}>Weekly Total</Text>
+                    <Text style={styles.subtotalVal}>
+                      {(shiftLogs.reduce((acc, curr) => acc + curr.h, 0) + (isOnline && shiftStart ? (Date.now() - shiftStart.getTime()) / (1000 * 60 * 60) : 0)).toFixed(1)} Hours
+                    </Text>
+                  </View>
+                </View>
+              )}
+            </View>
+          </View>
+
+          <TouchableOpacity style={styles.card} onPress={() => setActiveTab('activity')} activeOpacity={0.7}>
+            <View style={styles.cashRow}>
+              <View style={styles.cashIcon}>
+                <Ionicons name="pulse-outline" size={20} color={QuinckleColors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.cardTitle}>Recent Activity</Text>
+                <Text style={[styles.cardSubtitle, { color: QuinckleColors.textPrimary }]}>Updates from your shift</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
+            </View>
+          </TouchableOpacity>
+
+          <Text style={styles.adminText}>
+            Contact your restaurant administrator to update profile details.
+          </Text>
+
+          <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout} activeOpacity={0.7}>
+            <Ionicons name="log-out-outline" size={18} color={QuinckleColors.danger} />
+            <Text style={styles.logoutBtnText}>Log Out</Text>
           </TouchableOpacity>
         </ScrollView>
       ) : activeTab === 'cash_ledger' ? (
         <View style={styles.tabContent}>
-          <View style={styles.ledgerHeader}>
-            <TouchableOpacity 
-              style={styles.ledgerBackBtn} 
-              onPress={() => setActiveTab('profile')}
-            >
-              <Ionicons name="arrow-back" size={24} color="#fff" />
+          <View style={styles.profileHeaderRow}>
+            <TouchableOpacity style={styles.iconBtn} onPress={() => setActiveTab('profile')}>
+              <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
             </TouchableOpacity>
-            <Text style={styles.ledgerTitle}>Cash Ledger</Text>
-            <View style={{ width: 44 }} />
+            <Text style={styles.screenTitle}>Cash Ledger</Text>
+            <View style={styles.iconBtnPlaceholder} />
           </View>
 
           <FlatList
@@ -631,64 +887,83 @@ export default function StaffDashboard() {
               { date: '09 May', total: 5590, items: [
                 { id: 'c2', tableNo: 'T05', amount: 1280, time: '13:30' },
                 { id: 'c3', tableNo: 'T03', amount: 3420, time: '12:45' },
-                { id: 'c4', tableNo: 'T11', amount: 890, time: '11:15' }
-              ]}
+                { id: 'c4', tableNo: 'T11', amount: 890, time: '11:15' },
+              ]},
             ]}
-            keyExtractor={item => item.date}
+            keyExtractor={(item) => item.date}
             contentContainerStyle={styles.ledgerListContent}
             ListHeaderComponent={
-              <View style={styles.appleSummaryHeader}>
-                <Text style={styles.appleSummaryLabel}>Shift Total</Text>
-                <Text style={styles.appleSummaryValue}>₹48,250</Text>
-                <View style={[styles.appleDivider, { marginTop: 32, marginBottom: 10 }]} />
+              <View style={styles.ledgerSummary}>
+                <Text style={styles.ledgerSummaryLabel}>Shift Total</Text>
+                <Text style={styles.ledgerSummaryValue}>₹48,250</Text>
               </View>
             }
             renderItem={({ item }) => {
               const isExpanded = expandedDate === item.date;
               return (
-                <View style={styles.appleLedgerGroup}>
-                  <TouchableOpacity 
-                    style={styles.appleLedgerHeader}
+                <View style={styles.ledgerCard}>
+                  <TouchableOpacity
+                    style={styles.ledgerHeader}
                     onPress={() => setExpandedDate(isExpanded ? null : item.date)}
                     activeOpacity={0.6}
                   >
-                    <Text style={styles.appleLedgerDate}>{item.date}</Text>
-                    <View style={styles.appleLedgerRight}>
-                      <Text style={styles.appleLedgerTotal}>₹{item.total.toLocaleString()}</Text>
-                      <Ionicons 
-                        name={isExpanded ? "chevron-down" : "chevron-forward"} 
-                        size={14} 
-                        color="rgba(255,255,255,0.2)" 
-                        style={{ marginLeft: 8 }}
+                    <Text style={styles.ledgerDate}>{item.date}</Text>
+                    <View style={styles.ledgerHeaderRight}>
+                      <Text style={styles.ledgerTotal}>₹{item.total.toLocaleString()}</Text>
+                      <Ionicons
+                        name={isExpanded ? 'chevron-up' : 'chevron-down'}
+                        size={14}
+                        color={QuinckleColors.textTertiary}
                       />
                     </View>
                   </TouchableOpacity>
-                  
+
                   {isExpanded && (
-                    <View style={styles.appleExpandedSection}>
-                      {item.items.map((subItem, idx) => (
-                        <View key={subItem.id} style={[
-                          styles.appleSubRow,
-                          idx !== item.items.length - 1 && styles.appleSubRowDivider
-                        ]}>
-                          <View style={styles.appleSubLeft}>
-                            <Text style={styles.appleSubTable}>{subItem.tableNo}</Text>
-                            <Text style={styles.appleSubTime}>{subItem.time}</Text>
+                    <View style={styles.ledgerExpanded}>
+                      {item.items.map((subItem) => (
+                        <View key={subItem.id} style={styles.ledgerSubRow}>
+                          <View style={styles.ledgerSubLeft}>
+                            <Text style={styles.ledgerSubTable}>{subItem.tableNo}</Text>
+                            <Text style={styles.ledgerSubTime}>{subItem.time}</Text>
                           </View>
-                          <Text style={styles.appleSubAmount}>₹{subItem.amount.toLocaleString()}</Text>
+                          <Text style={styles.ledgerSubAmount}>₹{subItem.amount.toLocaleString()}</Text>
                         </View>
                       ))}
                     </View>
                   )}
-                  {!isExpanded && <View style={styles.appleDivider} />}
                 </View>
               );
             }}
           />
         </View>
+      ) : activeTab === 'activity' ? (
+        <View style={styles.tabContent}>
+          <View style={styles.profileHeaderRow}>
+            <TouchableOpacity style={styles.iconBtn} onPress={() => setActiveTab('profile')}>
+              <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
+            </TouchableOpacity>
+            <Text style={styles.screenTitle}>Activity Log</Text>
+            <View style={styles.iconBtnPlaceholder} />
+          </View>
+          <FlatList
+            data={ACTIVITY_DATA}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={styles.activityListContent}
+            renderItem={({ item }) => (
+              <View style={styles.activityItem}>
+                <Text style={styles.activityMessage}>{item.message}</Text>
+                <View style={styles.activityMeta}>
+                  <Text style={styles.activityDate}>{item.date}</Text>
+                  <Text style={styles.activityDot}>·</Text>
+                  <Text style={styles.activityTime}>{item.time}</Text>
+                </View>
+              </View>
+            )}
+          />
+        </View>
       ) : null}
 
-      {activeTab !== 'profile' && activeTab !== 'cash_ledger' && (
+      {showHeader && (
         <BottomNavbar activeTab={activeTab as any} onTabChange={setActiveTab as any} />
       )}
 
@@ -706,212 +981,189 @@ export default function StaffDashboard() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingHorizontal: 14,
+    paddingHorizontal: Spacing.lg,
     backgroundColor: QuinckleColors.background,
   },
+
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 20,
-    paddingVertical: 8,
+    marginBottom: Spacing.lg,
+    paddingVertical: Spacing.sm,
   },
   brandGroup: {
-    flexDirection: 'column',
-    alignItems: 'flex-start',
-    gap: 2,
+    gap: 4,
   },
   brandTitle: {
     color: QuinckleColors.textPrimary,
-    fontSize: 20,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-  },
-  onlineBadge: {
-    backgroundColor: 'rgba(34,197,94,0.1)',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(34,197,94,0.2)',
-  },
-  offlineBadge: {
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderColor: 'rgba(255,255,255,0.1)',
-  },
-  onlineText: {
-    color: '#22c55e',
-    fontSize: 10,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  dutyStatusCard: {
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderRadius: 20,
-    padding: 20,
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
-  },
-  dutyInfo: {
-    flex: 1,
-  },
-  dutyLabel: {
-    color: '#fff',
-    fontSize: 16,
+    fontSize: 22,
     fontWeight: '700',
-    marginBottom: 4,
+    letterSpacing: -0.4,
   },
-  dutySubtext: {
-    color: 'rgba(255,255,255,0.4)',
-    fontSize: 12,
-  },
-  rightActions: {
+  statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 16,
+    gap: 6,
   },
-  headerBackBtn: {
-    width: 32,
-    height: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 16,
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
   },
-  userIconContainer: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+  statusText: {
+    color: QuinckleColors.textSecondary,
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  avatarBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     borderWidth: 1.5,
     borderColor: QuinckleColors.primary,
     padding: 1.5,
   },
-  headerUserImage: {
+  avatarImage: {
     width: '100%',
     height: '100%',
-    borderRadius: 15,
+    borderRadius: 18,
   },
+
   controlsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    marginBottom: 16,
+    gap: Spacing.sm,
+    marginBottom: Spacing.lg,
   },
   searchBox: {
-    flex: 2,
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderColor: QuinckleColors.border,
     borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    gap: 6,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    height: 40,
+    gap: Spacing.sm,
+  },
+  searchBoxFull: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderColor: QuinckleColors.border,
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    height: 44,
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
   },
   searchInput: {
     flex: 1,
     color: QuinckleColors.textPrimary,
-    paddingVertical: 8,
-    fontSize: 13,
+    fontSize: 14,
   },
   filterDropdown: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderColor: QuinckleColors.border,
     borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    height: 40,
     gap: 6,
-    minWidth: 80,
-    justifyContent: 'center',
   },
   filterValueText: {
     color: QuinckleColors.textPrimary,
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '600',
   },
+
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: 'rgba(0,0,0,0.65)',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 20,
+    padding: Spacing.xl,
   },
   dropdownMenu: {
     width: '85%',
-    backgroundColor: '#161616',
-    borderRadius: 20,
-    padding: 8,
+    backgroundColor: QuinckleColors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.sm,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: QuinckleColors.border,
   },
   menuLabel: {
-    color: QuinckleColors.textSecondary,
-    fontSize: 12,
-    fontWeight: '700',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    color: QuinckleColors.textTertiary,
+    fontSize: 11,
+    fontWeight: '600',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.md,
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    letterSpacing: 0.8,
   },
   menuItem: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderRadius: 12,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.md,
+    borderRadius: Radius.sm,
   },
   menuItemActive: {
-    backgroundColor: 'rgba(243,93,59,0.08)',
+    backgroundColor: QuinckleColors.primarySoft,
   },
   menuItemText: {
-    color: QuinckleColors.textSecondary,
+    color: QuinckleColors.textPrimary,
     fontSize: 15,
     fontWeight: '500',
   },
   menuItemTextActive: {
     color: QuinckleColors.primary,
-    fontWeight: '700',
+    fontWeight: '600',
   },
-  listContent: { 
+  menuItemCount: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+
+  listContent: {
     paddingBottom: 100,
-    gap: 12,
+    gap: Spacing.md,
   },
   columnWrapper: {
     justifyContent: 'space-between',
-    gap: 12,
+    gap: Spacing.md,
   },
   tableCard: {
     flex: 1,
-    backgroundColor: '#0A0A0A',
+    backgroundColor: QuinckleColors.surface,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    borderRadius: 16,
-    padding: 16,
-    maxWidth: '48.5%',
-    minHeight: 140,
+    borderColor: QuinckleColors.border,
+    borderRadius: Radius.lg,
+    padding: Spacing.lg,
+    minHeight: 130,
     justifyContent: 'space-between',
+    maxWidth: '49%',
   },
   offlineCard: {
-    opacity: 0.6,
+    opacity: 0.55,
   },
   cardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
   },
-  tableTitle: { 
-    fontSize: 20, 
-    fontWeight: '800', 
-    color: QuinckleColors.textPrimary, 
-    letterSpacing: -0.5,
+  tableTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: QuinckleColors.textPrimary,
+    letterSpacing: -0.4,
   },
   seatsRow: {
     flexDirection: 'row',
@@ -920,44 +1172,42 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   seatsText: {
-    color: 'rgba(255,255,255,0.4)',
+    color: QuinckleColors.textTertiary,
     fontSize: 11,
-    fontWeight: '600',
+    fontWeight: '500',
   },
-  statusIndicatorGroup: {
+  statusPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 3,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
   },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+  statusPillDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
   },
-  statusLabel: {
+  statusPillText: {
     fontSize: 10,
     fontWeight: '700',
   },
-  cardMain: {
-    flex: 1,
-  },
-  cardBottomRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-end',
-    marginTop: 10,
+  cardBottom: {
+    marginTop: Spacing.md,
   },
   billAmount: {
     color: QuinckleColors.textPrimary,
     fontSize: 18,
-    fontWeight: '600',
-    letterSpacing: -0.2,
+    fontWeight: '700',
+    letterSpacing: -0.3,
   },
   billSubtitle: {
-    color: 'rgba(255,255,255,0.4)',
-    fontSize: 10,
-    fontWeight: '600',
-    marginTop: 1,
+    color: QuinckleColors.textTertiary,
+    fontSize: 11,
+    fontWeight: '500',
+    marginTop: 2,
   },
   actionPrompt: {
     flexDirection: 'row',
@@ -965,111 +1215,86 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   actionPromptText: {
-    color: 'rgba(255,255,255,0.4)',
+    color: QuinckleColors.textTertiary,
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '500',
   },
-  emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 44, gap: 8 },
-  emptyText: { color: QuinckleColors.textSecondary, fontSize: 14 },
-  centerView: {
-    flex: 1,
+
+  emptyState: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 30,
-    paddingBottom: 100,
-    gap: 16,
+    paddingVertical: Spacing.huge,
+    gap: Spacing.md,
   },
-  viewTitle: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 22,
-    fontWeight: '700',
-    textAlign: 'center',
+  emptyText: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 14,
   },
-  viewSubtitle: {
-    color: QuinckleColors.textSecondary,
-    fontSize: 15,
-    textAlign: 'center',
-    lineHeight: 22,
-  },
+
   tabContent: {
     flex: 1,
   },
-  menuSearchContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    marginHorizontal: 16,
-    marginBottom: 16,
-    paddingHorizontal: 12,
-    height: 44,
-    borderRadius: 12,
+
+  chipRow: {
+    marginBottom: Spacing.md,
+    flexGrow: 0,
+  },
+  chipScroll: {
+    gap: Spacing.sm,
+    paddingRight: Spacing.lg,
+  },
+  chip: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 7,
+    borderRadius: Radius.pill,
+    backgroundColor: QuinckleColors.surfaceMuted,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
+    borderColor: QuinckleColors.border,
   },
-  menuSearchInput: {
-    flex: 1,
-    color: '#fff',
-    marginLeft: 10,
-    fontSize: 14,
+  chipActive: {
+    backgroundColor: QuinckleColors.primarySoft,
+    borderColor: QuinckleColors.primarySoftBorder,
   },
-  menuCategories: {
-    marginBottom: 16,
-  },
-  menuCatScroll: {
-    paddingHorizontal: 16,
-    gap: 8,
-  },
-  menuCatPill: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-  },
-  menuCatPillActive: {
-    backgroundColor: QuinckleColors.primary,
-  },
-  menuCatText: {
-    color: 'rgba(255,255,255,0.5)',
+  chipText: {
+    color: QuinckleColors.textSecondary,
     fontSize: 13,
+    fontWeight: '500',
+  },
+  chipTextActive: {
+    color: QuinckleColors.primary,
     fontWeight: '600',
   },
-  menuCatTextActive: {
-    color: '#fff',
-  },
+
   menuListContent: {
-    paddingHorizontal: 16,
     paddingBottom: 100,
   },
   menuItemRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 14,
+    paddingVertical: Spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.06)',
+    borderBottomColor: QuinckleColors.borderSubtle,
   },
   menuItemLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
-    gap: 14,
+    gap: Spacing.md,
   },
   menuItemImage: {
-    width: 50,
-    height: 50,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    width: 48,
+    height: 48,
+    borderRadius: Radius.sm,
+    backgroundColor: QuinckleColors.surfaceMuted,
   },
   menuItemImagePlaceholder: {
-    width: 50,
-    height: 50,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    width: 48,
+    height: 48,
+    borderRadius: Radius.sm,
+    backgroundColor: QuinckleColors.surfaceMuted,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderColor: 'rgba(255,255,255,0.1)',
   },
   menuItemInfo: {
     flex: 1,
@@ -1077,25 +1302,32 @@ const styles = StyleSheet.create({
   },
   menuItemName: {
     color: QuinckleColors.textPrimary,
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
   },
   menuItemPrice: {
-    color: 'rgba(255,255,255,0.4)',
-    fontSize: 14,
+    color: QuinckleColors.textSecondary,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  dimmed: {
+    opacity: 0.4,
+  },
+  dimmedText: {
+    color: QuinckleColors.textTertiary,
   },
   toggleBase: {
     width: 44,
-    height: 24,
-    borderRadius: 12,
-    padding: 2,
+    height: 26,
+    borderRadius: 13,
+    padding: 3,
     justifyContent: 'center',
   },
   toggleOn: {
-    backgroundColor: '#22c55e',
+    backgroundColor: QuinckleColors.success,
   },
   toggleOff: {
-    backgroundColor: 'rgba(255,255,255,0.1)',
+    backgroundColor: QuinckleColors.surfaceMutedHover,
   },
   toggleCircle: {
     width: 20,
@@ -1109,426 +1341,539 @@ const styles = StyleSheet.create({
   toggleCircleOff: {
     alignSelf: 'flex-start',
   },
-  dimmedText: {
-    opacity: 0.4,
+
+  sectionHeading: {
+    paddingVertical: Spacing.md,
+    marginBottom: Spacing.sm,
   },
-  activityListContent: {
-    paddingHorizontal: 16,
+  sectionTitle: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 20,
+    fontWeight: '700',
+    letterSpacing: -0.3,
+  },
+  sectionSubtitle: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 13,
+    marginTop: 2,
+  },
+
+  orderListContent: {
     paddingBottom: 100,
   },
-  activityHeader: {
-    paddingVertical: 16,
-    marginBottom: 8,
+  segmentWrap: {
+    marginBottom: Spacing.md,
   },
-  activityTitle: {
-    color: 'rgba(255,255,255,0.4)',
-    fontSize: 12,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
+  emptyOrders: {
+    paddingVertical: Spacing.huge,
+    paddingHorizontal: Spacing.lg,
+    alignItems: 'center',
+  },
+  emptyOrdersText: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 14,
+    textAlign: 'center',
+    lineHeight: 21,
+  },
+
+  activityListContent: {
+    paddingBottom: 100,
   },
   activityItem: {
-    paddingVertical: 14,
+    paddingVertical: Spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.05)',
-  },
-  activityInfo: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: 16,
+    borderBottomColor: QuinckleColors.borderSubtle,
+    gap: 4,
   },
   activityMessage: {
-    flex: 1,
     color: QuinckleColors.textPrimary,
     fontSize: 14,
     fontWeight: '500',
     lineHeight: 20,
   },
-  activityTimeCol: {
-    alignItems: 'flex-end',
-    gap: 2,
+  activityMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   activityDate: {
-    color: 'rgba(255,255,255,0.3)',
-    fontSize: 10,
-    fontWeight: '700',
-    textTransform: 'uppercase',
+    color: QuinckleColors.textTertiary,
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  activityDot: {
+    color: QuinckleColors.textMuted,
+    fontSize: 11,
   },
   activityTime: {
-    color: 'rgba(255,255,255,0.2)',
-    fontSize: 12,
-    fontWeight: '600',
+    color: QuinckleColors.textTertiary,
+    fontSize: 11,
+    fontWeight: '500',
   },
+
   profileContent: {
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 60,
+    paddingBottom: Spacing.huge,
   },
-  profileBackBtn: {
-    width: 44,
-    height: 44,
+  profileHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: Spacing.xl,
+    paddingVertical: Spacing.sm,
+  },
+  iconBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: Radius.md,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderRadius: 12,
-    marginBottom: 20,
   },
-  profileHeader: {
+  iconBtnPlaceholder: {
+    width: 40,
+    height: 40,
+  },
+  screenTitle: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 17,
+    fontWeight: '700',
+    letterSpacing: -0.2,
+  },
+
+  profileHero: {
     alignItems: 'center',
-    marginBottom: 32,
+    marginBottom: Spacing.xxl,
   },
   profileImageContainer: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    marginBottom: 16,
+    width: 92,
+    height: 92,
+    borderRadius: 46,
+    marginBottom: Spacing.md,
     position: 'relative',
   },
   profileImage: {
     width: '100%',
     height: '100%',
-    borderRadius: 50,
-    borderWidth: 3,
-    borderColor: 'rgba(255,255,255,0.05)',
+    borderRadius: 46,
+    borderWidth: 2,
+    borderColor: QuinckleColors.border,
   },
   uploadBadge: {
     position: 'absolute',
     bottom: 0,
     right: 0,
     backgroundColor: QuinckleColors.primary,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 3,
     borderColor: QuinckleColors.background,
   },
   profileName: {
-    color: '#fff',
-    fontSize: 22,
-    fontWeight: '800',
-    letterSpacing: -0.5,
+    color: QuinckleColors.textPrimary,
+    fontSize: 20,
+    fontWeight: '700',
+    letterSpacing: -0.3,
   },
   profilePhone: {
-    color: 'rgba(255,255,255,0.4)',
-    fontSize: 14,
-    fontWeight: '600',
+    color: QuinckleColors.textSecondary,
+    fontSize: 13,
+    fontWeight: '500',
     marginTop: 4,
   },
-  venueLinkCard: {
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderRadius: 20,
+
+  card: {
+    backgroundColor: QuinckleColors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.lg,
+    marginBottom: Spacing.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+  },
+  cardTitle: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  cardSubtitle: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 12,
+    marginTop: 2,
+  },
+
+  dutyRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 24,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
-    overflow: 'hidden',
   },
-  venueIconContainer: {
-    width: 80,
-    height: 90,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+
+  shiftStatsRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    borderRightWidth: 1,
-    borderRightColor: 'rgba(255,255,255,0.1)',
+    justifyContent: 'space-between',
+  },
+  shiftStatItem: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 4,
+  },
+  shiftStatDivider: {
+    width: 1,
+    height: 30,
+    backgroundColor: QuinckleColors.border,
+    marginHorizontal: Spacing.md,
+  },
+  shiftStatLabel: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  shiftStatValue: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 18,
+    fontWeight: '700',
+    letterSpacing: -0.5,
+  },
+
+  venueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
   },
   venueLogo: {
-    width: '100%',
-    height: '100%',
+    width: 50,
+    height: 50,
+    borderRadius: Radius.sm,
+    backgroundColor: QuinckleColors.surfaceMuted,
   },
   venueInfo: {
     flex: 1,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    gap: 2,
   },
   venueLabel: {
-    color: 'rgba(255,255,255,0.3)',
+    color: QuinckleColors.textTertiary,
     fontSize: 10,
-    fontWeight: '800',
+    fontWeight: '700',
     textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: 4,
+    letterSpacing: 0.8,
+    marginBottom: 2,
   },
   venueName: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '700',
+    color: QuinckleColors.textPrimary,
+    fontSize: 15,
+    fontWeight: '600',
   },
   venueId: {
-    color: 'rgba(255,255,255,0.4)',
+    color: QuinckleColors.textTertiary,
     fontSize: 12,
+    fontWeight: '500',
+  },
+
+  cashRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+  },
+  cashIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: Radius.sm,
+    backgroundColor: QuinckleColors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cashValue: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 18,
+    fontWeight: '700',
     marginTop: 2,
   },
-  profileActionGrid: {
+
+  weeklyGrid: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    height: 100,
+    marginTop: Spacing.lg,
+    paddingHorizontal: Spacing.sm,
+  },
+  dayColumn: {
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  dayBarTrack: {
+    width: 6,
+    height: 70,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderRadius: 3,
+    justifyContent: 'flex-end',
+  },
+  dayBar: {
+    width: '100%',
+    borderRadius: 3,
+  },
+  dayLabel: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  weeklyStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: Spacing.xl,
+    paddingTop: Spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: QuinckleColors.borderSubtle,
+  },
+  cardHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  periodPicker: {
+    flexDirection: 'row',
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderRadius: Radius.sm,
+    padding: 3,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+  },
+  periodBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: Radius.xs,
+  },
+  periodBtnActive: {
+    backgroundColor: QuinckleColors.surface,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  periodBtnText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: QuinckleColors.textTertiary,
+  },
+  periodBtnTextActive: {
+    color: QuinckleColors.primary,
+  },
+  timingDetails: {
+    marginTop: Spacing.xl,
+    paddingTop: Spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: QuinckleColors.borderSubtle,
+  },
+  todayTiming: {
+    gap: 10,
+  },
+  timingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  timingText: {
+    color: QuinckleColors.textSecondary,
+    fontSize: 13,
+  },
+  timingVal: {
+    color: QuinckleColors.textPrimary,
+    fontWeight: '600',
+  },
+  timingDivider: {
+    height: 1,
+    backgroundColor: QuinckleColors.borderSubtle,
+    marginVertical: 4,
+  },
+  timingSummary: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  weekTiming: {
     gap: 12,
   },
-  profileActionBtn: {
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderRadius: 16,
-    padding: 16,
-    flex: 1,
-    minWidth: '45%',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
+  weekLogItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
-  fullWidthAction: {
-    minWidth: '100%',
+  weekLogDay: {
+    width: 45,
+    fontSize: 12,
+    fontWeight: '600',
+    color: QuinckleColors.textSecondary,
+  },
+  weekLogTime: {
+    flex: 1,
+    fontSize: 12,
+    color: QuinckleColors.textTertiary,
+    textAlign: 'center',
+  },
+  weekLogHours: {
+    width: 50,
+    fontSize: 12,
+    fontWeight: '700',
+    color: QuinckleColors.textPrimary,
+    textAlign: 'right',
+  },
+  weekSubtotal: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    marginTop: 8,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: QuinckleColors.borderSubtle,
   },
-  cashActionContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-  },
-  profileActionIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-  },
-  profileActionText: {
-    color: '#fff',
+  subtotalLabel: {
     fontSize: 13,
     fontWeight: '700',
+    color: QuinckleColors.textPrimary,
   },
-  cashValue: {
-    color: '#22c55e',
-    fontSize: 18,
+  subtotalVal: {
+    fontSize: 15,
     fontWeight: '800',
-    marginTop: 2,
+    color: QuinckleColors.primary,
   },
-  logoutBtn: {
-    marginTop: 40,
-    paddingVertical: 18,
-    alignItems: 'center',
-  },
-  logoutBtnText: {
-    color: '#ef4444',
+  weeklyStatVal: {
+    color: QuinckleColors.textPrimary,
     fontSize: 15,
     fontWeight: '700',
+    textAlign: 'center',
   },
-  profileFooter: {
-    marginTop: 32,
-    paddingHorizontal: 10,
-    marginBottom: 20,
+  weeklyStatLab: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 10,
+    fontWeight: '500',
+    textAlign: 'center',
+    marginTop: 2,
   },
-  adminContactText: {
-    color: 'rgba(255,255,255,0.2)',
+  statDot: {
+    width: 3,
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: QuinckleColors.border,
+  },
+
+  adminText: {
+    color: QuinckleColors.textTertiary,
     fontSize: 12,
     textAlign: 'center',
     lineHeight: 18,
-    fontWeight: '500',
+    marginTop: Spacing.xl,
+    paddingHorizontal: Spacing.lg,
   },
-  tableOrderCard: {
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderRadius: 20,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
-  },
-  tableOrderHeader: {
+
+  logoutBtn: {
+    marginTop: Spacing.xxl,
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  tableOrderBadge: {
-    backgroundColor: QuinckleColors.primary,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 10,
-  },
-  tableOrderBadgeText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  tableOrderReadyCount: {
-    color: 'rgba(255,255,255,0.4)',
-    fontSize: 11,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-  },
-  nestedOrdersList: {
-    gap: 12,
-  },
-  nestedOrderItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.02)',
-    padding: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.04)',
-  },
-  nestedOrderLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  nestedOrderQty: {
-    color: QuinckleColors.primary,
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  nestedOrderName: {
-    color: '#fff',
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  nestedOrderTime: {
-    color: 'rgba(255,255,255,0.2)',
-    fontSize: 11,
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  serviceCircleSmall: {
-    width: 32,
-    height: 32,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.md,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.dangerBorder,
+    backgroundColor: QuinckleColors.dangerSoft,
   },
-  ledgerHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 20,
+  logoutBtnText: {
+    color: QuinckleColors.danger,
+    fontSize: 14,
+    fontWeight: '600',
   },
-  ledgerBackBtn: {
-    width: 44,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderRadius: 12,
-  },
-  ledgerTitle: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-  },
+
   ledgerListContent: {
-    paddingHorizontal: 16,
-    paddingBottom: 40,
+    paddingBottom: Spacing.huge,
   },
-  appleLedgerGroup: {
-    backgroundColor: 'transparent',
-  },
-  appleLedgerHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  ledgerSummary: {
+    paddingVertical: Spacing.xxl,
     alignItems: 'center',
-    paddingVertical: 20,
-    paddingHorizontal: 4,
+    marginBottom: Spacing.md,
   },
-  appleLedgerDate: {
-    color: '#fff',
-    fontSize: 17,
-    fontWeight: '600',
-    letterSpacing: -0.2,
-  },
-  appleLedgerRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  appleLedgerTotal: {
-    color: 'rgba(255,255,255,0.4)',
-    fontSize: 17,
-    fontWeight: '500',
-  },
-  appleExpandedSection: {
-    paddingLeft: 12,
-    marginBottom: 8,
-  },
-  appleSubRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 16,
-    paddingRight: 4,
-  },
-  appleSubRowDivider: {
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.05)',
-  },
-  appleSubLeft: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 8,
-  },
-  appleSubTable: {
-    color: QuinckleColors.primary,
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  appleSubTime: {
-    color: 'rgba(255,255,255,0.2)',
-    fontSize: 13,
-    fontWeight: '500',
-  },
-  appleSubAmount: {
-    color: '#fff',
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  appleDivider: {
-    height: 1,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    width: '100%',
-  },
-  appleSummaryHeader: {
-    paddingVertical: 32,
-    alignItems: 'center',
-  },
-  appleSummaryLabel: {
-    color: 'rgba(255,255,255,0.3)',
-    fontSize: 13,
+  ledgerSummaryLabel: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 12,
     fontWeight: '600',
     textTransform: 'uppercase',
-    letterSpacing: 1.5,
-    marginBottom: 8,
+    letterSpacing: 1.2,
+    marginBottom: Spacing.sm,
   },
-  appleSummaryValue: {
-    color: '#fff',
-    fontSize: 42,
+  ledgerSummaryValue: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 38,
     fontWeight: '800',
     letterSpacing: -1,
   },
-  ledgerSummary: {
-    marginTop: 32,
-    backgroundColor: 'rgba(34,197,94,0.05)',
-    borderRadius: 20,
-    padding: 24,
-    alignItems: 'center',
+  ledgerCard: {
+    backgroundColor: QuinckleColors.surface,
+    borderRadius: Radius.md,
     borderWidth: 1,
-    borderColor: 'rgba(34,197,94,0.1)',
+    borderColor: QuinckleColors.border,
+    marginBottom: Spacing.sm,
+    overflow: 'hidden',
   },
-  summaryLabel: {
-    color: 'rgba(34,197,94,0.6)',
+  ledgerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: Spacing.lg,
+  },
+  ledgerDate: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  ledgerHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  ledgerTotal: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  ledgerExpanded: {
+    borderTopWidth: 1,
+    borderTopColor: QuinckleColors.borderSubtle,
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.sm,
+  },
+  ledgerSubRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: QuinckleColors.borderSubtle,
+  },
+  ledgerSubLeft: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: Spacing.sm,
+  },
+  ledgerSubTable: {
+    color: QuinckleColors.primary,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  ledgerSubTime: {
+    color: QuinckleColors.textTertiary,
     fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 2,
-    marginBottom: 8,
+    fontWeight: '500',
   },
-  summaryValue: {
-    color: '#22c55e',
-    fontSize: 32,
-    fontWeight: '900',
+  ledgerSubAmount: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

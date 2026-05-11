@@ -1,11 +1,11 @@
 import React from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
-import { QuinckleColors } from '../../constants/Colors';
+import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
 
 type ThemedDialogAction = {
   label: string;
   onPress: () => void;
-  variant?: 'default' | 'danger';
+  variant?: 'default' | 'danger' | 'primary';
 };
 
 type ThemedDialogProps = {
@@ -25,25 +25,32 @@ export function ThemedDialog({ visible, title, message, actions, onClose }: Them
           <Text style={styles.message}>{message}</Text>
 
           <View style={styles.actionsRow}>
-            {actions.map((action) => (
-              <Pressable
-                key={action.label}
-                style={[
-                  styles.actionButton,
-                  action.variant === 'danger' ? styles.actionDanger : styles.actionDefault,
-                ]}
-                onPress={action.onPress}
-              >
-                <Text
+            {actions.map((action) => {
+              const variant = action.variant ?? 'default';
+              return (
+                <Pressable
+                  key={action.label}
                   style={[
-                    styles.actionText,
-                    action.variant === 'danger' ? styles.actionTextDanger : styles.actionTextDefault,
+                    styles.actionButton,
+                    variant === 'danger' && styles.actionDanger,
+                    variant === 'primary' && styles.actionPrimary,
+                    variant === 'default' && styles.actionDefault,
                   ]}
+                  onPress={action.onPress}
                 >
-                  {action.label}
-                </Text>
-              </Pressable>
-            ))}
+                  <Text
+                    style={[
+                      styles.actionText,
+                      variant === 'danger' && styles.actionTextDanger,
+                      variant === 'primary' && styles.actionTextPrimary,
+                      variant === 'default' && styles.actionTextDefault,
+                    ]}
+                  >
+                    {action.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
         </Pressable>
       </Pressable>
@@ -54,57 +61,62 @@ export function ThemedDialog({ visible, title, message, actions, onClose }: Them
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: 'rgba(0,0,0,0.65)',
     justifyContent: 'center',
-    padding: 20,
+    padding: Spacing.xl,
   },
   card: {
     backgroundColor: QuinckleColors.surface,
     borderWidth: 1,
     borderColor: QuinckleColors.border,
-    borderRadius: 14,
-    padding: 16,
+    borderRadius: Radius.xl,
+    padding: Spacing.xxl,
   },
   title: {
+    ...Typography.subtitle,
     color: QuinckleColors.textPrimary,
-    fontSize: 18,
-    fontWeight: '700',
   },
   message: {
-    marginTop: 8,
+    marginTop: Spacing.sm,
+    ...Typography.body,
     color: QuinckleColors.textSecondary,
-    fontSize: 14,
-    lineHeight: 20,
+    lineHeight: 21,
   },
   actionsRow: {
-    marginTop: 16,
+    marginTop: Spacing.xl,
     flexDirection: 'row',
-    gap: 8,
+    gap: Spacing.sm,
   },
   actionButton: {
     flex: 1,
-    borderRadius: 10,
-    paddingVertical: 10,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.md,
     alignItems: 'center',
     borderWidth: 1,
   },
   actionDefault: {
-    backgroundColor: QuinckleColors.surfaceHover,
+    backgroundColor: QuinckleColors.surfaceMuted,
     borderColor: QuinckleColors.border,
   },
+  actionPrimary: {
+    backgroundColor: QuinckleColors.primary,
+    borderColor: QuinckleColors.primary,
+  },
   actionDanger: {
-    backgroundColor: `${QuinckleColors.danger}20`,
-    borderColor: QuinckleColors.danger,
+    backgroundColor: QuinckleColors.dangerSoft,
+    borderColor: QuinckleColors.dangerBorder,
   },
   actionText: {
-    fontWeight: '700',
-    fontSize: 13,
+    fontSize: 14,
+    fontWeight: '600',
   },
   actionTextDefault: {
     color: QuinckleColors.textPrimary,
+  },
+  actionTextPrimary: {
+    color: '#fff',
   },
   actionTextDanger: {
     color: QuinckleColors.danger,
   },
 });
-
