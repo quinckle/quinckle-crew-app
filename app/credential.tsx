@@ -19,6 +19,11 @@ import { useAuth } from '../context/AuthContext';
 const OTP_LENGTH = 6;
 const BLINK_DURATION = 500;
 
+const MOCK_CREDENTIALS: Record<string, { otp: string; role: 'staff' | 'cook' }> = {
+  '1234567890': { otp: '123456', role: 'staff' },
+  '0987654321': { otp: '654321', role: 'cook' },
+};
+
 export default function CredentialScreen() {
   const insets = useSafeAreaInsets();
   const { login } = useAuth();
@@ -105,15 +110,16 @@ export default function CredentialScreen() {
 
     setTimeout(() => {
       setIsLoading(false);
-      if (otp !== '123456') {
+      const mock = MOCK_CREDENTIALS[phone];
+      if (!mock || otp !== mock.otp) {
         setError('The verification code is incorrect. Please try again.');
         triggerShake();
         setOtp('');
         return;
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      login('staff');
-      router.replace('/(staff)');
+      login(mock.role);
+      router.replace(mock.role === 'staff' ? '/(staff)' : '/(cook)');
     }, 900);
   };
 
