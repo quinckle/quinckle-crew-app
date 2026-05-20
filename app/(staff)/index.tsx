@@ -388,7 +388,7 @@ export default function StaffDashboard() {
   const loadMenuFromApi = async () => {
     if (!staffInfo?.restaurantId) return;
     try {
-      const res = await restaurantApi.get(staffInfo.restaurantId);
+      const res = await restaurantApi.getMenu(staffInfo.restaurantId);
       const items = res.data?.menuItems ?? [];
       if (items.length > 0) {
         setMenuData(items.map((item: any) => ({
@@ -409,34 +409,47 @@ export default function StaffDashboard() {
   const loadPickupOrders = async () => {
     try {
       const res = await crewOrders.getActive();
-      setLiveOrders(res.orders ?? []);
-      // Map READY orders to the pickup format
-      const readyOrders = (res.orders ?? []).filter(o => o.status === 'ready');
-      if (readyOrders.length > 0 || liveOrders.length > 0) {
-        setPickupOrders(
-          readyOrders.map(order => ({
-            id: order.order_id,
-            tableNo: `T${String(order.table_number).padStart(2, '0')}`,
-            items: order.items.map(item => ({
-              id: item.item_id,
-              name: `${item.qty}× ${item.name}`,
-              qty: item.qty,
-              orderedAt: (() => { const d = new Date(order.placed_at); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; })(),
-              isServed: item.served,
-            })),
-          }))
-        );
-      }
+      const allOrders = res.orders ?? [];
+      setLiveOrders(allOrders);
+      // Always update pickup tab with READY orders from backend
+      const readyOrders = allOrders.filter(o => o.status === 'ready');
+      setPickupOrders(
+        readyOrders.map(order => ({
+          id: order.order_id,
+          tableNo: `T${String(order.table_number).padStart(2, '0')}`,
+          items: order.items.map(item => ({
+            id: item.item_id,
+            name: `${item.qty}× ${item.name}`,
+            qty: item.qty,
+            orderedAt: (() => {
+              const d = new Date(order.placed_at);
+              return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+            })(),
+            isServed: item.served,
+          })),
+        }))
+      );
     } catch { /* keep current */ }
   };
 
+  // Refresh tables every 5s, pickup orders every 5s
   useEffect(() => {
     loadTables();
     loadMenuFromApi();
     loadPickupOrders();
-    const interval = setInterval(() => { void loadPickupOrders(); void loadTables(); }, 15000);
+    const interval = setInterval(() => {
+      void loadPickupOrders();
+      void loadTables();
+    }, 5000);
     return () => clearInterval(interval);
   }, [staffInfo?.restaurantId]);
+
+  // Immediately refresh pickup orders when switching to Orders tab
+  useEffect(() => {
+    if (activeTab === 'orders') {
+      void loadPickupOrders();
+    }
+  }, [activeTab]);
 
   const updateTableStatus = async (tableNum: number, nextStatus: TableStatus) => {
     // Optimistic local update

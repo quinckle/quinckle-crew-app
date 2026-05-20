@@ -1,13 +1,13 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Animated, FlatList, StyleSheet, Text, TouchableOpacity, View, ActivityIndicator } from 'react-native';
+import { Animated, FlatList, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
-import { crewSessions, crewOrders, crewPayments } from '../../services/api';
+import { crewSessions, crewOrders, crewPayments, restaurantApi } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
-import type { BillOrderItem, BillOrder } from '../../services/api';
+import type { BillOrderItem, BillOrder, MenuItem } from '../../services/api';
 
 type ItemStatus = 'prep' | 'ready' | 'served';
 
@@ -56,6 +56,12 @@ export default function TableDetail() {
   const [isPaid, setIsPaid] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
 
+  // Add items modal
+  const [showOrderModal, setShowOrderModal] = useState(false);
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [cart, setCart] = useState<Record<string, number>>({});
+  const [isPlacingOrder, setIsPlacingOrder] = useState(false);
+
   const [dialog, setDialog] = useState<{
     visible: boolean; title: string; message: string;
     actions: { label: string; onPress: () => void; variant?: 'default' | 'danger' | 'primary' }[];
@@ -81,7 +87,50 @@ export default function TableDetail() {
     }
   };
 
-  useEffect(() => { loadBill(); }, [sessionId]);
+  useEffect(() => {
+    loadBill();
+    const interval = setInterval(loadBill, 5000);
+    return () => clearInterval(interval);
+  }, [sessionId]);
+
+  // Fetch menu when modal opens
+  useEffect(() => {
+    if (showOrderModal && menuItems.length === 0 && staffInfo?.restaurantId) {
+      restaurantApi.getMenu(staffInfo.restaurantId)
+        .then(res => {
+          const items = (res.data?.menuItems ?? []).filter((i: any) => i.isAvailable !== false);
+          setMenuItems(items.length > 0 ? items : []);
+        })
+        .catch(() => setMenuItems([]));
+    }
+  }, [showOrderModal]);
+
+  const addToCart = (itemId: string) => setCart(prev => ({ ...prev, [itemId]: (prev[itemId] ?? 0) + 1 }));
+  const removeFromCart = (itemId: string) => setCart(prev => {
+    const qty = (prev[itemId] ?? 0) - 1;
+    if (qty <= 0) { const next = { ...prev }; delete next[itemId]; return next; }
+    return { ...prev, [itemId]: qty };
+  });
+  const cartTotal = Object.entries(cart).reduce((sum, [id, qty]) => {
+    const item = menuItems.find(m => m.id === id);
+    return sum + (parseFloat(item?.price ?? '0') * qty);
+  }, 0);
+
+  const handlePlaceOrder = async () => {
+    const items = Object.entries(cart).map(([item_id, qty]) => ({ item_id, qty }));
+    if (items.length === 0 || !sessionId) return;
+    setIsPlacingOrder(true);
+    try {
+      await crewOrders.placeOrder(sessionId, items);
+      setCart({});
+      setShowOrderModal(false);
+      await loadBill();
+    } catch (e: any) {
+      // show error in modal — keep it open
+    } finally {
+      setIsPlacingOrder(false);
+    }
+  };
 
   // Flat list of all items across all orders
   const flatItems = useMemo<FlatItem[]>(() =>
@@ -190,6 +239,17 @@ export default function TableDetail() {
           <Ionicons name="ellipsis-horizontal" size={18} color={QuinckleColors.textPrimary} />
         </TouchableOpacity>
       </View>
+
+      {!isPaid && (
+        <TouchableOpacity
+          style={styles.manualOrderBtn}
+          onPress={() => setShowOrderModal(true)}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="add" size={18} color="#fff" />
+          <Text style={styles.manualOrderText}>Add Items to Order</Text>
+        </TouchableOpacity>
+      )}
 
       <View style={styles.sectionHeader}>
         <View style={styles.sectionTitleRow}>
@@ -311,6 +371,63 @@ export default function TableDetail() {
       </View>
 
       <ThemedDialog visible={dialog.visible} title={dialog.title} message={dialog.message} actions={dialog.actions} onClose={closeDialog} />
+
+      {/* Add Items Modal */}
+      <Modal visible={showOrderModal} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowOrderModal(false)}>
+        <View style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Add Items — T{tableNum}</Text>
+            <TouchableOpacity onPress={() => { setShowOrderModal(false); setCart({}); }} style={styles.iconBtn}>
+              <Ionicons name="close" size={20} color={QuinckleColors.textPrimary} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 120 }}>
+            {menuItems.length === 0 && showOrderModal ? (
+              <View style={styles.emptyState}>
+                <ActivityIndicator color={QuinckleColors.primary} />
+                <Text style={styles.emptyText}>Loading menu…</Text>
+              </View>
+            ) : menuItems.length === 0 ? (
+              <View style={styles.emptyState}>
+                <Ionicons name="restaurant-outline" size={28} color={QuinckleColors.textTertiary} />
+                <Text style={styles.emptyText}>No menu items available.</Text>
+              </View>
+            ) : menuItems.map(item => (
+              <View key={item.id} style={styles.menuRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.menuItemName}>{item.name}</Text>
+                  <Text style={styles.menuItemPrice}>₹{parseFloat(item.price).toFixed(0)}</Text>
+                </View>
+                <View style={styles.qtyControl}>
+                  <TouchableOpacity onPress={() => removeFromCart(item.id)} style={styles.qtyBtn} disabled={!cart[item.id]}>
+                    <Ionicons name="remove" size={16} color={cart[item.id] ? QuinckleColors.primary : QuinckleColors.borderStrong} />
+                  </TouchableOpacity>
+                  <Text style={styles.qtyText}>{cart[item.id] ?? 0}</Text>
+                  <TouchableOpacity onPress={() => addToCart(item.id)} style={styles.qtyBtn}>
+                    <Ionicons name="add" size={16} color={QuinckleColors.primary} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))}
+          </ScrollView>
+
+          <View style={styles.modalFooter}>
+            <View style={styles.cartSummary}>
+              <Text style={styles.cartLabel}>{Object.values(cart).reduce((a, b) => a + b, 0)} items</Text>
+              <Text style={styles.cartTotal}>₹{cartTotal.toFixed(0)}</Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.placeOrderBtn, (Object.keys(cart).length === 0 || isPlacingOrder) && styles.placeOrderBtnDisabled]}
+              onPress={handlePlaceOrder}
+              disabled={Object.keys(cart).length === 0 || isPlacingOrder}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.placeOrderText}>{isPlacingOrder ? 'Placing Order…' : 'Place Order'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -373,4 +490,23 @@ const styles = StyleSheet.create({
   payBtn: { backgroundColor: QuinckleColors.primary, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, paddingVertical: 14, borderRadius: Radius.md },
   payBtnPaid: { backgroundColor: QuinckleColors.success },
   payBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  manualOrderBtn: { backgroundColor: QuinckleColors.primary, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 13, borderRadius: Radius.md, gap: Spacing.sm, marginBottom: Spacing.xl },
+  manualOrderText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  // Modal styles
+  modalContainer: { flex: 1, backgroundColor: QuinckleColors.background },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: Spacing.xl, paddingVertical: Spacing.lg, borderBottomWidth: 1, borderBottomColor: QuinckleColors.border },
+  modalTitle: { fontSize: 18, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.3 },
+  menuRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.xl, paddingVertical: Spacing.md, borderBottomWidth: 1, borderBottomColor: QuinckleColors.borderSubtle },
+  menuItemName: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '500' },
+  menuItemPrice: { color: QuinckleColors.textSecondary, fontSize: 13, marginTop: 2 },
+  qtyControl: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  qtyBtn: { width: 32, height: 32, borderRadius: 16, borderWidth: 1.5, borderColor: QuinckleColors.border, alignItems: 'center', justifyContent: 'center' },
+  qtyText: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '700', minWidth: 20, textAlign: 'center' },
+  modalFooter: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: QuinckleColors.surface, borderTopWidth: 1, borderTopColor: QuinckleColors.border, paddingHorizontal: Spacing.xl, paddingTop: Spacing.lg, paddingBottom: Spacing.xxl, gap: Spacing.md },
+  cartSummary: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  cartLabel: { color: QuinckleColors.textSecondary, fontSize: 13 },
+  cartTotal: { color: QuinckleColors.textPrimary, fontSize: 18, fontWeight: '700' },
+  placeOrderBtn: { backgroundColor: QuinckleColors.primary, paddingVertical: 14, borderRadius: Radius.md, alignItems: 'center' },
+  placeOrderBtnDisabled: { backgroundColor: QuinckleColors.surfaceMutedHover },
+  placeOrderText: { color: '#fff', fontSize: 15, fontWeight: '600' },
 });

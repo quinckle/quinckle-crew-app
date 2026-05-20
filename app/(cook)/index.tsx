@@ -154,7 +154,7 @@ export default function CookDashboard() {
 
   useEffect(() => {
     loadOrders();
-    const interval = setInterval(loadOrders, 15000);
+    const interval = setInterval(loadOrders, 5000);
     return () => clearInterval(interval);
   }, [loadOrders]);
 

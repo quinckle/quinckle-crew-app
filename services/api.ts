@@ -156,9 +156,14 @@ export interface ActiveOrderItem { item_id: string; name: string; qty: number; p
 export interface ActiveOrder { order_id: string; table_number: number; session_id: string; status: 'received' | 'preparing' | 'ready' | 'served'; placed_at: string; items: ActiveOrderItem[]; }
 
 export const crewOrders = {
-  getActive: () => request<{ orders: ActiveOrder[] }>('GET', '/api/crew/orders/active', undefined, true),
+  getActive: () =>
+    request<{ orders: ActiveOrder[] }>('GET', '/api/crew/orders/active', undefined, true),
+
   serveItem: (orderId: string, itemId: string) =>
     request<unknown>('PATCH', `/api/crew/orders/${orderId}/items/${itemId}/serve`, undefined, true),
+
+  placeOrder: (sessionId: string, items: { item_id: string; qty: number; note?: string }[]) =>
+    request<unknown>('POST', '/api/crew/orders', { session_id: sessionId, items }, true),
 };
 
 // ── Crew Payments (STEWARD/ADMIN) ─────────────────────────────────────────────
@@ -174,8 +179,11 @@ export interface MenuItem { id: string; name: string; description?: string; pric
 export interface Restaurant { id: string; name: string; slug: string; upiId: string; }
 
 export const restaurantApi = {
-  get: (idOrSlug: string) =>
-    request<{ success: true; data: { restaurant: Restaurant; menuItems: MenuItem[] } }>(
-      'GET', `/api/v1/restaurants/${idOrSlug}`
+  get: (restaurantId: string) =>
+    request<{ success: true; data: Restaurant }>('GET', `/api/v1/restaurants/${restaurantId}`),
+
+  getMenu: (restaurantId: string) =>
+    request<{ success: true; data: { menuItems: MenuItem[] } }>(
+      'GET', `/api/v1/restaurants/${restaurantId}/menu`
     ),
 };
