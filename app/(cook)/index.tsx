@@ -3,6 +3,7 @@ import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { kitchen } from '../../services/api';
 import { Swipeable } from 'react-native-gesture-handler';
+import type { Swipeable as SwipeableType } from 'react-native-gesture-handler';
 import {
   FlatList,
   ScrollView,
@@ -95,6 +96,7 @@ const STATUS_META: Record<KitchenStatus, { label: string; color: string }> = {
 export default function CookDashboard() {
   const insets = useSafeAreaInsets();
   const { logout, staffInfo } = useAuth();
+  const swipeableRefs = useRef<Map<string, SwipeableType | null>>(new Map());
   const [orders, setOrders] = useState<KitchenOrder[]>([]);
   const [bumpedOrders, setBumpedOrders] = useState<KitchenOrder[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -415,7 +417,7 @@ export default function CookDashboard() {
 
                   <View style={styles.cardFooter}>
                     <View />
-                    {item.status === 'ready' && <Text style={styles.swipeHint}>Swipe to bump →</Text>}
+                    {item.status === 'ready' && <Text style={styles.swipeHint}>← Swipe left to send out</Text>}
                   </View>
                 </View>
               );
@@ -423,14 +425,21 @@ export default function CookDashboard() {
               if (item.status === 'ready') {
                 return (
                   <Swipeable
+                    ref={ref => swipeableRefs.current.set(item.id, ref)}
                     renderRightActions={() => (
-                      <View style={styles.swipeAction}>
-                        <Ionicons name="archive-outline" size={20} color="#fff" />
-                        <Text style={styles.swipeActionText}>Bump</Text>
-                      </View>
+                      <TouchableOpacity
+                        style={styles.swipeAction}
+                        activeOpacity={0.85}
+                        onPress={() => {
+                          swipeableRefs.current.get(item.id)?.close();
+                          void handleSwipeRemoveReady(item.id);
+                        }}
+                      >
+                        <Ionicons name="checkmark-done" size={20} color="#fff" />
+                        <Text style={styles.swipeActionText}>Send Out</Text>
+                      </TouchableOpacity>
                     )}
-                    overshootRight={false}
-                    onSwipeableOpen={() => { void handleSwipeRemoveReady(item.id); }}
+                    overshootFriction={8}
                   >
                     {cardContent}
                   </Swipeable>
