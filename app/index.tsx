@@ -15,7 +15,7 @@ import { QuinckleColors } from '../constants/Colors';
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function Index() {
-  const { role } = useAuth();
+  const { role, isRestoring } = useAuth();
   const rootNavigationState = useRootNavigationState();
   const [isSplashReady, setIsSplashReady] = useState(false);
   
@@ -49,7 +49,7 @@ export default function Index() {
   }, []);
 
   // Handle redirect only after splash is done AND navigation is ready
-  const isReady = rootNavigationState?.key && isSplashReady;
+  const isReady = rootNavigationState?.key && isSplashReady && !isRestoring;
 
   if (isReady) {
     if (role === null) return <Redirect href="/login" />;

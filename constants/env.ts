@@ -5,6 +5,9 @@ import { Platform } from 'react-native';
 const LOCAL_HOST = Platform.OS === 'android' ? '10.0.2.2' : 'localhost';
 const LOCAL_PORT = 3000;
 
+// ⚠️  Update PROD_HOST below to your actual Render backend URL before shipping
+const PROD_HOST = 'https://quinckle-user-app-backend.onrender.com';
+
 export const API_BASE_URL = __DEV__
   ? `http://${LOCAL_HOST}:${LOCAL_PORT}`
-  : 'https://quinckle-api.onrender.com';
+  : PROD_HOST;

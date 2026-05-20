@@ -12,7 +12,8 @@ import {
   View,
 } from 'react-native';
 import { useAuth } from '../../context/AuthContext';
-import { crewTables } from '../../services/api';
+import { crewTables, crewSessions, crewOrders, restaurantApi } from '../../services/api';
+import type { ActiveOrder, MenuItem } from '../../services/api';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -43,6 +44,7 @@ type Table = {
   billAmount?: number;
   since?: string;
   location?: string;
+  sessionId?: string;
 };
 
 const MENU_DATA_INITIAL = [
@@ -105,18 +107,20 @@ const STATUS_META: Record<TableStatus, { label: string; color: string }> = {
 
 export default function StaffDashboard() {
   const insets = useSafeAreaInsets();
-  const { logout } = useAuth();
+  const { logout, staffInfo } = useAuth();
   const [activeTab, setActiveTab] = useState<NavItem>('tables');
   const [expandedDate, setExpandedDate] = useState<string | null>(null);
   const [filterVisible, setFilterVisible] = useState(false);
   const [tables, setTables] = useState<Table[]>(INITIAL_TABLES);
   const [isLoadingTables, setIsLoadingTables] = useState(true);
   const [menuData, setMenuData] = useState(MENU_DATA_INITIAL);
+  const [menuCategories, setMenuCategories] = useState<string[]>(['All', 'Appetizers', 'Mains', 'Beverages', 'Desserts']);
   const [activeFilter, setActiveFilter] = useState<'all' | TableStatus | string>('all');
   const [menuFilter, setMenuFilter] = useState('All');
   const [searchText, setSearchText] = useState('');
   const [isOnline, setIsOnline] = useState(true);
   const [pickupOrders, setPickupOrders] = useState<PickupOrder[]>(READY_ORDERS_INITIAL);
+  const [liveOrders, setLiveOrders] = useState<ActiveOrder[]>([]);
   const [ordersSubTab, setOrdersSubTab] = useState<'active' | 'completed'>('active');
   const [completingIds, setCompletingIds] = useState<string[]>([]);
   const [shiftStart, setShiftStart] = useState<Date | null>(new Date(Date.now() - 4.5 * 60 * 60 * 1000)); // Mock: Started 4.5h ago
@@ -371,6 +375,7 @@ export default function StaffDashboard() {
             })()
           : undefined,
         location: undefined,
+        sessionId: t.session_id ?? undefined,
       }));
       if (apiTables.length > 0) setTables(apiTables);
     } catch {
@@ -380,9 +385,58 @@ export default function StaffDashboard() {
     }
   };
 
+  const loadMenuFromApi = async () => {
+    if (!staffInfo?.restaurantId) return;
+    try {
+      const res = await restaurantApi.get(staffInfo.restaurantId);
+      const items = res.data?.menuItems ?? [];
+      if (items.length > 0) {
+        setMenuData(items.map((item: any) => ({
+          id: item.id,
+          name: item.name,
+          price: parseFloat(item.price),
+          category: item.category,
+          available: item.isAvailable,
+          image: item.imageUrl ?? undefined,
+        })));
+        const cats = ['All', ...Array.from(new Set(items.map((i: any) => i.category as string)))];
+        setMenuCategories(cats as string[]);
+        setMenuFilter('All');
+      }
+    } catch { /* keep mock */ }
+  };
+
+  const loadPickupOrders = async () => {
+    try {
+      const res = await crewOrders.getActive();
+      setLiveOrders(res.orders ?? []);
+      // Map READY orders to the pickup format
+      const readyOrders = (res.orders ?? []).filter(o => o.status === 'ready');
+      if (readyOrders.length > 0 || liveOrders.length > 0) {
+        setPickupOrders(
+          readyOrders.map(order => ({
+            id: order.order_id,
+            tableNo: `T${String(order.table_number).padStart(2, '0')}`,
+            items: order.items.map(item => ({
+              id: item.item_id,
+              name: `${item.qty}× ${item.name}`,
+              qty: item.qty,
+              orderedAt: (() => { const d = new Date(order.placed_at); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; })(),
+              isServed: item.served,
+            })),
+          }))
+        );
+      }
+    } catch { /* keep current */ }
+  };
+
   useEffect(() => {
     loadTables();
-  }, []);
+    loadMenuFromApi();
+    loadPickupOrders();
+    const interval = setInterval(() => { void loadPickupOrders(); void loadTables(); }, 15000);
+    return () => clearInterval(interval);
+  }, [staffInfo?.restaurantId]);
 
   const updateTableStatus = async (tableNum: number, nextStatus: TableStatus) => {
     // Optimistic local update
@@ -421,14 +475,23 @@ export default function StaffDashboard() {
         {
           label: 'Start Session',
           variant: 'primary',
-          onPress: () => {
-            void updateTableStatus(tableNum, 'occupied');
-            router.push({ pathname: '/(staff)/[tableId]', params: { tableId: String(tableNum) } });
+          onPress: async () => {
+            const table = tables.find(t => t.number === tableNum);
+            if (!table) return;
+            try {
+              const res = await crewSessions.start(table.id);
+              void loadTables();
+              router.push({ pathname: '/(staff)/[tableId]', params: { tableId: String(tableNum), sessionId: res.session_id, tableDbId: table.id } });
+            } catch {
+              // Fallback: navigate without session
+              router.push({ pathname: '/(staff)/[tableId]', params: { tableId: String(tableNum), tableDbId: table.id } });
+            }
           },
         },
       ]);
     } else {
-      router.push({ pathname: '/(staff)/[tableId]', params: { tableId: String(tableNum) } });
+      const table = tables.find(t => t.number === tableNum);
+      router.push({ pathname: '/(staff)/[tableId]', params: { tableId: String(tableNum), sessionId: table?.sessionId ?? '', tableDbId: table?.id ?? '' } });
     }
   };
 
@@ -484,7 +547,7 @@ export default function StaffDashboard() {
       {showHeader && (
         <View style={styles.topBar}>
           <View style={styles.brandGroup}>
-            <Text style={styles.brandTitle}>The Grill Room</Text>
+            <Text style={styles.brandTitle}>{staffInfo?.restaurantName ?? 'The Grill Room'}</Text>
             <View style={styles.statusRow}>
               <View style={[styles.statusDot, { backgroundColor: isOnline ? QuinckleColors.success : QuinckleColors.textTertiary }]} />
               <Text style={styles.statusText}>{isOnline ? 'Online' : 'Off-duty'}</Text>
@@ -629,7 +692,7 @@ export default function StaffDashboard() {
             contentContainerStyle={styles.chipScroll}
             style={styles.chipRow}
           >
-            {['All', 'Appetizers', 'Mains', 'Beverages', 'Desserts'].map((cat) => (
+            {menuCategories.map((cat) => (
               <TouchableOpacity
                 key={cat}
                 style={[styles.chip, menuFilter === cat && styles.chipActive]}
@@ -739,8 +802,8 @@ export default function StaffDashboard() {
                 <Ionicons name="camera" size={12} color="#fff" />
               </View>
             </View>
-            <Text style={styles.profileName}>Koustab Chakraborty</Text>
-            <Text style={styles.profilePhone}>+91 98765 43210</Text>
+            <Text style={styles.profileName}>{staffInfo?.name ?? 'Staff Member'}</Text>
+            <Text style={styles.profilePhone}>{staffInfo?.restaurantName ?? 'The Grill Room'}</Text>
           </View>
 
           <View style={styles.card}>
@@ -784,8 +847,8 @@ export default function StaffDashboard() {
               />
               <View style={styles.venueInfo}>
                 <Text style={styles.venueLabel}>Linked Restaurant</Text>
-                <Text style={styles.venueName}>The Grill Room</Text>
-                <Text style={styles.venueId}>QNK-7782-GR</Text>
+                <Text style={styles.venueName}>{staffInfo?.restaurantName ?? 'The Grill Room'}</Text>
+                <Text style={styles.venueId}>{staffInfo?.restaurantId?.slice(0, 12).toUpperCase() ?? 'QNK-7782-GR'}</Text>
               </View>
             </View>
           </View>

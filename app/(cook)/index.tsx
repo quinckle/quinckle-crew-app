@@ -94,7 +94,7 @@ const STATUS_META: Record<KitchenStatus, { label: string; color: string }> = {
 
 export default function CookDashboard() {
   const insets = useSafeAreaInsets();
-  const { logout } = useAuth();
+  const { logout, staffInfo } = useAuth();
   const [orders, setOrders] = useState<KitchenOrder[]>([]);
   const [bumpedOrders, setBumpedOrders] = useState<KitchenOrder[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -321,7 +321,7 @@ export default function CookDashboard() {
       {showTopBar && (
       <View style={styles.topBar}>
         <View style={styles.brandGroup}>
-          <Text style={styles.brandTitle}>The Grill Room</Text>
+          <Text style={styles.brandTitle}>{staffInfo?.restaurantName ?? 'The Grill Room'}</Text>
           <View style={styles.statusRow}>
             <View style={[styles.statusDot, { backgroundColor: isOnline ? QuinckleColors.success : QuinckleColors.textTertiary }]} />
             <Text style={styles.statusText}>{isOnline ? 'Online' : 'Off-duty'}</Text>
@@ -492,8 +492,8 @@ export default function CookDashboard() {
                 <Ionicons name="camera" size={12} color="#fff" />
               </View>
             </View>
-            <Text style={styles.profileName}>Arjun Sharma</Text>
-            <Text style={styles.profilePhone}>+91 09876 54321</Text>
+            <Text style={styles.profileName}>{staffInfo?.name ?? 'Kitchen Staff'}</Text>
+            <Text style={styles.profilePhone}>{staffInfo?.restaurantName ?? 'The Grill Room'}</Text>
           </View>
 
           <View style={styles.card}>
@@ -533,8 +533,8 @@ export default function CookDashboard() {
               />
               <View style={styles.venueInfo}>
                 <Text style={styles.venueLabel}>Linked Restaurant</Text>
-                <Text style={styles.venueName}>The Grill Room</Text>
-                <Text style={styles.venueId}>QNK-7782-GR</Text>
+                <Text style={styles.venueName}>{staffInfo?.restaurantName ?? 'The Grill Room'}</Text>
+                <Text style={styles.venueId}>{staffInfo?.restaurantId?.slice(0, 12).toUpperCase() ?? 'QNK-7782-GR'}</Text>
               </View>
             </View>
           </View>

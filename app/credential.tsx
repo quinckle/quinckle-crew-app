@@ -17,7 +17,7 @@ import { QuinckleColors, Radius, Spacing, Typography } from '../constants/Colors
 import { useAuth } from '../context/AuthContext';
 import { crewAuth } from '../services/api';
 
-const OTP_LENGTH = 6;
+const OTP_LENGTH = 4;
 const BLINK_DURATION = 500;
 
 // Offline fallback: used when the local API server is unreachable
@@ -118,13 +118,13 @@ export default function CredentialScreen() {
 
     try {
       const res = await crewAuth.verifyOtp(`+91${phone}`, otp);
-      const { crewToken, staff } = res.data;
+      const { crewToken, staff } = res;
       const role = staff.role === 'STEWARD' ? 'staff' : 'cook';
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       login(role, crewToken, staff);
       router.replace(role === 'staff' ? '/(staff)' : '/(cook)');
-    } catch (apiError) {
-      // API unreachable — try offline mock credentials
+    } catch (apiError: any) {
+      // Try offline mock credentials if API is unreachable
       const mock = MOCK_CREDENTIALS[phone];
       if (mock && otp === mock.otp) {
         if (__DEV__) console.warn('[API] verify-otp failed, using mock credentials');
@@ -133,7 +133,10 @@ export default function CredentialScreen() {
         router.replace(mock.role === 'staff' ? '/(staff)' : '/(cook)');
         return;
       }
-      setError('The verification code is incorrect. Please try again.');
+      // Show actual error from backend
+      const msg = apiError?.message ?? 'Verification failed. Please try again.';
+      const isOtpError = msg.toLowerCase().includes('otp') || msg.toLowerCase().includes('invalid') || msg.toLowerCase().includes('expired');
+      setError(isOtpError ? msg : 'The verification code is incorrect. Please try again.');
       triggerShake();
       setOtp('');
     } finally {

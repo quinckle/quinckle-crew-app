@@ -35,9 +35,10 @@ export default function LoginScreen() {
     try {
       // Try real backend: fetch seeded staff and bypass OTP for the right role
       const state = await devApi.getState();
+      const staffList = state.data?.staff ?? [];
       const targetRole = role === 'staff' ? 'STEWARD' : 'CHEF';
-      const match = state.staff.find(s => s.role === targetRole)
-        ?? state.staff.find(s => role === 'staff' ? ['STEWARD', 'CASHIER', 'ADMIN'].includes(s.role) : s.role === 'CHEF');
+      const match = staffList.find((s: any) => s.role === targetRole)
+        ?? staffList.find((s: any) => role === 'staff' ? ['STEWARD', 'CASHIER', 'ADMIN'].includes(s.role) : s.role === 'CHEF');
 
       if (match) {
         const result = await devApi.crewLoginBypass(match.phone);
