@@ -371,7 +371,7 @@ export default function CookDashboard() {
             data={filteredOrders}
             keyExtractor={(item) => item.id}
             contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 80 }]}
-            renderItem={({ item }) => {
+            renderItem={({ item, index }) => {
               const disabled = item.status === 'bumped';
               const preparedCount = item.items.filter((i) => i.isPrepared).length;
               const isUrgent = item.status === 'urgent';
@@ -381,7 +381,7 @@ export default function CookDashboard() {
                   <View style={styles.cardTopRow}>
                     <View>
                       <View style={styles.ticketRow}>
-                        <Text style={styles.ticketId}>#{item.id}</Text>
+                        <Text style={styles.ticketId}>#{navTab === 'completed' ? bumpedOrders.indexOf(item) + 1 : index + 1}</Text>
                         <View style={styles.tableTag}>
                           <Text style={styles.tableTagText}>{item.table}</Text>
                         </View>
@@ -882,9 +882,9 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   checkbox: {
-    width: 20,
-    height: 20,
-    borderRadius: 5,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     borderWidth: 1.5,
     borderColor: QuinckleColors.borderStrong,
     alignItems: 'center',

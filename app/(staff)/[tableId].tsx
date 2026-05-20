@@ -59,6 +59,7 @@ export default function TableDetail() {
   // Add items modal
   const [showOrderModal, setShowOrderModal] = useState(false);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [isMenuLoading, setIsMenuLoading] = useState(false);
   const [cart, setCart] = useState<Record<string, number>>({});
   const [isPlacingOrder, setIsPlacingOrder] = useState(false);
 
@@ -96,12 +97,14 @@ export default function TableDetail() {
   // Fetch menu when modal opens
   useEffect(() => {
     if (showOrderModal && menuItems.length === 0 && staffInfo?.restaurantId) {
+      setIsMenuLoading(true);
       restaurantApi.getMenu(staffInfo.restaurantId)
         .then(res => {
           const items = (res.data?.menuItems ?? []).filter((i: any) => i.isAvailable !== false);
-          setMenuItems(items.length > 0 ? items : []);
+          setMenuItems(items);
         })
-        .catch(() => setMenuItems([]));
+        .catch(() => setMenuItems([]))
+        .finally(() => setIsMenuLoading(false));
     }
   }, [showOrderModal]);
 
@@ -383,7 +386,7 @@ export default function TableDetail() {
           </View>
 
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 120 }}>
-            {menuItems.length === 0 && showOrderModal ? (
+            {isMenuLoading ? (
               <View style={styles.emptyState}>
                 <ActivityIndicator color={QuinckleColors.primary} />
                 <Text style={styles.emptyText}>Loading menu…</Text>
@@ -391,7 +394,7 @@ export default function TableDetail() {
             ) : menuItems.length === 0 ? (
               <View style={styles.emptyState}>
                 <Ionicons name="restaurant-outline" size={28} color={QuinckleColors.textTertiary} />
-                <Text style={styles.emptyText}>No menu items available.</Text>
+                <Text style={styles.emptyText}>No menu items found.</Text>
               </View>
             ) : menuItems.map(item => (
               <View key={item.id} style={styles.menuRow}>
