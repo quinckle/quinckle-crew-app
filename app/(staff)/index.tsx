@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import { useAuth } from '../../context/AuthContext';
+import { crewTables } from '../../services/api';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -109,6 +110,7 @@ export default function StaffDashboard() {
   const [expandedDate, setExpandedDate] = useState<string | null>(null);
   const [filterVisible, setFilterVisible] = useState(false);
   const [tables, setTables] = useState<Table[]>(INITIAL_TABLES);
+  const [isLoadingTables, setIsLoadingTables] = useState(true);
   const [menuData, setMenuData] = useState(MENU_DATA_INITIAL);
   const [activeFilter, setActiveFilter] = useState<'all' | TableStatus | string>('all');
   const [menuFilter, setMenuFilter] = useState('All');
@@ -354,8 +356,50 @@ export default function StaffDashboard() {
     });
   };
 
-  const updateTableStatus = (tableNum: number, nextStatus: TableStatus) => {
-    setTables((prev) => prev.map((t) => (t.number === tableNum ? { ...t, status: nextStatus } : t)));
+  const loadTables = async () => {
+    try {
+      const res = await crewTables.list() as any;
+      const apiTables: Table[] = (res?.tables ?? []).map((t: any) => ({
+        id: t.table_id,
+        number: t.table_number,
+        status: (t.status === 'reserved' ? 'occupied' : t.status) as TableStatus,
+        seats: t.capacity,
+        since: t.occupied_since
+          ? (() => {
+              const d = new Date(t.occupied_since);
+              return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+            })()
+          : undefined,
+        location: undefined,
+      }));
+      if (apiTables.length > 0) setTables(apiTables);
+    } catch {
+      // Keep mock data if API fails
+    } finally {
+      setIsLoadingTables(false);
+    }
+  };
+
+  useEffect(() => {
+    loadTables();
+  }, []);
+
+  const updateTableStatus = async (tableNum: number, nextStatus: TableStatus) => {
+    // Optimistic local update
+    setTables(prev => prev.map(t => (t.number === tableNum ? { ...t, status: nextStatus } : t)));
+
+    // Only 'available' and 'reserved' are supported by the API
+    if (nextStatus === 'available' || nextStatus === 'reserved') {
+      const table = tables.find(t => t.number === tableNum);
+      if (table) {
+        try {
+          await crewTables.updateStatus(table.id, nextStatus);
+          await loadTables();
+        } catch {
+          // Keep optimistic update on error
+        }
+      }
+    }
   };
 
   const handleTablePress = (tableNum: number, currentStatus: TableStatus) => {
@@ -365,7 +409,7 @@ export default function StaffDashboard() {
         `Make Table T${String(tableNum).padStart(2, '0')} available again?`,
         [
           { label: 'Cancel', onPress: () => {} },
-          { label: 'Make Available', variant: 'primary', onPress: () => updateTableStatus(tableNum, 'available') },
+          { label: 'Make Available', variant: 'primary', onPress: () => { void updateTableStatus(tableNum, 'available'); } },
         ],
       );
       return;
@@ -378,7 +422,7 @@ export default function StaffDashboard() {
           label: 'Start Session',
           variant: 'primary',
           onPress: () => {
-            updateTableStatus(tableNum, 'occupied');
+            void updateTableStatus(tableNum, 'occupied');
             router.push({ pathname: '/(staff)/[tableId]', params: { tableId: String(tableNum) } });
           },
         },
@@ -398,7 +442,7 @@ export default function StaffDashboard() {
         `Mark Table T${String(tableNum).padStart(2, '0')} as offline? It will be hidden from new guest assignments.`,
         [
           { label: 'Cancel', onPress: () => {} },
-          { label: 'Mark Offline', variant: 'danger', onPress: () => updateTableStatus(tableNum, 'offline') },
+          { label: 'Mark Offline', variant: 'danger', onPress: () => { void updateTableStatus(tableNum, 'offline'); } },
         ],
       );
     } else if (status === 'offline') {
@@ -407,7 +451,7 @@ export default function StaffDashboard() {
         `Make Table T${String(tableNum).padStart(2, '0')} available for guests?`,
         [
           { label: 'Cancel', onPress: () => {} },
-          { label: 'Make Available', variant: 'primary', onPress: () => updateTableStatus(tableNum, 'available') },
+          { label: 'Make Available', variant: 'primary', onPress: () => { void updateTableStatus(tableNum, 'available'); } },
         ],
       );
     }

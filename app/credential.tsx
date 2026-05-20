@@ -15,10 +15,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { QuinckleColors, Radius, Spacing, Typography } from '../constants/Colors';
 import { useAuth } from '../context/AuthContext';
+import { crewAuth } from '../services/api';
 
 const OTP_LENGTH = 6;
 const BLINK_DURATION = 500;
 
+// Offline fallback: used when the local API server is unreachable
 const MOCK_CREDENTIALS: Record<string, { otp: string; role: 'staff' | 'cook' }> = {
   '1234567890': { otp: '123456', role: 'staff' },
   '0987654321': { otp: '654321', role: 'cook' },
@@ -78,21 +80,6 @@ export default function CredentialScreen() {
   const isOtpValid = otp.length === OTP_LENGTH;
   const ctaDisabled = (step === 1 ? !isPhoneValid : !isOtpValid) || isLoading;
 
-  const handleNext = () => {
-    if (step === 1) {
-      if (!isPhoneValid) return;
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      setIsLoading(true);
-      setTimeout(() => {
-        setIsLoading(false);
-        setStep(2);
-      }, 700);
-    } else {
-      if (!isOtpValid) return;
-      handleVerify();
-    }
-  };
-
   const triggerShake = () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     Animated.sequence([
@@ -103,24 +90,55 @@ export default function CredentialScreen() {
     ]).start();
   };
 
-  const handleVerify = () => {
+  const handleNext = async () => {
+    if (step === 1) {
+      if (!isPhoneValid) return;
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      setError('');
+      setIsLoading(true);
+      try {
+        await crewAuth.sendOtp(`+91${phone}`);
+      } catch (e) {
+        // If API is unreachable, fall through to OTP step anyway (offline mock mode)
+        if (__DEV__) console.warn('[API] send-otp failed, using mock mode:', e);
+      } finally {
+        setIsLoading(false);
+        setStep(2);
+      }
+    } else {
+      if (!isOtpValid) return;
+      await handleVerify();
+    }
+  };
+
+  const handleVerify = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setError('');
     setIsLoading(true);
 
-    setTimeout(() => {
-      setIsLoading(false);
+    try {
+      const res = await crewAuth.verifyOtp(`+91${phone}`, otp);
+      const { crewToken, staff } = res.data;
+      const role = staff.role === 'STEWARD' ? 'staff' : 'cook';
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      login(role, crewToken, staff);
+      router.replace(role === 'staff' ? '/(staff)' : '/(cook)');
+    } catch (apiError) {
+      // API unreachable — try offline mock credentials
       const mock = MOCK_CREDENTIALS[phone];
-      if (!mock || otp !== mock.otp) {
-        setError('The verification code is incorrect. Please try again.');
-        triggerShake();
-        setOtp('');
+      if (mock && otp === mock.otp) {
+        if (__DEV__) console.warn('[API] verify-otp failed, using mock credentials');
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        login(mock.role);
+        router.replace(mock.role === 'staff' ? '/(staff)' : '/(cook)');
         return;
       }
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      login(mock.role);
-      router.replace(mock.role === 'staff' ? '/(staff)' : '/(cook)');
-    }, 900);
+      setError('The verification code is incorrect. Please try again.');
+      triggerShake();
+      setOtp('');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

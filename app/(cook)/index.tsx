@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { kitchen } from '../../services/api';
 import { Swipeable } from 'react-native-gesture-handler';
 import {
   FlatList,
@@ -94,7 +95,9 @@ const STATUS_META: Record<KitchenStatus, { label: string; color: string }> = {
 export default function CookDashboard() {
   const insets = useSafeAreaInsets();
   const { logout } = useAuth();
-  const [orders, setOrders] = useState(INITIAL_KITCHEN_ORDERS);
+  const [orders, setOrders] = useState<KitchenOrder[]>([]);
+  const [bumpedOrders, setBumpedOrders] = useState<KitchenOrder[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [searchText, setSearchText] = useState('');
   const [navTab, setNavTab] = useState<'active' | 'completed' | 'profile'>('active');
   const [isOnline, setIsOnline] = useState(true);
@@ -106,72 +109,112 @@ export default function CookDashboard() {
     { d: 'Tue', t: '09:30 - 17:30', h: 8.0 },
     { d: 'Wed', t: '10:00 - 16:00', h: 6.0 },
   ]);
-  const [hiddenReadyIds, setHiddenReadyIds] = useState<string[]>([]);
   const [pendingUndoId, setPendingUndoId] = useState<string | null>(null);
-  const removeTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   const handleLogout = () => {
     logout();
     router.replace('/login');
   };
 
+  const loadOrders = useCallback(async () => {
+    try {
+      const res = await kitchen.getOrders() as any;
+      const tickets: any[] = res?.tickets ?? [];
+      setOrders(
+        tickets.map(t => {
+          const allDone = t.items.every((i: any) => i.item_status === 'done');
+          const anyDone = t.items.some((i: any) => i.item_status === 'done');
+          const status: KitchenStatus = allDone ? 'ready' : anyDone ? 'preparing' : 'new';
+          return {
+            id: t.order_id,
+            table: `T${t.table_number}`,
+            location: '',
+            orderedAgo: (() => {
+              const mins = Math.floor((Date.now() - new Date(t.placed_at).getTime()) / 60000);
+              if (mins < 1) return 'just now';
+              if (mins < 60) return `${mins}m ago`;
+              return `${Math.floor(mins / 60)}h ${mins % 60}m ago`;
+            })(),
+            priority: 'normal' as const,
+            items: t.items.map((item: any) => ({
+              id: item.item_id,
+              name: `${item.qty}× ${item.name}${item.note ? ` — ${item.note}` : ''}`,
+              isPrepared: item.item_status === 'done',
+            })),
+            status,
+          };
+        })
+      );
+    } catch {
+      setOrders(prev => (prev.length === 0 ? INITIAL_KITCHEN_ORDERS : prev));
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadOrders();
+    const interval = setInterval(loadOrders, 15000);
+    return () => clearInterval(interval);
+  }, [loadOrders]);
+
   const counts = useMemo(() => ({
-    all: orders.length,
+    all: orders.length + bumpedOrders.length,
     new: orders.filter((o) => o.status === 'new').length,
     urgent: orders.filter((o) => o.status === 'urgent').length,
     preparing: orders.filter((o) => o.status === 'preparing').length,
     ready: orders.filter((o) => o.status === 'ready').length,
-    bumped: orders.filter((o) => o.status === 'bumped').length,
-    active: orders.filter((o) => o.status !== 'bumped').length,
-  }), [orders]);
+    bumped: bumpedOrders.length,
+    active: orders.length,
+  }), [orders, bumpedOrders]);
 
-  const filteredOrders = useMemo(() =>
-    orders.filter((order) => {
-      const isCompleted = order.status === 'bumped';
-      if (navTab === 'active' && isCompleted) return false;
-      if (navTab === 'completed' && !isCompleted) return false;
-
-      if (hiddenReadyIds.includes(order.id)) return false;
+  const filteredOrders = useMemo(() => {
+    const source = navTab === 'completed' ? bumpedOrders : orders;
+    return source.filter((order) => {
       const query = searchText.trim().toLowerCase();
       const searchable = `${order.id} ${order.table} ${order.location} ${order.items.map((i) => i.name).join(' ')}`.toLowerCase();
       return !query || searchable.includes(query);
-    }),
-  [orders, searchText, hiddenReadyIds, navTab]);
+    });
+  }, [orders, bumpedOrders, searchText, navTab]);
 
-  const updateStatus = (id: string, nextStatus: KitchenStatus) => {
-    setOrders((prev) => prev.map((o) => (o.id === id ? { ...o, status: nextStatus } : o)));
-  };
-
-  const handleSwipeRemoveReady = (id: string) => {
+  const handleSwipeRemoveReady = async (id: string) => {
     const order = orders.find((o) => o.id === id);
     if (!order || order.status !== 'ready') return;
-    setHiddenReadyIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+
+    setOrders(prev => prev.filter(o => o.id !== id));
+    setBumpedOrders(prev => [...prev, { ...order, status: 'bumped' as KitchenStatus }]);
     setPendingUndoId(id);
-    if (removeTimersRef.current[id]) clearTimeout(removeTimersRef.current[id]);
-    removeTimersRef.current[id] = setTimeout(() => {
-      updateStatus(id, 'bumped');
-      setHiddenReadyIds((prev) => prev.filter((hid) => hid !== id));
-      setPendingUndoId((prev) => (prev === id ? null : prev));
-      delete removeTimersRef.current[id];
-    }, 5000);
-  };
 
-  const handleUndoRemove = () => {
-    if (!pendingUndoId) return;
-    if (removeTimersRef.current[pendingUndoId]) {
-      clearTimeout(removeTimersRef.current[pendingUndoId]);
-      delete removeTimersRef.current[pendingUndoId];
+    try {
+      await kitchen.bumpOrder(id);
+    } catch {
+      setOrders(prev => [...prev, order]);
+      setBumpedOrders(prev => prev.filter(o => o.id !== id));
+      setPendingUndoId(null);
     }
-    setHiddenReadyIds((prev) => prev.filter((hid) => hid !== pendingUndoId));
-    setPendingUndoId(null);
   };
 
-  useEffect(() => {
-    return () => {
-      Object.values(removeTimersRef.current).forEach(clearTimeout);
-      removeTimersRef.current = {};
-    };
-  }, []);
+  const handleUndoRemove = async () => {
+    if (!pendingUndoId) return;
+    const id = pendingUndoId;
+    const bumpedOrder = bumpedOrders.find(o => o.id === id);
+    setPendingUndoId(null);
+
+    if (bumpedOrder) {
+      setBumpedOrders(prev => prev.filter(o => o.id !== id));
+      setOrders(prev => [...prev, { ...bumpedOrder, status: 'ready' as KitchenStatus }]);
+    }
+
+    try {
+      await kitchen.undoBump(id);
+      await loadOrders();
+    } catch {
+      if (bumpedOrder) {
+        setOrders(prev => prev.filter(o => o.id !== id));
+        setBumpedOrders(prev => [...prev, { ...bumpedOrder, status: 'bumped' as KitchenStatus }]);
+      }
+    }
+  };
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -244,25 +287,30 @@ export default function CookDashboard() {
     { id: '6', message: 'Marked 3 items ready for ticket #1019 — T4', date: '19 May', time: '12:45' },
   ];
 
-  const toggleItemPrepared = (orderId: string, itemId: string) => {
-    setOrders((prev) =>
-      prev.map((order) => {
-        if (order.id !== orderId || order.status === 'bumped') return order;
-        const updatedItems = order.items.map((item) =>
-          item.id === itemId ? { ...item, isPrepared: !item.isPrepared } : item,
-        );
-        const allPrepared = updatedItems.length > 0 && updatedItems.every((i) => i.isPrepared);
-        const anyPrepared = updatedItems.some((i) => i.isPrepared);
-        const nextStatus: KitchenStatus = allPrepared
-          ? 'ready'
-          : anyPrepared
-            ? 'preparing'
-            : order.priority === 'urgent'
-              ? 'urgent'
-              : 'new';
-        return { ...order, items: updatedItems, status: nextStatus };
+  const toggleItemPrepared = async (orderId: string, itemId: string) => {
+    const order = orders.find(o => o.id === orderId);
+    if (!order || order.status === 'bumped') return;
+    const item = order.items.find(i => i.id === itemId);
+    if (!item) return;
+    const newIsPrepared = !item.isPrepared;
+
+    // Optimistic update
+    setOrders(prev =>
+      prev.map(o => {
+        if (o.id !== orderId) return o;
+        const updated = o.items.map(i => (i.id === itemId ? { ...i, isPrepared: newIsPrepared } : i));
+        const allDone = updated.every(i => i.isPrepared);
+        const anyDone = updated.some(i => i.isPrepared);
+        const status: KitchenStatus = allDone ? 'ready' : anyDone ? 'preparing' : 'new';
+        return { ...o, items: updated, status };
       }),
     );
+
+    try {
+      await kitchen.updateItemStatus(orderId, itemId, newIsPrepared ? 'done' : 'pending');
+    } catch {
+      await loadOrders();
+    }
   };
 
 
@@ -382,7 +430,7 @@ export default function CookDashboard() {
                       </View>
                     )}
                     overshootRight={false}
-                    onSwipeableOpen={() => handleSwipeRemoveReady(item.id)}
+                    onSwipeableOpen={() => { void handleSwipeRemoveReady(item.id); }}
                   >
                     {cardContent}
                   </Swipeable>
@@ -394,6 +442,7 @@ export default function CookDashboard() {
             ListEmptyComponent={
               <View style={styles.emptyState}>
                 <Ionicons name="restaurant-outline" size={28} color={QuinckleColors.textTertiary} />
+                {isLoading && <Text style={styles.emptyText}>Loading tickets…</Text>}
                 <Text style={styles.emptyText}>No tickets in this queue.</Text>
               </View>
             }

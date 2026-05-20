@@ -14,6 +14,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { QuinckleColors, Radius, Spacing, Typography } from '../constants/Colors';
 import { useAuth } from '../context/AuthContext';
+import { devApi } from '../services/api';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -27,9 +28,28 @@ export default function LoginScreen() {
     router.push('/credential');
   };
 
-  const handleSimLogin = (role: 'staff' | 'cook') => {
+  const handleSimLogin = async (role: 'staff' | 'cook') => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setShowSimMenu(false);
+
+    try {
+      // Try real backend: fetch seeded staff and bypass OTP for the right role
+      const state = await devApi.getState();
+      const targetRole = role === 'staff' ? 'STEWARD' : 'CHEF';
+      const match = state.staff.find(s => s.role === targetRole)
+        ?? state.staff.find(s => role === 'staff' ? ['STEWARD', 'CASHIER', 'ADMIN'].includes(s.role) : s.role === 'CHEF');
+
+      if (match) {
+        const result = await devApi.crewLoginBypass(match.phone);
+        login(role, result.crewToken, result.staff);
+        router.replace(role === 'staff' ? '/(staff)' : '/(cook)');
+        return;
+      }
+    } catch {
+      // Backend not running — fall through to offline mock
+    }
+
+    // Offline fallback: no real token, just set the role
     login(role);
     router.replace(role === 'staff' ? '/(staff)' : '/(cook)');
   };

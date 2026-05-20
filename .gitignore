@@ -41,3 +41,7 @@ app-example
 # generated native folders
 /ios
 /android
+
+# local backend folders (not part of this repo)
+/backend
+/backend-2
