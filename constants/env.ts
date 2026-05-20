@@ -1,8 +1,14 @@
 import { Platform } from 'react-native';
 
-// For Android emulator, localhost resolves to 10.0.2.2
-// For a physical device, replace with your machine's local IP e.g. '192.168.1.5'
-const LOCAL_HOST = Platform.OS === 'android' ? '10.0.2.2' : 'localhost';
+// ── LOCAL DEV HOST ─────────────────────────────────────────────────────────────
+// Testing on physical phones? Set PHYSICAL_DEVICE_IP to your laptop's WiFi IP.
+// Run `ipconfig` in PowerShell → look for IPv4 under your WiFi adapter.
+// Leave empty ('') when using the Android emulator only.
+const PHYSICAL_DEVICE_IP = '';  // e.g. '192.168.1.105'
+
+const LOCAL_HOST = PHYSICAL_DEVICE_IP
+  ? PHYSICAL_DEVICE_IP
+  : Platform.OS === 'android' ? '10.0.2.2' : 'localhost';
 const LOCAL_PORT = 3000;
 
 // ⚠️  Update PROD_HOST below to your actual Render backend URL before shipping

@@ -35,7 +35,15 @@ export default function CredentialScreen() {
   const [otp, setOtp] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
   const [isFocused, setIsFocused] = useState(false);
+
+  // Countdown timer for resend cooldown
+  React.useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const t = setTimeout(() => setResendCooldown(c => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendCooldown]);
 
   const inputBorderAnim = useRef(new Animated.Value(0)).current;
   const shakeAnim = useRef(new Animated.Value(0)).current;
@@ -99,11 +107,11 @@ export default function CredentialScreen() {
       try {
         await crewAuth.sendOtp(`+91${phone}`);
       } catch (e) {
-        // If API is unreachable, fall through to OTP step anyway (offline mock mode)
         if (__DEV__) console.warn('[API] send-otp failed, using mock mode:', e);
       } finally {
         setIsLoading(false);
         setStep(2);
+        setResendCooldown(30);
       }
     } else {
       if (!isOtpValid) return;
@@ -141,6 +149,22 @@ export default function CredentialScreen() {
       setOtp('');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleResend = async () => {
+    if (resendCooldown > 0 || isLoading) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setError('');
+    setOtp('');
+    setIsLoading(true);
+    try {
+      await crewAuth.sendOtp(`+91${phone}`);
+    } catch (e) {
+      if (__DEV__) console.warn('[API] resend failed:', e);
+    } finally {
+      setIsLoading(false);
+      setResendCooldown(30);
     }
   };
 
@@ -261,9 +285,17 @@ export default function CredentialScreen() {
           </View>
 
           {step === 2 && (
-            <TouchableOpacity style={styles.resendRow} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.resendRow}
+              activeOpacity={resendCooldown > 0 ? 1 : 0.7}
+              onPress={handleResend}
+              disabled={resendCooldown > 0 || isLoading}
+            >
               <Text style={styles.resendText}>Didn&apos;t receive the code? </Text>
-              <Text style={styles.resendLink}>Resend OTP</Text>
+              {resendCooldown > 0
+                ? <Text style={[styles.resendLink, { color: QuinckleColors.textTertiary }]}>Resend in {resendCooldown}s</Text>
+                : <Text style={styles.resendLink}>Resend OTP</Text>
+              }
             </TouchableOpacity>
           )}
 
