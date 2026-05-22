@@ -1,15 +1,13 @@
-// Realtime layer for the crew app (hybrid with polling).
+// Realtime layer for the crew app — pure Ably push, no polling.
 //
-// Polling every 5s is still the source of truth — it never misses an event
-// even after reconnects / app suspensions. This Ably layer fires the
-// kitchen/waiter notification sound the *instant* the backend publishes,
-// instead of waiting up to 5s for the next poll.
+// Key design: one Ably Realtime connection per unique channel name, shared
+// across all subscribeChannel calls on that channel. This means:
 //
-// Design: one Ably Realtime instance per (channel) subscription. The backend's
-// `/api/v1/realtime/token` endpoint scopes a token request to one channel, so
-// we keep it dead simple and create a fresh client per channel. Cook subscribes
-// to `kitchen:{restaurantId}`, waiter to `waiter:{restaurantId}` — each role
-// only needs one channel.
+//   7 × subscribeChannel(`waiter:${id}`, ...) → 1 Ably connection
+//   3 × subscribeChannel(`kitchen:${id}`, ...) → 1 Ably connection
+//
+// Without this pool, each call opened its own connection, burning through
+// Ably's free-tier 200-connection limit at ~12 connections per open screen.
 
 import { API_BASE_URL } from '../constants/env';
 
@@ -35,9 +33,6 @@ async function fetchTokenRequest(channel: string): Promise<unknown> {
 
 async function loadAbly(): Promise<any> {
 	try {
-		// Dynamic require so a missing dependency (fresh checkout, no
-		// `npm install` yet) doesn't crash the app — the cook/waiter just
-		// fall back to polling-only.
 		// eslint-disable-next-line @typescript-eslint/no-var-requires
 		return require('ably');
 	} catch {
@@ -45,37 +40,39 @@ async function loadAbly(): Promise<any> {
 	}
 }
 
-/**
- * Subscribe to a single Ably event on a channel. Returns an unsubscribe fn.
- *
- * Best-effort: returns a no-op if `ably` isn't installed or the auth handshake
- * fails. The caller's poll loop is still running, so we degrade gracefully.
- */
-export function subscribeChannel(
-	channelName: string,
-	eventName: string,
-	handler: (data: any) => void,
-): () => void {
-	let cancelled = false;
-	let client: any = null;
-	let channel: any = null;
-	let listener: any = null;
+// ── Shared channel pool ──────────────────────────────────────────────────────
 
-	(async () => {
+interface PoolEntry {
+	client: any;     // Ably.Realtime instance
+	channel: any;    // Ably channel object
+	refCount: number; // active subscription count; client closes when 0
+}
+
+const pool = new Map<string, PoolEntry>();
+// In-flight connection promises so concurrent subscribes wait rather than
+// each starting their own connection.
+const poolInit = new Map<string, Promise<PoolEntry | null>>();
+
+async function getOrCreateEntry(channelName: string): Promise<PoolEntry | null> {
+	// Already connected — return immediately
+	const existing = pool.get(channelName);
+	if (existing) return existing;
+
+	// Another call already started connecting — wait for it
+	const inflight = poolInit.get(channelName);
+	if (inflight) return inflight;
+
+	const promise = (async (): Promise<PoolEntry | null> => {
 		try {
 			const Ably = await loadAbly();
-			if (!Ably || cancelled) return;
-
+			if (!Ably) return null;
 			const Realtime = Ably.Realtime ?? Ably.default?.Realtime;
-			if (!Realtime) return;
+			if (!Realtime) return null;
 
 			const tokenRequest = await fetchTokenRequest(channelName);
-			if (cancelled) return;
 
-			client = new Realtime({
+			const client = new Realtime({
 				authCallback: (_data: any, cb: (err: Error | null, t: unknown) => void) => {
-					// Re-fetch on token refresh — handshake might happen more than once
-					// over the lifetime of the connection.
 					fetchTokenRequest(channelName)
 						.then((t) => cb(null, t))
 						.catch((err) => cb(err as Error, null));
@@ -83,29 +80,90 @@ export function subscribeChannel(
 				token: tokenRequest as any,
 			});
 
-			channel = client.channels.get(channelName);
-			listener = (msg: any) => handler(msg?.data);
-			channel.subscribe(eventName, listener);
+			const channel = client.channels.get(channelName);
+			const entry: PoolEntry = { client, channel, refCount: 0 };
+			pool.set(channelName, entry);
+			return entry;
 		} catch {
-			/* non-fatal — polling fallback covers us */
+			return null;
+		} finally {
+			poolInit.delete(channelName);
+		}
+	})();
+
+	poolInit.set(channelName, promise);
+	return promise;
+}
+
+function releaseEntry(channelName: string, entry: PoolEntry): void {
+	entry.refCount -= 1;
+	if (entry.refCount <= 0) {
+		pool.delete(channelName);
+		try { entry.client?.close?.(); } catch { /* non-fatal */ }
+	}
+}
+
+// ── Public API ───────────────────────────────────────────────────────────────
+
+/**
+ * Subscribe to a single event on a channel.
+ *
+ * Reuses a shared Ably connection for the channel — calling this 7 times on
+ * `waiter:xxx` still opens only 1 connection.
+ *
+ * Returns an unsubscribe function. Call it in useEffect cleanup.
+ */
+export function subscribeChannel(
+	channelName: string,
+	eventName: string,
+	handler: (data: any) => void,
+): () => void {
+	// Cleanup fn set by the async block once the subscription is live.
+	// If the component unmounts before async completes, isCancelled = true
+	// and the async block calls cleanupFn itself.
+	let isCancelled = false;
+	let cleanupFn: (() => void) | null = null;
+
+	(async () => {
+		try {
+			const entry = await getOrCreateEntry(channelName);
+			if (!entry) return;
+
+			entry.refCount += 1;
+			const listener = (msg: any) => handler(msg?.data);
+			entry.channel.subscribe(eventName, listener);
+
+			const doCleanup = () => {
+				try { entry.channel.unsubscribe(eventName, listener); } catch { /* non-fatal */ }
+				releaseEntry(channelName, entry);
+			};
+
+			if (isCancelled) {
+				// Component already unmounted — clean up immediately
+				doCleanup();
+			} else {
+				cleanupFn = doCleanup;
+			}
+		} catch {
+			/* non-fatal — component will re-subscribe on next render if needed */
 		}
 	})();
 
 	return () => {
-		cancelled = true;
-		try {
-			if (channel && listener) channel.unsubscribe(eventName, listener);
-		} catch {
-			/* non-fatal */
-		}
-		try {
-			client?.close?.();
-		} catch {
-			/* non-fatal */
+		isCancelled = true;
+		if (cleanupFn) {
+			cleanupFn();
+			cleanupFn = null;
 		}
 	};
 }
 
+/** Call on logout to close all pooled connections. */
 export function disconnectRealtime(): void {
+	for (const [, entry] of pool) {
+		try { entry.client?.close?.(); } catch { /* non-fatal */ }
+	}
+	pool.clear();
+	poolInit.clear();
 	setRealtimeAuth(null, null);
 }
