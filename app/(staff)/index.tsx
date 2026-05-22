@@ -131,10 +131,11 @@ export default function StaffDashboard() {
   const [menuFilter, setMenuFilter] = useState('All');
   const [searchText, setSearchText] = useState('');
   const [isOnline, setIsOnline] = useState(true);
-  const [pickupOrders, setPickupOrders] = useState<PickupOrder[]>(READY_ORDERS_INITIAL);
+  const [pickupOrders, setPickupOrders] = useState<PickupOrder[]>([]);
   const [liveOrders, setLiveOrders] = useState<ActiveOrder[]>([]);
   const [ordersSubTab, setOrdersSubTab] = useState<'active' | 'completed'>('active');
   const [completingIds, setCompletingIds] = useState<string[]>([]);
+  const isServingRef = React.useRef(false); // prevents poll from overwriting during serve
   const [shiftStart, setShiftStart] = useState<Date | null>(new Date(Date.now() - 4.5 * 60 * 60 * 1000)); // Mock: Started 4.5h ago
   const [activeDuration, setActiveDuration] = useState("04h 30m");
   const [shiftPeriod, setShiftPeriod] = useState<'today' | 'week'>('today');
@@ -259,29 +260,29 @@ export default function StaffDashboard() {
     return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
   };
 
-  const togglePickupItem = (orderId: string, itemId: string) => {
+  const togglePickupItem = async (orderId: string, itemId: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
+    // Determine target state before updating
+    const currentOrder = pickupOrders.find(o => o.id === orderId);
+    const currentItem = currentOrder?.items.find(i => i.id === itemId);
+    if (!currentItem) return;
+    const willBeServed = !currentItem.isServed;
+
+    // Optimistic update
     let didCompleteAll = false;
     let didReopen = false;
-
     setPickupOrders((prev) =>
       prev.map((order) => {
         if (order.id !== orderId) return order;
         const items = order.items.map((it) =>
-          it.id === itemId ? { ...it, isServed: !it.isServed } : it,
+          it.id === itemId ? { ...it, isServed: willBeServed } : it,
         );
         const allServed = items.every((it) => it.isServed);
         const wasComplete = !!order.completedAt;
         const next: PickupOrder = { ...order, items };
-
-        if (!allServed && wasComplete) {
-          next.completedAt = undefined;
-          didReopen = true;
-        }
-        if (allServed && !wasComplete) {
-          didCompleteAll = true;
-        }
+        if (!allServed && wasComplete) { next.completedAt = undefined; didReopen = true; }
+        if (allServed && !wasComplete) { didCompleteAll = true; }
         return next;
       }),
     );
@@ -290,9 +291,31 @@ export default function StaffDashboard() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setCompletingIds((prev) => (prev.includes(orderId) ? prev : [...prev, orderId]));
     }
-
     if (didReopen) {
       setCompletingIds((prev) => prev.filter((id) => id !== orderId));
+    }
+
+    // Call the backend API and refresh — guarded so polling doesn't clobber
+    if (willBeServed) {
+      isServingRef.current = true;
+      try {
+        await crewOrders.serveItem(orderId, itemId);
+        await loadPickupOrders(); // sync from server after successful serve
+      } catch {
+        // Revert optimistic update on failure
+        setPickupOrders((prev) =>
+          prev.map((o) =>
+            o.id !== orderId ? o : {
+              ...o,
+              items: o.items.map((it) =>
+                it.id === itemId ? { ...it, isServed: false } : it,
+              ),
+            }
+          ),
+        );
+      } finally {
+        isServingRef.current = false;
+      }
     }
   };
 
@@ -440,6 +463,7 @@ export default function StaffDashboard() {
   };
 
   const loadPickupOrders = async () => {
+    if (isServingRef.current) return; // skip poll while waiter is serving an item
     try {
       const res = await crewOrders.getActive();
       const allOrders = res.orders ?? [];
@@ -449,7 +473,7 @@ export default function StaffDashboard() {
       setPickupOrders(
         readyOrders.map(order => ({
           id: order.order_id,
-          tableNo: `T${String(order.table_number).padStart(2, '0')}`,
+          tableNo: `T${order.table_number}`,
           items: order.items.map(item => ({
             id: item.item_id,
             name: `${item.qty}× ${item.name}`,
