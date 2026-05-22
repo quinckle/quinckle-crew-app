@@ -455,10 +455,29 @@ export default function StaffDashboard() {
       const res = await crewOrders.getActive();
       const allOrders = res.orders ?? [];
       setLiveOrders(allOrders);
-      // Always update pickup tab with READY orders from backend
-      const readyOrders = allOrders.filter(o => o.status === 'ready');
+
+      // Show ALL active orders (READY + PREPARING) in pickup — waiter can serve any done item
+      const serveableOrders = allOrders.filter(o =>
+        (o.status === 'ready' || o.status === 'preparing') &&
+        o.items.some(i => !i.served)
+      );
+
+      // Fire notification if new READY orders appeared
+      const prevReadyIds = new Set(pickupOrders.map(o => o.id));
+      const newReadyOrders = allOrders.filter(o => o.status === 'ready' && !prevReadyIds.has(o.order_id));
+      if (newReadyOrders.length > 0) {
+        Notifications.scheduleNotificationAsync({
+          content: {
+            title: '🔔 Order Ready for Pickup',
+            body: newReadyOrders.map(o => `T${o.table_number}`).join(', ') + ' — ready to serve',
+            sound: true,
+          },
+          trigger: null,
+        }).catch(() => {});
+      }
+
       setPickupOrders(
-        readyOrders.map(order => ({
+        serveableOrders.map(order => ({
           id: order.order_id,
           tableNo: `T${order.table_number}`,
           items: order.items.map(item => ({
@@ -473,7 +492,7 @@ export default function StaffDashboard() {
           })),
         }))
       );
-    } catch { /* keep current */ }
+    } catch (e) { console.error('[pickup] loadPickupOrders error:', e); }
   };
 
   // Refresh tables every 5s, pickup orders every 5s
