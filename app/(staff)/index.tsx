@@ -855,7 +855,7 @@ export default function StaffDashboard() {
           </View>
 
           {/* Search + Category chips */}
-          <View style={[styles.searchBoxFull, { marginHorizontal: 16, marginBottom: 8 }]}>
+          <View style={[styles.searchBoxFull, { marginBottom: 8 }]}>
             <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
             <TextInput
               style={styles.searchInput}
@@ -1531,11 +1531,11 @@ const styles = StyleSheet.create({
   },
   chipScroll: {
     gap: Spacing.sm,
-    paddingRight: Spacing.lg,
+    paddingHorizontal: Spacing.lg,
   },
   chip: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 7,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: 10,
     borderRadius: Radius.pill,
     backgroundColor: QuinckleColors.surfaceMuted,
     borderWidth: 1,
@@ -1569,7 +1569,6 @@ const styles = StyleSheet.create({
   menuTileRow: {
     flexDirection: 'row' as const,
     gap: 12,
-    paddingHorizontal: 16,
     marginBottom: 16,
     marginTop: 4,
   },
@@ -1637,6 +1636,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.lg,
     borderBottomWidth: 1,
     borderBottomColor: QuinckleColors.borderSubtle,
   },
