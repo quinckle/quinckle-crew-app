@@ -814,31 +814,44 @@ export default function StaffDashboard() {
               <Ionicons name="chevron-forward" size={12} color={QuinckleColors.textTertiary} style={{ marginHorizontal: 4 }} />
               <Text style={styles.breadcrumbCurrent}>{highlightedSection?.title ?? 'Featured'}</Text>
             </View>
-            {highlightedSection?.subtitle ? (
-              <Text style={[styles.menuSectionSub, { paddingHorizontal: 16, paddingTop: 8 }]}>{highlightedSection.subtitle}</Text>
-            ) : null}
-            <ScrollView contentContainerStyle={{ paddingVertical: 16, gap: 12 }} showsVerticalScrollIndicator={false}>
-              {menuData.filter(m => highlightedSection?.itemIds?.includes(m.id)).map(item => (
-                <View key={item.id} style={[styles.comboListCard, !item.available && { opacity: 0.5 }]}>
-                  {item.image
-                    ? <Image source={{ uri: item.image }} style={styles.comboListImg} resizeMode="cover" />
-                    : <View style={[styles.comboListImg, { alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.05)' }]}>
-                        <Ionicons name="fast-food-outline" size={40} color={QuinckleColors.textTertiary} />
-                      </View>}
-                  {!item.available && (
-                    <View style={styles.featuredUnavailableBadge}>
-                      <Text style={styles.featuredUnavailableText}>Unavailable</Text>
-                    </View>
-                  )}
+            <ScrollView contentContainerStyle={{ paddingVertical: 16 }} showsVerticalScrollIndicator={false}>
+              {!highlightedSection ? (
+                <Text style={{ color: QuinckleColors.textTertiary, textAlign: 'center', marginTop: 40 }}>No featured section configured</Text>
+              ) : (
+                <View style={[styles.comboListCard, { marginHorizontal: 16 }]}>
+                  {/* Section header */}
+                  <View style={styles.featuredSectionHeader}>
+                    <MaterialIcons name="star" size={16} color={QuinckleColors.primary} />
+                    <Text style={styles.featuredSectionEyebrow}>FEATURED SECTION</Text>
+                  </View>
                   <View style={styles.comboListBody}>
-                    <Text style={styles.comboListName}>{item.name}</Text>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }}>
-                      <Text style={styles.comboCardPrice}>₹{item.price}</Text>
-                      <Text style={{ fontSize: 11, color: QuinckleColors.textTertiary, textTransform: 'uppercase', letterSpacing: 0.6 }}>{item.category}</Text>
-                    </View>
+                    <Text style={styles.comboListName}>{highlightedSection.title}</Text>
+                    {highlightedSection.subtitle ? (
+                      <Text style={styles.comboListDesc}>{highlightedSection.subtitle}</Text>
+                    ) : null}
+                    <View style={styles.featuredItemsDivider} />
+                    <Text style={styles.featuredItemsLabel}>{highlightedSection.itemIds?.length ?? 0} items in this section</Text>
+                    {menuData.filter(m => highlightedSection.itemIds?.includes(m.id)).map(item => (
+                      <View key={item.id} style={styles.featuredItemRow}>
+                        {item.image
+                          ? <Image source={{ uri: item.image }} style={styles.featuredItemThumb} />
+                          : <View style={[styles.featuredItemThumb, { backgroundColor: 'rgba(255,255,255,0.06)', alignItems: 'center', justifyContent: 'center' }]}>
+                              <Ionicons name="fast-food-outline" size={14} color={QuinckleColors.textTertiary} />
+                            </View>}
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.featuredItemName} numberOfLines={1}>{item.name}</Text>
+                          <Text style={styles.featuredItemPrice}>₹{item.price}</Text>
+                        </View>
+                        {!item.available && (
+                          <View style={styles.featuredUnavailableBadge}>
+                            <Text style={styles.featuredUnavailableText}>Off</Text>
+                          </View>
+                        )}
+                      </View>
+                    ))}
                   </View>
                 </View>
-              ))}
+              )}
               <View style={{ height: 80 }} />
             </ScrollView>
           </View>
@@ -1648,6 +1661,60 @@ const styles = StyleSheet.create({
   },
   comboListImg: { width: '100%' as any, height: 180, backgroundColor: 'rgba(255,255,255,0.06)' },
   comboListBody: { paddingHorizontal: 16, paddingVertical: 14 },
+  featuredSectionHeader: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
+    backgroundColor: 'rgba(243,93,59,0.06)',
+  },
+  featuredSectionEyebrow: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: QuinckleColors.primary,
+    letterSpacing: 1,
+  },
+  featuredItemsDivider: {
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    marginVertical: 12,
+  },
+  featuredItemsLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: QuinckleColors.textTertiary,
+    letterSpacing: 0.8,
+    textTransform: 'uppercase' as const,
+    marginBottom: 8,
+  },
+  featuredItemRow: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 12,
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.04)',
+  },
+  featuredItemThumb: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    overflow: 'hidden' as const,
+  },
+  featuredItemName: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: QuinckleColors.textPrimary,
+  },
+  featuredItemPrice: {
+    fontSize: 12,
+    color: QuinckleColors.primary,
+    fontWeight: '700',
+    marginTop: 2,
+  },
   featuredUnavailableBadge: {
     position: 'absolute' as const,
     top: 10,
