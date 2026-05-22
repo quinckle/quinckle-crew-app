@@ -118,6 +118,8 @@ export default function StaffDashboard() {
   const [isLoadingTables, setIsLoadingTables] = useState(true);
   const [menuData, setMenuData] = useState(MENU_DATA_INITIAL);
   const [menuCategories, setMenuCategories] = useState<string[]>(['All', 'Appetizers', 'Mains', 'Beverages', 'Desserts']);
+  const [combos, setCombos] = useState<any[]>([]);
+  const [highlightedSection, setHighlightedSection] = useState<{ title: string; subtitle?: string; itemIds: string[] } | null>(null);
   const [activeFilter, setActiveFilter] = useState<'all' | TableStatus | string>('all');
   const [menuFilter, setMenuFilter] = useState('All');
   const [searchText, setSearchText] = useState('');
@@ -393,23 +395,37 @@ export default function StaffDashboard() {
 
   const loadMenuFromApi = async () => {
     if (!staffInfo?.restaurantId) return;
+    const rid = staffInfo.restaurantId;
     try {
-      const res = await restaurantApi.getMenu(staffInfo.restaurantId);
-      // API returns grouped categories: [{ name, items[] }]
-      const categories: any[] = (res as any)?.data ?? (res as any) ?? [];
-      const items = categories.flatMap((cat: any) => cat.items ?? []);
-      if (items.length > 0) {
-        setMenuData(items.map((item: any) => ({
-          id: item.id,
-          name: item.name,
-          price: parseFloat(item.price),
-          category: item.category,
-          available: item.isAvailable,
-          image: item.imageUrl ?? undefined,
-        })));
-        const cats = ['All', ...categories.map((c: any) => c.name as string).filter(Boolean)];
-        setMenuCategories(cats);
-        setMenuFilter('All');
+      const [menuRes, combosRes, highlightRes] = await Promise.allSettled([
+        restaurantApi.getMenu(rid),
+        restaurantApi.getCombos(rid),
+        restaurantApi.getHighlighted(rid),
+      ]);
+
+      if (menuRes.status === 'fulfilled') {
+        const categories: any[] = (menuRes.value as any)?.data ?? [];
+        const items = categories.flatMap((cat: any) => cat.items ?? []);
+        if (items.length > 0) {
+          setMenuData(items.map((item: any) => ({
+            id: item.id, name: item.name,
+            price: parseFloat(item.price), category: item.category,
+            available: item.isAvailable, image: item.imageUrl ?? undefined,
+          })));
+          setMenuCategories(['All', ...categories.map((c: any) => c.name).filter(Boolean)]);
+          setMenuFilter('All');
+        }
+      } else {
+        console.error('[menu] menu error:', menuRes.reason);
+      }
+
+      if (combosRes.status === 'fulfilled') {
+        const data = (combosRes.value as any)?.data ?? [];
+        setCombos(data.filter((c: any) => c.isActive));
+      }
+
+      if (highlightRes.status === 'fulfilled') {
+        setHighlightedSection((highlightRes.value as any)?.data ?? null);
       }
     } catch (e) {
       console.error('[menu] loadMenuFromApi error:', e);
@@ -735,8 +751,68 @@ export default function StaffDashboard() {
           )}
         </>
       ) : activeTab === 'menu' ? (
-        <View style={styles.tabContent}>
-          <View style={styles.searchBoxFull}>
+        <ScrollView style={styles.tabContent} showsVerticalScrollIndicator={false}>
+          {/* ── Highlighted Section ── */}
+          {highlightedSection && highlightedSection.itemIds?.length > 0 && (() => {
+            const featuredItems = menuData.filter(m => highlightedSection.itemIds.includes(m.id));
+            if (!featuredItems.length) return null;
+            return (
+              <View style={styles.menuSection}>
+                <View style={styles.menuSectionHeader}>
+                  <Text style={styles.menuSectionEyebrow}>⭐ FEATURED</Text>
+                  <Text style={styles.menuSectionTitle}>{highlightedSection.title}</Text>
+                  {highlightedSection.subtitle ? <Text style={styles.menuSectionSub}>{highlightedSection.subtitle}</Text> : null}
+                </View>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingHorizontal: 16 }}>
+                  {featuredItems.map(item => (
+                    <View key={item.id} style={styles.featuredCard}>
+                      {item.image
+                        ? <Image source={{ uri: item.image }} style={styles.featuredCardImg} />
+                        : <View style={[styles.featuredCardImg, styles.featuredCardImgPlaceholder]}><Ionicons name="fast-food-outline" size={24} color={QuinckleColors.textTertiary} /></View>}
+                      <Text style={styles.featuredCardName} numberOfLines={1}>{item.name}</Text>
+                      <Text style={styles.featuredCardPrice}>₹{item.price}</Text>
+                    </View>
+                  ))}
+                </ScrollView>
+              </View>
+            );
+          })()}
+
+          {/* ── Combos ── */}
+          {combos.length > 0 && (
+            <View style={styles.menuSection}>
+              <View style={styles.menuSectionHeader}>
+                <Text style={styles.menuSectionEyebrow}>🎁 VALUE DEALS</Text>
+                <Text style={styles.menuSectionTitle}>Combos</Text>
+              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingHorizontal: 16 }}>
+                {combos.map(combo => {
+                  const savings = Math.round(((parseFloat(combo.originalPrice) - parseFloat(combo.price)) / parseFloat(combo.originalPrice)) * 100);
+                  return (
+                    <View key={combo.id} style={styles.comboCard}>
+                      {combo.imageUrl
+                        ? <Image source={{ uri: combo.imageUrl }} style={styles.comboCardImg} />
+                        : <View style={[styles.comboCardImg, styles.featuredCardImgPlaceholder]}><Ionicons name="pricetag-outline" size={24} color={QuinckleColors.textTertiary} /></View>}
+                      {savings > 0 && (
+                        <View style={styles.comboBadge}><Text style={styles.comboBadgeText}>{savings}% off</Text></View>
+                      )}
+                      <View style={styles.comboCardBody}>
+                        <Text style={styles.comboCardName} numberOfLines={1}>{combo.title}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text style={styles.comboCardPrice}>₹{parseFloat(combo.price).toFixed(0)}</Text>
+                          <Text style={styles.comboCardOrig}>₹{parseFloat(combo.originalPrice).toFixed(0)}</Text>
+                        </View>
+                        {combo.tag ? <Text style={styles.comboCardTag}>{combo.tag}</Text> : null}
+                      </View>
+                    </View>
+                  );
+                })}
+              </ScrollView>
+            </View>
+          )}
+
+          {/* ── Search + Category chips ── */}
+          <View style={[styles.searchBoxFull, { marginHorizontal: 16, marginBottom: 8 }]}>
             <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
             <TextInput
               style={styles.searchInput}
@@ -746,56 +822,38 @@ export default function StaffDashboard() {
               onChangeText={setSearchText}
             />
           </View>
-
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.chipScroll}
-            style={styles.chipRow}
-          >
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipScroll} style={styles.chipRow}>
             {menuCategories.map((cat) => (
-              <TouchableOpacity
-                key={cat}
-                style={[styles.chip, menuFilter === cat && styles.chipActive]}
-                onPress={() => setMenuFilter(cat)}
-              >
+              <TouchableOpacity key={cat} style={[styles.chip, menuFilter === cat && styles.chipActive]} onPress={() => setMenuFilter(cat)}>
                 <Text style={[styles.chipText, menuFilter === cat && styles.chipTextActive]}>{cat}</Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
 
-          <FlatList
-            data={menuData.filter((item) =>
-              (menuFilter === 'All' || item.category === menuFilter) &&
-              item.name.toLowerCase().includes(searchText.toLowerCase()),
-            )}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={styles.menuListContent}
-            renderItem={({ item }) => (
-              <View style={styles.menuItemRow}>
+          {/* ── Menu Items ── */}
+          {menuData
+            .filter(item => (menuFilter === 'All' || item.category === menuFilter) && item.name.toLowerCase().includes(searchText.toLowerCase()))
+            .map(item => (
+              <View key={item.id} style={styles.menuItemRow}>
                 <View style={styles.menuItemLeft}>
-                  {item.image ? (
-                    <Image source={{ uri: item.image }} style={[styles.menuItemImage, !item.available && styles.dimmed]} />
-                  ) : (
-                    <View style={[styles.menuItemImagePlaceholder, !item.available && styles.dimmed]}>
-                      <Ionicons name="fast-food-outline" size={20} color={QuinckleColors.textTertiary} />
-                    </View>
-                  )}
+                  {item.image
+                    ? <Image source={{ uri: item.image }} style={[styles.menuItemImage, !item.available && styles.dimmed]} />
+                    : <View style={[styles.menuItemImagePlaceholder, !item.available && styles.dimmed]}><Ionicons name="fast-food-outline" size={20} color={QuinckleColors.textTertiary} /></View>}
                   <View style={styles.menuItemInfo}>
                     <Text style={[styles.menuItemName, !item.available && styles.dimmedText]}>{item.name}</Text>
                     <Text style={styles.menuItemPrice}>₹{item.price}</Text>
                   </View>
                 </View>
                 <TouchableOpacity
-                  onPress={() => setMenuData((prev) => prev.map((m) => (m.id === item.id ? { ...m, available: !m.available } : m)))}
+                  onPress={() => setMenuData(prev => prev.map(m => m.id === item.id ? { ...m, available: !m.available } : m))}
                   style={[styles.toggleBase, item.available ? styles.toggleOn : styles.toggleOff]}
                 >
                   <View style={[styles.toggleCircle, item.available ? styles.toggleCircleOn : styles.toggleCircleOff]} />
                 </TouchableOpacity>
               </View>
-            )}
-          />
-        </View>
+            ))}
+          <View style={{ height: 120 }} />
+        </ScrollView>
       ) : activeTab === 'orders' ? (
         <View style={styles.tabContent}>
           <View style={[styles.sectionHeading, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}>
@@ -1455,6 +1513,118 @@ const styles = StyleSheet.create({
 
   menuListContent: {
     paddingBottom: 100,
+  },
+  menuSection: {
+    marginBottom: 20,
+  },
+  menuSectionHeader: {
+    paddingHorizontal: 16,
+    marginBottom: 10,
+  },
+  menuSectionEyebrow: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    color: QuinckleColors.primary,
+    marginBottom: 2,
+  },
+  menuSectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: QuinckleColors.textPrimary,
+    letterSpacing: -0.4,
+  },
+  menuSectionSub: {
+    fontSize: 12,
+    color: QuinckleColors.textSecondary,
+    marginTop: 2,
+  },
+  featuredCard: {
+    width: 130,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 12,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.07)',
+  },
+  featuredCardImg: {
+    width: 130,
+    height: 90,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  featuredCardImgPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  featuredCardName: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: QuinckleColors.textPrimary,
+    paddingHorizontal: 8,
+    paddingTop: 6,
+  },
+  featuredCardPrice: {
+    fontSize: 11,
+    color: QuinckleColors.primary,
+    fontWeight: '700',
+    paddingHorizontal: 8,
+    paddingBottom: 8,
+    marginTop: 2,
+  },
+  comboCard: {
+    width: 160,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 12,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.07)',
+  },
+  comboCardImg: {
+    width: 160,
+    height: 100,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  comboBadge: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    backgroundColor: QuinckleColors.primary,
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  comboBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#fff',
+    letterSpacing: 0.4,
+  },
+  comboCardBody: {
+    padding: 8,
+  },
+  comboCardName: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: QuinckleColors.textPrimary,
+    marginBottom: 4,
+  },
+  comboCardPrice: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: QuinckleColors.primary,
+  },
+  comboCardOrig: {
+    fontSize: 11,
+    color: QuinckleColors.textTertiary,
+    textDecorationLine: 'line-through',
+  },
+  comboCardTag: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: QuinckleColors.textTertiary,
+    letterSpacing: 0.8,
+    marginTop: 4,
+    textTransform: 'uppercase',
   },
   menuItemRow: {
     flexDirection: 'row',

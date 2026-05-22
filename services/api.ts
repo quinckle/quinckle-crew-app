@@ -189,18 +189,28 @@ export const crewPayments = {
 export interface MenuItem { id: string; name: string; description?: string; price: string; category: string; isVeg: boolean; isAvailable: boolean; imageUrl?: string; }
 export interface Restaurant { id: string; name: string; slug: string; upiId: string; }
 
-export interface MenuCategory {
-  name: string;
-  items: MenuItem[];
+export interface MenuCategory { name: string; items: MenuItem[]; }
+
+export interface Combo {
+  id: string; title: string; description?: string; tag: string;
+  price: string; originalPrice: string; imageUrl?: string;
+  items: string[]; isActive: boolean; itemDetails?: any;
+}
+
+export interface HighlightedSection {
+  title: string; subtitle?: string; itemIds: string[];
 }
 
 export const restaurantApi = {
   get: (restaurantId: string) =>
     request<{ success: true; data: Restaurant }>('GET', `/api/v1/restaurants/${restaurantId}`),
 
-  // Returns grouped categories: [{ name, items[] }]
   getMenu: (restaurantId: string) =>
-    request<{ success: true; data: MenuCategory[] }>(
-      'GET', `/api/v1/dine/menu/${restaurantId}`
-    ),
+    request<{ success: true; data: MenuCategory[] }>('GET', `/api/v1/dine/menu/${restaurantId}`),
+
+  getCombos: (restaurantId: string) =>
+    request<{ success: true; data: Combo[] }>('GET', `/api/v1/dine/combos/${restaurantId}`),
+
+  getHighlighted: (restaurantId: string) =>
+    request<{ success: true; data: HighlightedSection | null }>('GET', `/api/v1/dine/highlighted/${restaurantId}`),
 };
