@@ -17,7 +17,7 @@ import { useAuth } from '../../context/AuthContext';
 import { crewTables, crewSessions, crewOrders, restaurantApi, crewAuth } from '../../services/api';
 import type { ActiveOrder, MenuItem } from '../../services/api';
 import { router } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
@@ -836,7 +836,7 @@ export default function StaffDashboard() {
               onPress={() => combos.length > 0 && setShowCombosScreen(true)}
               activeOpacity={0.75}
             >
-              <View style={styles.menuTileIcon}><Text style={{ fontSize: 22 }}>🎁</Text></View>
+              <View style={styles.menuTileIcon}><MaterialIcons name="local-offer" size={24} color={QuinckleColors.primary} /></View>
               <Text style={styles.menuTileLabel}>Combos</Text>
               <Text style={styles.menuTileCount}>{combos.length} deal{combos.length !== 1 ? 's' : ''}</Text>
             </TouchableOpacity>
@@ -846,7 +846,7 @@ export default function StaffDashboard() {
               onPress={() => highlightedSection && setShowFeaturedScreen(true)}
               activeOpacity={0.75}
             >
-              <View style={styles.menuTileIcon}><Text style={{ fontSize: 22 }}>⭐</Text></View>
+              <View style={styles.menuTileIcon}><MaterialIcons name="star" size={24} color={QuinckleColors.primary} /></View>
               <Text style={styles.menuTileLabel}>Featured</Text>
               <Text style={styles.menuTileCount}>
                 {highlightedSection ? `${highlightedSection.itemIds?.length ?? 0} item${highlightedSection.itemIds?.length !== 1 ? 's' : ''}` : 'Not set'}
