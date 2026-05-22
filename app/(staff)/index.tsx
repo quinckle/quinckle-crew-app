@@ -757,10 +757,12 @@ export default function StaffDashboard() {
           /* ── Combos sub-screen ── */
           <View style={{ flex: 1 }}>
             <View style={styles.subScreenHeader}>
-              <TouchableOpacity onPress={() => setShowCombosScreen(false)} style={styles.subScreenBack}>
-                <Ionicons name="arrow-back" size={20} color={QuinckleColors.textPrimary} />
+              <TouchableOpacity onPress={() => setShowCombosScreen(false)} style={styles.breadcrumbBack} activeOpacity={0.6}>
+                <Ionicons name="chevron-back" size={16} color={QuinckleColors.textTertiary} />
+                <Text style={styles.breadcrumbParent}>Menu</Text>
               </TouchableOpacity>
-              <Text style={styles.subScreenTitle}>Combo Deals</Text>
+              <Ionicons name="chevron-forward" size={12} color={QuinckleColors.textTertiary} style={{ marginHorizontal: 4 }} />
+              <Text style={styles.breadcrumbCurrent}>Combos</Text>
             </View>
             <ScrollView contentContainerStyle={{ padding: 16, gap: 12 }} showsVerticalScrollIndicator={false}>
               {combos.length === 0 ? (
@@ -801,10 +803,12 @@ export default function StaffDashboard() {
           /* ── Featured sub-screen ── */
           <View style={{ flex: 1 }}>
             <View style={styles.subScreenHeader}>
-              <TouchableOpacity onPress={() => setShowFeaturedScreen(false)} style={styles.subScreenBack}>
-                <Ionicons name="arrow-back" size={20} color={QuinckleColors.textPrimary} />
+              <TouchableOpacity onPress={() => setShowFeaturedScreen(false)} style={styles.breadcrumbBack} activeOpacity={0.6}>
+                <Ionicons name="chevron-back" size={16} color={QuinckleColors.textTertiary} />
+                <Text style={styles.breadcrumbParent}>Menu</Text>
               </TouchableOpacity>
-              <Text style={styles.subScreenTitle}>{highlightedSection?.title ?? 'Featured'}</Text>
+              <Ionicons name="chevron-forward" size={12} color={QuinckleColors.textTertiary} style={{ marginHorizontal: 4 }} />
+              <Text style={styles.breadcrumbCurrent}>{highlightedSection?.title ?? 'Featured'}</Text>
             </View>
             {highlightedSection?.subtitle ? (
               <Text style={[styles.menuSectionSub, { paddingHorizontal: 16, marginBottom: 8 }]}>{highlightedSection.subtitle}</Text>
@@ -1599,13 +1603,26 @@ const styles = StyleSheet.create({
     flexDirection: 'row' as const,
     alignItems: 'center' as const,
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 14,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255,255,255,0.06)',
-    gap: 12,
   },
-  subScreenBack: { padding: 4 },
-  subScreenTitle: { fontSize: 17, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.3 },
+  breadcrumbBack: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 2,
+  },
+  breadcrumbParent: {
+    fontSize: 14,
+    color: QuinckleColors.textTertiary,
+    fontWeight: '500',
+  },
+  breadcrumbCurrent: {
+    fontSize: 14,
+    color: QuinckleColors.textPrimary,
+    fontWeight: '700',
+    letterSpacing: -0.2,
+  },
 
   // Combo list card (in sub-screen)
   comboListCard: {
