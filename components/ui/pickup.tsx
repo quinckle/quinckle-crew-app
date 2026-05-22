@@ -167,7 +167,7 @@ const segStyles = StyleSheet.create({
   },
 });
 
-/* ───────────── Tick row ───────────── */
+/* ───────────── Status row ───────────── */
 
 type ItemRowProps = {
   item: PickupItemData;
@@ -176,90 +176,34 @@ type ItemRowProps = {
 };
 
 function PickupItemRow({ item, onToggle, disabled }: ItemRowProps) {
-  const tickScale = useRef(new Animated.Value(1)).current;
-  const fillProgress = useRef(new Animated.Value(item.isServed ? 1 : 0)).current;
-  const rowOpacity = useRef(new Animated.Value(item.isServed ? 0.5 : 1)).current;
-
-  useEffect(() => {
-    Animated.parallel([
-      Animated.timing(fillProgress, {
-        toValue: item.isServed ? 1 : 0,
-        duration: 220,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: false,
-      }),
-      Animated.timing(rowOpacity, {
-        toValue: item.isServed ? 0.5 : 1,
-        duration: 220,
-        useNativeDriver: false,
-      }),
-    ]).start();
-  }, [item.isServed, fillProgress, rowOpacity]);
-
-  const handlePress = () => {
-    if (disabled) return;
-    Animated.sequence([
-      Animated.timing(tickScale, {
-        toValue: 0.85,
-        duration: 80,
-        useNativeDriver: false,
-      }),
-      Animated.spring(tickScale, {
-        toValue: 1.08,
-        friction: 4,
-        tension: 140,
-        useNativeDriver: false,
-      }),
-      Animated.spring(tickScale, {
-        toValue: 1,
-        friction: 5,
-        tension: 120,
-        useNativeDriver: false,
-      }),
-    ]).start();
-    onToggle();
-  };
-
-  const fillBg = fillProgress.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['rgba(34,197,94,0)', QuinckleColors.success],
-  });
-  const tickBorder = fillProgress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [QuinckleColors.primary, QuinckleColors.success],
-  });
-
   return (
-    <TouchableOpacity activeOpacity={0.85} onPress={handlePress} disabled={disabled}>
-      <Animated.View style={[rowStyles.row, { opacity: rowOpacity }]}>
-        <View style={rowStyles.left}>
-          <Text style={[rowStyles.qty, item.isServed && rowStyles.qtyServed]}>{item.qty}×</Text>
-          <View style={{ flex: 1 }}>
-            <Text
-              style={[rowStyles.name, item.isServed && rowStyles.nameServed]}
-              numberOfLines={1}
-            >
-              {item.name}
-            </Text>
-            <Text style={rowStyles.time}>ordered {item.orderedAt}</Text>
-          </View>
+    <View style={rowStyles.row}>
+      <View style={rowStyles.left}>
+        <Text style={[rowStyles.qty, item.isServed && rowStyles.qtyServed]}>{item.qty}×</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={[rowStyles.name, item.isServed && rowStyles.nameServed]} numberOfLines={1}>
+            {item.name}
+          </Text>
+          <Text style={rowStyles.time}>ordered {item.orderedAt}</Text>
         </View>
-        <Animated.View
-          style={[
-            rowStyles.tick,
-            {
-              backgroundColor: fillBg,
-              borderColor: tickBorder,
-              transform: [{ scale: tickScale }],
-            },
-          ]}
+      </View>
+
+      {item.isServed ? (
+        <View style={rowStyles.servedBadge}>
+          <Ionicons name="checkmark" size={11} color={QuinckleColors.success} />
+          <Text style={rowStyles.servedText}>Served</Text>
+        </View>
+      ) : (
+        <TouchableOpacity
+          style={rowStyles.serveCta}
+          onPress={onToggle}
+          disabled={disabled}
+          activeOpacity={0.75}
         >
-          <Animated.View style={{ opacity: fillProgress }}>
-            <Ionicons name="checkmark" size={14} color="#fff" />
-          </Animated.View>
-        </Animated.View>
-      </Animated.View>
-    </TouchableOpacity>
+          <Text style={rowStyles.serveCtaText}>Mark served</Text>
+        </TouchableOpacity>
+      )}
+    </View>
   );
 }
 
@@ -280,15 +224,14 @@ const rowStyles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.md,
     flex: 1,
+    marginRight: Spacing.md,
   },
   qty: {
     color: QuinckleColors.primary,
     fontSize: 15,
     fontWeight: '700',
   },
-  qtyServed: {
-    color: QuinckleColors.textTertiary,
-  },
+  qtyServed: { color: QuinckleColors.textTertiary },
   name: {
     color: QuinckleColors.textPrimary,
     fontSize: 14,
@@ -304,13 +247,34 @@ const rowStyles = StyleSheet.create({
     fontWeight: '500',
     marginTop: 2,
   },
-  tick: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    borderWidth: 1.5,
+  serveCta: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: QuinckleColors.primary,
+    backgroundColor: 'rgba(243,93,59,0.08)',
+    flexShrink: 0,
+  },
+  serveCtaText: {
+    color: QuinckleColors.primary,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  servedBadge: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+    backgroundColor: 'rgba(34,197,94,0.1)',
+    flexShrink: 0,
+  },
+  servedText: {
+    color: QuinckleColors.success,
+    fontSize: 11,
+    fontWeight: '700',
   },
 });
 

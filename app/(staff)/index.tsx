@@ -263,59 +263,46 @@ export default function StaffDashboard() {
   const togglePickupItem = async (orderId: string, itemId: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-    // Determine target state before updating
-    const currentOrder = pickupOrders.find(o => o.id === orderId);
-    const currentItem = currentOrder?.items.find(i => i.id === itemId);
-    if (!currentItem) return;
-    const willBeServed = !currentItem.isServed;
-
-    // Optimistic update
-    let didCompleteAll = false;
-    let didReopen = false;
+    // Only serve (not un-serve) — optimistic update
     setPickupOrders((prev) =>
       prev.map((order) => {
         if (order.id !== orderId) return order;
         const items = order.items.map((it) =>
-          it.id === itemId ? { ...it, isServed: willBeServed } : it,
+          it.id === itemId ? { ...it, isServed: true } : it,
         );
         const allServed = items.every((it) => it.isServed);
-        const wasComplete = !!order.completedAt;
-        const next: PickupOrder = { ...order, items };
-        if (!allServed && wasComplete) { next.completedAt = undefined; didReopen = true; }
-        if (allServed && !wasComplete) { didCompleteAll = true; }
-        return next;
+        return { ...order, items, completedAt: allServed && !order.completedAt ? 'now' : order.completedAt };
       }),
     );
 
-    if (didCompleteAll) {
+    const allNowServed = pickupOrders
+      .find(o => o.id === orderId)?.items
+      .every(it => it.id === itemId ? true : it.isServed) ?? false;
+
+    if (allNowServed) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setCompletingIds((prev) => (prev.includes(orderId) ? prev : [...prev, orderId]));
     }
-    if (didReopen) {
-      setCompletingIds((prev) => prev.filter((id) => id !== orderId));
-    }
 
-    // Call the backend API and refresh — guarded so polling doesn't clobber
-    if (willBeServed) {
-      isServingRef.current = true;
-      try {
-        await crewOrders.serveItem(orderId, itemId);
-        await loadPickupOrders(); // sync from server after successful serve
-      } catch {
-        // Revert optimistic update on failure
-        setPickupOrders((prev) =>
-          prev.map((o) =>
-            o.id !== orderId ? o : {
-              ...o,
-              items: o.items.map((it) =>
-                it.id === itemId ? { ...it, isServed: false } : it,
-              ),
-            }
-          ),
-        );
-      } finally {
-        isServingRef.current = false;
-      }
+    // Call API — guard poll during call
+    isServingRef.current = true;
+    try {
+      await crewOrders.serveItem(orderId, itemId);
+      await loadPickupOrders();
+    } catch {
+      // Revert on failure
+      setPickupOrders((prev) =>
+        prev.map((o) =>
+          o.id !== orderId ? o : {
+            ...o,
+            items: o.items.map((it) =>
+              it.id === itemId ? { ...it, isServed: false } : it,
+            ),
+          }
+        ),
+      );
+    } finally {
+      isServingRef.current = false;
     }
   };
 
