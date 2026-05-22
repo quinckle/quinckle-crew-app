@@ -33,7 +33,6 @@ import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
-import { Audio } from 'expo-av';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { BottomNavbar } from '../../components/ui/BottomNavbar';
