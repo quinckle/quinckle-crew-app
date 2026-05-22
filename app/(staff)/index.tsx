@@ -381,6 +381,7 @@ export default function StaffDashboard() {
         location: undefined,
         sessionId: t.session_id ?? undefined,
       }));
+      apiTables.sort((a, b) => a.number - b.number);
       console.log('[tables] mapped count:', apiTables.length);
       setTables(apiTables);
     } catch (e) {
