@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Animated, FlatList, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View, ActivityIndicator } from 'react-native';
+import { Animated, FlatList, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator, PanResponder } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
@@ -39,6 +39,109 @@ function formatTime(iso: string): string {
   return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 }
 
+interface SwipeConfirmProps {
+  onConfirm: () => void;
+  isConfirmed: boolean;
+  grandTotal: number;
+}
+
+function SwipeConfirm({ onConfirm, isConfirmed, grandTotal }: SwipeConfirmProps) {
+  const [width, setWidth] = useState(0);
+  const translateX = React.useRef(new Animated.Value(0)).current;
+
+  const handleWidth = 42;
+  const padding = 4;
+  const maxRange = width > 0 ? width - handleWidth - (padding * 2) : 0;
+
+  // Keep mutable refs so the PanResponder closure always reads the latest values
+  const maxRangeRef = React.useRef(maxRange);
+  const isConfirmedRef = React.useRef(isConfirmed);
+  const onConfirmRef = React.useRef(onConfirm);
+  maxRangeRef.current = maxRange;
+  isConfirmedRef.current = isConfirmed;
+  onConfirmRef.current = onConfirm;
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 5,
+        onPanResponderMove: (_, gestureState) => {
+          const mr = maxRangeRef.current;
+          if (isConfirmedRef.current || mr <= 0) return;
+          let newX = gestureState.dx;
+          if (newX < 0) newX = 0;
+          if (newX > mr) newX = mr;
+          translateX.setValue(newX);
+        },
+        onPanResponderRelease: (_, gestureState) => {
+          const mr = maxRangeRef.current;
+          if (isConfirmedRef.current || mr <= 0) return;
+          if (gestureState.dx >= mr * 0.7) {
+            Animated.timing(translateX, {
+              toValue: mr,
+              duration: 150,
+              useNativeDriver: true,
+            }).start(() => {
+              onConfirmRef.current();
+            });
+          } else {
+            Animated.spring(translateX, {
+              toValue: 0,
+              useNativeDriver: true,
+              bounciness: 4,
+              speed: 12,
+            }).start();
+          }
+        },
+      }),
+    [translateX],
+  );
+
+  useEffect(() => {
+    if (!isConfirmed) {
+      translateX.setValue(0);
+    }
+  }, [isConfirmed]);
+
+  const textOpacity = maxRange > 0 ? translateX.interpolate({
+    inputRange: [0, maxRange * 0.6],
+    outputRange: [1, 0],
+    extrapolate: 'clamp',
+  }) : 1;
+
+  if (isConfirmed) {
+    return (
+      <View style={styles.swipeSuccessContainer}>
+        <Ionicons name="checkmark-circle" size={18} color="#4ade80" />
+        <Text style={styles.swipeSuccessText}>Payment Collected</Text>
+      </View>
+    );
+  }
+
+  return (
+    <View
+      style={styles.swipeContainer}
+      onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
+    >
+      <Animated.Text pointerEvents="none" style={[styles.swipeText, { opacity: textOpacity }]}>
+        Swipe right to Collect Cash (₹{grandTotal.toFixed(0)})
+      </Animated.Text>
+      <Animated.View
+        style={[
+          styles.swipeThumb,
+          {
+            transform: [{ translateX }],
+          },
+        ]}
+        {...panResponder.panHandlers}
+      >
+        <Ionicons name="chevron-forward" size={18} color="#fff" />
+      </Animated.View>
+    </View>
+  );
+}
+
 export default function TableDetail() {
   const insets = useSafeAreaInsets();
   const { tableId, sessionId: paramSessionId, tableDbId } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string }>();
@@ -51,6 +154,8 @@ export default function TableDetail() {
   const [isLoading, setIsLoading] = useState(true);
   const [orders, setOrders] = useState<BillOrder[]>([]);
   const [sessionTotal, setSessionTotal] = useState(0);
+  const [taxTotal, setTaxTotal] = useState(0);
+  const [payableTotal, setPayableTotal] = useState(0);
   const [sessionStatus, setSessionStatus] = useState<'active' | 'paid' | 'closed'>('active');
   const [since, setSince] = useState('');
   const [isPaid, setIsPaid] = useState(false);
@@ -62,6 +167,9 @@ export default function TableDetail() {
   const [isMenuLoading, setIsMenuLoading] = useState(false);
   const [cart, setCart] = useState<Record<string, number>>({});
   const [isPlacingOrder, setIsPlacingOrder] = useState(false);
+  const [menuSearchText, setMenuSearchText] = useState('');
+  const [activeCategory, setActiveCategory] = useState('All');
+  const [menuCategories, setMenuCategories] = useState<string[]>(['All']);
 
   const [dialog, setDialog] = useState<{
     visible: boolean; title: string; message: string;
@@ -77,8 +185,11 @@ export default function TableDetail() {
     if (!sessionId) { setIsLoading(false); return; }
     try {
       const bill = await crewSessions.getBill(sessionId);
+      const nextTax = typeof bill.tax_total === 'number' ? bill.tax_total : bill.session_total * 0.05;
       setOrders(bill.orders);
       setSessionTotal(bill.session_total);
+      setTaxTotal(nextTax);
+      setPayableTotal(typeof bill.total_payable === 'number' ? bill.total_payable : bill.session_total + nextTax);
       setSessionStatus(bill.status);
       setIsPaid(bill.status === 'paid');
     } catch {
@@ -101,8 +212,16 @@ export default function TableDetail() {
       restaurantApi.getMenu(staffInfo.restaurantId)
         .then(res => {
           const categories: any[] = (res as any)?.data ?? [];
-          const items = categories.flatMap((c: any) => c.items ?? []).filter((i: any) => i.isAvailable !== false);
+          const items = categories.flatMap((c: any) => {
+            const catName = c.name || '';
+            const catItems = c.items ?? [];
+            return catItems.map((i: any) => ({
+              ...i,
+              category: i.category || catName,
+            }));
+          }).filter((i: any) => i.isAvailable !== false);
           setMenuItems(items);
+          setMenuCategories(['All', ...categories.map((c: any) => c.name).filter(Boolean)]);
         })
         .catch(() => setMenuItems([]))
         .finally(() => setIsMenuLoading(false));
@@ -120,6 +239,14 @@ export default function TableDetail() {
     return sum + (parseFloat(item?.price ?? '0') * qty);
   }, 0);
 
+  const filteredMenuItems = useMemo(() => {
+    return menuItems.filter(item => {
+      const matchesSearch = item.name.toLowerCase().includes(menuSearchText.toLowerCase());
+      const matchesCategory = activeCategory === 'All' || item.category === activeCategory;
+      return matchesSearch && matchesCategory;
+    });
+  }, [menuItems, menuSearchText, activeCategory]);
+
   const handlePlaceOrder = async () => {
     const items = Object.entries(cart).map(([item_id, qty]) => ({ item_id, qty }));
     if (items.length === 0 || !sessionId) return;
@@ -128,6 +255,8 @@ export default function TableDetail() {
       await crewOrders.placeOrder(sessionId, items);
       setCart({});
       setShowOrderModal(false);
+      setMenuSearchText('');
+      setActiveCategory('All');
       await loadBill();
     } catch (e: any) {
       // show error in modal — keep it open
@@ -160,8 +289,8 @@ export default function TableDetail() {
     Animated.spring(progressAnim, { toValue: serviceProgress, useNativeDriver: false, bounciness: 4, speed: 12 }).start();
   }, [serviceProgress]);
 
-  const tax = sessionTotal * 0.05;
-  const grandTotal = sessionTotal + tax;
+  const tax = taxTotal;
+  const grandTotal = payableTotal;
 
   const handleServe = async (item: FlatItem) => {
     if (item.status !== 'ready') return;
@@ -360,17 +489,14 @@ export default function TableDetail() {
               <Text style={styles.grandTotalValue}>₹{grandTotal.toFixed(2)}</Text>
             </View>
 
-            <TouchableOpacity
-              style={[styles.payBtn, isPaid && styles.payBtnPaid]}
-              onPress={handleCollectCash}
-              activeOpacity={0.85}
-              disabled={isPaid}
-            >
-              <Ionicons name={isPaid ? 'checkmark-circle' : 'cash-outline'} size={18} color="#fff" />
-              <Text style={styles.payBtnText}>{isPaid ? 'Payment Collected' : 'Collect Cash'}</Text>
-            </TouchableOpacity>
           </View>
         )}
+
+        <SwipeConfirm
+          onConfirm={handleCollectCash}
+          isConfirmed={isPaid}
+          grandTotal={grandTotal}
+        />
 
         <TouchableOpacity style={styles.totalRow} activeOpacity={0.85} onPress={() => setIsExpanded(!isExpanded)}>
           <View>
@@ -391,13 +517,70 @@ export default function TableDetail() {
       <ThemedDialog visible={dialog.visible} title={dialog.title} message={dialog.message} actions={dialog.actions} onClose={closeDialog} />
 
       {/* Add Items Modal */}
-      <Modal visible={showOrderModal} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowOrderModal(false)}>
+      <Modal
+        visible={showOrderModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => {
+          setShowOrderModal(false);
+          setCart({});
+          setMenuSearchText('');
+          setActiveCategory('All');
+        }}
+      >
         <View style={styles.modalContainer}>
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>Add Items — T{tableNum}</Text>
-            <TouchableOpacity onPress={() => { setShowOrderModal(false); setCart({}); }} style={styles.iconBtn}>
+            <TouchableOpacity
+              onPress={() => {
+                setShowOrderModal(false);
+                setCart({});
+                setMenuSearchText('');
+                setActiveCategory('All');
+              }}
+              style={styles.iconBtn}
+            >
               <Ionicons name="close" size={20} color={QuinckleColors.textPrimary} />
             </TouchableOpacity>
+          </View>
+
+          {/* Search bar inside Modal */}
+          <View style={styles.modalSearchRow}>
+            <View style={styles.modalSearchContainer}>
+              <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
+              <TextInput
+                style={styles.modalSearchInput}
+                placeholder="Search menu items…"
+                placeholderTextColor={QuinckleColors.textTertiary}
+                value={menuSearchText}
+                onChangeText={setMenuSearchText}
+              />
+              {menuSearchText.length > 0 && (
+                <TouchableOpacity onPress={() => setMenuSearchText('')}>
+                  <Ionicons name="close-circle" size={16} color={QuinckleColors.textTertiary} />
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+
+          {/* Category selection horizontal list */}
+          <View style={styles.modalChipRowContainer}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.modalChipScroll}
+              style={styles.modalChipRow}
+            >
+              {menuCategories.map((cat) => (
+                <TouchableOpacity
+                  key={cat}
+                  style={[styles.modalChip, activeCategory === cat && styles.modalChipActive]}
+                  onPress={() => setActiveCategory(cat)}
+                >
+                  <Text style={[styles.modalChipText, activeCategory === cat && styles.modalChipTextActive]}>{cat}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
           </View>
 
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 120 }}>
@@ -411,7 +594,12 @@ export default function TableDetail() {
                 <Ionicons name="restaurant-outline" size={28} color={QuinckleColors.textTertiary} />
                 <Text style={styles.emptyText}>No menu items found.</Text>
               </View>
-            ) : menuItems.map(item => (
+            ) : filteredMenuItems.length === 0 ? (
+              <View style={styles.emptyState}>
+                <Ionicons name="search-outline" size={28} color={QuinckleColors.textTertiary} />
+                <Text style={styles.emptyText}>No items match your search.</Text>
+              </View>
+            ) : filteredMenuItems.map(item => (
               <View key={item.id} style={styles.menuRow}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.menuItemName}>{item.name}</Text>
@@ -531,4 +719,109 @@ const styles = StyleSheet.create({
   placeOrderBtn: { backgroundColor: QuinckleColors.primary, paddingVertical: 14, borderRadius: Radius.md, alignItems: 'center' },
   placeOrderBtnDisabled: { backgroundColor: QuinckleColors.surfaceMutedHover },
   placeOrderText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  modalSearchRow: {
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.xs,
+  },
+  modalSearchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: QuinckleColors.surfaceMuted,
+    paddingHorizontal: Spacing.md,
+    height: 44,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    gap: Spacing.sm,
+  },
+  modalSearchInput: {
+    flex: 1,
+    color: QuinckleColors.textPrimary,
+    fontSize: 14,
+  },
+  modalChipRowContainer: {
+    marginBottom: Spacing.md,
+    marginTop: Spacing.xs,
+    flexGrow: 0,
+  },
+  modalChipRow: {
+    flexGrow: 0,
+  },
+  modalChipScroll: {
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.xl,
+  },
+  modalChip: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 7,
+    borderRadius: Radius.pill,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+  },
+  modalChipActive: {
+    backgroundColor: QuinckleColors.primarySoft,
+    borderColor: QuinckleColors.primarySoftBorder,
+  },
+  modalChipText: {
+    color: QuinckleColors.textSecondary,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  modalChipTextActive: {
+    color: QuinckleColors.primary,
+    fontWeight: '600',
+  },
+  swipeContainer: {
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    paddingHorizontal: 4,
+    justifyContent: 'center',
+    marginVertical: Spacing.md,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  swipeText: {
+    color: QuinckleColors.textSecondary,
+    fontSize: 13,
+    fontWeight: '600',
+    alignSelf: 'center',
+    position: 'absolute',
+    textAlign: 'center',
+    width: '100%',
+  },
+  swipeThumb: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: QuinckleColors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 1.5,
+  },
+  swipeSuccessContainer: {
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: 'rgba(74,222,128,0.08)',
+    borderWidth: 1,
+    borderColor: '#4ade80',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    marginVertical: Spacing.md,
+  },
+  swipeSuccessText: {
+    color: '#4ade80',
+    fontSize: 14,
+    fontWeight: '600',
+  },
 });

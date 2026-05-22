@@ -138,7 +138,7 @@ export const kitchen = {
 
 // ── Crew Tables (STEWARD/ADMIN) ───────────────────────────────────────────────
 
-export interface CrewTable { table_id: string; table_number: number; capacity: number; status: 'available' | 'occupied' | 'reserved' | 'offline'; session_id: string | null; occupied_since: string | null; }
+export interface CrewTable { table_id: string; table_number: number; capacity: number; status: 'available' | 'occupied' | 'reserved' | 'offline'; session_id: string | null; occupied_since: string | null; bill_subtotal?: number; bill_tax?: number; bill_total?: number; }
 
 export const crewTables = {
   list: () => request<{ tables: CrewTable[] }>('GET', '/api/crew/tables', undefined, true),
@@ -150,7 +150,7 @@ export const crewTables = {
 
 export interface BillOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; }
 export interface BillOrder { order_id: string; placed_at: string; status: 'received' | 'preparing' | 'ready' | 'served'; items: BillOrderItem[]; order_total: number; }
-export interface SessionBill { session_id: string; table_number: number; status: 'active' | 'paid' | 'closed'; orders: BillOrder[]; session_total: number; }
+export interface SessionBill { session_id: string; table_number: number; status: 'active' | 'paid' | 'closed'; orders: BillOrder[]; session_total: number; tax_total?: number; total_payable?: number; }
 
 export const crewSessions = {
   start: (tableId: string) =>

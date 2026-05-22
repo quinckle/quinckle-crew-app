@@ -271,7 +271,7 @@ export default function CookDashboard() {
   };
 
   useEffect(() => {
-    let interval: NodeJS.Timeout;
+    let interval: any;
     if (isOnline && shiftStart) {
       const updateDuration = () => {
         const diff = Date.now() - shiftStart.getTime();
@@ -481,7 +481,7 @@ export default function CookDashboard() {
               if (item.status === 'ready') {
                 return (
                   <Swipeable
-                    ref={ref => swipeableRefs.current.set(item.id, ref)}
+                    ref={ref => { swipeableRefs.current.set(item.id, ref); }}
                     renderRightActions={() => (
                       <TouchableOpacity
                         style={styles.swipeAction}
@@ -1243,7 +1243,7 @@ const styles = StyleSheet.create({
   periodBtn: {
     paddingHorizontal: 10,
     paddingVertical: 5,
-    borderRadius: Radius.xs,
+    borderRadius: 4,
   },
   periodBtnActive: {
     backgroundColor: QuinckleColors.surface,

@@ -384,19 +384,34 @@ export default function StaffDashboard() {
     try {
       const res = await crewTables.list() as any;
       console.log('[tables] API response:', JSON.stringify(res));
-      const apiTables: Table[] = (res?.tables ?? []).map((t: any) => ({
-        id: t.table_id,
-        number: t.table_number,
-        status: (t.status === 'reserved' ? 'occupied' : t.status) as TableStatus,
-        seats: t.capacity,
-        since: t.occupied_since
-          ? (() => {
-            const d = new Date(t.occupied_since);
-            return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-          })()
-          : undefined,
-        location: undefined,
-        sessionId: t.session_id ?? undefined,
+      const apiTables: Table[] = await Promise.all((res?.tables ?? []).map(async (t: any) => {
+        let billAmount = typeof t.bill_total === 'number' ? t.bill_total : undefined;
+        if (billAmount === undefined && t.session_id) {
+          try {
+            const bill = await crewSessions.getBill(t.session_id);
+            billAmount = typeof bill.total_payable === 'number'
+              ? bill.total_payable
+              : bill.session_total + (bill.tax_total ?? bill.session_total * 0.05);
+          } catch {
+            billAmount = undefined;
+          }
+        }
+
+        return {
+          id: t.table_id,
+          number: t.table_number,
+          status: (t.status === 'reserved' ? 'occupied' : t.status) as TableStatus,
+          seats: t.capacity,
+          since: t.occupied_since
+            ? (() => {
+              const d = new Date(t.occupied_since);
+              return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+            })()
+            : undefined,
+          location: undefined,
+          sessionId: t.session_id ?? undefined,
+          billAmount,
+        };
       }));
       apiTables.sort((a, b) => a.number - b.number);
       console.log('[tables] mapped count:', apiTables.length);
@@ -531,11 +546,21 @@ export default function StaffDashboard() {
       lastReadyId = orderId;
       void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
       void loadPickupOrders();
+      void loadTables();
     });
     const off2 = subscribeChannel(`waiter:${restaurantId}`, 'order_served', () => {
       void loadPickupOrders();
+      void loadTables();
     });
-    return () => { off1(); off2(); };
+    const off3 = subscribeChannel(`waiter:${restaurantId}`, 'new_order', () => {
+      void loadPickupOrders();
+      void loadTables();
+    });
+    const off4 = subscribeChannel(`waiter:${restaurantId}`, 'session_ended', () => {
+      void loadPickupOrders();
+      void loadTables();
+    });
+    return () => { off1(); off2(); off3(); off4(); };
   }, [staffInfo?.restaurantId]);
 
   const updateTableStatus = async (tableNum: number, nextStatus: TableStatus) => {
@@ -786,8 +811,8 @@ export default function StaffDashboard() {
                     <View style={styles.cardBottom}>
                       {item.status === 'occupied' ? (
                         <View>
-                          <Text style={styles.billAmount}>₹{item.billAmount?.toLocaleString() || '—'}</Text>
-                          <Text style={styles.billSubtitle}>since {item.since}</Text>
+                          <Text style={styles.billAmount}>₹{(item.billAmount ?? 0).toLocaleString()}</Text>
+                          <Text style={styles.billSubtitle}>{item.since ? `since ${item.since}` : 'active session'}</Text>
                         </View>
                       ) : item.status === 'available' ? (
                         <View style={styles.actionPrompt}>
