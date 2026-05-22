@@ -332,14 +332,11 @@ export default function CookDashboard() {
     return `${String(Math.floor(total)).padStart(2, '0')}h ${String(Math.floor((total % 1) * 60)).padStart(2, '0')}m`;
   }, [shiftLogs, isOnline, shiftStart]);
 
-  const COOK_ACTIVITY = [
-    { id: '1', message: 'Bumped ticket #1027 — T2 (Cappuccino × 2, Brownie Sundae)', date: '20 May', time: '14:30' },
-    { id: '2', message: 'Marked all items ready for ticket #1026 — T5', date: '20 May', time: '14:20' },
-    { id: '3', message: 'Marked Ribeye Steak as prepared on ticket #1025 — T1', date: '20 May', time: '14:10' },
-    { id: '4', message: 'Started preparing ticket #1024 — T3', date: '20 May', time: '13:55' },
-    { id: '5', message: 'Bumped ticket #1020 — T7 (Chicken Biryani × 1)', date: '19 May', time: '13:10' },
-    { id: '6', message: 'Marked 3 items ready for ticket #1019 — T4', date: '19 May', time: '12:45' },
-  ];
+  // Real-time activity feed — backed by realtime events emitted by the
+  // kitchen/queue routes. Starts empty; entries are pushed as the cook
+  // bumps tickets / marks items in this session. Previously hard-coded
+  // demo data here.
+  const COOK_ACTIVITY: Array<{ id: string; message: string; date: string; time: string }> = [];
 
   const toggleItemPrepared = async (orderId: string, itemId: string) => {
     const order = orders.find(o => o.id === orderId);

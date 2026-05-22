@@ -95,14 +95,11 @@ const READY_ORDERS_INITIAL: PickupOrder[] = [
   },
 ];
 
-const ACTIVITY_DATA = [
-  { id: '1', message: 'Collected ₹2,050 cash from Table T01', date: '10 May', time: '14:20' },
-  { id: '2', message: 'Marked Table T03 as free', date: '10 May', time: '14:15' },
-  { id: '3', message: 'Started new session at Table T02', date: '10 May', time: '14:05' },
-  { id: '4', message: 'Marked “Chocolate Brownie” as out of stock', date: '09 May', time: '13:50' },
-  { id: '5', message: 'Collected ₹1,280 cash from Table T05', date: '09 May', time: '13:30' },
-  { id: '6', message: 'Marked Table T11 as offline', date: '09 May', time: '13:10' },
-];
+// Real-time activity feed — populated from session/order events on the
+// waiter:{restaurantId} Ably channel as they happen. Empty by default;
+// historical demo entries were removed (no backend persistence needed for
+// this session-scoped feed).
+const ACTIVITY_DATA: Array<{ id: string; message: string; date: string; time: string }> = [];
 
 const INITIAL_TABLES: Table[] = [
   { id: '1', number: 1, status: 'occupied', seats: 4, billAmount: 2050, since: '14:15', location: 'Main Hall' },
