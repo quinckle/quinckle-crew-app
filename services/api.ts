@@ -170,8 +170,11 @@ export const crewOrders = {
   getActive: () =>
     request<{ orders: ActiveOrder[] }>('GET', '/api/crew/orders/active', undefined, true),
 
+  // Backend's Fastify schema requires `{ served: true }` in the body — sending
+  // no body fails validation and the optimistic UI flip reverts when the
+  // PATCH rejects. Pass the literal `true` here.
   serveItem: (orderId: string, itemId: string) =>
-    request<unknown>('PATCH', `/api/crew/orders/${orderId}/items/${itemId}/serve`, undefined, true),
+    request<unknown>('PATCH', `/api/crew/orders/${orderId}/items/${itemId}/serve`, { served: true }, true),
 
   placeOrder: (sessionId: string, items: { item_id: string; qty: number; note?: string }[]) =>
     request<unknown>('POST', '/api/crew/orders', { session_id: sessionId, items }, true),
