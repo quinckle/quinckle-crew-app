@@ -16,6 +16,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
 import { crewTables, crewSessions, crewOrders, restaurantApi, crewAuth } from '../../services/api';
+import { subscribeChannel } from '../../services/realtime';
 
 async function playSound(file: any) {
   try {
@@ -519,6 +520,26 @@ export default function StaffDashboard() {
       void loadPickupOrders();
     }
   }, [activeTab]);
+
+  // Hybrid push: waiter:{restaurantId} fires the waiter sound the moment the
+  // kitchen bumps a ticket to READY. Falls back silently to the 5s poll if
+  // Ably isn't connected (e.g. fresh checkout before `npm install`).
+  useEffect(() => {
+    const restaurantId = staffInfo?.restaurantId;
+    if (!restaurantId) return;
+    let lastReadyId: string | null = null;
+    const off1 = subscribeChannel(`waiter:${restaurantId}`, 'order_ready', (data: any) => {
+      const orderId = data?.orderId as string | undefined;
+      if (!orderId || orderId === lastReadyId) return;
+      lastReadyId = orderId;
+      void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
+      void loadPickupOrders();
+    });
+    const off2 = subscribeChannel(`waiter:${restaurantId}`, 'order_served', () => {
+      void loadPickupOrders();
+    });
+    return () => { off1(); off2(); };
+  }, [staffInfo?.restaurantId]);
 
   const updateTableStatus = async (tableNum: number, nextStatus: TableStatus) => {
     // Optimistic local update

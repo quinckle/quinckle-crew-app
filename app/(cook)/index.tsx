@@ -3,6 +3,7 @@ import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Audio } from 'expo-av';
 import { kitchen } from '../../services/api';
+import { subscribeChannel } from '../../services/realtime';
 
 async function playSound(file: any) {
   try {
@@ -191,6 +192,25 @@ export default function CookDashboard() {
     const interval = setInterval(loadOrders, 5000);
     return () => clearInterval(interval);
   }, [loadOrders]);
+
+  // Hybrid push: subscribe to kitchen:{restaurantId} so a brand-new order
+  // fires the kitchen sound within ~1s instead of waiting up to 5s for the
+  // next poll. The poll itself is still the source of truth for list state
+  // and de-duplicates the sound via knownOrderIdsRef.
+  useEffect(() => {
+    const restaurantId = staffInfo?.restaurantId;
+    if (!restaurantId) return;
+    const unsub = subscribeChannel(`kitchen:${restaurantId}`, 'new_order', (data: any) => {
+      const orderId = data?.orderId as string | undefined;
+      if (!orderId) return;
+      if (knownOrderIdsRef.current.has(orderId)) return; // poll got here first
+      knownOrderIdsRef.current.add(orderId);
+      void playSound(require('../../assets/audio/notifications/kitchen notification.wav'));
+      // Trigger an immediate refetch so the order appears in the queue right away.
+      void loadOrders();
+    });
+    return unsub;
+  }, [staffInfo?.restaurantId, loadOrders]);
 
   const counts = useMemo(() => ({
     all: orders.length + bumpedOrders.length,

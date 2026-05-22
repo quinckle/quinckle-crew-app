@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { setCrewToken, setOn401Callback } from '../services/api';
 import type { StaffInfo } from '../services/api';
+import { setRealtimeAuth, disconnectRealtime } from '../services/realtime';
 
 type Role = 'staff' | 'cook' | null;
 
@@ -36,6 +37,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           setCrewTokenState(saved.crewToken);
           setCrewToken(saved.crewToken);
           if (saved.staffInfo) setStaffInfo(saved.staffInfo);
+          // Prime the realtime auth so subscribeChannel(...) can fetch tokens.
+          if (saved.staffInfo?.id) {
+            setRealtimeAuth(saved.crewToken, `crew:${saved.staffInfo.id}`);
+          }
         }
       })
       .catch(() => {})
@@ -47,13 +52,20 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     if (token) {
       setCrewTokenState(token);
       setCrewToken(token);
+      // Prime the realtime auth so subscribeChannel(...) in the cook/waiter
+      // screens can fetch their per-channel tokens. If `ably` isn't installed
+      // yet (no npm install after this commit), subscribeChannel no-ops and
+      // we fall back to 5s polling.
+      if (staff?.id) {
+        setRealtimeAuth(token, `crew:${staff.id}`);
+      }
     }
     if (staff) setStaffInfo(staff);
-    // Persist to storage
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ role: selectedRole, crewToken: token ?? null, staffInfo: staff ?? null })).catch(() => {});
   };
 
   const logout = () => {
+    disconnectRealtime();
     setRole(null);
     setStaffInfo(null);
     setCrewTokenState(null);
