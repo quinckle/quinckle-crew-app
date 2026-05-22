@@ -478,7 +478,7 @@ export default function StaffDashboard() {
       const prevReadyIds = new Set(pickupOrders.map(o => o.id));
       const newReadyOrders = allOrders.filter(o => o.status === 'ready' && !prevReadyIds.has(o.order_id));
       if (newReadyOrders.length > 0) {
-        void playSound(require('../../../assets/audio/notifications/waiter notification.mp3'));
+        void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
         Notifications.scheduleNotificationAsync({
           content: {
             title: '🔔 Order Ready for Pickup',
