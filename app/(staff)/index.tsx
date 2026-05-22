@@ -66,15 +66,19 @@ type PickupOrder = { id: string; tableNo: string; items: PickupItem[]; completed
 
 const READY_ORDERS_INITIAL: PickupOrder[] = [
   { id: 'o1', tableNo: 'T02', items: [{ id: 'i1', name: 'Chicken Biryani', qty: 2, orderedAt: '14:05', isServed: false }] },
-  { id: 'o2', tableNo: 'T05', items: [
-    { id: 'i2', name: 'Cold Coffee', qty: 1, orderedAt: '14:15', isServed: false },
-    { id: 'i3', name: 'Lemon Soda', qty: 1, orderedAt: '14:16', isServed: false },
-  ]},
+  {
+    id: 'o2', tableNo: 'T05', items: [
+      { id: 'i2', name: 'Cold Coffee', qty: 1, orderedAt: '14:15', isServed: false },
+      { id: 'i3', name: 'Lemon Soda', qty: 1, orderedAt: '14:16', isServed: false },
+    ]
+  },
   { id: 'o3', tableNo: 'T01', items: [{ id: 'i4', name: 'Paneer Tikka', qty: 1, orderedAt: '14:20', isServed: false }] },
-  { id: 'o4', tableNo: 'T04', items: [
-    { id: 'i5', name: 'Butter Chicken', qty: 1, orderedAt: '13:30', isServed: true },
-    { id: 'i6', name: 'Garlic Naan', qty: 2, orderedAt: '13:31', isServed: true },
-  ], completedAt: '13:55' },
+  {
+    id: 'o4', tableNo: 'T04', items: [
+      { id: 'i5', name: 'Butter Chicken', qty: 1, orderedAt: '13:30', isServed: true },
+      { id: 'i6', name: 'Garlic Naan', qty: 2, orderedAt: '13:31', isServed: true },
+    ], completedAt: '13:55'
+  },
 ];
 
 const ACTIVITY_DATA = [
@@ -149,7 +153,7 @@ export default function StaffDashboard() {
         const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
         setActiveDuration(`${String(hours).padStart(2, '0')}h ${String(mins).padStart(2, '0')}m`);
       };
-      
+
       updateDuration();
       interval = setInterval(updateDuration, 60000); // Update every minute
     } else {
@@ -183,7 +187,7 @@ export default function StaffDashboard() {
   const chartData = useMemo(() => {
     const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     const currentDayIndex = (new Date().getDay() + 6) % 7; // 0=Mon, 6=Sun
-    
+
     return days.map((day, i) => {
       let hours = 0;
       if (i === currentDayIndex) {
@@ -228,7 +232,7 @@ export default function StaffDashboard() {
 
   const simulateNewOrder = async () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    
+
     try {
       // Play a premium, soft "Ding" style chime (elevator arrival sound)
       const { sound } = await Audio.Sound.createAsync(
@@ -306,10 +310,10 @@ export default function StaffDashboard() {
       prev.map((order) =>
         order.id === orderId
           ? {
-              ...order,
-              completedAt: undefined,
-              items: order.items.map((it, idx) => (idx === 0 ? { ...it, isServed: false } : it)),
-            }
+            ...order,
+            completedAt: undefined,
+            items: order.items.map((it, idx) => (idx === 0 ? { ...it, isServed: false } : it)),
+          }
           : order,
       ),
     );
@@ -378,9 +382,9 @@ export default function StaffDashboard() {
         seats: t.capacity,
         since: t.occupied_since
           ? (() => {
-              const d = new Date(t.occupied_since);
-              return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-            })()
+            const d = new Date(t.occupied_since);
+            return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+          })()
           : undefined,
         location: undefined,
         sessionId: t.session_id ?? undefined,
@@ -503,7 +507,7 @@ export default function StaffDashboard() {
         'Table Offline',
         `Make Table T${String(tableNum).padStart(2, '0')} available again?`,
         [
-          { label: 'Cancel', onPress: () => {} },
+          { label: 'Cancel', onPress: () => { } },
           { label: 'Make Available', variant: 'primary', onPress: () => { void updateTableStatus(tableNum, 'available'); } },
         ],
       );
@@ -512,7 +516,7 @@ export default function StaffDashboard() {
 
     if (currentStatus === 'available') {
       showDialog(`New Session`, `Start a new session for Table T${String(tableNum).padStart(2, '0')}?`, [
-        { label: 'Cancel', onPress: () => {} },
+        { label: 'Cancel', onPress: () => { } },
         {
           label: 'Start Session',
           variant: 'primary',
@@ -545,7 +549,7 @@ export default function StaffDashboard() {
         'Manage Table',
         `Mark Table T${String(tableNum).padStart(2, '0')} as offline? It will be hidden from new guest assignments.`,
         [
-          { label: 'Cancel', onPress: () => {} },
+          { label: 'Cancel', onPress: () => { } },
           { label: 'Mark Offline', variant: 'danger', onPress: () => { void updateTableStatus(tableNum, 'offline'); } },
         ],
       );
@@ -554,7 +558,7 @@ export default function StaffDashboard() {
         'Manage Table',
         `Make Table T${String(tableNum).padStart(2, '0')} available for guests?`,
         [
-          { label: 'Cancel', onPress: () => {} },
+          { label: 'Cancel', onPress: () => { } },
           { label: 'Make Available', variant: 'primary', onPress: () => { void updateTableStatus(tableNum, 'available'); } },
         ],
       );
@@ -570,7 +574,7 @@ export default function StaffDashboard() {
       const endTimeStr = formatNow();
       console.log(`Auto clock-out: ${startTimeStr} - ${endTimeStr} (${hours.toFixed(1)}h)`);
     }
-    
+
     logout();
     router.replace('/login');
   };
@@ -695,61 +699,61 @@ export default function StaffDashboard() {
               <Text style={styles.loadingText}>Loading tables…</Text>
             </View>
           ) : (
-          <FlatList
-            data={filteredTables}
-            keyExtractor={(item) => item.id}
-            numColumns={2}
-            columnWrapperStyle={styles.columnWrapper}
-            contentContainerStyle={styles.listContent}
-            renderItem={({ item }) => {
-              const meta = STATUS_META[item.status] || STATUS_META.available;
-              return (
-                <TouchableOpacity
-                  style={[styles.tableCard, item.status === 'offline' && styles.offlineCard]}
-                  onPress={() => handleTablePress(item.number, item.status)}
-                  onLongPress={() => handleLongPress(item.id, item.status)}
-                  activeOpacity={0.85}
-                  delayLongPress={500}
-                >
-                  <View style={styles.cardHeader}>
-                    <View>
-                      <Text style={styles.tableTitle}>T{String(item.number).padStart(2, '0')}</Text>
-                      <View style={styles.seatsRow}>
-                        <Ionicons name="people-outline" size={11} color={QuinckleColors.textTertiary} />
-                        <Text style={styles.seatsText}>{item.seats} seats</Text>
-                      </View>
-                    </View>
-                    <View style={[styles.statusPill, { backgroundColor: `${meta.color}1F`, borderColor: `${meta.color}40` }]}>
-                      <View style={[styles.statusPillDot, { backgroundColor: meta.color }]} />
-                      <Text style={[styles.statusPillText, { color: meta.color }]}>{meta.label}</Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.cardBottom}>
-                    {item.status === 'occupied' ? (
+            <FlatList
+              data={filteredTables}
+              keyExtractor={(item) => item.id}
+              numColumns={2}
+              columnWrapperStyle={styles.columnWrapper}
+              contentContainerStyle={styles.listContent}
+              renderItem={({ item }) => {
+                const meta = STATUS_META[item.status] || STATUS_META.available;
+                return (
+                  <TouchableOpacity
+                    style={[styles.tableCard, item.status === 'offline' && styles.offlineCard]}
+                    onPress={() => handleTablePress(item.number, item.status)}
+                    onLongPress={() => handleLongPress(item.id, item.status)}
+                    activeOpacity={0.85}
+                    delayLongPress={500}
+                  >
+                    <View style={styles.cardHeader}>
                       <View>
-                        <Text style={styles.billAmount}>₹{item.billAmount?.toLocaleString() || '—'}</Text>
-                        <Text style={styles.billSubtitle}>since {item.since}</Text>
+                        <Text style={styles.tableTitle}>T{String(item.number).padStart(2, '0')}</Text>
+                        <View style={styles.seatsRow}>
+                          <Ionicons name="people-outline" size={11} color={QuinckleColors.textTertiary} />
+                          <Text style={styles.seatsText}>{item.seats} seats</Text>
+                        </View>
                       </View>
-                    ) : item.status === 'available' ? (
-                      <View style={styles.actionPrompt}>
-                        <Ionicons name="add" size={13} color={QuinckleColors.textTertiary} />
-                        <Text style={styles.actionPromptText}>Start session</Text>
+                      <View style={[styles.statusPill, { backgroundColor: `${meta.color}1F`, borderColor: `${meta.color}40` }]}>
+                        <View style={[styles.statusPillDot, { backgroundColor: meta.color }]} />
+                        <Text style={[styles.statusPillText, { color: meta.color }]}>{meta.label}</Text>
                       </View>
-                    ) : (
-                      <Text style={styles.actionPromptText}>Marked offline</Text>
-                    )}
-                  </View>
-                </TouchableOpacity>
-              );
-            }}
-            ListEmptyComponent={
-              <View style={styles.emptyState}>
-                <Ionicons name="grid-outline" size={28} color={QuinckleColors.textTertiary} />
-                <Text style={styles.emptyText}>No tables match this filter.</Text>
-              </View>
-            }
-          />
+                    </View>
+
+                    <View style={styles.cardBottom}>
+                      {item.status === 'occupied' ? (
+                        <View>
+                          <Text style={styles.billAmount}>₹{item.billAmount?.toLocaleString() || '—'}</Text>
+                          <Text style={styles.billSubtitle}>since {item.since}</Text>
+                        </View>
+                      ) : item.status === 'available' ? (
+                        <View style={styles.actionPrompt}>
+                          <Ionicons name="add" size={13} color={QuinckleColors.textTertiary} />
+                          <Text style={styles.actionPromptText}>Start session</Text>
+                        </View>
+                      ) : (
+                        <Text style={styles.actionPromptText}>Marked offline</Text>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                );
+              }}
+              ListEmptyComponent={
+                <View style={styles.emptyState}>
+                  <Ionicons name="grid-outline" size={28} color={QuinckleColors.textTertiary} />
+                  <Text style={styles.emptyText}>No tables match this filter.</Text>
+                </View>
+              }
+            />
           )}
         </>
       ) : activeTab === 'menu' ? (
@@ -811,10 +815,84 @@ export default function StaffDashboard() {
               <Text style={styles.breadcrumbCurrent}>{highlightedSection?.title ?? 'Featured'}</Text>
             </View>
             {highlightedSection?.subtitle ? (
-              <Text style={[styles.menuSectionSub, { paddingHorizontal: 16, marginBottom: 8 }]}>{highlightedSection.subtitle}</Text>
+              <Text style={[styles.menuSectionSub, { paddingHorizontal: 16, paddingTop: 8 }]}>{highlightedSection.subtitle}</Text>
             ) : null}
-            <ScrollView contentContainerStyle={{ padding: 16, gap: 2 }} showsVerticalScrollIndicator={false}>
+            <ScrollView contentContainerStyle={{ paddingVertical: 16, gap: 12 }} showsVerticalScrollIndicator={false}>
               {menuData.filter(m => highlightedSection?.itemIds?.includes(m.id)).map(item => (
+                <View key={item.id} style={[styles.comboListCard, !item.available && { opacity: 0.5 }]}>
+                  {item.image
+                    ? <Image source={{ uri: item.image }} style={styles.comboListImg} resizeMode="cover" />
+                    : <View style={[styles.comboListImg, { alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.05)' }]}>
+                        <Ionicons name="fast-food-outline" size={40} color={QuinckleColors.textTertiary} />
+                      </View>}
+                  {!item.available && (
+                    <View style={styles.featuredUnavailableBadge}>
+                      <Text style={styles.featuredUnavailableText}>Unavailable</Text>
+                    </View>
+                  )}
+                  <View style={styles.comboListBody}>
+                    <Text style={styles.comboListName}>{item.name}</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }}>
+                      <Text style={styles.comboCardPrice}>₹{item.price}</Text>
+                      <Text style={{ fontSize: 11, color: QuinckleColors.textTertiary, textTransform: 'uppercase', letterSpacing: 0.6 }}>{item.category}</Text>
+                    </View>
+                  </View>
+                </View>
+              ))}
+              <View style={{ height: 80 }} />
+            </ScrollView>
+          </View>
+        ) : (
+          /* ── Main menu view ── */
+          <ScrollView style={styles.tabContent} showsVerticalScrollIndicator={false}>
+            {/* Two shortcut tiles */}
+            <View style={styles.menuTileRow}>
+              <TouchableOpacity
+                style={[styles.menuTile, { opacity: combos.length === 0 ? 0.45 : 1 }]}
+                onPress={() => combos.length > 0 && setShowCombosScreen(true)}
+                activeOpacity={0.75}
+              >
+                <View style={styles.menuTileIcon}><MaterialIcons name="local-offer" size={24} color={QuinckleColors.primary} /></View>
+                <Text style={styles.menuTileLabel}>Combos</Text>
+                <Text style={styles.menuTileCount}>{combos.length} deal{combos.length !== 1 ? 's' : ''}</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.menuTile, { opacity: !highlightedSection ? 0.45 : 1 }]}
+                onPress={() => highlightedSection && setShowFeaturedScreen(true)}
+                activeOpacity={0.75}
+              >
+                <View style={styles.menuTileIcon}><MaterialIcons name="star" size={24} color={QuinckleColors.primary} /></View>
+                <Text style={styles.menuTileLabel}>Featured</Text>
+                <Text style={styles.menuTileCount}>
+                  {highlightedSection ? `${highlightedSection.itemIds?.length ?? 0} item${highlightedSection.itemIds?.length !== 1 ? 's' : ''}` : 'Not set'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Search + Category chips */}
+            <View style={[styles.searchBoxFull, { marginBottom: 8 }]}>
+              <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Search menu items…"
+                placeholderTextColor={QuinckleColors.textTertiary}
+                value={searchText}
+                onChangeText={setSearchText}
+              />
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipScroll} style={styles.chipRow}>
+              {menuCategories.map(cat => (
+                <TouchableOpacity key={cat} style={[styles.chip, menuFilter === cat && styles.chipActive]} onPress={() => setMenuFilter(cat)}>
+                  <Text style={[styles.chipText, menuFilter === cat && styles.chipTextActive]}>{cat}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            {/* Menu Items */}
+            {menuData
+              .filter(item => (menuFilter === 'All' || item.category === menuFilter) && item.name.toLowerCase().includes(searchText.toLowerCase()))
+              .map(item => (
                 <View key={item.id} style={styles.menuItemRow}>
                   <View style={styles.menuItemLeft}>
                     {item.image
@@ -825,82 +903,16 @@ export default function StaffDashboard() {
                       <Text style={styles.menuItemPrice}>₹{item.price}</Text>
                     </View>
                   </View>
+                  <TouchableOpacity
+                    onPress={() => setMenuData(prev => prev.map(m => m.id === item.id ? { ...m, available: !m.available } : m))}
+                    style={[styles.toggleBase, item.available ? styles.toggleOn : styles.toggleOff]}
+                  >
+                    <View style={[styles.toggleCircle, item.available ? styles.toggleCircleOn : styles.toggleCircleOff]} />
+                  </TouchableOpacity>
                 </View>
               ))}
-              <View style={{ height: 80 }} />
-            </ScrollView>
-          </View>
-        ) : (
-        /* ── Main menu view ── */
-        <ScrollView style={styles.tabContent} showsVerticalScrollIndicator={false}>
-          {/* Two shortcut tiles */}
-          <View style={styles.menuTileRow}>
-            <TouchableOpacity
-              style={[styles.menuTile, { opacity: combos.length === 0 ? 0.45 : 1 }]}
-              onPress={() => combos.length > 0 && setShowCombosScreen(true)}
-              activeOpacity={0.75}
-            >
-              <View style={styles.menuTileIcon}><MaterialIcons name="local-offer" size={24} color={QuinckleColors.primary} /></View>
-              <Text style={styles.menuTileLabel}>Combos</Text>
-              <Text style={styles.menuTileCount}>{combos.length} deal{combos.length !== 1 ? 's' : ''}</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.menuTile, { opacity: !highlightedSection ? 0.45 : 1 }]}
-              onPress={() => highlightedSection && setShowFeaturedScreen(true)}
-              activeOpacity={0.75}
-            >
-              <View style={styles.menuTileIcon}><MaterialIcons name="star" size={24} color={QuinckleColors.primary} /></View>
-              <Text style={styles.menuTileLabel}>Featured</Text>
-              <Text style={styles.menuTileCount}>
-                {highlightedSection ? `${highlightedSection.itemIds?.length ?? 0} item${highlightedSection.itemIds?.length !== 1 ? 's' : ''}` : 'Not set'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* Search + Category chips */}
-          <View style={[styles.searchBoxFull, { marginBottom: 8 }]}>
-            <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search menu items…"
-              placeholderTextColor={QuinckleColors.textTertiary}
-              value={searchText}
-              onChangeText={setSearchText}
-            />
-          </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipScroll} style={styles.chipRow}>
-            {menuCategories.map(cat => (
-              <TouchableOpacity key={cat} style={[styles.chip, menuFilter === cat && styles.chipActive]} onPress={() => setMenuFilter(cat)}>
-                <Text style={[styles.chipText, menuFilter === cat && styles.chipTextActive]}>{cat}</Text>
-              </TouchableOpacity>
-            ))}
+            <View style={{ height: 120 }} />
           </ScrollView>
-
-          {/* Menu Items */}
-          {menuData
-            .filter(item => (menuFilter === 'All' || item.category === menuFilter) && item.name.toLowerCase().includes(searchText.toLowerCase()))
-            .map(item => (
-              <View key={item.id} style={styles.menuItemRow}>
-                <View style={styles.menuItemLeft}>
-                  {item.image
-                    ? <Image source={{ uri: item.image }} style={[styles.menuItemImage, !item.available && styles.dimmed]} />
-                    : <View style={[styles.menuItemImagePlaceholder, !item.available && styles.dimmed]}><Ionicons name="fast-food-outline" size={20} color={QuinckleColors.textTertiary} /></View>}
-                  <View style={styles.menuItemInfo}>
-                    <Text style={[styles.menuItemName, !item.available && styles.dimmedText]}>{item.name}</Text>
-                    <Text style={styles.menuItemPrice}>₹{item.price}</Text>
-                  </View>
-                </View>
-                <TouchableOpacity
-                  onPress={() => setMenuData(prev => prev.map(m => m.id === item.id ? { ...m, available: !m.available } : m))}
-                  style={[styles.toggleBase, item.available ? styles.toggleOn : styles.toggleOff]}
-                >
-                  <View style={[styles.toggleCircle, item.available ? styles.toggleCircleOn : styles.toggleCircleOff]} />
-                </TouchableOpacity>
-              </View>
-            ))}
-          <View style={{ height: 120 }} />
-        </ScrollView>
         )
       ) : activeTab === 'orders' ? (
         <View style={styles.tabContent}>
@@ -1051,13 +1063,13 @@ export default function StaffDashboard() {
                 </Text>
               </View>
               <View style={styles.periodPicker}>
-                <TouchableOpacity 
+                <TouchableOpacity
                   onPress={() => setShiftPeriod('today')}
                   style={[styles.periodBtn, shiftPeriod === 'today' && styles.periodBtnActive]}
                 >
                   <Text style={[styles.periodBtnText, shiftPeriod === 'today' && styles.periodBtnTextActive]}>Today</Text>
                 </TouchableOpacity>
-                <TouchableOpacity 
+                <TouchableOpacity
                   onPress={() => setShiftPeriod('week')}
                   style={[styles.periodBtn, shiftPeriod === 'week' && styles.periodBtnActive]}
                 >
@@ -1065,14 +1077,14 @@ export default function StaffDashboard() {
                 </TouchableOpacity>
               </View>
             </View>
-            
+
             <View style={styles.weeklyGrid}>
               {chartData.map((data, i) => {
                 return (
                   <View key={i} style={styles.dayColumn}>
                     <View style={styles.dayBarTrack}>
                       <View style={[
-                        styles.dayBar, 
+                        styles.dayBar,
                         { height: `${data.percentage}%` },
                         data.isToday ? { backgroundColor: QuinckleColors.primary } : { backgroundColor: QuinckleColors.primarySoftBorder }
                       ]} />
@@ -1084,7 +1096,7 @@ export default function StaffDashboard() {
                 );
               })}
             </View>
-            
+
             <View style={styles.timingDetails}>
               {shiftPeriod === 'today' ? (
                 <View style={styles.todayTiming}>
@@ -1100,8 +1112,8 @@ export default function StaffDashboard() {
                   </View>
                   <View style={styles.timingDivider} />
                   <Text style={styles.timingSummary}>
-                    {isOnline 
-                      ? `You are currently ${activeDuration} into your shift. Keep it up!` 
+                    {isOnline
+                      ? `You are currently ${activeDuration} into your shift. Keep it up!`
                       : "You are currently off-duty. Your timings will appear here once you go online."}
                   </Text>
                 </View>
@@ -1167,11 +1179,13 @@ export default function StaffDashboard() {
           <FlatList
             data={[
               { date: '10 May', total: 2050, items: [{ id: 'c1', tableNo: 'T01', amount: 2050, time: '14:20' }] },
-              { date: '09 May', total: 5590, items: [
-                { id: 'c2', tableNo: 'T05', amount: 1280, time: '13:30' },
-                { id: 'c3', tableNo: 'T03', amount: 3420, time: '12:45' },
-                { id: 'c4', tableNo: 'T11', amount: 890, time: '11:15' },
-              ]},
+              {
+                date: '09 May', total: 5590, items: [
+                  { id: 'c2', tableNo: 'T05', amount: 1280, time: '13:30' },
+                  { id: 'c3', tableNo: 'T03', amount: 3420, time: '12:45' },
+                  { id: 'c4', tableNo: 'T11', amount: 890, time: '11:15' },
+                ]
+              },
             ]}
             keyExtractor={(item) => item.date}
             contentContainerStyle={styles.ledgerListContent}
@@ -1631,10 +1645,25 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.07)',
     overflow: 'hidden' as const,
-    marginHorizontal: 16,
   },
   comboListImg: { width: '100%' as any, height: 180, backgroundColor: 'rgba(255,255,255,0.06)' },
   comboListBody: { paddingHorizontal: 16, paddingVertical: 14 },
+  featuredUnavailableBadge: {
+    position: 'absolute' as const,
+    top: 10,
+    right: 10,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  featuredUnavailableText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase' as const,
+  },
   comboListName: { fontSize: 15, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.2 },
   comboListDesc: { fontSize: 12, color: QuinckleColors.textSecondary, marginTop: 4, lineHeight: 17 },
   comboItemList: { fontSize: 11, color: QuinckleColors.textTertiary, marginTop: 6 },
@@ -1653,7 +1682,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.lg,
     borderBottomWidth: 1,
     borderBottomColor: QuinckleColors.borderSubtle,
   },
@@ -1664,14 +1692,14 @@ const styles = StyleSheet.create({
     gap: Spacing.md,
   },
   menuItemImage: {
-    width: 48,
-    height: 48,
+    width: 58,
+    height: 58,
     borderRadius: Radius.sm,
     backgroundColor: QuinckleColors.surfaceMuted,
   },
   menuItemImagePlaceholder: {
-    width: 48,
-    height: 48,
+    width: 58,
+    height: 58,
     borderRadius: Radius.sm,
     backgroundColor: QuinckleColors.surfaceMuted,
     alignItems: 'center',
