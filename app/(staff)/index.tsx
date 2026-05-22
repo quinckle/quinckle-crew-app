@@ -764,7 +764,7 @@ export default function StaffDashboard() {
               <Ionicons name="chevron-forward" size={12} color={QuinckleColors.textTertiary} style={{ marginHorizontal: 4 }} />
               <Text style={styles.breadcrumbCurrent}>Combos</Text>
             </View>
-            <ScrollView contentContainerStyle={{ padding: 16, gap: 12 }} showsVerticalScrollIndicator={false}>
+            <ScrollView contentContainerStyle={{ paddingVertical: 16, gap: 12 }} showsVerticalScrollIndicator={false}>
               {combos.length === 0 ? (
                 <Text style={{ color: QuinckleColors.textTertiary, textAlign: 'center', marginTop: 40 }}>No combos available</Text>
               ) : combos.map(combo => {
@@ -1627,14 +1627,14 @@ const styles = StyleSheet.create({
   // Combo list card (in sub-screen)
   comboListCard: {
     backgroundColor: 'rgba(255,255,255,0.04)',
-    borderRadius: 14,
-    borderWidth: 1,
+    borderRadius: 0,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
     borderColor: 'rgba(255,255,255,0.07)',
     overflow: 'hidden' as const,
-    marginBottom: 12,
   },
-  comboListImg: { width: '100%' as any, height: 140, backgroundColor: 'rgba(255,255,255,0.06)' },
-  comboListBody: { padding: 14 },
+  comboListImg: { width: '100%' as any, height: 180, backgroundColor: 'rgba(255,255,255,0.06)' },
+  comboListBody: { paddingHorizontal: 16, paddingVertical: 14 },
   comboListName: { fontSize: 15, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.2 },
   comboListDesc: { fontSize: 12, color: QuinckleColors.textSecondary, marginTop: 4, lineHeight: 17 },
   comboItemList: { fontSize: 11, color: QuinckleColors.textTertiary, marginTop: 6 },
