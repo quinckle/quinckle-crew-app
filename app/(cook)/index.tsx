@@ -1,7 +1,19 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Audio } from 'expo-av';
 import { kitchen } from '../../services/api';
+
+async function playSound(file: any) {
+  try {
+    await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
+    const { sound } = await Audio.Sound.createAsync(file);
+    await sound.playAsync();
+    sound.setOnPlaybackStatusUpdate(s => {
+      if (s.isLoaded && s.didJustFinish) sound.unloadAsync();
+    });
+  } catch { /* non-fatal */ }
+}
 import { Swipeable } from 'react-native-gesture-handler';
 import type { Swipeable as SwipeableType } from 'react-native-gesture-handler';
 import {
@@ -97,6 +109,7 @@ export default function CookDashboard() {
   const insets = useSafeAreaInsets();
   const { logout, staffInfo } = useAuth();
   const swipeableRefs = useRef<Map<string, SwipeableType | null>>(new Map());
+  const knownOrderIdsRef = useRef<Set<string>>(new Set());
   const [orders, setOrders] = useState<KitchenOrder[]>([]);
   const [bumpedOrders, setBumpedOrders] = useState<KitchenOrder[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -122,6 +135,15 @@ export default function CookDashboard() {
     try {
       const res = await kitchen.getOrders() as any;
       const tickets: any[] = res?.tickets ?? [];
+
+      // Play kitchen sound for brand-new orders
+      const incomingIds = new Set(tickets.map((t: any) => t.order_id as string));
+      const hasNew = tickets.some((t: any) => !knownOrderIdsRef.current.has(t.order_id));
+      if (hasNew && knownOrderIdsRef.current.size > 0) {
+        void playSound(require('../../assets/audio/notifications/kitchen notification.wav'));
+      }
+      knownOrderIdsRef.current = incomingIds;
+
       setOrders(
         tickets.map(t => {
           const allDone = t.items.every((i: any) => i.item_status === 'done');
@@ -148,7 +170,7 @@ export default function CookDashboard() {
         })
       );
     } catch {
-      setOrders(prev => (prev.length === 0 ? INITIAL_KITCHEN_ORDERS : prev));
+      // keep existing orders on network error; don't fall back to mock data
     } finally {
       setIsLoading(false);
     }

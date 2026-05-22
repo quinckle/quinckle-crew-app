@@ -14,7 +14,19 @@ import {
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../../context/AuthContext';
+import { Audio } from 'expo-av';
 import { crewTables, crewSessions, crewOrders, restaurantApi, crewAuth } from '../../services/api';
+
+async function playSound(file: any) {
+  try {
+    await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
+    const { sound } = await Audio.Sound.createAsync(file);
+    await sound.playAsync();
+    sound.setOnPlaybackStatusUpdate(s => {
+      if (s.isLoaded && s.didJustFinish) sound.unloadAsync();
+    });
+  } catch { /* non-fatal */ }
+}
 import type { ActiveOrder, MenuItem } from '../../services/api';
 import { router } from 'expo-router';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
@@ -466,6 +478,7 @@ export default function StaffDashboard() {
       const prevReadyIds = new Set(pickupOrders.map(o => o.id));
       const newReadyOrders = allOrders.filter(o => o.status === 'ready' && !prevReadyIds.has(o.order_id));
       if (newReadyOrders.length > 0) {
+        void playSound(require('../../../assets/audio/notifications/waiter notification.mp3'));
         Notifications.scheduleNotificationAsync({
           content: {
             title: '🔔 Order Ready for Pickup',
