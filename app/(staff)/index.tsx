@@ -792,9 +792,18 @@ export default function StaffDashboard() {
                         {savings > 0 && <Text style={styles.comboCardOrig}>₹{orig.toFixed(0)}</Text>}
                       </View>
                       {detailItems.length > 0 && (
-                        <Text style={styles.comboItemList} numberOfLines={2}>
-                          {detailItems.map((i: any) => i.name ?? i.menuItemName).filter(Boolean).join(' · ')}
-                        </Text>
+                        <View style={styles.comboItemsBlock}>
+                          <Text style={styles.comboItemsLabel}>Includes</Text>
+                          {detailItems.map((i: any, idx: number) => (
+                            <View key={idx} style={styles.comboItemEntry}>
+                              <View style={styles.comboItemDot} />
+                              <Text style={styles.comboItemList}>{i.name ?? i.menuItemName ?? 'Item'}</Text>
+                              {(i.comboPrice || i.price) ? (
+                                <Text style={styles.comboItemPrice}>₹{parseFloat(i.comboPrice ?? i.price ?? 0).toFixed(0)}</Text>
+                              ) : null}
+                            </View>
+                          ))}
+                        </View>
                       )}
                     </View>
                   </View>
@@ -1733,7 +1742,22 @@ const styles = StyleSheet.create({
   },
   comboListName: { fontSize: 15, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.2 },
   comboListDesc: { fontSize: 12, color: QuinckleColors.textSecondary, marginTop: 4, lineHeight: 17 },
-  comboItemList: { fontSize: 11, color: QuinckleColors.textTertiary, marginTop: 6 },
+  comboItemList: { fontSize: 12, color: QuinckleColors.textSecondary, flex: 1 },
+  comboItemsBlock: { marginTop: 10, gap: 6 },
+  comboItemsLabel: {
+    fontSize: 10, fontWeight: '700', color: QuinckleColors.textTertiary,
+    letterSpacing: 0.8, textTransform: 'uppercase' as const, marginBottom: 4,
+  },
+  comboItemEntry: {
+    flexDirection: 'row' as const, alignItems: 'center' as const, gap: 8,
+  },
+  comboItemDot: {
+    width: 4, height: 4, borderRadius: 2,
+    backgroundColor: QuinckleColors.primary, flexShrink: 0,
+  },
+  comboItemPrice: {
+    fontSize: 12, fontWeight: '600', color: QuinckleColors.textTertiary,
+  },
 
   comboBadge: {
     backgroundColor: QuinckleColors.primary,
