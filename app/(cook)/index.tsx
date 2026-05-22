@@ -187,29 +187,37 @@ export default function CookDashboard() {
     }
   }, []);
 
+  // Load once on mount — Ably drives all subsequent updates
   useEffect(() => {
     loadOrders();
-    const interval = setInterval(loadOrders, 5000);
-    return () => clearInterval(interval);
   }, [loadOrders]);
 
-  // Hybrid push: subscribe to kitchen:{restaurantId} so a brand-new order
-  // fires the kitchen sound within ~1s instead of waiting up to 5s for the
-  // next poll. The poll itself is still the source of truth for list state
-  // and de-duplicates the sound via knownOrderIdsRef.
+  // Ably: kitchen:{restaurantId} — pure push, no polling
   useEffect(() => {
     const restaurantId = staffInfo?.restaurantId;
     if (!restaurantId) return;
-    const unsub = subscribeChannel(`kitchen:${restaurantId}`, 'new_order', (data: any) => {
+
+    // new_order → play sound + refresh queue
+    const unsubNew = subscribeChannel(`kitchen:${restaurantId}`, 'new_order', (data: any) => {
       const orderId = data?.orderId as string | undefined;
-      if (!orderId) return;
-      if (knownOrderIdsRef.current.has(orderId)) return; // poll got here first
-      knownOrderIdsRef.current.add(orderId);
-      void playSound(require('../../assets/audio/notifications/kitchen notification.wav'));
-      // Trigger an immediate refetch so the order appears in the queue right away.
+      if (orderId && !knownOrderIdsRef.current.has(orderId)) {
+        knownOrderIdsRef.current.add(orderId);
+        void playSound(require('../../assets/audio/notifications/kitchen notification.wav'));
+      }
       void loadOrders();
     });
-    return unsub;
+
+    // item_bumped → refresh so item status updates in kitchen view
+    const unsubBumped = subscribeChannel(`kitchen:${restaurantId}`, 'item_bumped', () => {
+      void loadOrders();
+    });
+
+    // order_cancelled → remove from queue immediately
+    const unsubCancelled = subscribeChannel(`kitchen:${restaurantId}`, 'order_cancelled', () => {
+      void loadOrders();
+    });
+
+    return () => { unsubNew(); unsubBumped(); unsubCancelled(); };
   }, [staffInfo?.restaurantId, loadOrders]);
 
   const counts = useMemo(() => ({

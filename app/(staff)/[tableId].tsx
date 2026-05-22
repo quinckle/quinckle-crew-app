@@ -7,6 +7,7 @@ import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { crewSessions, crewOrders, crewPayments, restaurantApi } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { subscribeChannel } from '../../services/realtime';
 import type { BillOrderItem, BillOrder, MenuItem } from '../../services/api';
 
 type ItemStatus = 'prep' | 'ready' | 'served';
@@ -199,11 +200,23 @@ export default function TableDetail() {
     }
   };
 
+  // Load once on mount; Ably drives all subsequent updates
+  useEffect(() => { loadBill(); }, [sessionId]);
+
+  // Ably: waiter:{restaurantId} — refresh bill on any order/payment event
   useEffect(() => {
-    loadBill();
-    const interval = setInterval(loadBill, 5000);
-    return () => clearInterval(interval);
-  }, [sessionId]);
+    const restaurantId = staffInfo?.restaurantId;
+    if (!restaurantId || !sessionId) return;
+    const refetch = () => void loadBill();
+    const unsubs = [
+      subscribeChannel(`waiter:${restaurantId}`, 'order_ready',       refetch),
+      subscribeChannel(`waiter:${restaurantId}`, 'order_served',      refetch),
+      subscribeChannel(`waiter:${restaurantId}`, 'item_bumped',       refetch),
+      subscribeChannel(`waiter:${restaurantId}`, 'new_order',         refetch),
+      subscribeChannel(`waiter:${restaurantId}`, 'payment_confirmed', refetch),
+    ];
+    return () => unsubs.forEach(u => u());
+  }, [staffInfo?.restaurantId, sessionId]);
 
   // Fetch menu when modal opens
   useEffect(() => {

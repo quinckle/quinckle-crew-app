@@ -508,38 +508,30 @@ export default function StaffDashboard() {
     } catch (e) { console.error('[pickup] loadPickupOrders error:', e); }
   };
 
-  // Refresh tables every 5s, pickup orders every 5s
+  // Load once on mount — Ably drives all subsequent updates
   useEffect(() => {
     loadTables();
     loadMenuFromApi();
     loadPickupOrders();
-    // Fetch restaurant branding for profile logo
     if (staffInfo?.restaurantId) {
       restaurantApi.getBranding(staffInfo.restaurantId)
         .then(res => { if ((res as any)?.data?.logoUrl) setRestaurantLogoUrl((res as any).data.logoUrl); })
         .catch(() => {});
     }
-    const interval = setInterval(() => {
-      void loadPickupOrders();
-      void loadTables();
-    }, 5000);
-    return () => clearInterval(interval);
   }, [staffInfo?.restaurantId]);
 
   // Immediately refresh pickup orders when switching to Orders tab
   useEffect(() => {
-    if (activeTab === 'orders') {
-      void loadPickupOrders();
-    }
+    if (activeTab === 'orders') void loadPickupOrders();
   }, [activeTab]);
 
-  // Hybrid push: waiter:{restaurantId} fires the waiter sound the moment the
-  // kitchen bumps a ticket to READY. Falls back silently to the 5s poll if
-  // Ably isn't connected (e.g. fresh checkout before `npm install`).
+  // Ably: waiter:{restaurantId} — pure push, no polling
   useEffect(() => {
     const restaurantId = staffInfo?.restaurantId;
     if (!restaurantId) return;
+
     let lastReadyId: string | null = null;
+
     const off1 = subscribeChannel(`waiter:${restaurantId}`, 'order_ready', (data: any) => {
       const orderId = data?.orderId as string | undefined;
       if (!orderId || orderId === lastReadyId) return;
@@ -548,19 +540,35 @@ export default function StaffDashboard() {
       void loadPickupOrders();
       void loadTables();
     });
+
     const off2 = subscribeChannel(`waiter:${restaurantId}`, 'order_served', () => {
       void loadPickupOrders();
       void loadTables();
     });
+
     const off3 = subscribeChannel(`waiter:${restaurantId}`, 'new_order', () => {
       void loadPickupOrders();
       void loadTables();
     });
+
     const off4 = subscribeChannel(`waiter:${restaurantId}`, 'session_ended', () => {
       void loadPickupOrders();
       void loadTables();
     });
-    return () => { off1(); off2(); off3(); off4(); };
+
+    const off5 = subscribeChannel(`waiter:${restaurantId}`, 'session_started', () => {
+      void loadTables();
+    });
+
+    const off6 = subscribeChannel(`waiter:${restaurantId}`, 'payment_confirmed', () => {
+      void loadTables();
+    });
+
+    const off7 = subscribeChannel(`waiter:${restaurantId}`, 'item_bumped', () => {
+      void loadPickupOrders();
+    });
+
+    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off7(); };
   }, [staffInfo?.restaurantId]);
 
   const updateTableStatus = async (tableNum: number, nextStatus: TableStatus) => {
