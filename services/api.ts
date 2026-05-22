@@ -208,6 +208,11 @@ export const restaurantApi = {
   getMenu: (restaurantId: string) =>
     request<{ success: true; data: MenuCategory[] }>('GET', `/api/v1/dine/menu/${restaurantId}`),
 
+  getBranding: (restaurantId: string) =>
+    request<{ success: true; data: { name: string; logoUrl: string | null; dineTheme: string } }>(
+      'GET', `/api/v1/dine/restaurant/${restaurantId}`
+    ),
+
   getCombos: (restaurantId: string) =>
     request<{ success: true; data: Combo[] }>('GET', `/api/v1/dine/combos/${restaurantId}`),
 

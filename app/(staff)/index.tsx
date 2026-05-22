@@ -126,6 +126,7 @@ export default function StaffDashboard() {
   const [highlightedSection, setHighlightedSection] = useState<{ title: string; subtitle?: string; itemIds: string[] } | null>(null);
   const [showCombosScreen, setShowCombosScreen] = useState(false);
   const [showFeaturedScreen, setShowFeaturedScreen] = useState(false);
+  const [restaurantLogoUrl, setRestaurantLogoUrl] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<'all' | TableStatus | string>('all');
   const [menuFilter, setMenuFilter] = useState('All');
   const [searchText, setSearchText] = useState('');
@@ -469,6 +470,12 @@ export default function StaffDashboard() {
     loadTables();
     loadMenuFromApi();
     loadPickupOrders();
+    // Fetch restaurant branding for profile logo
+    if (staffInfo?.restaurantId) {
+      restaurantApi.getBranding(staffInfo.restaurantId)
+        .then(res => { if ((res as any)?.data?.logoUrl) setRestaurantLogoUrl((res as any).data.logoUrl); })
+        .catch(() => {});
+    }
     const interval = setInterval(() => {
       void loadPickupOrders();
       void loadTables();
@@ -1051,14 +1058,19 @@ export default function StaffDashboard() {
 
           <View style={styles.card}>
             <View style={styles.venueRow}>
-              <Image
-                source={{ uri: 'https://images.unsplash.com/photo-1544148103-0773bf10d330?q=80&w=100&h=100&auto=format&fit=crop' }}
-                style={styles.venueLogo}
-              />
+              {restaurantLogoUrl ? (
+                <Image source={{ uri: restaurantLogoUrl }} style={styles.venueLogo} resizeMode="contain" />
+              ) : (
+                <View style={[styles.venueLogo, { backgroundColor: QuinckleColors.primary, alignItems: 'center', justifyContent: 'center' }]}>
+                  <Text style={{ color: '#fff', fontWeight: '800', fontSize: 18 }}>
+                    {(staffInfo?.restaurantName ?? 'R').slice(0, 1).toUpperCase()}
+                  </Text>
+                </View>
+              )}
               <View style={styles.venueInfo}>
                 <Text style={styles.venueLabel}>Linked Restaurant</Text>
-                <Text style={styles.venueName}>{staffInfo?.restaurantName ?? 'The Grill Room'}</Text>
-                <Text style={styles.venueId}>{staffInfo?.restaurantId?.slice(0, 12).toUpperCase() ?? 'QNK-7782-GR'}</Text>
+                <Text style={styles.venueName}>{staffInfo?.restaurantName ?? '—'}</Text>
+                <Text style={styles.venueId} selectable>{staffInfo?.restaurantId ?? '—'}</Text>
               </View>
             </View>
           </View>
