@@ -366,6 +366,7 @@ export default function StaffDashboard() {
   const loadTables = async () => {
     try {
       const res = await crewTables.list() as any;
+      console.log('[tables] API response:', JSON.stringify(res));
       const apiTables: Table[] = (res?.tables ?? []).map((t: any) => ({
         id: t.table_id,
         number: t.table_number,
@@ -380,9 +381,10 @@ export default function StaffDashboard() {
         location: undefined,
         sessionId: t.session_id ?? undefined,
       }));
+      console.log('[tables] mapped count:', apiTables.length);
       setTables(apiTables);
-    } catch {
-      // Keep current tables if API fails
+    } catch (e) {
+      console.error('[tables] loadTables error:', e);
     } finally {
       setIsLoadingTables(false);
     }
