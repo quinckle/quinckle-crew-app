@@ -1627,11 +1627,11 @@ const styles = StyleSheet.create({
   // Combo list card (in sub-screen)
   comboListCard: {
     backgroundColor: 'rgba(255,255,255,0.04)',
-    borderRadius: 0,
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
+    borderRadius: 16,
+    borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.07)',
     overflow: 'hidden' as const,
+    marginHorizontal: 16,
   },
   comboListImg: { width: '100%' as any, height: 180, backgroundColor: 'rgba(255,255,255,0.06)' },
   comboListBody: { paddingHorizontal: 16, paddingVertical: 14 },
