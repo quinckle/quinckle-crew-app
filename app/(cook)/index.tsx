@@ -39,6 +39,7 @@ type KitchenOrder = {
   table: string;
   location: string;
   orderedAgo: string;
+  placedAt?: string;
   priority: 'normal' | 'urgent';
   items: KitchenOrderItem[];
   status: KitchenStatus;
@@ -131,10 +132,40 @@ export default function CookDashboard() {
     router.replace('/login');
   };
 
+  const mapTicket = (t: any, statusOverride?: KitchenStatus): KitchenOrder => {
+    const allDone = t.items.every((i: any) => i.item_status === 'done');
+    const anyDone = t.items.some((i: any) => i.item_status === 'done');
+    const status: KitchenStatus =
+      statusOverride ?? (allDone ? 'ready' : anyDone ? 'preparing' : 'new');
+    return {
+      id: t.order_id,
+      table: `T${t.table_number}`,
+      location: '',
+      orderedAgo: (() => {
+        const mins = Math.floor((Date.now() - new Date(t.placed_at).getTime()) / 60000);
+        if (mins < 1) return 'just now';
+        if (mins < 60) return `${mins}m ago`;
+        return `${Math.floor(mins / 60)}h ${mins % 60}m ago`;
+      })(),
+      placedAt: t.placed_at,
+      priority: 'normal' as const,
+      items: t.items.map((item: any) => ({
+        id: item.item_id,
+        name: `${item.qty}× ${item.name}${item.note ? ` — ${item.note}` : ''}`,
+        isPrepared: item.item_status === 'done',
+      })),
+      status,
+    };
+  };
+
   const loadOrders = useCallback(async () => {
     try {
-      const res = await kitchen.getOrders() as any;
-      const tickets: any[] = res?.tickets ?? [];
+      // Fetch active + completed in parallel so the Completed tab is always populated.
+      const [activeRes, completedRes] = await Promise.all([
+        kitchen.getOrders() as Promise<any>,
+        kitchen.getCompleted().catch(() => ({ tickets: [] })) as Promise<any>,
+      ]);
+      const tickets: any[] = activeRes?.tickets ?? [];
 
       // Play kitchen sound for brand-new orders
       const incomingIds = new Set(tickets.map((t: any) => t.order_id as string));
@@ -144,31 +175,10 @@ export default function CookDashboard() {
       }
       knownOrderIdsRef.current = incomingIds;
 
-      setOrders(
-        tickets.map(t => {
-          const allDone = t.items.every((i: any) => i.item_status === 'done');
-          const anyDone = t.items.some((i: any) => i.item_status === 'done');
-          const status: KitchenStatus = allDone ? 'ready' : anyDone ? 'preparing' : 'new';
-          return {
-            id: t.order_id,
-            table: `T${t.table_number}`,
-            location: '',
-            orderedAgo: (() => {
-              const mins = Math.floor((Date.now() - new Date(t.placed_at).getTime()) / 60000);
-              if (mins < 1) return 'just now';
-              if (mins < 60) return `${mins}m ago`;
-              return `${Math.floor(mins / 60)}h ${mins % 60}m ago`;
-            })(),
-            priority: 'normal' as const,
-            items: t.items.map((item: any) => ({
-              id: item.item_id,
-              name: `${item.qty}× ${item.name}${item.note ? ` — ${item.note}` : ''}`,
-              isPrepared: item.item_status === 'done',
-            })),
-            status,
-          };
-        })
-      );
+      setOrders(tickets.map((t) => mapTicket(t)));
+
+      const completedTickets: any[] = completedRes?.tickets ?? [];
+      setBumpedOrders(completedTickets.map((t) => mapTicket(t, 'bumped' as KitchenStatus)));
     } catch {
       // keep existing orders on network error; don't fall back to mock data
     } finally {
@@ -408,6 +418,13 @@ export default function CookDashboard() {
                           <Text style={styles.tableTagText}>{item.table}</Text>
                         </View>
                       </View>
+                      {/* Show both wall-clock time and relative age so the cook
+                          can immediately tell when the ticket was placed. */}
+                      <Text style={styles.placedAtLine}>
+                        {item.placedAt
+                          ? `${new Date(item.placedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${item.orderedAgo}`
+                          : item.orderedAgo}
+                      </Text>
                     </View>
                     <View style={[styles.statusPill, { backgroundColor: QuinckleColors.surfaceMutedHover, borderColor: QuinckleColors.borderStrong }]}>
                       <View style={[styles.statusPillDot, { backgroundColor: QuinckleColors.primary }]} />
@@ -845,6 +862,12 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     letterSpacing: -0.3,
+  },
+  placedAtLine: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 11,
+    fontWeight: '500',
+    marginTop: 4,
   },
   tableTag: {
     backgroundColor: QuinckleColors.surfaceMutedHover,

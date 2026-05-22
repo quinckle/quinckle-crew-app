@@ -126,6 +126,8 @@ export interface KitchenTicket { order_id: string; table_number: number; status:
 
 export const kitchen = {
   getOrders: () => request<{ tickets: KitchenTicket[] }>('GET', '/api/kitchen/orders', undefined, true),
+  // Recent completed tickets (READY/SERVED) — powers the cook "Completed" tab.
+  getCompleted: () => request<{ tickets: KitchenTicket[] }>('GET', '/api/kitchen/orders/completed', undefined, true),
   updateItemStatus: (orderId: string, itemId: string, status: 'done' | 'pending') =>
     request<unknown>('PATCH', `/api/kitchen/orders/${orderId}/items/${itemId}/status`, { item_status: status }, true),
   bumpOrder: (orderId: string) =>
