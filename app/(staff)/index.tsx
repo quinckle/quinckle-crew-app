@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import {
+  ActivityIndicator,
   FlatList,
   Image,
   LayoutAnimation,
@@ -11,8 +12,9 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../../context/AuthContext';
-import { crewTables, crewSessions, crewOrders, restaurantApi } from '../../services/api';
+import { crewTables, crewSessions, crewOrders, restaurantApi, crewAuth } from '../../services/api';
 import type { ActiveOrder, MenuItem } from '../../services/api';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -107,11 +109,12 @@ const STATUS_META: Record<TableStatus, { label: string; color: string }> = {
 
 export default function StaffDashboard() {
   const insets = useSafeAreaInsets();
-  const { logout, staffInfo } = useAuth();
+  const { logout, staffInfo, setPhotoUrl } = useAuth();
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [activeTab, setActiveTab] = useState<NavItem>('tables');
   const [expandedDate, setExpandedDate] = useState<string | null>(null);
   const [filterVisible, setFilterVisible] = useState(false);
-  const [tables, setTables] = useState<Table[]>(INITIAL_TABLES);
+  const [tables, setTables] = useState<Table[]>([]);
   const [isLoadingTables, setIsLoadingTables] = useState(true);
   const [menuData, setMenuData] = useState(MENU_DATA_INITIAL);
   const [menuCategories, setMenuCategories] = useState<string[]>(['All', 'Appetizers', 'Mains', 'Beverages', 'Desserts']);
@@ -377,9 +380,9 @@ export default function StaffDashboard() {
         location: undefined,
         sessionId: t.session_id ?? undefined,
       }));
-      if (apiTables.length > 0) setTables(apiTables);
+      setTables(apiTables);
     } catch {
-      // Keep mock data if API fails
+      // Keep current tables if API fails
     } finally {
       setIsLoadingTables(false);
     }
@@ -547,6 +550,32 @@ export default function StaffDashboard() {
     router.replace('/login');
   };
 
+  const handleChangePhoto = async () => {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.5,
+        base64: true,
+      });
+      if (result.canceled || !result.assets?.[0]?.base64) return;
+      const dataUrl = 'data:image/jpeg;base64,' + result.assets[0].base64;
+      setIsUploadingPhoto(true);
+      try {
+        await crewAuth.updatePhoto(dataUrl);
+        setPhotoUrl(dataUrl);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } catch (err) {
+        console.warn('Failed to upload photo', err);
+      } finally {
+        setIsUploadingPhoto(false);
+      }
+    } catch (err) {
+      console.warn('Image picker error', err);
+    }
+  };
+
   const FILTER_CHIPS = [
     { key: 'all', label: 'All', count: counts.all },
     { key: 'available', label: 'Available', count: counts.available },
@@ -572,10 +601,15 @@ export default function StaffDashboard() {
             onPress={() => setActiveTab('profile')}
             activeOpacity={0.7}
           >
-            <Image
-              source={{ uri: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?q=80&w=200&h=200&auto=format&fit=crop' }}
-              style={styles.avatarImage}
-            />
+            {staffInfo?.photoUrl ? (
+              <Image source={{ uri: staffInfo.photoUrl }} style={styles.avatarImage} />
+            ) : (
+              <View style={[styles.avatarImage, { backgroundColor: '#F35D3B', alignItems: 'center', justifyContent: 'center' }]}>
+                <Text style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>
+                  {(staffInfo?.name ?? 'S').split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase()}
+                </Text>
+              </View>
+            )}
           </TouchableOpacity>
         </View>
       )}
@@ -630,6 +664,12 @@ export default function StaffDashboard() {
             </TouchableOpacity>
           </Modal>
 
+          {isLoadingTables && tables.length === 0 ? (
+            <View style={styles.loadingState}>
+              <ActivityIndicator size="large" color={QuinckleColors.primary} />
+              <Text style={styles.loadingText}>Loading tables…</Text>
+            </View>
+          ) : (
           <FlatList
             data={filteredTables}
             keyExtractor={(item) => item.id}
@@ -685,6 +725,7 @@ export default function StaffDashboard() {
               </View>
             }
           />
+          )}
         </>
       ) : activeTab === 'menu' ? (
         <View style={styles.tabContent}>
@@ -806,15 +847,24 @@ export default function StaffDashboard() {
           </View>
 
           <View style={styles.profileHero}>
-            <View style={styles.profileImageContainer}>
-              <Image
-                source={{ uri: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?q=80&w=200&h=200&auto=format&fit=crop' }}
-                style={styles.profileImage}
-              />
+            <TouchableOpacity style={styles.profileImageContainer} onPress={handleChangePhoto} activeOpacity={0.8} disabled={isUploadingPhoto}>
+              {staffInfo?.photoUrl ? (
+                <Image source={{ uri: staffInfo.photoUrl }} style={styles.profileImage} />
+              ) : (
+                <View style={[styles.profileImage, { backgroundColor: '#F35D3B', alignItems: 'center', justifyContent: 'center' }]}>
+                  <Text style={{ color: '#fff', fontWeight: '700', fontSize: 32 }}>
+                    {(staffInfo?.name ?? 'S').split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase()}
+                  </Text>
+                </View>
+              )}
               <View style={styles.uploadBadge}>
-                <Ionicons name="camera" size={12} color="#fff" />
+                {isUploadingPhoto ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Ionicons name="camera" size={12} color="#fff" />
+                )}
               </View>
-            </View>
+            </TouchableOpacity>
             <Text style={styles.profileName}>{staffInfo?.name ?? 'Staff Member'}</Text>
             <Text style={styles.profilePhone}>{staffInfo?.restaurantName ?? 'The Grill Room'}</Text>
           </View>
@@ -1347,6 +1397,17 @@ const styles = StyleSheet.create({
     gap: Spacing.md,
   },
   emptyText: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 14,
+  },
+  loadingState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.md,
+    paddingVertical: Spacing.huge,
+  },
+  loadingText: {
     color: QuinckleColors.textTertiary,
     fontSize: 14,
   },

@@ -17,13 +17,14 @@ export interface StaffInfo {
   role: StaffRole;
   restaurantId: string;
   restaurantName: string;
+  photoUrl?: string | null;
 }
 
 interface RawVerifyOtpResponse {
   success: boolean;
   data: {
     token: string;
-    user: { id: string; name: string; role: StaffRole; restaurant_id: string; restaurant_name: string };
+    user: { id: string; name: string; role: StaffRole; restaurant_id: string; restaurant_name: string; photo_url: string | null };
   };
 }
 
@@ -64,7 +65,9 @@ async function request<T>(
 
   if (!res.ok) {
     const msg = json.message ?? json.error?.message ?? json.error ?? `API error ${res.status}`;
-    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+    const err = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg)) as Error & { code?: string };
+    err.code = json.code ?? undefined;
+    throw err;
   }
   return json as T;
 }
@@ -80,9 +83,17 @@ export const crewAuth = {
     const d = raw.data;
     return {
       crewToken: d.token,
-      staff: { id: d.user.id, name: d.user.name, role: d.user.role, restaurantId: d.user.restaurant_id, restaurantName: d.user.restaurant_name },
+      staff: { id: d.user.id, name: d.user.name, role: d.user.role, restaurantId: d.user.restaurant_id, restaurantName: d.user.restaurant_name, photoUrl: d.user.photo_url },
     };
   },
+
+  getProfile: () =>
+    request<{ success: boolean; data: { id: string; name: string; role: StaffRole; photoUrl: string | null; restaurantId: string; restaurantName: string } }>(
+      'GET', '/api/crew/auth/profile', undefined, true
+    ),
+
+  updatePhoto: (photoUrl: string) =>
+    request<{ success: boolean; data: { photoUrl: string } }>('PATCH', '/api/crew/auth/profile/photo', { photoUrl }, true),
 };
 
 // ── Dev (development only) ────────────────────────────────────────────────────

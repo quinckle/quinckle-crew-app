@@ -12,6 +12,7 @@ interface AuthContextType {
   isRestoring: boolean;
   login: (role: Role, token?: string, staff?: StaffInfo) => void;
   logout: () => void;
+  setPhotoUrl: (url: string) => void;
 }
 
 const STORAGE_KEY = 'quinckle_crew_auth';
@@ -60,13 +61,25 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
   };
 
+  const setPhotoUrl = (url: string) => {
+    setStaffInfo(prev => prev ? { ...prev, photoUrl: url } : prev);
+    AsyncStorage.getItem(STORAGE_KEY)
+      .then(raw => {
+        if (!raw) return;
+        const saved = JSON.parse(raw);
+        saved.staffInfo = { ...saved.staffInfo, photoUrl: url };
+        return AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+      })
+      .catch(() => {});
+  };
+
   // Wire 401 → auto-logout
   useEffect(() => {
     setOn401Callback(logout);
   }, []);
 
   return (
-    <AuthContext.Provider value={{ role, staffInfo, crewToken, isRestoring, login, logout }}>
+    <AuthContext.Provider value={{ role, staffInfo, crewToken, isRestoring, login, logout, setPhotoUrl }}>
       {children}
     </AuthContext.Provider>
   );
