@@ -818,7 +818,7 @@ export default function StaffDashboard() {
               {!highlightedSection ? (
                 <Text style={{ color: QuinckleColors.textTertiary, textAlign: 'center', marginTop: 40 }}>No featured section configured</Text>
               ) : (
-                <View style={[styles.comboListCard, { marginHorizontal: 16 }]}>
+                <View style={styles.comboListCard}>
                   {/* Section header */}
                   <View style={styles.featuredSectionHeader}>
                     <MaterialIcons name="star" size={16} color={QuinckleColors.primary} />
@@ -836,8 +836,8 @@ export default function StaffDashboard() {
                         {item.image
                           ? <Image source={{ uri: item.image }} style={styles.featuredItemThumb} />
                           : <View style={[styles.featuredItemThumb, { backgroundColor: 'rgba(255,255,255,0.06)', alignItems: 'center', justifyContent: 'center' }]}>
-                              <Ionicons name="fast-food-outline" size={14} color={QuinckleColors.textTertiary} />
-                            </View>}
+                            <Ionicons name="fast-food-outline" size={14} color={QuinckleColors.textTertiary} />
+                          </View>}
                         <View style={{ flex: 1 }}>
                           <Text style={styles.featuredItemName} numberOfLines={1}>{item.name}</Text>
                           <Text style={styles.featuredItemPrice}>₹{item.price}</Text>
