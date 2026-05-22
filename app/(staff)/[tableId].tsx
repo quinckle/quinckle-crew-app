@@ -73,10 +73,7 @@ export default function TableDetail() {
     setDialog({ visible: true, title, message, actions: actions.map(a => ({ ...a, onPress: () => { closeDialog(); a.onPress(); } })) });
   };
 
-  const isServingRef = React.useRef(false);
-
-  const loadBill = async (force = false) => {
-    if (!force && isServingRef.current) return; // skip poll while serving an item
+  const loadBill = async () => {
     if (!sessionId) { setIsLoading(false); return; }
     try {
       const bill = await crewSessions.getBill(sessionId);
@@ -172,18 +169,15 @@ export default function TableDetail() {
       if (o.order_id !== item.order_id) return o;
       return { ...o, items: o.items.map(i => i.item_id === item.item_id ? { ...i, served: true } : i) };
     }));
-    isServingRef.current = true;
     try {
       await crewOrders.serveItem(item.order_id, item.item_id);
-      await loadBill(true); // force=true bypasses the serving guard
+      await loadBill(); // refresh from server — same pattern as kitchen
     } catch {
-      // Revert optimistic update on failure
+      // Revert on failure
       setOrders(prev => prev.map(o => {
         if (o.order_id !== item.order_id) return o;
         return { ...o, items: o.items.map(i => i.item_id === item.item_id ? { ...i, served: false } : i) };
       }));
-    } finally {
-      isServingRef.current = false;
     }
   };
 

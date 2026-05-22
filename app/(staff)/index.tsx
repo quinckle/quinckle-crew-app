@@ -146,7 +146,6 @@ export default function StaffDashboard() {
   const [liveOrders, setLiveOrders] = useState<ActiveOrder[]>([]);
   const [ordersSubTab, setOrdersSubTab] = useState<'active' | 'completed'>('active');
   const [completingIds, setCompletingIds] = useState<string[]>([]);
-  const isServingRef = React.useRef(false); // prevents poll from overwriting during serve
   const [shiftStart, setShiftStart] = useState<Date | null>(new Date(Date.now() - 4.5 * 60 * 60 * 1000)); // Mock: Started 4.5h ago
   const [activeDuration, setActiveDuration] = useState("04h 30m");
   const [shiftPeriod, setShiftPeriod] = useState<'today' | 'week'>('today');
@@ -274,7 +273,7 @@ export default function StaffDashboard() {
   const togglePickupItem = async (orderId: string, itemId: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-    // Only serve (not un-serve) — optimistic update
+    // Optimistic update — mark served immediately
     setPickupOrders((prev) =>
       prev.map((order) => {
         if (order.id !== orderId) return order;
@@ -286,19 +285,9 @@ export default function StaffDashboard() {
       }),
     );
 
-    const allNowServed = pickupOrders
-      .find(o => o.id === orderId)?.items
-      .every(it => it.id === itemId ? true : it.isServed) ?? false;
-
-    if (allNowServed) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setCompletingIds((prev) => (prev.includes(orderId) ? prev : [...prev, orderId]));
-    }
-
-    // Call API — guard poll during call
-    isServingRef.current = true;
     try {
       await crewOrders.serveItem(orderId, itemId);
+      // Refresh from server — same pattern as kitchen screen
       await loadPickupOrders();
     } catch {
       // Revert on failure
@@ -312,8 +301,6 @@ export default function StaffDashboard() {
           }
         ),
       );
-    } finally {
-      isServingRef.current = false;
     }
   };
 
@@ -461,7 +448,6 @@ export default function StaffDashboard() {
   };
 
   const loadPickupOrders = async () => {
-    if (isServingRef.current) return; // skip poll while waiter is serving an item
     try {
       const res = await crewOrders.getActive();
       const allOrders = res.orders ?? [];
