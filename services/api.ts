@@ -189,12 +189,18 @@ export const crewPayments = {
 export interface MenuItem { id: string; name: string; description?: string; price: string; category: string; isVeg: boolean; isAvailable: boolean; imageUrl?: string; }
 export interface Restaurant { id: string; name: string; slug: string; upiId: string; }
 
+export interface MenuCategory {
+  name: string;
+  items: MenuItem[];
+}
+
 export const restaurantApi = {
   get: (restaurantId: string) =>
     request<{ success: true; data: Restaurant }>('GET', `/api/v1/restaurants/${restaurantId}`),
 
+  // Returns grouped categories: [{ name, items[] }]
   getMenu: (restaurantId: string) =>
-    request<{ success: true; data: { menuItems: MenuItem[] } }>(
-      'GET', `/api/v1/restaurants/${restaurantId}/menu`
+    request<{ success: true; data: MenuCategory[] }>(
+      'GET', `/api/v1/dine/menu/${restaurantId}`
     ),
 };

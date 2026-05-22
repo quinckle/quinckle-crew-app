@@ -395,7 +395,9 @@ export default function StaffDashboard() {
     if (!staffInfo?.restaurantId) return;
     try {
       const res = await restaurantApi.getMenu(staffInfo.restaurantId);
-      const items = res.data?.menuItems ?? [];
+      // API returns grouped categories: [{ name, items[] }]
+      const categories: any[] = (res as any)?.data ?? (res as any) ?? [];
+      const items = categories.flatMap((cat: any) => cat.items ?? []);
       if (items.length > 0) {
         setMenuData(items.map((item: any) => ({
           id: item.id,
@@ -405,11 +407,13 @@ export default function StaffDashboard() {
           available: item.isAvailable,
           image: item.imageUrl ?? undefined,
         })));
-        const cats = ['All', ...Array.from(new Set(items.map((i: any) => i.category as string)))];
-        setMenuCategories(cats as string[]);
+        const cats = ['All', ...categories.map((c: any) => c.name as string).filter(Boolean)];
+        setMenuCategories(cats);
         setMenuFilter('All');
       }
-    } catch { /* keep mock */ }
+    } catch (e) {
+      console.error('[menu] loadMenuFromApi error:', e);
+    }
   };
 
   const loadPickupOrders = async () => {
