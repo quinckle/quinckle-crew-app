@@ -100,7 +100,8 @@ export default function TableDetail() {
       setIsMenuLoading(true);
       restaurantApi.getMenu(staffInfo.restaurantId)
         .then(res => {
-          const items = (res.data?.menuItems ?? []).filter((i: any) => i.isAvailable !== false);
+          const categories: any[] = (res as any)?.data ?? [];
+          const items = categories.flatMap((c: any) => c.items ?? []).filter((i: any) => i.isAvailable !== false);
           setMenuItems(items);
         })
         .catch(() => setMenuItems([]))

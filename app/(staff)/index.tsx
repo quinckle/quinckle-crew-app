@@ -39,11 +39,13 @@ import { BottomNavbar } from '../../components/ui/BottomNavbar';
 import { PICKUP_LAYOUT_PRESET, PickupCard, PickupSegmented } from '../../components/ui/pickup';
 
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-  }),
+  handleNotification: async () => {
+    return {
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+    } as any;
+  },
 });
 
 type NavItem = 'tables' | 'menu' | 'orders' | 'activity' | 'profile' | 'cash_ledger';
@@ -157,7 +159,7 @@ export default function StaffDashboard() {
 
   // Timer to update active duration
   useEffect(() => {
-    let interval: NodeJS.Timeout;
+    let interval: ReturnType<typeof setInterval>;
     if (isOnline && shiftStart) {
       const updateDuration = () => {
         const diff = Date.now() - shiftStart.getTime();
@@ -522,8 +524,7 @@ export default function StaffDashboard() {
     // Optimistic local update
     setTables(prev => prev.map(t => (t.number === tableNum ? { ...t, status: nextStatus } : t)));
 
-    // Only 'available' and 'reserved' are supported by the API
-    if (nextStatus === 'available' || nextStatus === 'reserved') {
+    if (nextStatus === 'available') {
       const table = tables.find(t => t.number === tableNum);
       if (table) {
         try {
@@ -2188,7 +2189,7 @@ const styles = StyleSheet.create({
   periodBtn: {
     paddingHorizontal: 10,
     paddingVertical: 5,
-    borderRadius: Radius.xs,
+    borderRadius: Radius.sm,
   },
   periodBtnActive: {
     backgroundColor: QuinckleColors.surface,
