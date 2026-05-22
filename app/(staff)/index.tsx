@@ -120,6 +120,8 @@ export default function StaffDashboard() {
   const [menuCategories, setMenuCategories] = useState<string[]>(['All', 'Appetizers', 'Mains', 'Beverages', 'Desserts']);
   const [combos, setCombos] = useState<any[]>([]);
   const [highlightedSection, setHighlightedSection] = useState<{ title: string; subtitle?: string; itemIds: string[] } | null>(null);
+  const [showCombosScreen, setShowCombosScreen] = useState(false);
+  const [showFeaturedScreen, setShowFeaturedScreen] = useState(false);
   const [activeFilter, setActiveFilter] = useState<'all' | TableStatus | string>('all');
   const [menuFilter, setMenuFilter] = useState('All');
   const [searchText, setSearchText] = useState('');
@@ -751,67 +753,108 @@ export default function StaffDashboard() {
           )}
         </>
       ) : activeTab === 'menu' ? (
-        <ScrollView style={styles.tabContent} showsVerticalScrollIndicator={false}>
-          {/* ── Highlighted Section ── */}
-          {highlightedSection && highlightedSection.itemIds?.length > 0 && (() => {
-            const featuredItems = menuData.filter(m => highlightedSection.itemIds.includes(m.id));
-            if (!featuredItems.length) return null;
-            return (
-              <View style={styles.menuSection}>
-                <View style={styles.menuSectionHeader}>
-                  <Text style={styles.menuSectionEyebrow}>⭐ FEATURED</Text>
-                  <Text style={styles.menuSectionTitle}>{highlightedSection.title}</Text>
-                  {highlightedSection.subtitle ? <Text style={styles.menuSectionSub}>{highlightedSection.subtitle}</Text> : null}
-                </View>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingHorizontal: 16 }}>
-                  {featuredItems.map(item => (
-                    <View key={item.id} style={styles.featuredCard}>
-                      {item.image
-                        ? <Image source={{ uri: item.image }} style={styles.featuredCardImg} />
-                        : <View style={[styles.featuredCardImg, styles.featuredCardImgPlaceholder]}><Ionicons name="fast-food-outline" size={24} color={QuinckleColors.textTertiary} /></View>}
-                      <Text style={styles.featuredCardName} numberOfLines={1}>{item.name}</Text>
-                      <Text style={styles.featuredCardPrice}>₹{item.price}</Text>
-                    </View>
-                  ))}
-                </ScrollView>
-              </View>
-            );
-          })()}
-
-          {/* ── Combos ── */}
-          {combos.length > 0 && (
-            <View style={styles.menuSection}>
-              <View style={styles.menuSectionHeader}>
-                <Text style={styles.menuSectionEyebrow}>🎁 VALUE DEALS</Text>
-                <Text style={styles.menuSectionTitle}>Combos</Text>
-              </View>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingHorizontal: 16 }}>
-                {combos.map(combo => {
-                  const savings = Math.round(((parseFloat(combo.originalPrice) - parseFloat(combo.price)) / parseFloat(combo.originalPrice)) * 100);
-                  return (
-                    <View key={combo.id} style={styles.comboCard}>
-                      {combo.imageUrl
-                        ? <Image source={{ uri: combo.imageUrl }} style={styles.comboCardImg} />
-                        : <View style={[styles.comboCardImg, styles.featuredCardImgPlaceholder]}><Ionicons name="pricetag-outline" size={24} color={QuinckleColors.textTertiary} /></View>}
-                      {savings > 0 && (
-                        <View style={styles.comboBadge}><Text style={styles.comboBadgeText}>{savings}% off</Text></View>
-                      )}
-                      <View style={styles.comboCardBody}>
-                        <Text style={styles.comboCardName} numberOfLines={1}>{combo.title}</Text>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                          <Text style={styles.comboCardPrice}>₹{parseFloat(combo.price).toFixed(0)}</Text>
-                          <Text style={styles.comboCardOrig}>₹{parseFloat(combo.originalPrice).toFixed(0)}</Text>
-                        </View>
-                        {combo.tag ? <Text style={styles.comboCardTag}>{combo.tag}</Text> : null}
-                      </View>
-                    </View>
-                  );
-                })}
-              </ScrollView>
+        showCombosScreen ? (
+          /* ── Combos sub-screen ── */
+          <View style={{ flex: 1 }}>
+            <View style={styles.subScreenHeader}>
+              <TouchableOpacity onPress={() => setShowCombosScreen(false)} style={styles.subScreenBack}>
+                <Ionicons name="arrow-back" size={20} color={QuinckleColors.textPrimary} />
+              </TouchableOpacity>
+              <Text style={styles.subScreenTitle}>Combo Deals</Text>
             </View>
-          )}
+            <ScrollView contentContainerStyle={{ padding: 16, gap: 12 }} showsVerticalScrollIndicator={false}>
+              {combos.length === 0 ? (
+                <Text style={{ color: QuinckleColors.textTertiary, textAlign: 'center', marginTop: 40 }}>No combos available</Text>
+              ) : combos.map(combo => {
+                const orig = parseFloat(combo.originalPrice);
+                const price = parseFloat(combo.price);
+                const savings = orig > price ? Math.round(((orig - price) / orig) * 100) : 0;
+                const detailItems: any[] = combo.itemDetails
+                  ? (typeof combo.itemDetails === 'string' ? JSON.parse(combo.itemDetails) : combo.itemDetails)
+                  : [];
+                return (
+                  <View key={combo.id} style={styles.comboListCard}>
+                    {combo.imageUrl && <Image source={{ uri: combo.imageUrl }} style={styles.comboListImg} />}
+                    <View style={styles.comboListBody}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <Text style={styles.comboListName}>{combo.title}</Text>
+                        {savings > 0 && <View style={styles.comboBadge}><Text style={styles.comboBadgeText}>{savings}% off</Text></View>}
+                      </View>
+                      {combo.description ? <Text style={styles.comboListDesc}>{combo.description}</Text> : null}
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }}>
+                        <Text style={styles.comboCardPrice}>₹{price.toFixed(0)}</Text>
+                        {savings > 0 && <Text style={styles.comboCardOrig}>₹{orig.toFixed(0)}</Text>}
+                      </View>
+                      {detailItems.length > 0 && (
+                        <Text style={styles.comboItemList} numberOfLines={2}>
+                          {detailItems.map((i: any) => i.name ?? i.menuItemName).filter(Boolean).join(' · ')}
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                );
+              })}
+              <View style={{ height: 80 }} />
+            </ScrollView>
+          </View>
+        ) : showFeaturedScreen ? (
+          /* ── Featured sub-screen ── */
+          <View style={{ flex: 1 }}>
+            <View style={styles.subScreenHeader}>
+              <TouchableOpacity onPress={() => setShowFeaturedScreen(false)} style={styles.subScreenBack}>
+                <Ionicons name="arrow-back" size={20} color={QuinckleColors.textPrimary} />
+              </TouchableOpacity>
+              <Text style={styles.subScreenTitle}>{highlightedSection?.title ?? 'Featured'}</Text>
+            </View>
+            {highlightedSection?.subtitle ? (
+              <Text style={[styles.menuSectionSub, { paddingHorizontal: 16, marginBottom: 8 }]}>{highlightedSection.subtitle}</Text>
+            ) : null}
+            <ScrollView contentContainerStyle={{ padding: 16, gap: 2 }} showsVerticalScrollIndicator={false}>
+              {menuData.filter(m => highlightedSection?.itemIds?.includes(m.id)).map(item => (
+                <View key={item.id} style={styles.menuItemRow}>
+                  <View style={styles.menuItemLeft}>
+                    {item.image
+                      ? <Image source={{ uri: item.image }} style={[styles.menuItemImage, !item.available && styles.dimmed]} />
+                      : <View style={[styles.menuItemImagePlaceholder, !item.available && styles.dimmed]}><Ionicons name="fast-food-outline" size={20} color={QuinckleColors.textTertiary} /></View>}
+                    <View style={styles.menuItemInfo}>
+                      <Text style={[styles.menuItemName, !item.available && styles.dimmedText]}>{item.name}</Text>
+                      <Text style={styles.menuItemPrice}>₹{item.price}</Text>
+                    </View>
+                  </View>
+                </View>
+              ))}
+              <View style={{ height: 80 }} />
+            </ScrollView>
+          </View>
+        ) : (
+        /* ── Main menu view ── */
+        <ScrollView style={styles.tabContent} showsVerticalScrollIndicator={false}>
+          {/* Two shortcut tiles */}
+          <View style={styles.menuTileRow}>
+            <TouchableOpacity
+              style={[styles.menuTile, { opacity: combos.length === 0 ? 0.45 : 1 }]}
+              onPress={() => combos.length > 0 && setShowCombosScreen(true)}
+              activeOpacity={0.75}
+            >
+              <View style={styles.menuTileIcon}><Text style={{ fontSize: 22 }}>🎁</Text></View>
+              <Text style={styles.menuTileLabel}>Combos</Text>
+              <Text style={styles.menuTileCount}>{combos.length} deal{combos.length !== 1 ? 's' : ''}</Text>
+            </TouchableOpacity>
 
-          {/* ── Search + Category chips ── */}
+            <TouchableOpacity
+              style={[styles.menuTile, { opacity: !highlightedSection ? 0.45 : 1 }]}
+              onPress={() => highlightedSection && setShowFeaturedScreen(true)}
+              activeOpacity={0.75}
+            >
+              <View style={styles.menuTileIcon}><Text style={{ fontSize: 22 }}>⭐</Text></View>
+              <Text style={styles.menuTileLabel}>Featured</Text>
+              <Text style={styles.menuTileCount}>
+                {highlightedSection ? `${highlightedSection.itemIds?.length ?? 0} item${highlightedSection.itemIds?.length !== 1 ? 's' : ''}` : 'Not set'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Search + Category chips */}
           <View style={[styles.searchBoxFull, { marginHorizontal: 16, marginBottom: 8 }]}>
             <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
             <TextInput
@@ -823,14 +866,14 @@ export default function StaffDashboard() {
             />
           </View>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipScroll} style={styles.chipRow}>
-            {menuCategories.map((cat) => (
+            {menuCategories.map(cat => (
               <TouchableOpacity key={cat} style={[styles.chip, menuFilter === cat && styles.chipActive]} onPress={() => setMenuFilter(cat)}>
                 <Text style={[styles.chipText, menuFilter === cat && styles.chipTextActive]}>{cat}</Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
 
-          {/* ── Menu Items ── */}
+          {/* Menu Items */}
           {menuData
             .filter(item => (menuFilter === 'All' || item.category === menuFilter) && item.name.toLowerCase().includes(searchText.toLowerCase()))
             .map(item => (
@@ -854,6 +897,7 @@ export default function StaffDashboard() {
             ))}
           <View style={{ height: 120 }} />
         </ScrollView>
+        )
       ) : activeTab === 'orders' ? (
         <View style={styles.tabContent}>
           <View style={[styles.sectionHeading, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}>
@@ -1514,118 +1558,80 @@ const styles = StyleSheet.create({
   menuListContent: {
     paddingBottom: 100,
   },
-  menuSection: {
-    marginBottom: 20,
-  },
-  menuSectionHeader: {
+  menuSection: { marginBottom: 20 },
+  menuSectionHeader: { paddingHorizontal: 16, marginBottom: 10 },
+  menuSectionEyebrow: { fontSize: 10, fontWeight: '700', letterSpacing: 1.2, color: QuinckleColors.primary, marginBottom: 2 },
+  menuSectionTitle: { fontSize: 18, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.4 },
+  menuSectionSub: { fontSize: 12, color: QuinckleColors.textSecondary, marginTop: 2 },
+  featuredCardImgPlaceholder: { alignItems: 'center' as const, justifyContent: 'center' as const },
+
+  // Two shortcut tiles
+  menuTileRow: {
+    flexDirection: 'row' as const,
+    gap: 12,
     paddingHorizontal: 16,
-    marginBottom: 10,
+    marginBottom: 16,
+    marginTop: 4,
   },
-  menuSectionEyebrow: {
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 1.2,
-    color: QuinckleColors.primary,
-    marginBottom: 2,
-  },
-  menuSectionTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: QuinckleColors.textPrimary,
-    letterSpacing: -0.4,
-  },
-  menuSectionSub: {
-    fontSize: 12,
-    color: QuinckleColors.textSecondary,
-    marginTop: 2,
-  },
-  featuredCard: {
-    width: 130,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderRadius: 12,
-    overflow: 'hidden',
+  menuTile: {
+    flex: 1,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.07)',
+    borderColor: 'rgba(255,255,255,0.09)',
+    padding: 16,
+    gap: 4,
   },
-  featuredCardImg: {
-    width: 130,
-    height: 90,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-  },
-  featuredCardImgPlaceholder: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  featuredCardName: {
-    fontSize: 12,
-    fontWeight: '600',
+  menuTileIcon: { marginBottom: 4 },
+  menuTileLabel: {
+    fontSize: 15,
+    fontWeight: '700',
     color: QuinckleColors.textPrimary,
-    paddingHorizontal: 8,
-    paddingTop: 6,
+    letterSpacing: -0.3,
   },
-  featuredCardPrice: {
+  menuTileCount: {
     fontSize: 11,
-    color: QuinckleColors.primary,
-    fontWeight: '700',
-    paddingHorizontal: 8,
-    paddingBottom: 8,
-    marginTop: 2,
+    color: QuinckleColors.textTertiary,
+    fontWeight: '500',
   },
-  comboCard: {
-    width: 160,
+
+  // Sub-screen header
+  subScreenHeader: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
+    gap: 12,
+  },
+  subScreenBack: { padding: 4 },
+  subScreenTitle: { fontSize: 17, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.3 },
+
+  // Combo list card (in sub-screen)
+  comboListCard: {
     backgroundColor: 'rgba(255,255,255,0.04)',
-    borderRadius: 12,
-    overflow: 'hidden',
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.07)',
+    overflow: 'hidden' as const,
+    marginBottom: 12,
   },
-  comboCardImg: {
-    width: 160,
-    height: 100,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-  },
+  comboListImg: { width: '100%' as any, height: 140, backgroundColor: 'rgba(255,255,255,0.06)' },
+  comboListBody: { padding: 14 },
+  comboListName: { fontSize: 15, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.2 },
+  comboListDesc: { fontSize: 12, color: QuinckleColors.textSecondary, marginTop: 4, lineHeight: 17 },
+  comboItemList: { fontSize: 11, color: QuinckleColors.textTertiary, marginTop: 6 },
+
   comboBadge: {
-    position: 'absolute',
-    top: 8,
-    left: 8,
     backgroundColor: QuinckleColors.primary,
     borderRadius: 4,
     paddingHorizontal: 6,
     paddingVertical: 2,
   },
-  comboBadgeText: {
-    fontSize: 9,
-    fontWeight: '800',
-    color: '#fff',
-    letterSpacing: 0.4,
-  },
-  comboCardBody: {
-    padding: 8,
-  },
-  comboCardName: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: QuinckleColors.textPrimary,
-    marginBottom: 4,
-  },
-  comboCardPrice: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: QuinckleColors.primary,
-  },
-  comboCardOrig: {
-    fontSize: 11,
-    color: QuinckleColors.textTertiary,
-    textDecorationLine: 'line-through',
-  },
-  comboCardTag: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: QuinckleColors.textTertiary,
-    letterSpacing: 0.8,
-    marginTop: 4,
-    textTransform: 'uppercase',
-  },
+  comboBadgeText: { fontSize: 9, fontWeight: '800', color: '#fff', letterSpacing: 0.4 },
+  comboCardPrice: { fontSize: 15, fontWeight: '800', color: QuinckleColors.primary },
+  comboCardOrig: { fontSize: 12, color: QuinckleColors.textTertiary, textDecorationLine: 'line-through' as const },
   menuItemRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
