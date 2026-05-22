@@ -106,12 +106,26 @@ export default function CredentialScreen() {
       setIsLoading(true);
       try {
         await crewAuth.sendOtp(`+91${phone}`);
-      } catch (e) {
-        if (__DEV__) console.warn('[API] send-otp failed, using mock mode:', e);
-      } finally {
-        setIsLoading(false);
         setStep(2);
         setResendCooldown(30);
+      } catch (e: any) {
+        const code: string = (e as any)?.code ?? '';
+        if (code === 'CREW_NOT_FOUND') {
+          setError('You\'re not registered as crew for any restaurant. Ask your manager to add you first.');
+        } else if (code === 'INVALID_PHONE') {
+          setError('Invalid phone number format.');
+        } else if (code === 'OTP_RATE_LIMIT') {
+          setError('Too many requests. Please wait and try again.');
+        } else if (code === 'OTP_SEND_FAILED') {
+          // SMS failed but the backend stored the OTP — still advance
+          setStep(2);
+          setResendCooldown(30);
+        } else {
+          // Network error — can't reach server
+          setError('Could not connect to server. Check your connection and try again.');
+        }
+      } finally {
+        setIsLoading(false);
       }
     } else {
       if (!isOtpValid) return;

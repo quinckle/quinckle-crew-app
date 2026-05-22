@@ -11,9 +11,12 @@ const LOCAL_HOST = PHYSICAL_DEVICE_IP
   : Platform.OS === 'android' ? '10.0.2.2' : 'localhost';
 const LOCAL_PORT = 3000;
 
-// ⚠️  Update PROD_HOST below to your actual Render backend URL before shipping
 const PROD_HOST = 'https://quinckle-user-app-backend.onrender.com';
 
-export const API_BASE_URL = __DEV__
-  ? `http://${LOCAL_HOST}:${LOCAL_PORT}`
-  : PROD_HOST;
+// Set to true when testing against the production backend from Expo Go.
+// Set to false only when running the backend locally on your machine.
+const USE_PROD_BACKEND_IN_DEV = true;
+
+export const API_BASE_URL = (!__DEV__ || USE_PROD_BACKEND_IN_DEV)
+  ? PROD_HOST
+  : `http://${LOCAL_HOST}:${LOCAL_PORT}`;
