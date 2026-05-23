@@ -15,7 +15,7 @@ import {
 import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
-import { crewTables, crewSessions, crewOrders, restaurantApi, crewAuth } from '../../services/api';
+import { crewTables, crewSessions, crewOrders, crewPayments, restaurantApi, crewAuth } from '../../services/api';
 import { subscribeChannel } from '../../services/realtime';
 
 async function playSound(file: any) {
@@ -127,6 +127,8 @@ export default function StaffDashboard() {
   const { logout, staffInfo, setPhotoUrl } = useAuth();
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [activeTab, setActiveTab] = useState<NavItem>('tables');
+  const [cashLedger, setCashLedger] = useState<import('../../services/api').CashLedger | null>(null);
+  const [isLoadingLedger, setIsLoadingLedger] = useState(false);
   const [expandedDate, setExpandedDate] = useState<string | null>(null);
   const [filterVisible, setFilterVisible] = useState(false);
   const [tables, setTables] = useState<Table[]>([]);
@@ -513,6 +515,7 @@ export default function StaffDashboard() {
     loadTables();
     loadMenuFromApi();
     loadPickupOrders();
+    loadCashLedger();
     if (staffInfo?.restaurantId) {
       restaurantApi.getBranding(staffInfo.restaurantId)
         .then(res => { if ((res as any)?.data?.logoUrl) setRestaurantLogoUrl((res as any).data.logoUrl); })
@@ -520,9 +523,26 @@ export default function StaffDashboard() {
     }
   }, [staffInfo?.restaurantId]);
 
+  const loadCashLedger = async () => {
+    setIsLoadingLedger(true);
+    try {
+      const data = await crewPayments.getCashLedger();
+      setCashLedger(data);
+    } catch {
+      // non-fatal — show stale data if any
+    } finally {
+      setIsLoadingLedger(false);
+    }
+  };
+
   // Immediately refresh pickup orders when switching to Orders tab
   useEffect(() => {
     if (activeTab === 'orders') void loadPickupOrders();
+  }, [activeTab]);
+
+  // Load cash ledger when switching to that tab
+  useEffect(() => {
+    if (activeTab === 'cash_ledger') void loadCashLedger();
   }, [activeTab]);
 
   // Ably: waiter:{restaurantId} — pure push, no polling
@@ -562,13 +582,31 @@ export default function StaffDashboard() {
 
     const off6 = subscribeChannel(`waiter:${restaurantId}`, 'payment_confirmed', () => {
       void loadTables();
+      // Refresh ledger if the tab is open — cash collection just confirmed
+      if (activeTab === 'cash_ledger') void loadCashLedger();
     });
 
     const off7 = subscribeChannel(`waiter:${restaurantId}`, 'item_bumped', () => {
       void loadPickupOrders();
     });
 
-    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off7(); };
+    const off8 = subscribeChannel(`waiter:${restaurantId}`, 'cash_collection_requested', (data: any) => {
+      const tableNumber = data?.tableNumber as number | undefined;
+      const amount = data?.amount as number | undefined;
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
+      Notifications.scheduleNotificationAsync({
+        content: {
+          title: `💵 Collect cash${tableNumber ? ` — Table ${tableNumber}` : ''}`,
+          body: amount ? `₹${amount} due at the table` : 'Customer is paying by cash',
+          sound: true,
+        },
+        trigger: null,
+      }).catch(() => {});
+      void loadTables();
+    });
+
+    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off7(); off8(); };
   }, [staffInfo?.restaurantId]);
 
   const updateTableStatus = async (tableNum: number, nextStatus: TableStatus) => {
@@ -1162,7 +1200,7 @@ export default function StaffDashboard() {
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.cardTitle}>Cash Collected</Text>
-                <Text style={styles.cashValue}>₹48,250</Text>
+                <Text style={styles.cashValue}>₹{(cashLedger?.shiftTotal ?? 0).toLocaleString('en-IN')}</Text>
               </View>
               <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
             </View>
@@ -1291,22 +1329,20 @@ export default function StaffDashboard() {
           </View>
 
           <FlatList
-            data={[
-              { date: '10 May', total: 2050, items: [{ id: 'c1', tableNo: 'T01', amount: 2050, time: '14:20' }] },
-              {
-                date: '09 May', total: 5590, items: [
-                  { id: 'c2', tableNo: 'T05', amount: 1280, time: '13:30' },
-                  { id: 'c3', tableNo: 'T03', amount: 3420, time: '12:45' },
-                  { id: 'c4', tableNo: 'T11', amount: 890, time: '11:15' },
-                ]
-              },
-            ]}
+            data={cashLedger?.groups ?? []}
             keyExtractor={(item) => item.date}
             contentContainerStyle={styles.ledgerListContent}
+            ListEmptyComponent={
+              <View style={{ alignItems: 'center', paddingTop: 48 }}>
+                <Text style={{ color: QuinckleColors.textTertiary, fontSize: 13 }}>
+                  {isLoadingLedger ? 'Loading…' : 'No cash collections yet.'}
+                </Text>
+              </View>
+            }
             ListHeaderComponent={
               <View style={styles.ledgerSummary}>
                 <Text style={styles.ledgerSummaryLabel}>Shift Total</Text>
-                <Text style={styles.ledgerSummaryValue}>₹48,250</Text>
+                <Text style={styles.ledgerSummaryValue}>₹{(cashLedger?.shiftTotal ?? 0).toLocaleString('en-IN')}</Text>
               </View>
             }
             renderItem={({ item }) => {
