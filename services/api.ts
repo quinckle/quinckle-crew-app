@@ -14,6 +14,7 @@ export type StaffRole = 'STEWARD' | 'CHEF' | 'ADMIN' | 'CASHIER';
 export interface StaffInfo {
   id: string;
   name: string;
+  phone?: string;
   role: StaffRole;
   restaurantId: string;
   restaurantName: string;
@@ -24,7 +25,7 @@ interface RawVerifyOtpResponse {
   success: boolean;
   data: {
     token: string;
-    user: { id: string; name: string; role: StaffRole; restaurant_id: string; restaurant_name: string; photo_url: string | null };
+    user: { id: string; name: string; phone: string; role: StaffRole; restaurant_id: string; restaurant_name: string; photo_url: string | null };
   };
 }
 
@@ -83,12 +84,12 @@ export const crewAuth = {
     const d = raw.data;
     return {
       crewToken: d.token,
-      staff: { id: d.user.id, name: d.user.name, role: d.user.role, restaurantId: d.user.restaurant_id, restaurantName: d.user.restaurant_name, photoUrl: d.user.photo_url },
+      staff: { id: d.user.id, name: d.user.name, phone: d.user.phone, role: d.user.role, restaurantId: d.user.restaurant_id, restaurantName: d.user.restaurant_name, photoUrl: d.user.photo_url },
     };
   },
 
   getProfile: () =>
-    request<{ success: boolean; data: { id: string; name: string; role: StaffRole; photoUrl: string | null; restaurantId: string; restaurantName: string } }>(
+    request<{ success: boolean; data: { id: string; name: string; phone: string; role: StaffRole; photoUrl: string | null; restaurantId: string; restaurantName: string } }>(
       'GET', '/api/crew/auth/profile', undefined, true
     ),
 

@@ -41,6 +41,16 @@ import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { BottomNavbar } from '../../components/ui/BottomNavbar';
 import { PICKUP_LAYOUT_PRESET, PickupCard, PickupSegmented } from '../../components/ui/pickup';
 import { TableSkeleton } from '../../components/ui/TableSkeleton';
+import { LinearGradient } from 'expo-linear-gradient';
+
+// Format an Indian phone like "9051138485" → "+91 90511 38485" for display
+function formatPhone(raw?: string | null): string {
+  if (!raw) return '';
+  const digits = raw.replace(/\D/g, '');
+  const last10 = digits.slice(-10);
+  if (last10.length !== 10) return raw;
+  return `+91 ${last10.slice(0, 5)} ${last10.slice(5)}`;
+}
 
 Notifications.setNotificationHandler({
   handleNotification: async () => {
@@ -1205,36 +1215,87 @@ export default function StaffDashboard() {
           />
         </View>
       ) : activeTab === 'profile' ? (
-        <ScrollView style={styles.tabContent} contentContainerStyle={styles.profileContent}>
-          <View style={styles.profileHeaderRow}>
-            <TouchableOpacity style={styles.iconBtn} onPress={() => setActiveTab('tables')}>
-              <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
-            </TouchableOpacity>
-            <Text style={styles.screenTitle}>Profile</Text>
-            <View style={styles.iconBtnPlaceholder} />
-          </View>
-
-          <View style={styles.profileHero}>
-            <TouchableOpacity style={styles.profileImageContainer} onPress={handleChangePhoto} activeOpacity={0.8} disabled={isUploadingPhoto}>
+        <ScrollView
+          style={styles.tabContent}
+          contentContainerStyle={styles.profileContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Full-bleed hero with photo, gradient overlay, name + phone */}
+          <View style={styles.heroWrap}>
+            <TouchableOpacity
+              activeOpacity={0.95}
+              onPress={handleChangePhoto}
+              disabled={isUploadingPhoto}
+              style={styles.heroTouch}
+            >
               {staffInfo?.photoUrl ? (
-                <Image source={{ uri: staffInfo.photoUrl }} style={styles.profileImage} />
+                <Image
+                  source={{ uri: staffInfo.photoUrl }}
+                  style={styles.heroImage}
+                  resizeMode="cover"
+                />
               ) : (
-                <View style={[styles.profileImage, { backgroundColor: '#F35D3B', alignItems: 'center', justifyContent: 'center' }]}>
-                  <Text style={{ color: '#fff', fontWeight: '700', fontSize: 32 }}>
-                    {(staffInfo?.name ?? 'S').split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase()}
+                <View style={[styles.heroImage, styles.heroFallback]}>
+                  <Text style={styles.heroFallbackInitials}>
+                    {(staffInfo?.name ?? 'S')
+                      .split(' ')
+                      .map((w: string) => w[0])
+                      .join('')
+                      .slice(0, 2)
+                      .toUpperCase()}
                   </Text>
                 </View>
               )}
-              <View style={styles.uploadBadge}>
+
+              {/* Top vignette so back button stays readable on bright photos */}
+              <LinearGradient
+                colors={['rgba(0,0,0,0.55)', 'rgba(0,0,0,0)']}
+                locations={[0, 1]}
+                style={styles.heroTopVignette}
+                pointerEvents="none"
+              />
+
+              {/* Bottom overlay carries name + phone over a darken-to-black ramp */}
+              <LinearGradient
+                colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.85)', 'rgba(0,0,0,0.97)']}
+                locations={[0, 0.55, 1]}
+                style={styles.heroBottomGradient}
+                pointerEvents="none"
+              />
+
+              <View style={styles.heroBottomContent} pointerEvents="none">
+                <View style={styles.heroRoleChip}>
+                  <View style={styles.heroRoleDot} />
+                  <Text style={styles.heroRoleText}>{(staffInfo?.role ?? 'STAFF').toUpperCase()}</Text>
+                </View>
+                <Text style={styles.heroName} numberOfLines={1}>
+                  {staffInfo?.name ?? 'Staff Member'}
+                </Text>
+                <View style={styles.heroPhoneRow}>
+                  <Ionicons name="call-outline" size={13} color="rgba(255,255,255,0.75)" />
+                  <Text style={styles.heroPhone}>{formatPhone(staffInfo?.phone) || '—'}</Text>
+                </View>
+              </View>
+
+              {/* Camera badge in the corner — separate visual cue that the
+                  whole tile is tappable to change the photo */}
+              <View style={styles.heroCameraBadge} pointerEvents="none">
                 {isUploadingPhoto ? (
                   <ActivityIndicator size="small" color="#fff" />
                 ) : (
-                  <Ionicons name="camera" size={12} color="#fff" />
+                  <Ionicons name="camera" size={15} color="#fff" />
                 )}
               </View>
             </TouchableOpacity>
-            <Text style={styles.profileName}>{staffInfo?.name ?? 'Staff Member'}</Text>
-            <Text style={styles.profilePhone}>{staffInfo?.restaurantName ?? 'The Grill Room'}</Text>
+
+            {/* Back button overlays the top-left of the hero */}
+            <TouchableOpacity
+              style={[styles.heroBackBtn, { top: insets.top + Spacing.sm }]}
+              onPress={() => setActiveTab('tables')}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="chevron-back" size={22} color="#fff" />
+            </TouchableOpacity>
           </View>
 
           <View style={styles.card}>
@@ -2202,48 +2263,130 @@ const styles = StyleSheet.create({
     letterSpacing: -0.2,
   },
 
-  profileHero: {
-    alignItems: 'center',
-    marginBottom: Spacing.xxl,
-  },
-  profileImageContainer: {
-    width: 92,
-    height: 92,
-    borderRadius: 46,
-    marginBottom: Spacing.md,
+  // ── Full-bleed hero ────────────────────────────────────────────────────
+  // Negative margins break out of the container's horizontal padding +
+  // safe-area top, so the photo runs edge-to-edge and right up to the
+  // status bar.
+  heroWrap: {
+    marginHorizontal: -Spacing.lg,
+    marginTop: -(Spacing.sm),
+    marginBottom: Spacing.lg,
     position: 'relative',
   },
-  profileImage: {
+  heroTouch: {
+    width: '100%',
+    aspectRatio: 1, // square photos look cleanest given we upload at 400×400
+    position: 'relative',
+    backgroundColor: QuinckleColors.surface,
+  },
+  heroImage: {
     width: '100%',
     height: '100%',
-    borderRadius: 46,
-    borderWidth: 2,
-    borderColor: QuinckleColors.border,
   },
-  uploadBadge: {
-    position: 'absolute',
-    bottom: 0,
-    right: 0,
+  heroFallback: {
     backgroundColor: QuinckleColors.primary,
-    width: 28,
-    height: 28,
-    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 3,
-    borderColor: QuinckleColors.background,
   },
-  profileName: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 20,
+  heroFallbackInitials: {
+    color: '#fff',
+    fontSize: 72,
+    fontWeight: '800',
+    letterSpacing: -2,
+  },
+  heroTopVignette: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 120,
+  },
+  heroBottomGradient: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: '55%',
+  },
+  heroBottomContent: {
+    position: 'absolute',
+    left: Spacing.xl,
+    right: Spacing.xl,
+    bottom: Spacing.xl,
+  },
+  heroRoleChip: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: Radius.pill,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    marginBottom: Spacing.sm,
+  },
+  heroRoleDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: QuinckleColors.success,
+  },
+  heroRoleText: {
+    color: '#fff',
+    fontSize: 10,
     fontWeight: '700',
-    letterSpacing: -0.3,
+    letterSpacing: 0.6,
   },
-  profilePhone: {
-    color: QuinckleColors.textSecondary,
+  heroName: {
+    color: '#fff',
+    fontSize: 28,
+    fontWeight: '800',
+    letterSpacing: -0.6,
+    lineHeight: 32,
+  },
+  heroPhoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 6,
+  },
+  heroPhone: {
+    color: 'rgba(255,255,255,0.78)',
     fontSize: 13,
     fontWeight: '500',
-    marginTop: 4,
+    letterSpacing: 0.2,
+  },
+  heroCameraBadge: {
+    position: 'absolute',
+    right: Spacing.lg,
+    bottom: Spacing.lg,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: QuinckleColors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'rgba(0,0,0,0.4)',
+    shadowColor: '#000',
+    shadowOpacity: 0.35,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  heroBackBtn: {
+    position: 'absolute',
+    left: Spacing.lg,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
   },
 
   card: {
