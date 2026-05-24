@@ -1,6 +1,5 @@
 import { AuthProvider } from '@/context/AuthContext';
 import { Stack } from 'expo-router';
-import 'react-native-reanimated';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
 import { QuinckleColors } from '@/constants/Colors';
