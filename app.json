@@ -37,7 +37,9 @@
         {
           "icon": "./assets/images/icon.png",
           "color": "#004AAD",
-          "sounds": ["./assets/audio/notifications/waiter_notification.mp3"]
+          "sounds": [
+            "./assets/audio/notifications/waiter_notification.mp3"
+          ]
         }
       ],
       [
@@ -49,6 +51,14 @@
           "backgroundColor": "#ffffff",
           "dark": {
             "backgroundColor": "#000000"
+          }
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "allowNativeHeapPointerTagging": false
           }
         }
       ]
