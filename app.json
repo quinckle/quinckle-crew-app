@@ -31,6 +31,15 @@
     },
     "plugins": [
       "expo-router",
+      "expo-dev-client",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#004AAD",
+          "sounds": ["./assets/audio/notifications/waiter notification.mp3"]
+        }
+      ],
       [
         "expo-splash-screen",
         {
