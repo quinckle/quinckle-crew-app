@@ -87,29 +87,38 @@ async function getOrCreateEntry(channelName: string): Promise<PoolEntry | null> 
 			const Realtime = Ably.Realtime ?? Ably.default?.Realtime;
 			if (!Realtime) return null;
 
-			const tokenRequest = await fetchTokenRequest(channelName);
-
+			// Use authCallback exclusively — Ably will invoke it on first connection
+			// to fetch a TokenRequest and exchange it for a real token, and again
+			// whenever the token nears expiry. Previously we also passed
+			// `token: tokenRequest` which is invalid (a TokenRequest is not a Token)
+			// and broke long-running subscriptions silently.
 			const client = new Realtime({
 				authCallback: (_data: any, cb: (err: Error | null, t: unknown) => void) => {
 					fetchTokenRequest(channelName)
 						.then((t) => cb(null, t))
-						.catch((err) => cb(err as Error, null));
+						.catch((err) => {
+							console.warn(`[realtime] ${channelName} token fetch failed`, err);
+							cb(err as Error, null);
+						});
 				},
-				token: tokenRequest as any,
 			});
 
-			// Surface connection health to watchers
+			// Surface connection health to watchers + log for in-dev diagnostics
 			client.connection.on((stateChange: any) => {
 				const connected = stateChange.current === 'connected';
 				connStates.set(channelName, connected);
 				connHandlers.get(channelName)?.forEach(h => h(connected));
+				if (__DEV__) {
+					console.log(`[realtime] ${channelName} → ${stateChange.current}${stateChange.reason ? ` (${stateChange.reason.message})` : ''}`);
+				}
 			});
 
 			const channel = client.channels.get(channelName);
 			const entry: PoolEntry = { client, channel, refCount: 0 };
 			pool.set(channelName, entry);
 			return entry;
-		} catch {
+		} catch (err) {
+			console.warn(`[realtime] ${channelName} setup failed`, err);
 			return null;
 		} finally {
 			poolInit.delete(channelName);
