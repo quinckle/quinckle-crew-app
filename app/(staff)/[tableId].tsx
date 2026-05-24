@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Animated, FlatList, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator, PanResponder, Share } from 'react-native';
+import { Animated, FlatList, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator, Share } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
@@ -39,109 +39,6 @@ function itemStatus(item: BillOrderItem, orderStatus: BillOrder['status']): Item
 function formatTime(iso: string): string {
   const d = new Date(iso);
   return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-}
-
-interface SwipeConfirmProps {
-  onConfirm: () => void;
-  isConfirmed: boolean;
-  grandTotal: number;
-}
-
-function SwipeConfirm({ onConfirm, isConfirmed, grandTotal }: SwipeConfirmProps) {
-  const [width, setWidth] = useState(0);
-  const translateX = React.useRef(new Animated.Value(0)).current;
-
-  const handleWidth = 42;
-  const padding = 4;
-  const maxRange = width > 0 ? width - handleWidth - (padding * 2) : 0;
-
-  // Keep mutable refs so the PanResponder closure always reads the latest values
-  const maxRangeRef = React.useRef(maxRange);
-  const isConfirmedRef = React.useRef(isConfirmed);
-  const onConfirmRef = React.useRef(onConfirm);
-  maxRangeRef.current = maxRange;
-  isConfirmedRef.current = isConfirmed;
-  onConfirmRef.current = onConfirm;
-
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 5,
-        onPanResponderMove: (_, gestureState) => {
-          const mr = maxRangeRef.current;
-          if (isConfirmedRef.current || mr <= 0) return;
-          let newX = gestureState.dx;
-          if (newX < 0) newX = 0;
-          if (newX > mr) newX = mr;
-          translateX.setValue(newX);
-        },
-        onPanResponderRelease: (_, gestureState) => {
-          const mr = maxRangeRef.current;
-          if (isConfirmedRef.current || mr <= 0) return;
-          if (gestureState.dx >= mr * 0.7) {
-            Animated.timing(translateX, {
-              toValue: mr,
-              duration: 150,
-              useNativeDriver: true,
-            }).start(() => {
-              onConfirmRef.current();
-            });
-          } else {
-            Animated.spring(translateX, {
-              toValue: 0,
-              useNativeDriver: true,
-              bounciness: 4,
-              speed: 12,
-            }).start();
-          }
-        },
-      }),
-    [translateX],
-  );
-
-  useEffect(() => {
-    if (!isConfirmed) {
-      translateX.setValue(0);
-    }
-  }, [isConfirmed]);
-
-  const textOpacity = maxRange > 0 ? translateX.interpolate({
-    inputRange: [0, maxRange * 0.6],
-    outputRange: [1, 0],
-    extrapolate: 'clamp',
-  }) : 1;
-
-  if (isConfirmed) {
-    return (
-      <View style={styles.swipeSuccessContainer}>
-        <Ionicons name="checkmark-circle" size={18} color="#4ade80" />
-        <Text style={styles.swipeSuccessText}>Payment Collected</Text>
-      </View>
-    );
-  }
-
-  return (
-    <View
-      style={styles.swipeContainer}
-      onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
-    >
-      <Animated.Text pointerEvents="none" style={[styles.swipeText, { opacity: textOpacity }]}>
-        Swipe right to Collect Cash (₹{grandTotal.toFixed(0)})
-      </Animated.Text>
-      <Animated.View
-        style={[
-          styles.swipeThumb,
-          {
-            transform: [{ translateX }],
-          },
-        ]}
-        {...panResponder.panHandlers}
-      >
-        <Ionicons name="chevron-forward" size={18} color="#fff" />
-      </Animated.View>
-    </View>
-  );
 }
 
 export default function TableDetail() {
@@ -338,27 +235,10 @@ export default function TableDetail() {
     }
   };
 
-  const handleCollectCash = () => {
-    if (isPaid || !staffInfo?.id) return;
-    showDialog(
-      'Collect Payment',
-      `Collect ₹${grandTotal.toFixed(0)} cash from Table T${tableNum}?`,
-      [
-        { label: 'Cancel', onPress: () => {} },
-        {
-          label: 'Mark Paid',
-          variant: 'primary',
-          onPress: async () => {
-            try {
-              await crewPayments.cashConfirm(sessionId, staffInfo.id, Math.round(grandTotal));
-              setIsPaid(true);
-              setSessionStatus('paid');
-            } catch { /* already collected maybe */ setIsPaid(true); }
-          },
-        },
-      ],
-    );
-  };
+  // Cash collection lives in app/(staff)/cash-collection.tsx now — accessible
+  // via the cash icon in the staff dashboard header. The table screen no
+  // longer offers a "Collect Cash" action because cash collection is driven
+  // by diner-initiated cash checkouts (paymentStatus: PENDING_CASH).
 
   // Auto-dismiss QR modal when Ably payment_confirmed arrives and isPaid flips
   useEffect(() => {
@@ -547,36 +427,26 @@ export default function TableDetail() {
         )}
 
         {isPaid ? (
-          <View style={styles.swipeSuccessContainer}>
+          <View style={styles.paidStrip}>
             <Ionicons name="checkmark-circle" size={18} color="#4ade80" />
-            <Text style={styles.swipeSuccessText}>Payment Collected</Text>
+            <Text style={styles.paidStripText}>Payment Collected</Text>
           </View>
         ) : (
-          <View style={styles.paymentOptionsRow}>
-            <TouchableOpacity
-              style={styles.cashPayBtn}
-              onPress={handleCollectCash}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="cash-outline" size={17} color={QuinckleColors.textSecondary} />
-              <Text style={styles.cashPayBtnText}>Collect Cash</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.onlinePayBtn, isGeneratingLink && styles.onlinePayBtnLoading]}
-              onPress={handleRequestOnlinePayment}
-              activeOpacity={0.85}
-              disabled={isGeneratingLink}
-            >
-              {isGeneratingLink ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Ionicons name="qr-code-outline" size={17} color="#fff" />
-              )}
-              <Text style={styles.onlinePayBtnText}>
-                {isGeneratingLink ? 'Generating…' : 'Online Payment'}
-              </Text>
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            style={[styles.onlinePayBtn, isGeneratingLink && styles.onlinePayBtnLoading]}
+            onPress={handleRequestOnlinePayment}
+            activeOpacity={0.85}
+            disabled={isGeneratingLink}
+          >
+            {isGeneratingLink ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Ionicons name="qr-code-outline" size={17} color="#fff" />
+            )}
+            <Text style={styles.onlinePayBtnText}>
+              {isGeneratingLink ? 'Generating…' : 'Send Online Payment Link'}
+            </Text>
+          </TouchableOpacity>
         )}
 
         <TouchableOpacity style={styles.totalRow} activeOpacity={0.85} onPress={() => setIsExpanded(!isExpanded)}>
@@ -923,41 +793,7 @@ const styles = StyleSheet.create({
     color: QuinckleColors.primary,
     fontWeight: '600',
   },
-  swipeContainer: {
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: QuinckleColors.surfaceMuted,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
-    paddingHorizontal: 4,
-    justifyContent: 'center',
-    marginVertical: Spacing.md,
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  swipeText: {
-    color: QuinckleColors.textSecondary,
-    fontSize: 13,
-    fontWeight: '600',
-    alignSelf: 'center',
-    position: 'absolute',
-    textAlign: 'center',
-    width: '100%',
-  },
-  swipeThumb: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: QuinckleColors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.2,
-    shadowRadius: 1.5,
-  },
-  swipeSuccessContainer: {
+  paidStrip: {
     height: 50,
     borderRadius: 25,
     backgroundColor: 'rgba(74,222,128,0.08)',
@@ -969,36 +805,13 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
     marginVertical: Spacing.md,
   },
-  swipeSuccessText: {
+  paidStripText: {
     color: '#4ade80',
     fontSize: 14,
     fontWeight: '600',
   },
-  // Two-button payment row
-  paymentOptionsRow: {
-    flexDirection: 'row',
-    gap: Spacing.md,
-    marginVertical: Spacing.md,
-  },
-  cashPayBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.sm,
-    height: 50,
-    borderRadius: Radius.md,
-    backgroundColor: QuinckleColors.surfaceMuted,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
-  },
-  cashPayBtnText: {
-    color: QuinckleColors.textSecondary,
-    fontSize: 14,
-    fontWeight: '600',
-  },
   onlinePayBtn: {
-    flex: 1.4,
+    marginVertical: Spacing.md,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
