@@ -37,7 +37,7 @@
         {
           "icon": "./assets/images/icon.png",
           "color": "#004AAD",
-          "sounds": ["./assets/audio/notifications/waiter notification.mp3"]
+          "sounds": ["./assets/audio/notifications/waiter_notification.mp3"]
         }
       ],
       [
