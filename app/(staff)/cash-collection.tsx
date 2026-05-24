@@ -65,8 +65,9 @@ export default function CashCollectionScreen() {
   const load = useCallback(async () => {
     try {
       const data = await crewPayments.getCashRequests();
-      setPending(data.pending);
-      setTodayCollected(data.todayCollected);
+      // Guard against any envelope/shape drift — never set state to undefined.
+      setPending(Array.isArray(data?.pending) ? data.pending : []);
+      setTodayCollected(Array.isArray(data?.todayCollected) ? data.todayCollected : []);
     } catch (err) {
       console.error('[cash-collection] load failed', err);
     } finally {

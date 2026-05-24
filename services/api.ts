@@ -223,8 +223,18 @@ export const crewPayments = {
     request<unknown>('POST', '/api/crew/payments/cash', { order_id: orderId, staff_id: staffId, amount_collected: amountCollected }, true),
 
   // Powers the cash-collection screen: pending requests + today's history.
-  getCashRequests: () =>
-    request<CashRequestsResponse>('GET', '/api/crew/payments/cash-requests', undefined, true),
+  // Backend wraps the payload in { success, data } — unwrap so callers get
+  // the clean shape. Defaults to empty lists when the backend is on an old
+  // version (graceful degradation while rolling out).
+  getCashRequests: async (): Promise<CashRequestsResponse> => {
+    const res = await request<{ success: boolean; data?: CashRequestsResponse }>(
+      'GET', '/api/crew/payments/cash-requests', undefined, true,
+    );
+    return {
+      pending:        res.data?.pending        ?? [],
+      todayCollected: res.data?.todayCollected ?? [],
+    };
+  },
 
   requestOnlinePaymentLink: (sessionId: string) =>
     request<{ payment_link_url: string; amount: number }>(
