@@ -1,7 +1,6 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Animated, FlatList, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator, PanResponder } from 'react-native';
-import QRCode from 'react-native-qrcode-svg';
+import { Animated, FlatList, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator, PanResponder, Share } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
@@ -619,17 +618,19 @@ export default function TableDetail() {
 
             <View style={styles.qrCodeWrapper}>
               {paymentLinkUrl ? (
-                <QRCode
-                  value={paymentLinkUrl}
-                  size={220}
-                  backgroundColor="#fff"
-                  color="#09090b"
-                />
+                <TouchableOpacity
+                  style={styles.shareLinkBtn}
+                  onPress={() => Share.share({ message: paymentLinkUrl })}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="share-outline" size={20} color="#09090b" />
+                  <Text style={styles.shareLinkBtnText}>Share payment link</Text>
+                </TouchableOpacity>
               ) : null}
             </View>
 
             <Text style={styles.qrHint}>
-              Show this QR to the guest, or share the payment link
+              Share this link with the guest to collect payment
             </Text>
 
             <View style={styles.qrWaitingRow}>
@@ -1059,6 +1060,18 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderRadius: Radius.lg,
     marginVertical: Spacing.md,
+  },
+  shareLinkBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+  },
+  shareLinkBtnText: {
+    color: '#09090b',
+    fontSize: 15,
+    fontWeight: '600',
   },
   qrHint: {
     color: QuinckleColors.textTertiary,
