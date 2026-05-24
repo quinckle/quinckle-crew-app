@@ -249,8 +249,15 @@ export default function StaffDashboard() {
       const isExpoGo = Constants.appOwnership === 'expo';
       if (!isExpoGo) {
         try {
-          const tokenData = await Notifications.getExpoPushTokenAsync();
-          await crewNotifications.registerToken(tokenData.data);
+          const projectId: string | undefined =
+            Constants.expoConfig?.extra?.eas?.projectId ??
+            (Constants as any).easConfig?.projectId;
+          if (!projectId || projectId === 'REPLACE_WITH_EAS_PROJECT_ID') {
+            console.warn('[push] EAS projectId not configured in app.json');
+          } else {
+            const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
+            await crewNotifications.registerToken(tokenData.data);
+          }
         } catch (err) {
           console.warn('[push] token registration failed', err);
         }
