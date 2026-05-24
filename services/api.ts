@@ -92,8 +92,25 @@ export const crewAuth = {
       'GET', '/api/crew/auth/profile', undefined, true
     ),
 
+  // Upload a new profile photo. Pass raw base64 (no `data:` prefix needed —
+  // server accepts either). Server resizes + WebP-encodes + uploads to R2 and
+  // returns the permanent CDN URL.
+  uploadPhoto: (photoBase64: string) =>
+    request<{ success: boolean; data: { photoUrl: string } }>(
+      'POST',
+      '/api/crew/auth/profile/photo',
+      { photoBase64 },
+      true,
+    ),
+
+  // Legacy helper — direct URL update. Kept for any back-compat callers.
   updatePhoto: (photoUrl: string) =>
-    request<{ success: boolean; data: { photoUrl: string } }>('PATCH', '/api/crew/auth/profile/photo', { photoUrl }, true),
+    request<{ success: boolean; data: { photoUrl: string } }>(
+      'PATCH',
+      '/api/crew/auth/profile/photo',
+      { photoUrl },
+      true,
+    ),
 };
 
 // ── Dev (development only) ────────────────────────────────────────────────────

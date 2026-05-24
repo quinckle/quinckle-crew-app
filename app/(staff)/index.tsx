@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
 import { crewTables, crewSessions, crewOrders, crewPayments, restaurantApi, crewAuth, crewNotifications } from '../../services/api';
@@ -760,18 +761,40 @@ export default function StaffDashboard() {
         mediaTypes: ['images'],
         allowsEditing: true,
         aspect: [1, 1],
-        quality: 0.5,
-        base64: true,
+        quality: 1, // pick the best source — we re-compress below
       });
-      if (result.canceled || !result.assets?.[0]?.base64) return;
-      const dataUrl = 'data:image/jpeg;base64,' + result.assets[0].base64;
+      if (result.canceled || !result.assets?.[0]?.uri) return;
+
       setIsUploadingPhoto(true);
       try {
-        await crewAuth.updatePhoto(dataUrl);
-        setPhotoUrl(dataUrl);
+        // Resize to 400×400 JPEG @ 75% on-device first → ~30-50 KB upload
+        // payload instead of multi-MB raw image. Server still re-optimizes
+        // to WebP for storage, but this keeps the wire payload tiny.
+        const manipulated = await ImageManipulator.manipulateAsync(
+          result.assets[0].uri,
+          [{ resize: { width: 400, height: 400 } }],
+          {
+            compress: 0.75,
+            format: ImageManipulator.SaveFormat.JPEG,
+            base64: true,
+          },
+        );
+        if (!manipulated.base64) throw new Error('image manipulation produced no base64');
+
+        const resp = await crewAuth.uploadPhoto(manipulated.base64);
+        const cdnUrl = resp.data?.photoUrl;
+        if (!cdnUrl) throw new Error('server did not return photoUrl');
+
+        setPhotoUrl(cdnUrl);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       } catch (err) {
         console.warn('Failed to upload photo', err);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        showDialog(
+          'Photo upload failed',
+          err instanceof Error ? err.message : 'Please try again with a smaller image.',
+          [{ label: 'OK', onPress: () => {} }],
+        );
       } finally {
         setIsUploadingPhoto(false);
       }
