@@ -1220,14 +1220,9 @@ export default function StaffDashboard() {
           contentContainerStyle={styles.profileContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* Full-bleed hero with photo, gradient overlay, name + phone */}
+          {/* Full-bleed photo with an identity card overlapping its bottom */}
           <View style={styles.heroWrap}>
-            <TouchableOpacity
-              activeOpacity={0.95}
-              onPress={handleChangePhoto}
-              disabled={isUploadingPhoto}
-              style={styles.heroTouch}
-            >
+            <View style={styles.heroImageWrap}>
               {staffInfo?.photoUrl ? (
                 <Image
                   source={{ uri: staffInfo.photoUrl }}
@@ -1247,7 +1242,7 @@ export default function StaffDashboard() {
                 </View>
               )}
 
-              {/* Top vignette so back button stays readable on bright photos */}
+              {/* Soft top vignette so the back button stays readable */}
               <LinearGradient
                 colors={['rgba(0,0,0,0.55)', 'rgba(0,0,0,0)']}
                 locations={[0, 1]}
@@ -1255,47 +1250,57 @@ export default function StaffDashboard() {
                 pointerEvents="none"
               />
 
-              {/* Bottom overlay carries name + phone over a darken-to-black ramp */}
+              {/* Bottom fade so the card has a smooth seat against the photo */}
               <LinearGradient
-                colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.85)', 'rgba(0,0,0,0.97)']}
-                locations={[0, 0.55, 1]}
-                style={styles.heroBottomGradient}
+                colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.35)']}
+                locations={[0, 1]}
+                style={styles.heroBottomVignette}
                 pointerEvents="none"
               />
 
-              <View style={styles.heroBottomContent} pointerEvents="none">
-                <View style={styles.heroRoleChip}>
-                  <View style={styles.heroRoleDot} />
-                  <Text style={styles.heroRoleText}>{(staffInfo?.role ?? 'STAFF').toUpperCase()}</Text>
-                </View>
-                <Text style={styles.heroName} numberOfLines={1}>
+              {/* Back button overlays top-left of the photo */}
+              <TouchableOpacity
+                style={[styles.heroBackBtn, { top: insets.top + Spacing.sm }]}
+                onPress={() => setActiveTab('tables')}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="chevron-back" size={22} color="#fff" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Identity card — overlaps the photo's bottom edge */}
+            <View style={styles.identityCard}>
+              <View style={styles.identityNameRow}>
+                <Text style={styles.identityName} numberOfLines={1}>
                   {staffInfo?.name ?? 'Staff Member'}
                 </Text>
-                <View style={styles.heroPhoneRow}>
-                  <Ionicons name="call-outline" size={13} color="rgba(255,255,255,0.75)" />
-                  <Text style={styles.heroPhone}>{formatPhone(staffInfo?.phone) || '—'}</Text>
-                </View>
+                <TouchableOpacity
+                  style={styles.identityEditBtn}
+                  onPress={handleChangePhoto}
+                  disabled={isUploadingPhoto}
+                  activeOpacity={0.7}
+                >
+                  {isUploadingPhoto ? (
+                    <ActivityIndicator size="small" color={QuinckleColors.textPrimary} />
+                  ) : (
+                    <Ionicons name="camera-outline" size={18} color={QuinckleColors.textPrimary} />
+                  )}
+                </TouchableOpacity>
               </View>
 
-              {/* Camera badge in the corner — separate visual cue that the
-                  whole tile is tappable to change the photo */}
-              <View style={styles.heroCameraBadge} pointerEvents="none">
-                {isUploadingPhoto ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Ionicons name="camera" size={15} color="#fff" />
-                )}
+              <View style={styles.identityInfoRow}>
+                <Ionicons name="call-outline" size={15} color={QuinckleColors.textSecondary} />
+                <Text style={styles.identityInfoText}>{formatPhone(staffInfo?.phone) || '—'}</Text>
               </View>
-            </TouchableOpacity>
 
-            {/* Back button overlays the top-left of the hero */}
-            <TouchableOpacity
-              style={[styles.heroBackBtn, { top: insets.top + Spacing.sm }]}
-              onPress={() => setActiveTab('tables')}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="chevron-back" size={22} color="#fff" />
-            </TouchableOpacity>
+              <View style={styles.identityInfoRow}>
+                <Ionicons name="briefcase-outline" size={15} color={QuinckleColors.textSecondary} />
+                <Text style={styles.identityInfoText}>
+                  {(staffInfo?.role ?? 'STAFF').charAt(0) + (staffInfo?.role ?? 'STAFF').slice(1).toLowerCase()}
+                  {staffInfo?.restaurantName ? ` · ${staffInfo.restaurantName}` : ''}
+                </Text>
+              </View>
+            </View>
           </View>
 
           <View style={styles.card}>
@@ -2263,19 +2268,18 @@ const styles = StyleSheet.create({
     letterSpacing: -0.2,
   },
 
-  // ── Full-bleed hero ────────────────────────────────────────────────────
-  // Negative margins break out of the container's horizontal padding +
-  // safe-area top, so the photo runs edge-to-edge and right up to the
-  // status bar.
+  // ── Full-bleed hero with overlapping identity card ─────────────────────
+  // heroWrap breaks out of the container's horizontal padding + safe-area
+  // top so the photo runs edge-to-edge. The identity card sits BELOW the
+  // image but uses a negative marginTop to overlap the photo's bottom edge.
   heroWrap: {
     marginHorizontal: -Spacing.lg,
     marginTop: -(Spacing.sm),
     marginBottom: Spacing.lg,
-    position: 'relative',
   },
-  heroTouch: {
+  heroImageWrap: {
     width: '100%',
-    aspectRatio: 1, // square photos look cleanest given we upload at 400×400
+    aspectRatio: 1, // square photos (we upload at 400×400)
     position: 'relative',
     backgroundColor: QuinckleColors.surface,
   },
@@ -2301,80 +2305,12 @@ const styles = StyleSheet.create({
     right: 0,
     height: 120,
   },
-  heroBottomGradient: {
+  heroBottomVignette: {
     position: 'absolute',
     left: 0,
     right: 0,
     bottom: 0,
-    height: '55%',
-  },
-  heroBottomContent: {
-    position: 'absolute',
-    left: Spacing.xl,
-    right: Spacing.xl,
-    bottom: Spacing.xl,
-  },
-  heroRoleChip: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    borderRadius: Radius.pill,
-    backgroundColor: 'rgba(255,255,255,0.14)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
-    marginBottom: Spacing.sm,
-  },
-  heroRoleDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-    backgroundColor: QuinckleColors.success,
-  },
-  heroRoleText: {
-    color: '#fff',
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 0.6,
-  },
-  heroName: {
-    color: '#fff',
-    fontSize: 28,
-    fontWeight: '800',
-    letterSpacing: -0.6,
-    lineHeight: 32,
-  },
-  heroPhoneRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 6,
-  },
-  heroPhone: {
-    color: 'rgba(255,255,255,0.78)',
-    fontSize: 13,
-    fontWeight: '500',
-    letterSpacing: 0.2,
-  },
-  heroCameraBadge: {
-    position: 'absolute',
-    right: Spacing.lg,
-    bottom: Spacing.lg,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: QuinckleColors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: 'rgba(0,0,0,0.4)',
-    shadowColor: '#000',
-    shadowOpacity: 0.35,
-    shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 10,
-    elevation: 6,
+    height: 80,
   },
   heroBackBtn: {
     position: 'absolute',
@@ -2387,6 +2323,58 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.12)',
+  },
+
+  identityCard: {
+    marginTop: -Spacing.xxl, // pulls the card up to overlap the photo
+    marginHorizontal: Spacing.lg,
+    backgroundColor: QuinckleColors.surfaceElevated,
+    borderRadius: Radius.xl,
+    padding: Spacing.lg,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    shadowColor: '#000',
+    shadowOpacity: 0.45,
+    shadowOffset: { width: 0, height: 8 },
+    shadowRadius: 18,
+    elevation: 10,
+  },
+  identityNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.md,
+    marginBottom: Spacing.md,
+  },
+  identityName: {
+    flex: 1,
+    color: QuinckleColors.textPrimary,
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: -0.4,
+  },
+  identityEditBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  identityInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingVertical: 6,
+  },
+  identityInfoText: {
+    color: QuinckleColors.textSecondary,
+    fontSize: 14,
+    fontWeight: '500',
+    letterSpacing: 0.1,
+    flexShrink: 1,
   },
 
   card: {
