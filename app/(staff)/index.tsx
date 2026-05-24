@@ -34,6 +34,7 @@ import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
+import Constants from 'expo-constants';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { BottomNavbar } from '../../components/ui/BottomNavbar';
@@ -243,13 +244,16 @@ export default function StaffDashboard() {
         console.warn('Failed to get push token for push notification!');
         return;
       }
-      // Register Expo push token with backend so we can receive push
-      // notifications even when the app is backgrounded.
-      try {
-        const tokenData = await Notifications.getExpoPushTokenAsync();
-        await crewNotifications.registerToken(tokenData.data);
-      } catch (err) {
-        console.warn('[push] token registration failed', err);
+      // getExpoPushTokenAsync only works in a real dev/prod build — skip in Expo Go
+      // (SDK 53 removed remote notification support from Expo Go).
+      const isExpoGo = Constants.appOwnership === 'expo';
+      if (!isExpoGo) {
+        try {
+          const tokenData = await Notifications.getExpoPushTokenAsync();
+          await crewNotifications.registerToken(tokenData.data);
+        } catch (err) {
+          console.warn('[push] token registration failed', err);
+        }
       }
     })();
   }, []);
