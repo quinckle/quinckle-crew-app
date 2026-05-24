@@ -165,7 +165,19 @@ export function subscribeChannel(
 
 			entry.refCount += 1;
 			const listener = (msg: any) => handler(msg?.data);
-			entry.channel.subscribe(eventName, listener);
+			// Ably v2 channel.subscribe returns a Promise. Swallow rejections
+			// (e.g. channel suspended due to token failure) so they don't
+			// surface as uncaught promise errors in the dev overlay.
+			try {
+				const ret = entry.channel.subscribe(eventName, listener) as any;
+				if (ret && typeof ret.then === 'function') {
+					(ret as Promise<unknown>).catch((err: any) => {
+						if (__DEV__) console.warn(`[realtime] ${channelName}/${eventName} subscribe rejected`, err?.message ?? err);
+					});
+				}
+			} catch (err: any) {
+				if (__DEV__) console.warn(`[realtime] ${channelName}/${eventName} subscribe threw`, err?.message ?? err);
+			}
 
 			const doCleanup = () => {
 				try { entry.channel.unsubscribe(eventName, listener); } catch { /* non-fatal */ }
