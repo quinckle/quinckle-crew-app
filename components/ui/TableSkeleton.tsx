@@ -96,10 +96,17 @@ export const TableSkeleton: React.FC = () => {
     outputRange: [-SWEEP_DISTANCE, SWEEP_DISTANCE],
   });
 
+  // Build (CARD_COUNT / 2) rows of 2 cards each — mirrors FlatList numColumns=2
+  // with columnWrapperStyle so the layout matches pixel-for-pixel.
+  const rowCount = Math.ceil(CARD_COUNT / 2);
+
   return (
     <View style={styles.grid}>
-      {Array.from({ length: CARD_COUNT }).map((_, i) => (
-        <SkeletonCard key={i} translateX={translateX} />
+      {Array.from({ length: rowCount }).map((_, rowIdx) => (
+        <View key={rowIdx} style={styles.row}>
+          <SkeletonCard translateX={translateX} />
+          <SkeletonCard translateX={translateX} />
+        </View>
       ))}
     </View>
   );
@@ -107,13 +114,17 @@ export const TableSkeleton: React.FC = () => {
 
 const styles = StyleSheet.create({
   grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.md,
     paddingBottom: 100,
+    gap: Spacing.md,
+  },
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: Spacing.md,
   },
   card: {
-    width: '48.5%',
+    flex: 1,
+    maxWidth: '49%',
     minHeight: 130,
     backgroundColor: QuinckleColors.surface,
     borderWidth: 1,
