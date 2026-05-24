@@ -8,7 +8,7 @@
     "icon": "./assets/images/icon.png",
     "scheme": "quincklecrew",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": false,
+    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.quinckle.crew"
@@ -54,14 +54,7 @@
           }
         }
       ],
-      [
-        "expo-build-properties",
-        {
-          "android": {
-            "allowNativeHeapPointerTagging": false
-          }
-        }
-      ]
+      "./plugins/withAllowNativeHeapPointerTagging"
     ],
     "experiments": {
       "typedRoutes": true,
