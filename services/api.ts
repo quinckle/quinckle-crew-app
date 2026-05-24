@@ -188,9 +188,43 @@ export interface CashLedgerItem { id: string; tableNo: string; amount: number; t
 export interface CashLedgerGroup { date: string; total: number; items: CashLedgerItem[]; }
 export interface CashLedger { shiftTotal: number; groups: CashLedgerGroup[]; }
 
+export interface PendingCashRequest {
+  orderId: string;
+  sessionId: string;
+  tableNumber: number;
+  amount: number;
+  customerName: string | null;
+  customerPhone: string;
+  requestedAt: string;
+}
+
+export interface CollectedCashRecord {
+  orderId: string;
+  sessionId: string;
+  tableNumber: number;
+  amount: number;
+  customerName: string | null;
+  customerPhone: string;
+  collectedAt: string;
+  collectedByName: string | null;
+}
+
+export interface CashRequestsResponse {
+  pending: PendingCashRequest[];
+  todayCollected: CollectedCashRecord[];
+}
+
 export const crewPayments = {
-  cashConfirm: (sessionId: string, staffId: string, amountCollected: number) =>
-    request<unknown>('POST', '/api/crew/payments/cash', { session_id: sessionId, staff_id: staffId, amount_collected: amountCollected }, true),
+  // Cash collection is per-ORDER now (decoupled from session lifecycle). The
+  // waiter confirms cash received against one Order at a time — flipping that
+  // order's paymentStatus to PAID_CASH. Session stays ACTIVE until explicitly
+  // freed.
+  cashConfirm: (orderId: string, staffId: string, amountCollected: number) =>
+    request<unknown>('POST', '/api/crew/payments/cash', { order_id: orderId, staff_id: staffId, amount_collected: amountCollected }, true),
+
+  // Powers the cash-collection screen: pending requests + today's history.
+  getCashRequests: () =>
+    request<CashRequestsResponse>('GET', '/api/crew/payments/cash-requests', undefined, true),
 
   requestOnlinePaymentLink: (sessionId: string) =>
     request<{ payment_link_url: string; amount: number }>(

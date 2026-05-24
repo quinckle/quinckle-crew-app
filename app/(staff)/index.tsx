@@ -146,6 +146,12 @@ export default function StaffDashboard() {
   const [searchText, setSearchText] = useState('');
   const [isOnline, setIsOnline] = useState(true);
   const [realtimeOk, setRealtimeOk] = useState(true);
+  // Pending cash-collection requests across the whole restaurant. Drives the
+  // red-dot badge on the cash icon in the header. Updated from:
+  //  - initial fetch on mount
+  //  - cash_collection_requested Ably event (+1)
+  //  - cash_payment_collected   Ably event (−1, floored at 0)
+  const [pendingCashCount, setPendingCashCount] = useState(0);
   const [pickupOrders, setPickupOrders] = useState<PickupOrder[]>([]);
   const [liveOrders, setLiveOrders] = useState<ActiveOrder[]>([]);
   const [ordersSubTab, setOrdersSubTab] = useState<'active' | 'completed'>('active');
@@ -537,12 +543,20 @@ export default function StaffDashboard() {
     loadMenuFromApi();
     loadPickupOrders();
     loadCashLedger();
+    loadPendingCashCount();
     if (staffInfo?.restaurantId) {
       restaurantApi.getBranding(staffInfo.restaurantId)
         .then(res => { if ((res as any)?.data?.logoUrl) setRestaurantLogoUrl((res as any).data.logoUrl); })
         .catch(() => {});
     }
   }, [staffInfo?.restaurantId]);
+
+  const loadPendingCashCount = async () => {
+    try {
+      const data = await crewPayments.getCashRequests();
+      setPendingCashCount(data.pending.length);
+    } catch { /* non-fatal — Ably will keep the count fresh */ }
+  };
 
   const loadCashLedger = async () => {
     setIsLoadingLedger(true);
@@ -614,6 +628,7 @@ export default function StaffDashboard() {
     const off8 = subscribeChannel(`waiter:${restaurantId}`, 'cash_collection_requested', (data: any) => {
       const tableNumber = data?.tableNumber as number | undefined;
       const amount = data?.amount as number | undefined;
+      setPendingCashCount(c => c + 1);
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
       void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
       Notifications.scheduleNotificationAsync({
@@ -627,7 +642,13 @@ export default function StaffDashboard() {
       void loadTables();
     });
 
-    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off7(); off8(); };
+    // When any waiter (this one or another) marks an order collected,
+    // decrement the badge so it stays accurate across multiple devices.
+    const off9 = subscribeChannel(`waiter:${restaurantId}`, 'cash_payment_collected', () => {
+      setPendingCashCount(c => Math.max(0, c - 1));
+    });
+
+    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off7(); off8(); off9(); };
   }, [staffInfo?.restaurantId]);
 
   // C1: Track Ably connection health — show a warning when the waiter channel drops.
@@ -785,21 +806,40 @@ export default function StaffDashboard() {
             </View>
           </View>
 
-          <TouchableOpacity
-            style={styles.avatarBtn}
-            onPress={() => setActiveTab('profile')}
-            activeOpacity={0.7}
-          >
-            {staffInfo?.photoUrl ? (
-              <Image source={{ uri: staffInfo.photoUrl }} style={styles.avatarImage} />
-            ) : (
-              <View style={[styles.avatarImage, { backgroundColor: '#F35D3B', alignItems: 'center', justifyContent: 'center' }]}>
-                <Text style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>
-                  {(staffInfo?.name ?? 'S').split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase()}
-                </Text>
-              </View>
-            )}
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            {/* Cash-collection icon: tap to see pending requests + today's history.
+                Red dot appears when there's at least one unresolved request. */}
+            <TouchableOpacity
+              style={styles.cashIconBtn}
+              onPress={() => router.push('/(staff)/cash-collection')}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="cash-outline" size={22} color={QuinckleColors.textPrimary} />
+              {pendingCashCount > 0 && (
+                <View style={styles.cashBadge}>
+                  <Text style={styles.cashBadgeText}>
+                    {pendingCashCount > 9 ? '9+' : String(pendingCashCount)}
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.avatarBtn}
+              onPress={() => setActiveTab('profile')}
+              activeOpacity={0.7}
+            >
+              {staffInfo?.photoUrl ? (
+                <Image source={{ uri: staffInfo.photoUrl }} style={styles.avatarImage} />
+              ) : (
+                <View style={[styles.avatarImage, { backgroundColor: '#F35D3B', alignItems: 'center', justifyContent: 'center' }]}>
+                  <Text style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>
+                    {(staffInfo?.name ?? 'S').split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase()}
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
       )}
 
@@ -1510,6 +1550,42 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
     borderRadius: 18,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  cashIconBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  cashBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    borderRadius: 9,
+    backgroundColor: '#ef4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: QuinckleColors.background,
+  },
+  cashBadgeText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '800',
+    lineHeight: 12,
   },
 
   controlsRow: {
