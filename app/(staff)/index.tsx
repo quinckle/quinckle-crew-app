@@ -39,6 +39,7 @@ import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { BottomNavbar } from '../../components/ui/BottomNavbar';
 import { PICKUP_LAYOUT_PRESET, PickupCard, PickupSegmented } from '../../components/ui/pickup';
+import { TableSkeleton } from '../../components/ui/TableSkeleton';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => {
@@ -894,10 +895,7 @@ export default function StaffDashboard() {
           </Modal>
 
           {isLoadingTables && tables.length === 0 ? (
-            <View style={styles.loadingState}>
-              <ActivityIndicator size="large" color={QuinckleColors.primary} />
-              <Text style={styles.loadingText}>Loading tables…</Text>
-            </View>
+            <TableSkeleton />
           ) : (
             <FlatList
               data={filteredTables}
