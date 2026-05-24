@@ -40,6 +40,24 @@ async function loadAbly(): Promise<any> {
 	}
 }
 
+// ── Connection state tracking ────────────────────────────────────────────────
+
+type ConnHandler = (connected: boolean) => void;
+const connHandlers = new Map<string, Set<ConnHandler>>();
+const connStates = new Map<string, boolean>();
+
+/**
+ * Watch Ably connection state for a specific channel.
+ * Handler is called immediately with the current known state (if any),
+ * then on every subsequent state change. Returns an unsubscribe function.
+ */
+export function watchConnection(channelName: string, handler: ConnHandler): () => void {
+	if (!connHandlers.has(channelName)) connHandlers.set(channelName, new Set());
+	connHandlers.get(channelName)!.add(handler);
+	if (connStates.has(channelName)) handler(connStates.get(channelName)!);
+	return () => { connHandlers.get(channelName)?.delete(handler); };
+}
+
 // ── Shared channel pool ──────────────────────────────────────────────────────
 
 interface PoolEntry {
@@ -78,6 +96,13 @@ async function getOrCreateEntry(channelName: string): Promise<PoolEntry | null> 
 						.catch((err) => cb(err as Error, null));
 				},
 				token: tokenRequest as any,
+			});
+
+			// Surface connection health to watchers
+			client.connection.on((stateChange: any) => {
+				const connected = stateChange.current === 'connected';
+				connStates.set(channelName, connected);
+				connHandlers.get(channelName)?.forEach(h => h(connected));
 			});
 
 			const channel = client.channels.get(channelName);

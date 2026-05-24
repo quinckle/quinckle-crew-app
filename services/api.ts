@@ -201,6 +201,13 @@ export const crewPayments = {
     request<CashLedger>('GET', '/api/crew/payments/cash-ledger', undefined, true),
 };
 
+// ── Crew Notifications ────────────────────────────────────────────────────────
+
+export const crewNotifications = {
+  registerToken: (expoPushToken: string) =>
+    request<{ success: boolean }>('POST', '/api/crew/notifications/token', { token: expoPushToken }, true),
+};
+
 // ── Restaurant / Menu (public) ────────────────────────────────────────────────
 
 export interface MenuItem { id: string; name: string; description?: string; price: string; category: string; isVeg: boolean; isAvailable: boolean; imageUrl?: string; }

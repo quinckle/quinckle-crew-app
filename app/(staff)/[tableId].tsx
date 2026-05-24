@@ -169,6 +169,7 @@ export default function TableDetail() {
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [isMenuLoading, setIsMenuLoading] = useState(false);
   const [cart, setCart] = useState<Record<string, number>>({});
+  const [cartNotes, setCartNotes] = useState<Record<string, string>>({});
   const [isPlacingOrder, setIsPlacingOrder] = useState(false);
   const [menuSearchText, setMenuSearchText] = useState('');
   const [activeCategory, setActiveCategory] = useState('All');
@@ -269,12 +270,17 @@ export default function TableDetail() {
   }, [menuItems, menuSearchText, activeCategory]);
 
   const handlePlaceOrder = async () => {
-    const items = Object.entries(cart).map(([item_id, qty]) => ({ item_id, qty }));
+    const items = Object.entries(cart).map(([item_id, qty]) => ({
+      item_id,
+      qty,
+      ...(cartNotes[item_id]?.trim() ? { note: cartNotes[item_id].trim() } : {}),
+    }));
     if (items.length === 0 || !sessionId) return;
     setIsPlacingOrder(true);
     try {
       await crewOrders.placeOrder(sessionId, items);
       setCart({});
+      setCartNotes({});
       setShowOrderModal(false);
       setMenuSearchText('');
       setActiveCategory('All');
@@ -650,6 +656,7 @@ export default function TableDetail() {
         onRequestClose={() => {
           setShowOrderModal(false);
           setCart({});
+          setCartNotes({});
           setMenuSearchText('');
           setActiveCategory('All');
         }}
@@ -661,6 +668,7 @@ export default function TableDetail() {
               onPress={() => {
                 setShowOrderModal(false);
                 setCart({});
+                setCartNotes({});
                 setMenuSearchText('');
                 setActiveCategory('All');
               }}
@@ -727,19 +735,31 @@ export default function TableDetail() {
               </View>
             ) : filteredMenuItems.map(item => (
               <View key={item.id} style={styles.menuRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.menuItemName}>{item.name}</Text>
-                  <Text style={styles.menuItemPrice}>₹{parseFloat(item.price).toFixed(0)}</Text>
+                <View style={styles.menuRowTop}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.menuItemName}>{item.name}</Text>
+                    <Text style={styles.menuItemPrice}>₹{parseFloat(item.price).toFixed(0)}</Text>
+                  </View>
+                  <View style={styles.qtyControl}>
+                    <TouchableOpacity onPress={() => removeFromCart(item.id)} style={styles.qtyBtn} disabled={!cart[item.id]}>
+                      <Ionicons name="remove" size={16} color={cart[item.id] ? QuinckleColors.primary : QuinckleColors.borderStrong} />
+                    </TouchableOpacity>
+                    <Text style={styles.qtyText}>{cart[item.id] ?? 0}</Text>
+                    <TouchableOpacity onPress={() => addToCart(item.id)} style={styles.qtyBtn}>
+                      <Ionicons name="add" size={16} color={QuinckleColors.primary} />
+                    </TouchableOpacity>
+                  </View>
                 </View>
-                <View style={styles.qtyControl}>
-                  <TouchableOpacity onPress={() => removeFromCart(item.id)} style={styles.qtyBtn} disabled={!cart[item.id]}>
-                    <Ionicons name="remove" size={16} color={cart[item.id] ? QuinckleColors.primary : QuinckleColors.borderStrong} />
-                  </TouchableOpacity>
-                  <Text style={styles.qtyText}>{cart[item.id] ?? 0}</Text>
-                  <TouchableOpacity onPress={() => addToCart(item.id)} style={styles.qtyBtn}>
-                    <Ionicons name="add" size={16} color={QuinckleColors.primary} />
-                  </TouchableOpacity>
-                </View>
+                {!!cart[item.id] && (
+                  <TextInput
+                    style={styles.itemNoteInput}
+                    placeholder="Add a note… (e.g. no onions)"
+                    placeholderTextColor={QuinckleColors.textTertiary}
+                    value={cartNotes[item.id] ?? ''}
+                    onChangeText={(text) => setCartNotes(prev => ({ ...prev, [item.id]: text }))}
+                    returnKeyType="done"
+                  />
+                )}
               </View>
             ))}
           </ScrollView>
@@ -833,9 +853,11 @@ const styles = StyleSheet.create({
   modalContainer: { flex: 1, backgroundColor: QuinckleColors.background },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: Spacing.xl, paddingVertical: Spacing.lg, borderBottomWidth: 1, borderBottomColor: QuinckleColors.border },
   modalTitle: { fontSize: 18, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.3 },
-  menuRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.xl, paddingVertical: Spacing.md, borderBottomWidth: 1, borderBottomColor: QuinckleColors.borderSubtle },
+  menuRow: { paddingHorizontal: Spacing.xl, paddingVertical: Spacing.md, borderBottomWidth: 1, borderBottomColor: QuinckleColors.borderSubtle },
+  menuRowTop: { flexDirection: 'row', alignItems: 'center' },
   menuItemName: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '500' },
   menuItemPrice: { color: QuinckleColors.textSecondary, fontSize: 13, marginTop: 2 },
+  itemNoteInput: { marginTop: Spacing.sm, backgroundColor: QuinckleColors.surfaceMuted, borderWidth: 1, borderColor: QuinckleColors.border, borderRadius: Radius.sm, paddingHorizontal: Spacing.md, paddingVertical: 7, color: QuinckleColors.textPrimary, fontSize: 13 },
   qtyControl: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
   qtyBtn: { width: 32, height: 32, borderRadius: 16, borderWidth: 1.5, borderColor: QuinckleColors.border, alignItems: 'center', justifyContent: 'center' },
   qtyText: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '700', minWidth: 20, textAlign: 'center' },

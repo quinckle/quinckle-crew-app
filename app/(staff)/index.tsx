@@ -15,8 +15,8 @@ import {
 import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
-import { crewTables, crewSessions, crewOrders, crewPayments, restaurantApi, crewAuth } from '../../services/api';
-import { subscribeChannel } from '../../services/realtime';
+import { crewTables, crewSessions, crewOrders, crewPayments, restaurantApi, crewAuth, crewNotifications } from '../../services/api';
+import { subscribeChannel, watchConnection } from '../../services/realtime';
 
 async function playSound(file: any) {
   try {
@@ -144,6 +144,7 @@ export default function StaffDashboard() {
   const [menuFilter, setMenuFilter] = useState('All');
   const [searchText, setSearchText] = useState('');
   const [isOnline, setIsOnline] = useState(true);
+  const [realtimeOk, setRealtimeOk] = useState(true);
   const [pickupOrders, setPickupOrders] = useState<PickupOrder[]>([]);
   const [liveOrders, setLiveOrders] = useState<ActiveOrder[]>([]);
   const [ordersSubTab, setOrdersSubTab] = useState<'active' | 'completed'>('active');
@@ -240,6 +241,15 @@ export default function StaffDashboard() {
       }
       if (finalStatus !== 'granted') {
         console.warn('Failed to get push token for push notification!');
+        return;
+      }
+      // Register Expo push token with backend so we can receive push
+      // notifications even when the app is backgrounded.
+      try {
+        const tokenData = await Notifications.getExpoPushTokenAsync();
+        await crewNotifications.registerToken(tokenData.data);
+      } catch (err) {
+        console.warn('[push] token registration failed', err);
       }
     })();
   }, []);
@@ -609,6 +619,13 @@ export default function StaffDashboard() {
     return () => { off1(); off2(); off3(); off4(); off5(); off6(); off7(); off8(); };
   }, [staffInfo?.restaurantId]);
 
+  // C1: Track Ably connection health — show a warning when the waiter channel drops.
+  useEffect(() => {
+    const restaurantId = staffInfo?.restaurantId;
+    if (!restaurantId) return;
+    return watchConnection(`waiter:${restaurantId}`, (connected) => setRealtimeOk(connected));
+  }, [staffInfo?.restaurantId]);
+
   const updateTableStatus = async (tableNum: number, nextStatus: TableStatus) => {
     // Optimistic local update
     setTables(prev => prev.map(t => (t.number === tableNum ? { ...t, status: nextStatus } : t)));
@@ -747,6 +764,13 @@ export default function StaffDashboard() {
             <View style={styles.statusRow}>
               <View style={[styles.statusDot, { backgroundColor: isOnline ? QuinckleColors.success : QuinckleColors.textTertiary }]} />
               <Text style={styles.statusText}>{isOnline ? 'Online' : 'Off-duty'}</Text>
+              {!realtimeOk && (
+                <>
+                  <Text style={[styles.statusText, { color: QuinckleColors.textTertiary, marginHorizontal: 2 }]}>·</Text>
+                  <View style={[styles.statusDot, { backgroundColor: QuinckleColors.warning }]} />
+                  <Text style={[styles.statusText, { color: QuinckleColors.warning }]}>No live updates</Text>
+                </>
+              )}
             </View>
           </View>
 
