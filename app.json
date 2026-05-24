@@ -54,7 +54,8 @@
           }
         }
       ],
-      "./plugins/withAllowNativeHeapPointerTagging"
+      "./plugins/withAllowNativeHeapPointerTagging",
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,

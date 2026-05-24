@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { setCrewToken, setOn401Callback } from '../services/api';
 import type { StaffInfo } from '../services/api';
@@ -16,9 +17,74 @@ interface AuthContextType {
   setPhotoUrl: (url: string) => void;
 }
 
-const STORAGE_KEY = 'quinckle_crew_auth';
+// SecureStore keeps the JWT in the iOS Keychain / Android Keystore — readable
+// only by this app and not extractable from a routine adb backup. The
+// staffInfo blob (name, photo URL, restaurantId) is non-sensitive and stays
+// in AsyncStorage so we don't bump up against SecureStore's 2 KB key limit.
+// SECURITY_AUDIT.md SEC-7.
+const TOKEN_KEY = 'crewToken';
+const STAFF_KEY = 'quinckle_crew_staff';
+const LEGACY_KEY = 'quinckle_crew_auth'; // pre-SEC-7 AsyncStorage blob
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+interface Persisted {
+  role: Role;
+  crewToken: string | null;
+  staffInfo: StaffInfo | null;
+}
+
+async function loadPersisted(): Promise<Persisted | null> {
+  try {
+    const [token, staffRaw] = await Promise.all([
+      SecureStore.getItemAsync(TOKEN_KEY),
+      AsyncStorage.getItem(STAFF_KEY),
+    ]);
+    if (token && staffRaw) {
+      const staff = JSON.parse(staffRaw) as { role: Role; staffInfo: StaffInfo | null };
+      return { crewToken: token, role: staff.role, staffInfo: staff.staffInfo };
+    }
+
+    // One-time migration from the legacy AsyncStorage blob so existing
+    // installs don't get logged out by this rollout. Cleared after migrate.
+    const legacy = await AsyncStorage.getItem(LEGACY_KEY);
+    if (legacy) {
+      const parsed = JSON.parse(legacy);
+      if (parsed?.crewToken && parsed?.role) {
+        await SecureStore.setItemAsync(TOKEN_KEY, parsed.crewToken);
+        await AsyncStorage.setItem(STAFF_KEY, JSON.stringify({
+          role: parsed.role,
+          staffInfo: parsed.staffInfo ?? null,
+        }));
+        await AsyncStorage.removeItem(LEGACY_KEY);
+        return {
+          crewToken: parsed.crewToken,
+          role: parsed.role,
+          staffInfo: parsed.staffInfo ?? null,
+        };
+      }
+    }
+  } catch { /* fall through — user just signs in again */ }
+  return null;
+}
+
+async function persist(role: Role, token: string | null, staffInfo: StaffInfo | null): Promise<void> {
+  try {
+    if (token) await SecureStore.setItemAsync(TOKEN_KEY, token);
+    else await SecureStore.deleteItemAsync(TOKEN_KEY);
+    await AsyncStorage.setItem(STAFF_KEY, JSON.stringify({ role, staffInfo }));
+  } catch { /* non-fatal; in-memory state still works for this session */ }
+}
+
+async function clearPersisted(): Promise<void> {
+  try {
+    await Promise.all([
+      SecureStore.deleteItemAsync(TOKEN_KEY).catch(() => {}),
+      AsyncStorage.removeItem(STAFF_KEY).catch(() => {}),
+      AsyncStorage.removeItem(LEGACY_KEY).catch(() => {}),
+    ]);
+  } catch { /* non-fatal */ }
+}
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [role, setRole] = useState<Role>(null);
@@ -28,22 +94,17 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   // Restore auth on app start
   useEffect(() => {
-    AsyncStorage.getItem(STORAGE_KEY)
-      .then(raw => {
-        if (!raw) return;
-        const saved = JSON.parse(raw);
-        if (saved.crewToken && saved.role) {
-          setRole(saved.role);
-          setCrewTokenState(saved.crewToken);
-          setCrewToken(saved.crewToken);
-          if (saved.staffInfo) setStaffInfo(saved.staffInfo);
-          // Prime the realtime auth so subscribeChannel(...) can fetch tokens.
-          if (saved.staffInfo?.id) {
-            setRealtimeAuth(saved.crewToken, `crew:${saved.staffInfo.id}`);
-          }
+    loadPersisted()
+      .then(saved => {
+        if (!saved?.crewToken || !saved.role) return;
+        setRole(saved.role);
+        setCrewTokenState(saved.crewToken);
+        setCrewToken(saved.crewToken);
+        if (saved.staffInfo) setStaffInfo(saved.staffInfo);
+        if (saved.staffInfo?.id) {
+          setRealtimeAuth(saved.crewToken, `crew:${saved.staffInfo.id}`);
         }
       })
-      .catch(() => {})
       .finally(() => setIsRestoring(false));
   }, []);
 
@@ -52,16 +113,12 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     if (token) {
       setCrewTokenState(token);
       setCrewToken(token);
-      // Prime the realtime auth so subscribeChannel(...) in the cook/waiter
-      // screens can fetch their per-channel tokens. If `ably` isn't installed
-      // yet (no npm install after this commit), subscribeChannel no-ops and
-      // we fall back to 5s polling.
       if (staff?.id) {
         setRealtimeAuth(token, `crew:${staff.id}`);
       }
     }
     if (staff) setStaffInfo(staff);
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ role: selectedRole, crewToken: token ?? null, staffInfo: staff ?? null })).catch(() => {});
+    void persist(selectedRole, token ?? null, staff ?? null);
   };
 
   const logout = () => {
@@ -70,19 +127,16 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setStaffInfo(null);
     setCrewTokenState(null);
     setCrewToken(null);
-    AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
+    void clearPersisted();
   };
 
   const setPhotoUrl = (url: string) => {
-    setStaffInfo(prev => prev ? { ...prev, photoUrl: url } : prev);
-    AsyncStorage.getItem(STORAGE_KEY)
-      .then(raw => {
-        if (!raw) return;
-        const saved = JSON.parse(raw);
-        saved.staffInfo = { ...saved.staffInfo, photoUrl: url };
-        return AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
-      })
-      .catch(() => {});
+    setStaffInfo(prev => {
+      const next = prev ? { ...prev, photoUrl: url } : prev;
+      // Re-persist the updated staffInfo (token is unchanged so don't touch it)
+      if (next) void AsyncStorage.setItem(STAFF_KEY, JSON.stringify({ role, staffInfo: next })).catch(() => {});
+      return next;
+    });
   };
 
   // Wire 401 → auto-logout
