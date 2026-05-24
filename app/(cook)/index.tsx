@@ -33,7 +33,7 @@ import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { useAuth } from '../../context/AuthContext';
 
 type KitchenStatus = 'new' | 'urgent' | 'preparing' | 'ready' | 'bumped';
-type KitchenOrderItem = { id: string; name: string; isPrepared: boolean };
+type KitchenOrderItem = { id: string; name: string; modifiersSummary?: string | null; isPrepared: boolean };
 
 type KitchenOrder = {
   id: string;
@@ -153,6 +153,7 @@ export default function CookDashboard() {
       items: t.items.map((item: any) => ({
         id: item.item_id,
         name: `${item.qty}× ${item.name}${item.note ? ` — ${item.note}` : ''}`,
+        modifiersSummary: item.modifiers_summary ?? null,
         isPrepared: item.item_status === 'done',
       })),
       status,
@@ -474,7 +475,12 @@ export default function CookDashboard() {
                         <View style={[styles.checkbox, entry.isPrepared && styles.checkboxChecked]}>
                           {entry.isPrepared && <Ionicons name="checkmark" size={13} color="#fff" />}
                         </View>
-                        <Text style={[styles.itemLine, entry.isPrepared && styles.itemLineDone]}>{entry.name}</Text>
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.itemLine, entry.isPrepared && styles.itemLineDone]}>{entry.name}</Text>
+                          {entry.modifiersSummary ? (
+                            <Text style={styles.itemModifiers}>{entry.modifiersSummary}</Text>
+                          ) : null}
+                        </View>
                       </TouchableOpacity>
                     ))}
                   </View>
@@ -968,11 +974,16 @@ const styles = StyleSheet.create({
     color: QuinckleColors.textPrimary,
     fontSize: 14,
     fontWeight: '500',
-    flex: 1,
   },
   itemLineDone: {
     color: QuinckleColors.textTertiary,
     textDecorationLine: 'line-through',
+  },
+  itemModifiers: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 11,
+    fontStyle: 'italic',
+    marginTop: 1,
   },
 
   cardFooter: {

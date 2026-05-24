@@ -121,7 +121,7 @@ export const devApi = {
 
 // ── Kitchen (CHEF) ────────────────────────────────────────────────────────────
 
-export interface KitchenTicketItem { item_id: string; name: string; qty: number; note: string | null; item_status: 'pending' | 'done'; }
+export interface KitchenTicketItem { item_id: string; name: string; qty: number; note: string | null; modifiers_summary?: string | null; item_status: 'pending' | 'done'; }
 export interface KitchenTicket { order_id: string; table_number: number; status: 'received' | 'preparing'; placed_at: string; items: KitchenTicketItem[]; }
 
 export const kitchen = {
@@ -148,7 +148,7 @@ export const crewTables = {
 
 // ── Crew Sessions (STEWARD/ADMIN) ─────────────────────────────────────────────
 
-export interface BillOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; }
+export interface BillOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; modifiers_summary?: string | null; }
 export interface BillOrder { order_id: string; placed_at: string; status: 'received' | 'preparing' | 'ready' | 'served'; items: BillOrderItem[]; order_total: number; }
 export interface SessionBill { session_id: string; table_number: number; status: 'active' | 'paid' | 'closed'; orders: BillOrder[]; session_total: number; tax_total?: number; total_payable?: number; }
 
@@ -184,9 +184,21 @@ export const crewOrders = {
 
 // ── Crew Payments (STEWARD/ADMIN) ─────────────────────────────────────────────
 
+export interface CashLedgerItem { id: string; tableNo: string; amount: number; time: string; }
+export interface CashLedgerGroup { date: string; total: number; items: CashLedgerItem[]; }
+export interface CashLedger { shiftTotal: number; groups: CashLedgerGroup[]; }
+
 export const crewPayments = {
   cashConfirm: (sessionId: string, staffId: string, amountCollected: number) =>
     request<unknown>('POST', '/api/crew/payments/cash', { session_id: sessionId, staff_id: staffId, amount_collected: amountCollected }, true),
+
+  requestOnlinePaymentLink: (sessionId: string) =>
+    request<{ payment_link_url: string; amount: number }>(
+      'POST', `/api/crew/sessions/${sessionId}/payment-link`, {}, true
+    ),
+
+  getCashLedger: () =>
+    request<CashLedger>('GET', '/api/crew/payments/cash-ledger', undefined, true),
 };
 
 // ── Restaurant / Menu (public) ────────────────────────────────────────────────

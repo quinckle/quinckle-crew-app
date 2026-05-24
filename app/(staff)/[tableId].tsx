@@ -1,6 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Animated, FlatList, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator, PanResponder } from 'react-native';
+import QRCode from 'react-native-qrcode-svg';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
@@ -17,6 +18,7 @@ type FlatItem = {
   item_id: string;
   order_id: string;
   name: string;
+  modifiersSummary?: string | null;
   status: ItemStatus;
   price: number;
   orderedAt: string;
@@ -172,6 +174,12 @@ export default function TableDetail() {
   const [activeCategory, setActiveCategory] = useState('All');
   const [menuCategories, setMenuCategories] = useState<string[]>(['All']);
 
+  // Online payment QR modal state
+  const [showQRModal, setShowQRModal] = useState(false);
+  const [paymentLinkUrl, setPaymentLinkUrl] = useState('');
+  const [paymentLinkAmount, setPaymentLinkAmount] = useState(0);
+  const [isGeneratingLink, setIsGeneratingLink] = useState(false);
+
   const [dialog, setDialog] = useState<{
     visible: boolean; title: string; message: string;
     actions: { label: string; onPress: () => void; variant?: 'default' | 'danger' | 'primary' }[];
@@ -286,6 +294,7 @@ export default function TableDetail() {
         item_id: item.item_id,
         order_id: order.order_id,
         name: `${item.qty}× ${item.name}`,
+        modifiersSummary: item.modifiers_summary,
         status: itemStatus(item, order.status),
         price: item.price * item.qty,
         orderedAt: formatTime(order.placed_at),
@@ -344,6 +353,30 @@ export default function TableDetail() {
         },
       ],
     );
+  };
+
+  // Auto-dismiss QR modal when Ably payment_confirmed arrives and isPaid flips
+  useEffect(() => {
+    if (isPaid && showQRModal) setShowQRModal(false);
+  }, [isPaid]);
+
+  const handleRequestOnlinePayment = async () => {
+    if (isPaid || !sessionId || isGeneratingLink) return;
+    setIsGeneratingLink(true);
+    try {
+      const result = await crewPayments.requestOnlinePaymentLink(sessionId);
+      setPaymentLinkUrl(result.payment_link_url);
+      setPaymentLinkAmount(result.amount);
+      setShowQRModal(true);
+    } catch (e: any) {
+      showDialog(
+        'Error',
+        e.message ?? 'Could not generate payment link. Please try again.',
+        [{ label: 'OK', onPress: () => {} }],
+      );
+    } finally {
+      setIsGeneratingLink(false);
+    }
   };
 
   const handleEndSession = () => {
@@ -436,8 +469,11 @@ export default function TableDetail() {
           return (
             <View style={[styles.orderItemRow, isServed && { opacity: 0.55 }]}>
               <View style={styles.orderItemLeft}>
-                <View>
+                <View style={{ flex: 1 }}>
                   <Text style={[styles.itemName, isServed && styles.itemNameServed]}>{item.name}</Text>
+                  {item.modifiersSummary ? (
+                    <Text style={styles.itemModifiers} numberOfLines={1}>{item.modifiersSummary}</Text>
+                  ) : null}
                   <View style={styles.itemMetaRow}>
                     <Text style={styles.itemPrice}>₹{item.price.toFixed(0)}</Text>
                     <Text style={styles.itemDot}>·</Text>
@@ -505,11 +541,38 @@ export default function TableDetail() {
           </View>
         )}
 
-        <SwipeConfirm
-          onConfirm={handleCollectCash}
-          isConfirmed={isPaid}
-          grandTotal={grandTotal}
-        />
+        {isPaid ? (
+          <View style={styles.swipeSuccessContainer}>
+            <Ionicons name="checkmark-circle" size={18} color="#4ade80" />
+            <Text style={styles.swipeSuccessText}>Payment Collected</Text>
+          </View>
+        ) : (
+          <View style={styles.paymentOptionsRow}>
+            <TouchableOpacity
+              style={styles.cashPayBtn}
+              onPress={handleCollectCash}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="cash-outline" size={17} color={QuinckleColors.textSecondary} />
+              <Text style={styles.cashPayBtnText}>Collect Cash</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.onlinePayBtn, isGeneratingLink && styles.onlinePayBtnLoading]}
+              onPress={handleRequestOnlinePayment}
+              activeOpacity={0.85}
+              disabled={isGeneratingLink}
+            >
+              {isGeneratingLink ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Ionicons name="qr-code-outline" size={17} color="#fff" />
+              )}
+              <Text style={styles.onlinePayBtnText}>
+                {isGeneratingLink ? 'Generating…' : 'Online Payment'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         <TouchableOpacity style={styles.totalRow} activeOpacity={0.85} onPress={() => setIsExpanded(!isExpanded)}>
           <View>
@@ -528,6 +591,56 @@ export default function TableDetail() {
       </View>
 
       <ThemedDialog visible={dialog.visible} title={dialog.title} message={dialog.message} actions={dialog.actions} onClose={closeDialog} />
+
+      {/* Online Payment QR Modal */}
+      <Modal
+        visible={showQRModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowQRModal(false)}
+      >
+        <View style={styles.qrModalContainer}>
+          <View style={styles.qrModalHeader}>
+            <Text style={styles.qrModalTitle}>Scan to Pay</Text>
+            <TouchableOpacity style={styles.iconBtn} onPress={() => setShowQRModal(false)}>
+              <Ionicons name="close" size={20} color={QuinckleColors.textPrimary} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.qrModalBody}>
+            <Text style={styles.qrAmountLabel}>Amount Due</Text>
+            <Text style={styles.qrAmount}>₹{paymentLinkAmount.toFixed(0)}</Text>
+
+            <View style={styles.qrCodeWrapper}>
+              {paymentLinkUrl ? (
+                <QRCode
+                  value={paymentLinkUrl}
+                  size={220}
+                  backgroundColor="#fff"
+                  color="#09090b"
+                />
+              ) : null}
+            </View>
+
+            <Text style={styles.qrHint}>
+              Show this QR to the guest, or share the payment link
+            </Text>
+
+            <View style={styles.qrWaitingRow}>
+              <ActivityIndicator size="small" color={QuinckleColors.textTertiary} />
+              <Text style={styles.qrWaitingText}>Waiting for payment confirmation…</Text>
+            </View>
+          </View>
+
+          <TouchableOpacity
+            style={styles.qrCancelBtn}
+            onPress={() => setShowQRModal(false)}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.qrCancelText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </Modal>
 
       {/* Add Items Modal */}
       <Modal
@@ -672,6 +785,7 @@ const styles = StyleSheet.create({
   checkCircleServed: { backgroundColor: QuinckleColors.primary, borderColor: QuinckleColors.primary },
   itemName: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '600' },
   itemNameServed: { textDecorationLine: 'line-through', color: QuinckleColors.textTertiary },
+  itemModifiers: { color: QuinckleColors.textTertiary, fontSize: 12, marginTop: 1, fontStyle: 'italic' },
   itemMetaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 3, gap: 6 },
   itemPrice: { color: QuinckleColors.textTertiary, fontSize: 12, fontWeight: '500' },
   itemDot: { color: QuinckleColors.textMuted, fontSize: 11 },
@@ -835,6 +949,125 @@ const styles = StyleSheet.create({
   swipeSuccessText: {
     color: '#4ade80',
     fontSize: 14,
+    fontWeight: '600',
+  },
+  // Two-button payment row
+  paymentOptionsRow: {
+    flexDirection: 'row',
+    gap: Spacing.md,
+    marginVertical: Spacing.md,
+  },
+  cashPayBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    height: 50,
+    borderRadius: Radius.md,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+  },
+  cashPayBtnText: {
+    color: QuinckleColors.textSecondary,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  onlinePayBtn: {
+    flex: 1.4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    height: 50,
+    borderRadius: Radius.md,
+    backgroundColor: QuinckleColors.primary,
+  },
+  onlinePayBtnLoading: {
+    opacity: 0.7,
+  },
+  onlinePayBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  // QR Modal
+  qrModalContainer: {
+    flex: 1,
+    backgroundColor: QuinckleColors.background,
+  },
+  qrModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: QuinckleColors.border,
+  },
+  qrModalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: QuinckleColors.textPrimary,
+    letterSpacing: -0.3,
+  },
+  qrModalBody: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.xl,
+    gap: Spacing.lg,
+  },
+  qrAmountLabel: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  qrAmount: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 42,
+    fontWeight: '700',
+    letterSpacing: -1,
+  },
+  qrCodeWrapper: {
+    padding: Spacing.xl,
+    backgroundColor: '#fff',
+    borderRadius: Radius.lg,
+    marginVertical: Spacing.md,
+  },
+  qrHint: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  qrWaitingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  qrWaitingText: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  qrCancelBtn: {
+    marginHorizontal: Spacing.xl,
+    marginBottom: Spacing.xxl,
+    height: 50,
+    borderRadius: Radius.md,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  qrCancelText: {
+    color: QuinckleColors.textSecondary,
+    fontSize: 15,
     fontWeight: '600',
   },
 });
