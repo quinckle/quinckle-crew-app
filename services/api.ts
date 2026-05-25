@@ -214,6 +214,8 @@ export interface PendingCashRequest {
   customerName: string | null;
   customerPhone: string;
   requestedAt: string;
+  /** "CASH" or "UPI_DIRECT" — drives the chip + confirmation endpoint to call. */
+  method?: 'CASH' | 'UPI_DIRECT';
 }
 
 export interface CollectedCashRecord {
@@ -239,6 +241,17 @@ export const crewPayments = {
   // freed.
   cashConfirm: (orderId: string, staffId: string, amountCollected: number) =>
     request<unknown>('POST', '/api/crew/payments/cash', { order_id: orderId, staff_id: staffId, amount_collected: amountCollected }, true),
+
+  // UPI Direct confirmation — waiter sees the payment on the soundbox and
+  // taps confirm in the crew app. Flips the order from PENDING_UPI_DIRECT
+  // to PAID_UPI_DIRECT and pushes the realtime event back to the diner.
+  upiDirectConfirm: (orderId: string, staffId: string, amountCollected: number, upiReference?: string | null) =>
+    request<unknown>('POST', '/api/crew/payments/upi-direct', {
+      order_id:        orderId,
+      staff_id:        staffId,
+      amount_collected: amountCollected,
+      upi_reference:   upiReference ?? null,
+    }, true),
 
   // Powers the cash-collection screen: pending requests + today's history.
   // Backend wraps the payload in { success, data } — unwrap so callers get

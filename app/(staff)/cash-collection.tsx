@@ -147,12 +147,21 @@ export default function CashCollectionScreen() {
     // Optimistically remove from pending so the UI updates immediately
     setCollectingIds(prev => new Set(prev).add(req.orderId));
     try {
-      await crewPayments.cashConfirm(req.orderId, staffId, req.amount);
+      // Route to the correct confirmation endpoint based on the payment method.
+      // Defaults to cash for legacy rows that don't carry a method field.
+      if (req.method === 'UPI_DIRECT') {
+        await crewPayments.upiDirectConfirm(req.orderId, staffId, req.amount);
+      } else {
+        await crewPayments.cashConfirm(req.orderId, staffId, req.amount);
+      }
       setPending(prev => prev.filter(p => p.orderId !== req.orderId));
       // Refresh to pull the newly-collected row into the history section
       void load();
     } catch (err: any) {
-      Alert.alert('Could not record collection', err?.message ?? 'Please try again.');
+      Alert.alert(
+        req.method === 'UPI_DIRECT' ? 'Could not confirm UPI payment' : 'Could not record collection',
+        err?.message ?? 'Please try again.',
+      );
     } finally {
       setCollectingIds(prev => {
         const next = new Set(prev);
@@ -262,12 +271,29 @@ export default function CashCollectionScreen() {
             if (item.kind === 'pending') {
               const p = item.data;
               const busy = collectingIds.has(p.orderId);
+              const isUpi = p.method === 'UPI_DIRECT';
               return (
                 <View style={styles.pendingCard}>
                   <View style={styles.cardTopRow}>
                     <View style={styles.tablePill}>
                       <Ionicons name="restaurant-outline" size={12} color={QuinckleColors.primary} />
                       <Text style={styles.tablePillText}>Table {p.tableNumber || '—'}</Text>
+                    </View>
+                    {/* Method chip — Cash (orange) vs UPI Direct (blue). Tells the waiter
+                        at a glance whether they're collecting physical cash or verifying
+                        a UPI payment on the soundbox. */}
+                    <View style={[
+                      styles.tablePill,
+                      isUpi && { backgroundColor: 'rgba(59,130,246,0.12)', borderColor: 'rgba(59,130,246,0.3)' },
+                    ]}>
+                      <Ionicons
+                        name={isUpi ? 'phone-portrait-outline' : 'cash-outline'}
+                        size={11}
+                        color={isUpi ? '#60a5fa' : QuinckleColors.primary}
+                      />
+                      <Text style={[styles.tablePillText, isUpi && { color: '#93c5fd' }]}>
+                        {isUpi ? 'UPI Direct' : 'Cash'}
+                      </Text>
                     </View>
                     <Text style={styles.timeAgo}>{timeAgo(p.requestedAt)}</Text>
                   </View>
@@ -291,8 +317,10 @@ export default function CashCollectionScreen() {
                         <ActivityIndicator color="#fff" size="small" />
                       ) : (
                         <>
-                          <Ionicons name="checkmark-circle" size={16} color="#fff" />
-                          <Text style={styles.collectBtnText}>Collect ₹{p.amount}</Text>
+                          <Ionicons name={isUpi ? 'shield-checkmark' : 'checkmark-circle'} size={16} color="#fff" />
+                          <Text style={styles.collectBtnText}>
+                            {isUpi ? `Confirm ₹${p.amount}` : `Collect ₹${p.amount}`}
+                          </Text>
                         </>
                       )}
                     </TouchableOpacity>
