@@ -8,9 +8,16 @@ export default function StaffLayout() {
         headerShown: false,
         animation: 'slide_from_right',
         animationDuration: 250,
+        animationTypeForReplace: 'push',
         gestureEnabled: true,
         gestureDirection: 'horizontal',
-        contentStyle: { backgroundColor: QuinckleColors.background },
+        presentation: 'card',
+        contentStyle: {
+          backgroundColor: QuinckleColors.background,
+          borderTopLeftRadius: 20,
+          borderTopRightRadius: 20,
+          overflow: 'hidden',
+        },
       }}
     >
       <Stack.Screen name="index" />

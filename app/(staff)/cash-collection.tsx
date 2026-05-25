@@ -8,9 +8,10 @@
 //
 // Session lifecycle is untouched: collecting cash never frees the table.
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   FlatList,
   RefreshControl,
   StyleSheet,
@@ -19,14 +20,17 @@ import {
   View,
   Linking,
   Alert,
+  Image,
 } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useAuth } from '../../context/AuthContext';
 import { crewPayments, type PendingCashRequest, type CollectedCashRecord } from '../../services/api';
 import { subscribeChannel } from '../../services/realtime';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
+import { CashCollectionSkeleton } from '../../components/ui/CashCollectionSkeleton';
 
 type Row =
   | { kind: 'sectionHeader'; title: string; subtitle: string }
@@ -61,6 +65,44 @@ export default function CashCollectionScreen() {
   // Orders currently being submitted — disables button + shows spinner so the
   // waiter can't double-tap and double-confirm.
   const [collectingIds, setCollectingIds] = useState<Set<string>>(new Set());
+
+  const scrollY = useRef(new Animated.Value(0)).current;
+
+  const renderHeader = () => (
+    <View style={styles.heroContainer}>
+      <Image
+        source={require('../../assets/images/hero banner/cash collection screen/hero banner.webp')}
+        style={styles.heroImage}
+        resizeMode="cover"
+      />
+      {/* Dark overlay to fade image into deep background */}
+      <LinearGradient
+        colors={['rgba(10, 10, 11, 0.1)', 'rgba(10, 10, 11, 0.85)', QuinckleColors.background]}
+        locations={[0, 0.8, 1]}
+        style={StyleSheet.absoluteFillObject}
+      />
+
+      {/* Floating Header Content */}
+      <View style={styles.heroTextSection}>
+        <Text style={styles.heroTitle}>Cash Collection</Text>
+        {pending.length > 0 ? (
+          <View style={styles.statsRow}>
+            <View style={styles.statPill}>
+              <Text style={styles.statPillText}>{pending.length} Pending</Text>
+            </View>
+            <View style={[styles.statPill, styles.duePill]}>
+              <Text style={styles.duePillText}>₹{pending.reduce((s, p) => s + p.amount, 0)} Due</Text>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.allCaughtUpPill}>
+            <Ionicons name="checkmark-circle-outline" size={14} color={QuinckleColors.success} />
+            <Text style={styles.allCaughtUpText}>All Caught Up</Text>
+          </View>
+        )}
+      </View>
+    </View>
+  );
 
   const load = useCallback(async () => {
     try {
@@ -137,33 +179,66 @@ export default function CashCollectionScreen() {
   ];
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
+    <View style={styles.container}>
       <Stack.Screen options={{ headerShown: false }} />
 
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} activeOpacity={0.7}>
-          <Ionicons name="chevron-back" size={22} color={QuinckleColors.textPrimary} />
-        </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>Cash collection</Text>
-          <Text style={styles.headerSubtitle}>
-            {pending.length > 0
-              ? `${pending.length} pending · ₹${pending.reduce((s, p) => s + p.amount, 0)} due`
-              : 'All caught up'}
-          </Text>
+      {/* Sticky Top Header Overlay */}
+      <View style={[styles.stickyHeader, { paddingTop: insets.top }]}>
+        {/* Sticky Background */}
+        <Animated.View
+          style={[
+            styles.stickyHeaderBg,
+            {
+              opacity: scrollY.interpolate({
+                inputRange: [0, 80],
+                outputRange: [0, 1],
+                extrapolate: 'clamp',
+              }),
+            },
+          ]}
+        />
+        
+        {/* Content Row */}
+        <View style={styles.stickyHeaderContent}>
+          {/* Back button (left) */}
+          <TouchableOpacity onPress={() => router.back()} style={styles.headerActionBtn} activeOpacity={0.7}>
+            <Ionicons name="chevron-back" size={22} color={QuinckleColors.textPrimary} />
+          </TouchableOpacity>
+
+          {/* Title (center) */}
+          <Animated.View
+            style={{
+              opacity: scrollY.interpolate({
+                inputRange: [60, 120],
+                outputRange: [0, 1],
+                extrapolate: 'clamp',
+              }),
+            }}
+          >
+            <Text style={styles.stickyHeaderTitleText}>Cash Collection</Text>
+          </Animated.View>
+
+          {/* Refresh button (right) */}
+          <TouchableOpacity onPress={handleRefresh} style={styles.headerActionBtn} activeOpacity={0.7}>
+            <Ionicons name="refresh" size={20} color={QuinckleColors.textSecondary} />
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity onPress={handleRefresh} style={styles.iconBtn} activeOpacity={0.7}>
-          <Ionicons name="refresh" size={20} color={QuinckleColors.textSecondary} />
-        </TouchableOpacity>
       </View>
 
       {isLoading ? (
-        <View style={styles.loadingWrap}>
-          <ActivityIndicator color={QuinckleColors.primary} />
-        </View>
+        <Animated.ScrollView
+          onScroll={Animated.event(
+            [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+            { useNativeDriver: true }
+          )}
+          scrollEventThrottle={16}
+          contentContainerStyle={{ paddingBottom: insets.bottom + Spacing.xl }}
+        >
+          {renderHeader()}
+          <CashCollectionSkeleton />
+        </Animated.ScrollView>
       ) : (
-        <FlatList
+        <Animated.FlatList
           data={rows}
           keyExtractor={(row, i) => {
             if (row.kind === 'pending')   return `p-${row.data.orderId}`;
@@ -171,6 +246,7 @@ export default function CashCollectionScreen() {
             if (row.kind === 'sectionHeader') return `h-${row.title}`;
             return `e-${i}`;
           }}
+          ListHeaderComponent={renderHeader}
           renderItem={({ item }) => {
             if (item.kind === 'sectionHeader') {
               return (
@@ -248,11 +324,17 @@ export default function CashCollectionScreen() {
             );
           }}
           contentContainerStyle={{ paddingBottom: insets.bottom + Spacing.xl }}
+          onScroll={Animated.event(
+            [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+            { useNativeDriver: true }
+          )}
+          scrollEventThrottle={16}
           refreshControl={
             <RefreshControl
               refreshing={isRefreshing}
               onRefresh={handleRefresh}
               tintColor={QuinckleColors.primary}
+              progressViewOffset={220}
             />
           }
         />
@@ -263,23 +345,109 @@ export default function CashCollectionScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: QuinckleColors.background },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-    gap: Spacing.sm,
+  stickyHeader: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 100,
+    overflow: 'hidden',
+  },
+  stickyHeaderBg: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#141416',
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: QuinckleColors.border,
   },
-  iconBtn: {
-    width: 38, height: 38, borderRadius: 19,
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: QuinckleColors.surface,
-    borderWidth: 1, borderColor: QuinckleColors.border,
+  stickyHeaderContent: {
+    height: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.md,
   },
-  headerTitle: { color: QuinckleColors.textPrimary, fontSize: 18, fontWeight: '700' },
-  headerSubtitle: { color: QuinckleColors.textSecondary, fontSize: 12, marginTop: 1 },
+  headerActionBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  stickyHeaderTitleText: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  heroContainer: {
+    height: 220,
+    width: '100%',
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  heroImage: {
+    width: '100%',
+    height: '100%',
+  },
+  heroTextSection: {
+    position: 'absolute',
+    bottom: Spacing.md,
+    left: Spacing.lg,
+    gap: Spacing.xs,
+    maxWidth: '65%',
+  },
+  heroTitle: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 26,
+    fontWeight: '800',
+    letterSpacing: -0.6,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  statPill: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  statPillText: {
+    color: QuinckleColors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  duePill: {
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    borderColor: 'rgba(245, 158, 11, 0.25)',
+  },
+  duePillText: {
+    color: '#F59E0B',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  allCaughtUpPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(34, 197, 94, 0.12)',
+    borderColor: 'rgba(34, 197, 94, 0.2)',
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    alignSelf: 'flex-start',
+  },
+  allCaughtUpText: {
+    color: QuinckleColors.success,
+    fontSize: 12,
+    fontWeight: '600',
+  },
 
   loadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 

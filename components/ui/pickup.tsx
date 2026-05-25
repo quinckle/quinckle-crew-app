@@ -18,12 +18,26 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-// Gentle reflow used when cards enter/leave Active or Completed lists.
+// Buttery reflow used when cards enter/leave Active or Completed lists.
+// `update` uses a soft spring so the cards beneath a just-completed card
+// glide upward into the empty slot instead of snapping. Delete fades quickly
+// so the empty slot opens up while the spring is still settling — the eye
+// reads it as "card melts away → neighbors flow up to fill in."
 export const PICKUP_LAYOUT_PRESET = {
-  duration: 280,
-  create: { type: LayoutAnimation.Types.easeInEaseOut, property: LayoutAnimation.Properties.opacity },
-  update: { type: LayoutAnimation.Types.easeInEaseOut },
-  delete: { type: LayoutAnimation.Types.easeInEaseOut, property: LayoutAnimation.Properties.opacity },
+  duration: 460,
+  create: {
+    type: LayoutAnimation.Types.easeOut,
+    property: LayoutAnimation.Properties.opacity,
+  },
+  update: {
+    type: LayoutAnimation.Types.spring,
+    springDamping: 0.78,
+  },
+  delete: {
+    duration: 240,
+    type: LayoutAnimation.Types.easeIn,
+    property: LayoutAnimation.Properties.opacity,
+  },
 };
 
 export type PickupItemData = {
@@ -301,7 +315,10 @@ type CardProps = {
   onReopen?: () => void;
 };
 
-const COMPLETION_HOLD_MS = 700;   // hold in Active list with calm state shown
+const SWEEP_DURATION_MS = 480;     // green wipe left → right
+const SWEEP_HOLD_MS = 320;         // full-coverage hold so "COMPLETED" reads
+const COMPLETION_TOTAL_MS = SWEEP_DURATION_MS + SWEEP_HOLD_MS;
+const ENTRY_RECENT_MS = 1500;      // play entry animation on completed cards mounted within this window
 const UNDO_WINDOW_MS = 60_000;
 
 export function PickupCard({
@@ -314,10 +331,15 @@ export function PickupCard({
   const isCompleted = !!order.completedAt;
   const items = order.items;
 
-  // Cross-fade between active/completed visual treatment + list slot.
-  const opacity = useRef(new Animated.Value(1)).current;
-  const accentPulse = useRef(new Animated.Value(0)).current;
+  // Card-level animated values
   const calmness = useRef(new Animated.Value(isCompleted ? 1 : 0)).current; // 0 = active surface, 1 = muted
+  const sweepProgress = useRef(new Animated.Value(0)).current;              // 0 = no overlay, 1 = full sweep covered
+  const badgePop = useRef(new Animated.Value(0)).current;                   // COMPLETED badge scale+opacity
+  const entryTranslate = useRef(new Animated.Value(0)).current;             // slide-in when card mounts into Completed list
+  const entryOpacity = useRef(new Animated.Value(1)).current;
+
+  // Measure the card so the sweep overlay knows how far to translate.
+  const [cardWidth, setCardWidth] = useState(0);
 
   // 60s Undo timer for fresh completions
   const [undoVisible, setUndoVisible] = useState(false);
@@ -338,46 +360,79 @@ export function PickupCard({
     return () => clearTimeout(t);
   }, [isCompleted, order.completedAt, onReopen]);
 
-  // Completion celebration: calm in place, single accent pulse, then signal
-  // parent to flip completedAt (which moves the card to Completed list via
-  // LayoutAnimation cross-fade). No flying objects.
+  // Mount-time entry animation on cards that just landed in the Completed
+  // list. Detected by a fresh completedAt timestamp.
+  useEffect(() => {
+    if (!isCompleted || !order.completedAt) return;
+    const ts = Date.parse(order.completedAt);
+    if (isNaN(ts)) return;
+    const age = Date.now() - ts;
+    if (age > ENTRY_RECENT_MS) return;
+    entryTranslate.setValue(28);
+    entryOpacity.setValue(0);
+    Animated.parallel([
+      Animated.timing(entryTranslate, {
+        toValue: 0,
+        duration: 320,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(entryOpacity, {
+        toValue: 1,
+        duration: 320,
+        useNativeDriver: true,
+      }),
+    ]).start();
+    // run-once on mount only
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Completion celebration: green sweep wipes across left→right, "COMPLETED"
+  // badge pops in mid-sweep, brief full-coverage hold, then signal parent to
+  // flip completedAt (which removes this card from Active via LayoutAnimation
+  // cross-fade; a fresh instance mounts in Completed with the entry slide).
   useEffect(() => {
     if (!isCompleting) return;
+
     Animated.timing(calmness, {
       toValue: 1,
-      duration: 320,
+      duration: SWEEP_DURATION_MS,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start();
+
+    Animated.timing(sweepProgress, {
+      toValue: 1,
+      duration: SWEEP_DURATION_MS,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+
     Animated.sequence([
-      Animated.timing(accentPulse, {
+      Animated.delay(Math.round(SWEEP_DURATION_MS * 0.45)),
+      Animated.spring(badgePop, {
         toValue: 1,
-        duration: 280,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: false,
-      }),
-      Animated.timing(accentPulse, {
-        toValue: 0,
-        duration: 380,
-        easing: Easing.in(Easing.quad),
-        useNativeDriver: false,
+        friction: 6,
+        tension: 130,
+        useNativeDriver: true,
       }),
     ]).start();
 
-    const t = setTimeout(() => onCompletionFinished(), COMPLETION_HOLD_MS);
+    const t = setTimeout(() => onCompletionFinished(), COMPLETION_TOTAL_MS);
     return () => clearTimeout(t);
-  }, [isCompleting, accentPulse, calmness, onCompletionFinished]);
+  }, [isCompleting, calmness, sweepProgress, badgePop, onCompletionFinished]);
 
-  // When the card transitions to completed (post-celebration), keep the
-  // muted-surface look already set by `calmness`. When a completed card is
-  // reopened, calm back down.
+  // Reopened completed card → calm back down + clear sweep overlay state
   useEffect(() => {
+    if (isCompleted || isCompleting) return;
     Animated.timing(calmness, {
-      toValue: isCompleted ? 1 : 0,
+      toValue: 0,
       duration: 240,
       useNativeDriver: false,
     }).start();
-  }, [isCompleted, calmness]);
+    sweepProgress.setValue(0);
+    badgePop.setValue(0);
+  }, [isCompleted, isCompleting, calmness, sweepProgress, badgePop]);
 
   // Accent strip color: encodes most-advanced item state. Driven by the
   // current items so a partial-ready ticket gets a green-tinted strip, etc.
@@ -392,14 +447,19 @@ export function PickupCard({
     return QuinckleColors.textTertiary;
   }, [items, isCompleted]);
 
-  const accentColor = accentPulse.interpolate({
-    inputRange: [0, 1],
-    outputRange: [accentBase, QuinckleColors.success],
-  });
-
   const cardBackground = calmness.interpolate({
     inputRange: [0, 1],
     outputRange: [QuinckleColors.surface, QuinckleColors.surfaceMuted],
+  });
+
+  const sweepTranslateX = sweepProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-(cardWidth || 1), 0],
+  });
+
+  const badgeScale = badgePop.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.6, 1],
   });
 
   // Single status phrase
@@ -423,15 +483,17 @@ export function PickupCard({
 
   return (
     <Animated.View
+      onLayout={(e) => setCardWidth(e.nativeEvent.layout.width)}
       style={[
         cardStyles.card,
         {
-          opacity,
           backgroundColor: cardBackground,
+          opacity: entryOpacity,
+          transform: [{ translateX: entryTranslate }],
         },
       ]}
     >
-      <Animated.View style={[cardStyles.accentStrip, { backgroundColor: accentColor }]} />
+      <View style={[cardStyles.accentStrip, { backgroundColor: accentBase }]} />
 
       <View style={cardStyles.body}>
         <View style={cardStyles.header}>
@@ -476,6 +538,35 @@ export function PickupCard({
           ))}
         </View>
       </View>
+
+      {/* Green sweep overlay — fills left → right when the order completes,
+          then holds long enough to show "COMPLETED" before the card slides
+          out to the Completed tab. */}
+      {isCompleting && cardWidth > 0 && (
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            cardStyles.sweepOverlay,
+            {
+              width: cardWidth,
+              transform: [{ translateX: sweepTranslateX }],
+            },
+          ]}
+        >
+          <Animated.View
+            style={[
+              cardStyles.sweepBadge,
+              {
+                opacity: badgePop,
+                transform: [{ scale: badgeScale }],
+              },
+            ]}
+          >
+            <Ionicons name="checkmark-circle" size={20} color="#fff" />
+            <Text style={cardStyles.sweepBadgeText}>Completed</Text>
+          </Animated.View>
+        </Animated.View>
+      )}
     </Animated.View>
   );
 }
@@ -551,5 +642,26 @@ const cardStyles = StyleSheet.create({
   },
   itemList: {
     gap: 2,
+  },
+  sweepOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    bottom: 0,
+    backgroundColor: QuinckleColors.success,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sweepBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  sweepBadgeText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
 });

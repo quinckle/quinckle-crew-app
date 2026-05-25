@@ -15,19 +15,30 @@ async function playSound(file: any) {
     });
   } catch { /* non-fatal */ }
 }
-import { Swipeable } from 'react-native-gesture-handler';
-import type { Swipeable as SwipeableType } from 'react-native-gesture-handler';
 import {
+  Animated,
+  Easing,
   FlatList,
+  LayoutAnimation,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
+  UIManager,
   View,
   Image,
 } from 'react-native';
+import { PICKUP_LAYOUT_PRESET } from '../../components/ui/pickup';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+const READY_FADE_DELAY = 700; // give the cook a beat to see the card go full-ready before it slides out
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { useAuth } from '../../context/AuthContext';
@@ -107,26 +118,154 @@ const STATUS_META: Record<KitchenStatus, { label: string; color: string }> = {
   bumped: { label: 'Bumped', color: QuinckleColors.textTertiary },
 };
 
+/* ───────────── Kitchen order card ─────────────
+ * Extracted so each card has its own lifecycle hooks for entry/exit
+ * animation. Cards in the Completed tab slide in from the right; the
+ * READY banner inside an active card softly fades + rises on appearance
+ * instead of popping in. Matches the staff Orders page feel.
+ */
+type KitchenCardProps = {
+  item: KitchenOrder;
+  index: number;
+  onTogglePrepared: (itemId: string) => void;
+  isCompletedTab: boolean;
+};
+
+function KitchenOrderCard({ item, index, onTogglePrepared, isCompletedTab }: KitchenCardProps) {
+  const disabled = item.status === 'bumped';
+  const preparedCount = item.items.filter((i) => i.isPrepared).length;
+  const isUrgent = item.status === 'urgent';
+
+  // Entry animation when this card mounts into the Completed tab.
+  const entryTranslate = useRef(new Animated.Value(isCompletedTab ? 24 : 0)).current;
+  const entryOpacity = useRef(new Animated.Value(isCompletedTab ? 0 : 1)).current;
+  useEffect(() => {
+    if (!isCompletedTab) return;
+    Animated.parallel([
+      Animated.timing(entryTranslate, {
+        toValue: 0,
+        duration: 320,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(entryOpacity, {
+        toValue: 1,
+        duration: 320,
+        useNativeDriver: true,
+      }),
+    ]).start();
+    // run-once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // READY banner: soft slide-up + fade when status flips to 'ready'
+  const bannerTranslate = useRef(new Animated.Value(item.status === 'ready' ? 0 : 8)).current;
+  const bannerOpacity = useRef(new Animated.Value(item.status === 'ready' ? 1 : 0)).current;
+  useEffect(() => {
+    if (item.status !== 'ready') return;
+    bannerTranslate.setValue(8);
+    bannerOpacity.setValue(0);
+    Animated.parallel([
+      Animated.spring(bannerTranslate, {
+        toValue: 0,
+        friction: 7,
+        tension: 100,
+        useNativeDriver: true,
+      }),
+      Animated.timing(bannerOpacity, {
+        toValue: 1,
+        duration: 260,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [item.status, bannerTranslate, bannerOpacity]);
+
+  return (
+    <Animated.View
+      style={[
+        styles.orderCard,
+        disabled && styles.orderCardDimmed,
+        isUrgent && styles.orderCardUrgent,
+        {
+          opacity: entryOpacity,
+          transform: [{ translateX: entryTranslate }],
+        },
+      ]}
+    >
+      <View style={styles.cardTopRow}>
+        <View>
+          <View style={styles.ticketRow}>
+            <Text style={styles.ticketId}>#{index}</Text>
+            <View style={styles.tableTag}>
+              <Text style={styles.tableTagText}>{item.table}</Text>
+            </View>
+          </View>
+          <Text style={styles.placedAtLine}>
+            {item.placedAt
+              ? `${new Date(item.placedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${item.orderedAgo}`
+              : item.orderedAgo}
+          </Text>
+        </View>
+        <View style={[styles.statusPill, { backgroundColor: QuinckleColors.surfaceMutedHover, borderColor: QuinckleColors.borderStrong }]}>
+          <View style={[styles.statusPillDot, { backgroundColor: QuinckleColors.primary }]} />
+          <Text style={[styles.statusPillText, { color: QuinckleColors.textPrimary }]}>
+            {item.status === 'bumped' ? 'BUMPED' : `${preparedCount}/${item.items.length} READY`}
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.itemList}>
+        <View style={styles.dividerProgressContainer}>
+          <View style={[styles.dividerProgressFill, { width: `${(preparedCount / item.items.length) * 100}%` }]} />
+        </View>
+        {item.items.map((entry) => (
+          <TouchableOpacity
+            key={entry.id}
+            style={styles.itemRow}
+            onPress={() => onTogglePrepared(entry.id)}
+            activeOpacity={0.7}
+            disabled={disabled}
+          >
+            <View style={[styles.checkbox, entry.isPrepared && styles.checkboxChecked]}>
+              {entry.isPrepared && <Ionicons name="checkmark" size={13} color="#fff" />}
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.itemLine, entry.isPrepared && styles.itemLineDone]}>{entry.name}</Text>
+              {entry.modifiersSummary ? (
+                <Text style={styles.itemModifiers}>{entry.modifiersSummary}</Text>
+              ) : null}
+            </View>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {item.status === 'ready' && (
+        <Animated.View
+          style={[
+            styles.readyBanner,
+            {
+              opacity: bannerOpacity,
+              transform: [{ translateY: bannerTranslate }],
+            },
+          ]}
+        >
+          <Ionicons name="checkmark-circle" size={16} color={QuinckleColors.success} />
+          <Text style={styles.readyBannerText}>Ready · sending out</Text>
+        </Animated.View>
+      )}
+    </Animated.View>
+  );
+}
+
 export default function CookDashboard() {
   const insets = useSafeAreaInsets();
   const { logout, staffInfo } = useAuth();
-  const swipeableRefs = useRef<Map<string, SwipeableType | null>>(new Map());
   const knownOrderIdsRef = useRef<Set<string>>(new Set());
   const [orders, setOrders] = useState<KitchenOrder[]>([]);
   const [bumpedOrders, setBumpedOrders] = useState<KitchenOrder[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchText, setSearchText] = useState('');
-  const [navTab, setNavTab] = useState<'active' | 'completed' | 'profile'>('active');
-  const [isOnline, setIsOnline] = useState(true);
-  const [shiftStart, setShiftStart] = useState<Date | null>(new Date(Date.now() - 3.5 * 60 * 60 * 1000));
-  const [activeDuration, setActiveDuration] = useState('03h 30m');
-  const [shiftPeriod, setShiftPeriod] = useState<'today' | 'week'>('today');
-  const [shiftLogs, setShiftLogs] = useState([
-    { d: 'Mon', t: '10:00 - 18:00', h: 8.0 },
-    { d: 'Tue', t: '09:30 - 17:30', h: 8.0 },
-    { d: 'Wed', t: '10:00 - 16:00', h: 6.0 },
-  ]);
-  const [pendingUndoId, setPendingUndoId] = useState<string | null>(null);
+  const [navTab, setNavTab] = useState<'active' | 'completed'>('active');
 
   const handleLogout = () => {
     logout();
@@ -240,106 +379,22 @@ export default function CookDashboard() {
     });
   }, [orders, bumpedOrders, searchText, navTab]);
 
-  const handleSwipeRemoveReady = async (id: string) => {
-    const order = orders.find((o) => o.id === id);
-    if (!order || order.status !== 'ready') return;
-
-    setOrders(prev => prev.filter(o => o.id !== id));
-    setBumpedOrders(prev => [...prev, { ...order, status: 'bumped' as KitchenStatus }]);
-    setPendingUndoId(id);
-
-    try {
-      await kitchen.bumpOrder(id);
-    } catch {
-      setOrders(prev => [...prev, order]);
-      setBumpedOrders(prev => prev.filter(o => o.id !== id));
-      setPendingUndoId(null);
-    }
+  // Backend auto-bumps the order to READY when the last item flips to done.
+  // We mirror that locally: after a short visual pause so the cook sees the
+  // card go full-ready, animate-move it from Active → Completed.
+  const sweepReadyOrderToCompleted = (id: string) => {
+    setTimeout(() => {
+      // Same buttery preset as the staff Orders page: card fades fast,
+      // neighbors spring upward into the empty slot with soft damping.
+      LayoutAnimation.configureNext(PICKUP_LAYOUT_PRESET);
+      setOrders(prev => {
+        const order = prev.find(o => o.id === id);
+        if (!order) return prev;
+        setBumpedOrders(b => [{ ...order, status: 'bumped' as KitchenStatus }, ...b]);
+        return prev.filter(o => o.id !== id);
+      });
+    }, READY_FADE_DELAY);
   };
-
-  const handleUndoRemove = async () => {
-    if (!pendingUndoId) return;
-    const id = pendingUndoId;
-    const bumpedOrder = bumpedOrders.find(o => o.id === id);
-    setPendingUndoId(null);
-
-    if (bumpedOrder) {
-      setBumpedOrders(prev => prev.filter(o => o.id !== id));
-      setOrders(prev => [...prev, { ...bumpedOrder, status: 'ready' as KitchenStatus }]);
-    }
-
-    try {
-      await kitchen.undoBump(id);
-      await loadOrders();
-    } catch {
-      if (bumpedOrder) {
-        setOrders(prev => prev.filter(o => o.id !== id));
-        setBumpedOrders(prev => [...prev, { ...bumpedOrder, status: 'bumped' as KitchenStatus }]);
-      }
-    }
-  };
-
-  useEffect(() => {
-    let interval: any;
-    if (isOnline && shiftStart) {
-      const updateDuration = () => {
-        const diff = Date.now() - shiftStart.getTime();
-        const hours = Math.floor(diff / (1000 * 60 * 60));
-        const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-        setActiveDuration(`${String(hours).padStart(2, '0')}h ${String(mins).padStart(2, '0')}m`);
-      };
-      updateDuration();
-      interval = setInterval(updateDuration, 60000);
-    } else {
-      setActiveDuration('--');
-    }
-    return () => clearInterval(interval);
-  }, [isOnline, shiftStart]);
-
-  const formatNow = () => {
-    const now = new Date();
-    return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-  };
-
-  const handleToggleOnline = () => {
-    if (isOnline && shiftStart) {
-      const diff = Date.now() - shiftStart.getTime();
-      const hours = diff / (1000 * 60 * 60);
-      if (hours > 0.05) {
-        const startStr = `${String(shiftStart.getHours()).padStart(2, '0')}:${String(shiftStart.getMinutes()).padStart(2, '0')}`;
-        const endStr = formatNow();
-        const dayStr = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date().getDay()];
-        setShiftLogs((prev) => [...prev, { d: dayStr, t: `${startStr} - ${endStr}`, h: parseFloat(hours.toFixed(1)) }]);
-      }
-      setShiftStart(null);
-    } else {
-      setShiftStart(new Date());
-    }
-    setIsOnline((prev) => !prev);
-  };
-
-  const chartData = useMemo(() => {
-    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    const currentDayIndex = (new Date().getDay() + 6) % 7;
-    return days.map((day, i) => {
-      let hours = 0;
-      if (i === currentDayIndex) {
-        hours = isOnline && shiftStart ? (Date.now() - shiftStart.getTime()) / (1000 * 60 * 60) : 0;
-      } else {
-        const log = shiftLogs.find((l) => l.d === day);
-        hours = log ? log.h : 0;
-      }
-      return { day, percentage: Math.min((hours / 12) * 100, 100), isToday: i === currentDayIndex, label: day[0] };
-    });
-  }, [shiftLogs, shiftStart, isOnline]);
-
-  const totalTodayHours = useMemo(() => {
-    const dayStr = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date().getDay()];
-    const completed = shiftLogs.filter((l) => l.d === dayStr).reduce((acc, l) => acc + l.h, 0);
-    const active = isOnline && shiftStart ? (Date.now() - shiftStart.getTime()) / (1000 * 60 * 60) : 0;
-    const total = completed + active;
-    return `${String(Math.floor(total)).padStart(2, '0')}h ${String(Math.floor((total % 1) * 60)).padStart(2, '0')}m`;
-  }, [shiftLogs, isOnline, shiftStart]);
 
   // Real-time activity feed — backed by realtime events emitted by the
   // kitchen/queue routes. Starts empty; entries are pushed as the cook
@@ -354,6 +409,8 @@ export default function CookDashboard() {
     if (!item) return;
     const newIsPrepared = !item.isPrepared;
 
+    let becameFullyReady = false;
+
     // Optimistic update
     setOrders(prev =>
       prev.map(o => {
@@ -362,9 +419,12 @@ export default function CookDashboard() {
         const allDone = updated.every(i => i.isPrepared);
         const anyDone = updated.some(i => i.isPrepared);
         const status: KitchenStatus = allDone ? 'ready' : anyDone ? 'preparing' : 'new';
+        if (allDone && o.status !== 'ready') becameFullyReady = true;
         return { ...o, items: updated, status };
       }),
     );
+
+    if (becameFullyReady) sweepReadyOrderToCompleted(orderId);
 
     try {
       await kitchen.updateItemStatus(orderId, itemId, newIsPrepared ? 'done' : 'pending');
@@ -374,7 +434,7 @@ export default function CookDashboard() {
   };
 
 
-  const showTopBar = navTab !== 'profile';
+  const showTopBar = true;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
@@ -382,15 +442,14 @@ export default function CookDashboard() {
       <View style={styles.topBar}>
         <View style={styles.brandGroup}>
           <Text style={styles.brandTitle}>{staffInfo?.restaurantName ?? 'The Grill Room'}</Text>
-          <View style={styles.statusRow}>
-            <View style={[styles.statusDot, { backgroundColor: isOnline ? QuinckleColors.success : QuinckleColors.textTertiary }]} />
-            <Text style={styles.statusText}>{isOnline ? 'Online' : 'Off-duty'}</Text>
+          <View style={styles.roleBadge}>
+            <Text style={styles.roleBadgeText}>Kitchen</Text>
           </View>
         </View>
 
         <TouchableOpacity
           style={styles.avatarBtn}
-          onPress={() => setNavTab('profile')}
+          onPress={() => router.push('/(cook)/profile')}
           activeOpacity={0.7}
         >
           <Image
@@ -401,7 +460,7 @@ export default function CookDashboard() {
       </View>
       )}
 
-      {navTab !== 'profile' && (
+      {(
         <>
           <View style={styles.headerCountWrap}>
             <Text style={styles.headerCountText}>
@@ -429,95 +488,14 @@ export default function CookDashboard() {
             data={filteredOrders}
             keyExtractor={(item) => item.id}
             contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 80 }]}
-            renderItem={({ item, index }) => {
-              const disabled = item.status === 'bumped';
-              const preparedCount = item.items.filter((i) => i.isPrepared).length;
-              const isUrgent = item.status === 'urgent';
-
-              const cardContent = (
-                <View style={[styles.orderCard, disabled && styles.orderCardDimmed, isUrgent && styles.orderCardUrgent]}>
-                  <View style={styles.cardTopRow}>
-                    <View>
-                      <View style={styles.ticketRow}>
-                        <Text style={styles.ticketId}>#{navTab === 'completed' ? bumpedOrders.indexOf(item) + 1 : index + 1}</Text>
-                        <View style={styles.tableTag}>
-                          <Text style={styles.tableTagText}>{item.table}</Text>
-                        </View>
-                      </View>
-                      {/* Show both wall-clock time and relative age so the cook
-                          can immediately tell when the ticket was placed. */}
-                      <Text style={styles.placedAtLine}>
-                        {item.placedAt
-                          ? `${new Date(item.placedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${item.orderedAgo}`
-                          : item.orderedAgo}
-                      </Text>
-                    </View>
-                    <View style={[styles.statusPill, { backgroundColor: QuinckleColors.surfaceMutedHover, borderColor: QuinckleColors.borderStrong }]}>
-                      <View style={[styles.statusPillDot, { backgroundColor: QuinckleColors.primary }]} />
-                      <Text style={[styles.statusPillText, { color: QuinckleColors.textPrimary }]}>
-                        {item.status === 'bumped' ? 'BUMPED' : `${preparedCount}/${item.items.length} READY`}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.itemList}>
-                    <View style={styles.dividerProgressContainer}>
-                      <View style={[styles.dividerProgressFill, { width: `${(preparedCount / item.items.length) * 100}%` }]} />
-                    </View>
-                    {item.items.map((entry) => (
-                      <TouchableOpacity
-                        key={entry.id}
-                        style={styles.itemRow}
-                        onPress={() => toggleItemPrepared(item.id, entry.id)}
-                        activeOpacity={0.7}
-                        disabled={disabled}
-                      >
-                        <View style={[styles.checkbox, entry.isPrepared && styles.checkboxChecked]}>
-                          {entry.isPrepared && <Ionicons name="checkmark" size={13} color="#fff" />}
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={[styles.itemLine, entry.isPrepared && styles.itemLineDone]}>{entry.name}</Text>
-                          {entry.modifiersSummary ? (
-                            <Text style={styles.itemModifiers}>{entry.modifiersSummary}</Text>
-                          ) : null}
-                        </View>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-
-                  <View style={styles.cardFooter}>
-                    <View />
-                    {item.status === 'ready' && <Text style={styles.swipeHint}>← Swipe left to send out</Text>}
-                  </View>
-                </View>
-              );
-
-              if (item.status === 'ready') {
-                return (
-                  <Swipeable
-                    ref={ref => { swipeableRefs.current.set(item.id, ref); }}
-                    renderRightActions={() => (
-                      <TouchableOpacity
-                        style={styles.swipeAction}
-                        activeOpacity={0.85}
-                        onPress={() => {
-                          swipeableRefs.current.get(item.id)?.close();
-                          void handleSwipeRemoveReady(item.id);
-                        }}
-                      >
-                        <Ionicons name="checkmark-done" size={20} color="#fff" />
-                        <Text style={styles.swipeActionText}>Send Out</Text>
-                      </TouchableOpacity>
-                    )}
-                    overshootFriction={8}
-                  >
-                    {cardContent}
-                  </Swipeable>
-                );
-              }
-
-              return cardContent;
-            }}
+            renderItem={({ item, index }) => (
+              <KitchenOrderCard
+                item={item}
+                index={navTab === 'completed' ? bumpedOrders.indexOf(item) + 1 : index + 1}
+                onTogglePrepared={(itemId) => toggleItemPrepared(item.id, itemId)}
+                isCompletedTab={navTab === 'completed'}
+              />
+            )}
             ListEmptyComponent={
               <View style={styles.emptyState}>
                 <Ionicons name="restaurant-outline" size={28} color={QuinckleColors.textTertiary} />
@@ -526,15 +504,6 @@ export default function CookDashboard() {
               </View>
             }
           />
-
-          {pendingUndoId ? (
-            <View style={[styles.undoBar, { bottom: insets.bottom + Spacing.md }]}>
-              <Text style={styles.undoText}>Ticket #{pendingUndoId} bumped.</Text>
-              <TouchableOpacity onPress={handleUndoRemove}>
-                <Text style={styles.undoAction}>Undo</Text>
-              </TouchableOpacity>
-            </View>
-          ) : null}
 
           <View style={[styles.bottomNav, { paddingBottom: Math.max(insets.bottom, Spacing.sm) }]}>
             <View style={styles.navRow}>
@@ -551,202 +520,6 @@ export default function CookDashboard() {
         </>
       )}
 
-      {navTab === 'profile' && (
-        <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.profileContent}>
-          <View style={styles.profileHeaderRow}>
-            <TouchableOpacity style={styles.iconBtn} onPress={() => setNavTab('active')}>
-              <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
-            </TouchableOpacity>
-            <Text style={styles.screenTitle}>Profile</Text>
-            <View style={styles.iconBtnPlaceholder} />
-          </View>
-
-          <View style={styles.profileHero}>
-            <View style={styles.profileImageContainer}>
-              <Image
-                source={{ uri: 'https://images.unsplash.com/photo-1577219491135-ce391730fb2c?q=80&w=200&h=200&auto=format&fit=crop' }}
-                style={styles.profileImage}
-              />
-              <View style={styles.uploadBadge}>
-                <Ionicons name="camera" size={12} color="#fff" />
-              </View>
-            </View>
-            <Text style={styles.profileName}>{staffInfo?.name ?? 'Kitchen Staff'}</Text>
-            <Text style={styles.profilePhone}>{staffInfo?.restaurantName ?? 'The Grill Room'}</Text>
-          </View>
-
-          <View style={styles.card}>
-            <View style={styles.dutyRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.cardTitle}>Duty Status</Text>
-                <Text style={styles.cardSubtitle}>{isOnline ? 'Receiving kitchen tickets' : 'Currently off-duty'}</Text>
-              </View>
-              <TouchableOpacity
-                onPress={handleToggleOnline}
-                style={[styles.toggleBase, isOnline ? styles.toggleOn : styles.toggleOff]}
-              >
-                <View style={[styles.toggleCircle, isOnline ? styles.toggleCircleOn : styles.toggleCircleOff]} />
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          <View style={styles.card}>
-            <View style={styles.shiftStatsRow}>
-              <View style={styles.shiftStatItem}>
-                <Text style={styles.shiftStatLabel}>Today's Hours</Text>
-                <Text style={styles.shiftStatValue}>{totalTodayHours}</Text>
-              </View>
-              <View style={styles.shiftStatDivider} />
-              <View style={styles.shiftStatItem}>
-                <Text style={styles.shiftStatLabel}>Current Session</Text>
-                <Text style={[styles.shiftStatValue, isOnline && { color: QuinckleColors.success }]}>{activeDuration}</Text>
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.card}>
-            <View style={styles.venueRow}>
-              <Image
-                source={{ uri: 'https://images.unsplash.com/photo-1544148103-0773bf10d330?q=80&w=100&h=100&auto=format&fit=crop' }}
-                style={styles.venueLogo}
-              />
-              <View style={styles.venueInfo}>
-                <Text style={styles.venueLabel}>Linked Restaurant</Text>
-                <Text style={styles.venueName}>{staffInfo?.restaurantName ?? 'The Grill Room'}</Text>
-                <Text style={styles.venueId}>{staffInfo?.restaurantId?.slice(0, 12).toUpperCase() ?? 'QNK-7782-GR'}</Text>
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.card}>
-            <View style={styles.perfRow}>
-              <View style={styles.perfItem}>
-                <Text style={styles.shiftStatLabel}>Tickets Today</Text>
-                <Text style={styles.shiftStatValue}>{counts.bumped + counts.active}</Text>
-              </View>
-              <View style={styles.shiftStatDivider} />
-              <View style={styles.perfItem}>
-                <Text style={styles.shiftStatLabel}>Completed</Text>
-                <Text style={[styles.shiftStatValue, { color: QuinckleColors.success }]}>{counts.bumped}</Text>
-              </View>
-              <View style={styles.shiftStatDivider} />
-              <View style={styles.perfItem}>
-                <Text style={styles.shiftStatLabel}>In Progress</Text>
-                <Text style={[styles.shiftStatValue, { color: QuinckleColors.warning }]}>{counts.active}</Text>
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.card}>
-            <View style={styles.cardHeaderRow}>
-              <View>
-                <Text style={styles.cardTitle}>Shift Insights</Text>
-                <Text style={styles.cardSubtitle}>
-                  {shiftPeriod === 'today' ? "Today's session details" : 'Performance this week'}
-                </Text>
-              </View>
-              <View style={styles.periodPicker}>
-                <TouchableOpacity
-                  onPress={() => setShiftPeriod('today')}
-                  style={[styles.periodBtn, shiftPeriod === 'today' && styles.periodBtnActive]}
-                >
-                  <Text style={[styles.periodBtnText, shiftPeriod === 'today' && styles.periodBtnTextActive]}>Today</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => setShiftPeriod('week')}
-                  style={[styles.periodBtn, shiftPeriod === 'week' && styles.periodBtnActive]}
-                >
-                  <Text style={[styles.periodBtnText, shiftPeriod === 'week' && styles.periodBtnTextActive]}>Week</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            <View style={styles.weeklyGrid}>
-              {chartData.map((data, i) => (
-                <View key={i} style={styles.dayColumn}>
-                  <View style={styles.dayBarTrack}>
-                    <View style={[styles.dayBar, { height: `${data.percentage}%` }, data.isToday ? { backgroundColor: QuinckleColors.primary } : { backgroundColor: QuinckleColors.primarySoftBorder }]} />
-                  </View>
-                  <Text style={[styles.dayLabel, data.isToday && { color: QuinckleColors.primary, fontWeight: '700' }]}>{data.label}</Text>
-                </View>
-              ))}
-            </View>
-
-            <View style={styles.timingDetails}>
-              {shiftPeriod === 'today' ? (
-                <View style={styles.todayTiming}>
-                  <View style={styles.timingRow}>
-                    <Ionicons name="time-outline" size={14} color={QuinckleColors.textTertiary} />
-                    <Text style={styles.timingText}>Shift Started: <Text style={styles.timingVal}>
-                      {shiftStart ? `${String(shiftStart.getHours()).padStart(2, '0')}:${String(shiftStart.getMinutes()).padStart(2, '0')}` : '--:--'}
-                    </Text></Text>
-                  </View>
-                  <View style={styles.timingRow}>
-                    <Ionicons name="flame-outline" size={14} color={QuinckleColors.textTertiary} />
-                    <Text style={styles.timingText}>Current Session: <Text style={styles.timingVal}>{activeDuration}</Text></Text>
-                  </View>
-                  <View style={styles.timingDivider} />
-                  <Text style={styles.timingSummary}>
-                    {isOnline
-                      ? `You are currently ${activeDuration} into your shift. Keep it up!`
-                      : 'You are currently off-duty. Your timings will appear here once you go online.'}
-                  </Text>
-                </View>
-              ) : (
-                <View style={styles.weekTiming}>
-                  {shiftLogs.map((log, idx) => (
-                    <View key={idx} style={styles.weekLogItem}>
-                      <Text style={styles.weekLogDay}>{log.d}</Text>
-                      <Text style={styles.weekLogTime}>{log.t}</Text>
-                      <Text style={styles.weekLogHours}>{log.h}h</Text>
-                    </View>
-                  ))}
-                  {isOnline && (
-                    <View style={styles.weekLogItem}>
-                      <Text style={[styles.weekLogDay, { color: QuinckleColors.primary }]}>Today</Text>
-                      <Text style={styles.weekLogTime}>Active Session</Text>
-                      <Text style={styles.weekLogHours}>{activeDuration}</Text>
-                    </View>
-                  )}
-                  <View style={styles.weekSubtotal}>
-                    <Text style={styles.subtotalLabel}>Weekly Total</Text>
-                    <Text style={styles.subtotalVal}>
-                      {(shiftLogs.reduce((acc, l) => acc + l.h, 0) + (isOnline && shiftStart ? (Date.now() - shiftStart.getTime()) / (1000 * 60 * 60) : 0)).toFixed(1)} Hours
-                    </Text>
-                  </View>
-                </View>
-              )}
-            </View>
-          </View>
-
-          <View style={styles.card}>
-            <Text style={[styles.cardTitle, { marginBottom: Spacing.md }]}>Kitchen Activity</Text>
-            {COOK_ACTIVITY.map((item) => (
-              <View key={item.id} style={styles.activityItem}>
-                <Text style={styles.activityMessage}>{item.message}</Text>
-                <View style={styles.activityMeta}>
-                  <Text style={styles.activityDate}>{item.date}</Text>
-                  <Text style={styles.activityDot}>·</Text>
-                  <Text style={styles.activityTime}>{item.time}</Text>
-                </View>
-              </View>
-            ))}
-          </View>
-
-          <Text style={styles.adminText}>
-            Contact your restaurant administrator to update profile details.
-          </Text>
-
-          <TouchableOpacity
-            style={styles.logoutBtn}
-            onPress={handleLogout}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="log-out-outline" size={18} color={QuinckleColors.danger} />
-            <Text style={styles.logoutBtnText}>Log Out</Text>
-          </TouchableOpacity>
-        </ScrollView>
-      )}
     </View>
   );
 }
@@ -815,6 +588,23 @@ const styles = StyleSheet.create({
     color: QuinckleColors.textSecondary,
     fontSize: 12,
     fontWeight: '500',
+  },
+  roleBadge: {
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: 'rgba(139, 92, 246, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(167, 139, 250, 0.4)',
+  },
+  roleBadgeText: {
+    color: '#C4B5FD',
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
   },
   avatarBtn: {
     width: 36,
@@ -986,6 +776,25 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
 
+  readyBanner: {
+    marginTop: Spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    borderRadius: Radius.md,
+    backgroundColor: 'rgba(34, 197, 94, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(34, 197, 94, 0.35)',
+  },
+  readyBannerText: {
+    color: QuinckleColors.success,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+  },
   cardFooter: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1056,6 +865,59 @@ const styles = StyleSheet.create({
 
   profileContent: {
     paddingBottom: Spacing.huge,
+  },
+  profileBody: {
+    paddingHorizontal: Spacing.lg,
+    marginTop: Spacing.lg,
+  },
+  kitchenBanner: {
+    width: '100%',
+    height: 320,
+    position: 'relative',
+    backgroundColor: '#111',
+  },
+  kitchenBannerImage: {
+    width: '100%',
+    height: '100%',
+  },
+  bannerBackBtn: {
+    position: 'absolute',
+    left: Spacing.lg,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bannerTextWrap: {
+    position: 'absolute',
+    left: Spacing.lg,
+    right: Spacing.lg,
+    bottom: Spacing.lg,
+    gap: 8,
+  },
+  bannerRoleBadge: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 6,
+    backgroundColor: 'rgba(139, 92, 246, 0.25)',
+    borderWidth: 1,
+    borderColor: 'rgba(167, 139, 250, 0.55)',
+  },
+  bannerRoleBadgeText: {
+    color: '#E9D5FF',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+  },
+  bannerRestaurantName: {
+    color: '#fff',
+    fontSize: 26,
+    fontWeight: '700',
+    letterSpacing: -0.4,
   },
   profileHeaderRow: {
     flexDirection: 'row',

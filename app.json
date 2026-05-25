@@ -5,7 +5,7 @@
     "owner": "quinckle",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/logo/quinckle crew icon.png",
     "scheme": "quincklecrew",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -35,7 +35,7 @@
       [
         "expo-notifications",
         {
-          "icon": "./assets/images/icon.png",
+          "icon": "./assets/images/logo/quinckle crew icon.png",
           "color": "#004AAD",
           "sounds": [
             "./assets/audio/notifications/waiter_notification.mp3"
