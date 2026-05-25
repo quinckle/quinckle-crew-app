@@ -117,11 +117,20 @@ export default function TableDetail() {
       subscribeChannel(`waiter:${restaurantId}`, 'order_ready',       refetch),
       subscribeChannel(`waiter:${restaurantId}`, 'order_served',      refetch),
       subscribeChannel(`waiter:${restaurantId}`, 'item_bumped',       refetch),
+      subscribeChannel(`waiter:${restaurantId}`, 'item_ready',        refetch),
       subscribeChannel(`waiter:${restaurantId}`, 'new_order',         refetch),
       subscribeChannel(`waiter:${restaurantId}`, 'payment_confirmed', refetch),
+      // If this session ends from another device (or via diner/partner),
+      // pop the modal so the waiter isn't left staring at a stale bill.
+      subscribeChannel(`waiter:${restaurantId}`, 'session_ended', (data: any) => {
+        const endedId = data?.sessionId as string | undefined;
+        if (endedId && endedId === sessionId) {
+          router.back();
+        }
+      }),
     ];
     return () => unsubs.forEach(u => u());
-  }, [staffInfo?.restaurantId, sessionId]);
+  }, [staffInfo?.restaurantId, sessionId, router]);
 
   // Fetch menu when modal opens
   useEffect(() => {

@@ -631,6 +631,15 @@ export default function StaffDashboard() {
       void loadTables();
     });
 
+    // Table status flipped (offline/online/reserved/available) from another
+    // device — refresh the grid so this device matches.
+    const off6a = subscribeChannel(`waiter:${restaurantId}`, 'table_offline', () => {
+      void loadTables();
+    });
+    const off6b = subscribeChannel(`waiter:${restaurantId}`, 'table_online', () => {
+      void loadTables();
+    });
+
     const off7 = subscribeChannel(`waiter:${restaurantId}`, 'item_bumped', () => {
       void loadPickupOrders();
     });
@@ -666,7 +675,7 @@ export default function StaffDashboard() {
       setPendingCashCount(c => Math.max(0, c - 1));
     });
 
-    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off7(); off7b(); off8(); off9(); };
+    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off7(); off7b(); off8(); off9(); };
   }, [staffInfo?.restaurantId]);
 
   // C1: Track Ably connection health — show a warning when the waiter channel drops.
