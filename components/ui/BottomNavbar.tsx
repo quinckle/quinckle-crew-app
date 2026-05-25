@@ -4,26 +4,42 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QuinckleColors, Spacing, Typography } from '../../constants/Colors';
 
-type NavItem = 'tables' | 'menu' | 'orders' | 'activity';
+// Default staff tabs — kept as the back-compat shape so existing callers
+// don't break. The component now also accepts a generic `tabs` array.
+type StaffTabKey = 'tables' | 'menu' | 'orders' | 'activity';
 
-interface BottomNavbarProps {
-  activeTab: NavItem;
-  onTabChange: (tab: NavItem) => void;
+export interface BottomNavTab<K extends string = string> {
+  key:        K;
+  label:      string;
+  icon:       keyof typeof Ionicons.glyphMap;
+  iconActive: keyof typeof Ionicons.glyphMap;
 }
 
-const TABS: { key: NavItem; label: string; icon: keyof typeof Ionicons.glyphMap; iconActive: keyof typeof Ionicons.glyphMap }[] = [
-  { key: 'orders', label: 'Orders', icon: 'receipt-outline', iconActive: 'receipt' },
-  { key: 'tables', label: 'Tables', icon: 'grid-outline', iconActive: 'grid' },
-  { key: 'menu', label: 'Menu', icon: 'restaurant-outline', iconActive: 'restaurant' },
+interface BottomNavbarProps<K extends string = StaffTabKey> {
+  activeTab:    K;
+  onTabChange:  (tab: K) => void;
+  /** Optional custom tabs. Defaults to the staff tab set. */
+  tabs?:        BottomNavTab<K>[];
+}
+
+const DEFAULT_STAFF_TABS: BottomNavTab<StaffTabKey>[] = [
+  { key: 'orders', label: 'Orders', icon: 'receipt-outline',    iconActive: 'receipt' },
+  { key: 'tables', label: 'Tables', icon: 'grid-outline',       iconActive: 'grid' },
+  { key: 'menu',   label: 'Menu',   icon: 'restaurant-outline', iconActive: 'restaurant' },
 ];
 
-export function BottomNavbar({ activeTab, onTabChange }: BottomNavbarProps) {
+export function BottomNavbar<K extends string = StaffTabKey>({
+  activeTab,
+  onTabChange,
+  tabs,
+}: BottomNavbarProps<K>) {
   const insets = useSafeAreaInsets();
+  const items = (tabs ?? (DEFAULT_STAFF_TABS as unknown as BottomNavTab<K>[]));
 
   return (
     <View style={[styles.container, { paddingBottom: Math.max(insets.bottom, Spacing.sm) }]}>
       <View style={styles.row}>
-        {TABS.map((tab) => {
+        {items.map((tab) => {
           const isActive = activeTab === tab.key;
           return (
             <TouchableOpacity
