@@ -287,6 +287,32 @@ export interface HighlightedSection {
   title: string; subtitle?: string; itemIds: string[];
 }
 
+// ── Crew Activity ─────────────────────────────────────────────────────────────
+export interface CrewActivityItem {
+  id: string;
+  action: string;
+  actor: string | null;
+  actorRole: string | null;
+  details: Record<string, any> | null;
+  createdAt: string;
+}
+export interface CrewActivityPage {
+  items: CrewActivityItem[];
+  nextCursor?: string;
+  hasMore: boolean;
+}
+
+export const crewActivity = {
+  list: (params?: { cursor?: string; limit?: number; category?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.cursor)   q.set('cursor', params.cursor);
+    if (params?.limit)    q.set('limit', String(params.limit));
+    if (params?.category) q.set('category', params.category);
+    const qs = q.toString();
+    return request<{ success: true; data: CrewActivityPage }>('GET', `/api/crew/activity${qs ? `?${qs}` : ''}`, undefined, true);
+  },
+};
+
 export const restaurantApi = {
   get: (restaurantId: string) =>
     request<{ success: true; data: Restaurant }>('GET', `/api/v1/restaurants/${restaurantId}`),
