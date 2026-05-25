@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import React, { useState } from 'react';
+import React from 'react';
 import {
   Dimensions,
   Image,
@@ -14,13 +14,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { QuinckleColors, Radius, Spacing, Typography } from '../constants/Colors';
 import { useAuth } from '../context/AuthContext';
-import { devApi } from '../services/api';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
-  const [showSimMenu, setShowSimMenu] = useState(false);
   const { login } = useAuth();
 
   const handleGetStarted = () => {
@@ -28,103 +26,45 @@ export default function LoginScreen() {
     router.push('/credential');
   };
 
-  const handleSimLogin = async (role: 'staff' | 'cook') => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setShowSimMenu(false);
-
-    try {
-      // Try real backend: fetch seeded staff and bypass OTP for the right role
-      const state = await devApi.getState();
-      const staffList = state.data?.staff ?? [];
-      const targetRole = role === 'staff' ? 'STEWARD' : 'CHEF';
-      const match = staffList.find((s: any) => s.role === targetRole)
-        ?? staffList.find((s: any) => role === 'staff' ? ['STEWARD', 'CASHIER', 'ADMIN'].includes(s.role) : s.role === 'CHEF');
-
-      if (match) {
-        const result = await devApi.crewLoginBypass(match.phone);
-        login(role, result.crewToken, result.staff);
-        router.replace(role === 'staff' ? '/(staff)' : '/(cook)');
-        return;
-      }
-    } catch {
-      // Backend not running — fall through to offline mock
-    }
-
-    // Offline fallback: no real token, just set the role
-    login(role);
-    router.replace(role === 'staff' ? '/(staff)' : '/(cook)');
-  };
-
   return (
     <View style={styles.container}>
-      <View style={styles.heroContainer}>
+      {/* Full screen background hero */}
+      <View style={StyleSheet.absoluteFillObject}>
         <Image
-          source={require('../assets/images/auth/quinckle crew auth hero.png')}
+          source={require('../assets/images/auth/auth hero.webp')}
           style={styles.heroImage}
           resizeMode="cover"
         />
-
+        {/* Dark overlay fading smoothly into the bottom */}
         <LinearGradient
-          colors={['transparent', 'rgba(10,10,11,0.4)', QuinckleColors.background]}
-          locations={[0, 0.6, 1]}
-          style={styles.heroGradient}
+          colors={['transparent', 'rgba(10, 10, 11, 0.01)', QuinckleColors.background, QuinckleColors.background]}
+          locations={[0, 0.4, 0.8, 1]}
+          style={StyleSheet.absoluteFillObject}
         />
-
-        <View style={[styles.topBarOverlay, { top: insets.top > 0 ? insets.top + 4 : 24 }]}>
-          <TouchableOpacity
-            style={styles.simToggle}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setShowSimMenu(!showSimMenu);
-            }}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="flask-outline" size={13} color={QuinckleColors.primary} />
-            <Text style={styles.simToggleText}>Test Access</Text>
-          </TouchableOpacity>
-        </View>
-
-        {showSimMenu && (
-          <View style={[styles.simDropdown, { top: (insets.top > 0 ? insets.top + 4 : 24) + 40 }]}>
-            <TouchableOpacity style={styles.simOption} onPress={() => handleSimLogin('cook')} activeOpacity={0.7}>
-              <View style={styles.simIconWrap}>
-                <Ionicons name="flame" size={14} color={QuinckleColors.primary} />
-              </View>
-              <Text style={styles.simOptionText}>Kitchen Staff</Text>
-            </TouchableOpacity>
-            <View style={styles.simDivider} />
-            <TouchableOpacity style={styles.simOption} onPress={() => handleSimLogin('staff')} activeOpacity={0.7}>
-              <View style={styles.simIconWrap}>
-                <Ionicons name="people" size={14} color={QuinckleColors.primary} />
-              </View>
-              <Text style={styles.simOptionText}>Steward</Text>
-            </TouchableOpacity>
-          </View>
-        )}
       </View>
 
-      <View style={[styles.bottomCard, { paddingBottom: insets.bottom + Spacing.huge }]}>
-        <View style={styles.welcomeSection}>
-          <Text style={styles.welcomeTitle}>Welcome, Crew</Text>
-          <Text style={styles.welcomeSubtitle}>
-            Your terminal for managing orders and tables{`\n`}across the floor.
+      {/* Bottom Fixed Content Area */}
+      <View style={styles.contentWrapper}>
+        <View style={[styles.bottomOverlay, { paddingBottom: insets.bottom + Spacing.lg }]}>
+          <View style={styles.greetingContainer}>
+            <Text style={styles.greetingTitle}>Welcome, Crew</Text>
+            <Text style={styles.greetingSubtitle}>Manage your floor seamlessly.</Text>
+          </View>
+
+          <TouchableOpacity
+            style={styles.ctaButton}
+            onPress={handleGetStarted}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.ctaText}>Get Started</Text>
+          </TouchableOpacity>
+
+          <Text style={styles.termsText}>
+            By continuing, you agree to our{' '}
+            <Text style={styles.termsLink}>Terms of Service</Text> and{' '}
+            <Text style={styles.termsLink}>Privacy Policy</Text>.
           </Text>
         </View>
-
-        <TouchableOpacity
-          style={styles.ctaButton}
-          onPress={handleGetStarted}
-          activeOpacity={0.85}
-        >
-          <Text style={styles.ctaText}>Get Started</Text>
-          <Ionicons name="arrow-forward" size={18} color="#fff" />
-        </TouchableOpacity>
-
-        <Text style={styles.termsText}>
-          By continuing, you agree to our{' '}
-          <Text style={styles.termsLink}>Terms of Service</Text> and{' '}
-          <Text style={styles.termsLink}>Privacy Policy</Text>.
-        </Text>
       </View>
     </View>
   );
@@ -136,123 +76,48 @@ const styles = StyleSheet.create({
     backgroundColor: QuinckleColors.background,
   },
 
-  heroContainer: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT * 0.62,
-    position: 'relative',
-  },
   heroImage: {
-    width: SCREEN_WIDTH,
+    width: '100%',
     height: '100%',
   },
-  heroGradient: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 200,
+
+  contentWrapper: {
+    flex: 1,
+    justifyContent: 'flex-end',
   },
 
-  topBarOverlay: {
-    position: 'absolute',
-    right: Spacing.xxl,
-    zIndex: 100,
+  bottomOverlay: {
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.xl,
+    width: '100%',
   },
-  simToggle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 7,
-    borderRadius: Radius.pill,
-    backgroundColor: 'rgba(10,10,11,0.7)',
-    borderWidth: 1,
-    borderColor: QuinckleColors.borderStrong,
+
+  greetingContainer: {
+    marginBottom: Spacing.xl,
   },
-  simToggleText: {
+  greetingTitle: {
+    fontSize: 32,
+    fontWeight: '800',
     color: QuinckleColors.textPrimary,
-    fontSize: 12,
-    fontWeight: '600',
+    letterSpacing: -1,
+    marginBottom: Spacing.xs,
   },
-
-  simDropdown: {
-    position: 'absolute',
-    right: Spacing.xxl,
-    backgroundColor: QuinckleColors.surface,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: QuinckleColors.borderStrong,
-    paddingVertical: 6,
-    paddingHorizontal: 6,
-    zIndex: 200,
-    elevation: 20,
-    shadowColor: '#000',
-    shadowOpacity: 0.6,
-    shadowRadius: 25,
-    shadowOffset: { width: 0, height: 10 },
-    minWidth: 190,
-  },
-  simOption: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    paddingVertical: 10,
-    paddingHorizontal: Spacing.md,
-    borderRadius: Radius.sm,
-  },
-  simIconWrap: {
-    width: 28,
-    height: 28,
-    borderRadius: Radius.sm,
-    backgroundColor: QuinckleColors.primarySoft,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  simOptionText: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  simDivider: {
-    height: 1,
-    backgroundColor: QuinckleColors.borderSubtle,
-    marginHorizontal: Spacing.sm,
-  },
-
-  bottomCard: {
-    backgroundColor: QuinckleColors.background,
-    paddingTop: Spacing.xxxl,
-    paddingHorizontal: Spacing.xxl,
-    marginTop: -40,
-  },
-
-  welcomeSection: {
-    alignItems: 'center',
-    gap: Spacing.sm,
-    marginBottom: Spacing.xxl,
-  },
-  welcomeTitle: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: QuinckleColors.textPrimary,
-    letterSpacing: -0.6,
-  },
-  welcomeSubtitle: {
-    ...Typography.body,
+  greetingSubtitle: {
+    fontSize: 16,
     color: QuinckleColors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 22,
+    letterSpacing: 0,
   },
 
   ctaButton: {
     backgroundColor: QuinckleColors.primary,
     borderRadius: Radius.lg,
-    height: 54,
+    height: 52,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: Spacing.sm,
-    marginBottom: Spacing.xl,
+    marginBottom: Spacing.lg,
+    width: '100%',
   },
   ctaText: {
     color: '#fff',
@@ -263,10 +128,10 @@ const styles = StyleSheet.create({
 
   termsText: {
     textAlign: 'center',
-    fontSize: 12,
+    fontSize: 11,
     color: QuinckleColors.textTertiary,
-    lineHeight: 18,
-    paddingHorizontal: Spacing.xxl,
+    lineHeight: 16,
+    paddingHorizontal: Spacing.md,
   },
   termsLink: {
     color: QuinckleColors.primary,

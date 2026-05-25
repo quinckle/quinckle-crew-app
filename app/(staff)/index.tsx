@@ -1,6 +1,8 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import {
   ActivityIndicator,
+  Animated,
+  Dimensions,
   FlatList,
   Image,
   LayoutAnimation,
@@ -12,8 +14,62 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import * as ImagePicker from 'expo-image-picker';
-import * as ImageManipulator from 'expo-image-manipulator';
+import { LinearGradient } from 'expo-linear-gradient';
+
+const SCREEN_WIDTH = Dimensions.get('window').width;
+
+// Graph-paper grid overlay component — renders thin lines that fade to transparent with a golden glow
+function GridTexture({ height = 100 }: { height?: number }) {
+  const gridSize = 18;
+  const cols = Math.ceil(SCREEN_WIDTH / gridSize);
+  const rows = Math.ceil(height / gridSize);
+
+  return (
+    <View style={{ position: 'absolute', top: 0, left: 0, right: 0, height, overflow: 'hidden' }} pointerEvents="none">
+      {/* Golden glow gradient background */}
+      <LinearGradient
+        colors={['rgba(245, 159, 11, 0.25)', 'rgba(245, 159, 11, 0.08)', 'transparent']}
+        locations={[0, 0.5, 1]}
+        style={{ position: 'absolute', top: 0, left: 0, right: 0, height: height * 0.8 }}
+        pointerEvents="none"
+      />
+      {/* Horizontal lines */}
+      {Array.from({ length: rows + 1 }).map((_, i) => (
+        <View
+          key={`h${i}`}
+          style={{
+            position: 'absolute',
+            top: i * gridSize,
+            left: 0,
+            right: 0,
+            height: StyleSheet.hairlineWidth,
+            backgroundColor: 'rgba(245, 158, 11, 0.08)',
+          }}
+        />
+      ))}
+      {/* Vertical lines */}
+      {Array.from({ length: cols + 1 }).map((_, i) => (
+        <View
+          key={`v${i}`}
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: i * gridSize,
+            width: StyleSheet.hairlineWidth,
+            height,
+            backgroundColor: 'rgba(245, 158, 11, 0.08)',
+          }}
+        />
+      ))}
+      {/* Fade to transparent/background */}
+      <LinearGradient
+        colors={['transparent', QuinckleColors.background]}
+        style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: height * 0.6 }}
+        pointerEvents="none"
+      />
+    </View>
+  );
+}
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
 import { crewTables, crewSessions, crewOrders, crewPayments, restaurantApi, crewAuth, crewNotifications } from '../../services/api';
@@ -41,7 +97,9 @@ import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { BottomNavbar } from '../../components/ui/BottomNavbar';
 import { PICKUP_LAYOUT_PRESET, PickupCard, PickupSegmented } from '../../components/ui/pickup';
 import { TableSkeleton } from '../../components/ui/TableSkeleton';
-import { LinearGradient } from 'expo-linear-gradient';
+import { MenuSkeleton } from '../../components/ui/MenuSkeleton';
+import { CombosSkeleton } from '../../components/ui/CombosSkeleton';
+import { FeaturedSkeleton } from '../../components/ui/FeaturedSkeleton';
 
 // Format an Indian phone like "9051138485" → "+91 90511 38485" for display
 function formatPhone(raw?: string | null): string {
@@ -62,7 +120,7 @@ Notifications.setNotificationHandler({
   },
 });
 
-type NavItem = 'tables' | 'menu' | 'orders' | 'activity' | 'profile' | 'cash_ledger';
+type NavItem = 'tables' | 'menu' | 'orders';
 type TableStatus = 'available' | 'occupied' | 'offline';
 
 type Table = {
@@ -137,26 +195,21 @@ const STATUS_META: Record<TableStatus, { label: string; color: string }> = {
 
 export default function StaffDashboard() {
   const insets = useSafeAreaInsets();
-  const { logout, staffInfo, setPhotoUrl } = useAuth();
-  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+  const { staffInfo } = useAuth();
   const [activeTab, setActiveTab] = useState<NavItem>('tables');
-  const [cashLedger, setCashLedger] = useState<import('../../services/api').CashLedger | null>(null);
-  const [isLoadingLedger, setIsLoadingLedger] = useState(false);
-  const [expandedDate, setExpandedDate] = useState<string | null>(null);
   const [filterVisible, setFilterVisible] = useState(false);
   const [tables, setTables] = useState<Table[]>([]);
   const [isLoadingTables, setIsLoadingTables] = useState(true);
+  const [isLoadingMenu, setIsLoadingMenu] = useState(true);
   const [menuData, setMenuData] = useState(MENU_DATA_INITIAL);
   const [menuCategories, setMenuCategories] = useState<string[]>(['All', 'Appetizers', 'Mains', 'Beverages', 'Desserts']);
   const [combos, setCombos] = useState<any[]>([]);
   const [highlightedSection, setHighlightedSection] = useState<{ title: string; subtitle?: string; itemIds: string[] } | null>(null);
-  const [showCombosScreen, setShowCombosScreen] = useState(false);
-  const [showFeaturedScreen, setShowFeaturedScreen] = useState(false);
-  const [restaurantLogoUrl, setRestaurantLogoUrl] = useState<string | null>(null);
+
+
   const [activeFilter, setActiveFilter] = useState<'all' | TableStatus | string>('all');
   const [menuFilter, setMenuFilter] = useState('All');
   const [searchText, setSearchText] = useState('');
-  const [isOnline, setIsOnline] = useState(true);
   const [realtimeOk, setRealtimeOk] = useState(true);
   // Pending cash-collection requests across the whole restaurant. Drives the
   // red-dot badge on the cash icon in the header. Updated from:
@@ -168,87 +221,6 @@ export default function StaffDashboard() {
   const [liveOrders, setLiveOrders] = useState<ActiveOrder[]>([]);
   const [ordersSubTab, setOrdersSubTab] = useState<'active' | 'completed'>('active');
   const [completingIds, setCompletingIds] = useState<string[]>([]);
-  const [shiftStart, setShiftStart] = useState<Date | null>(new Date(Date.now() - 4.5 * 60 * 60 * 1000)); // Mock: Started 4.5h ago
-  const [activeDuration, setActiveDuration] = useState("04h 30m");
-  const [shiftPeriod, setShiftPeriod] = useState<'today' | 'week'>('today');
-  const [shiftLogs, setShiftLogs] = useState([
-    { d: 'Mon', t: '09:30 - 18:30', h: 9.0 },
-    { d: 'Tue', t: '10:00 - 18:00', h: 8.0 },
-    { d: 'Wed', t: '09:00 - 17:00', h: 8.0 },
-  ]);
-
-  // Timer to update active duration
-  useEffect(() => {
-    let interval: ReturnType<typeof setInterval>;
-    if (isOnline && shiftStart) {
-      const updateDuration = () => {
-        const diff = Date.now() - shiftStart.getTime();
-        const hours = Math.floor(diff / (1000 * 60 * 60));
-        const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-        setActiveDuration(`${String(hours).padStart(2, '0')}h ${String(mins).padStart(2, '0')}m`);
-      };
-
-      updateDuration();
-      interval = setInterval(updateDuration, 60000); // Update every minute
-    } else {
-      setActiveDuration("--");
-    }
-    return () => clearInterval(interval);
-  }, [isOnline, shiftStart]);
-
-  const handleToggleOnline = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    if (isOnline) {
-      // Clocking out: Add current session to logs if it's significant
-      if (shiftStart) {
-        const diff = Date.now() - shiftStart.getTime();
-        const hours = diff / (1000 * 60 * 60);
-        if (hours > 0.05) { // Only log if > 3 mins
-          const startTimeStr = `${String(shiftStart.getHours()).padStart(2, '0')}:${String(shiftStart.getMinutes()).padStart(2, '0')}`;
-          const endTimeStr = formatNow();
-          const dayStr = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date().getDay()];
-          setShiftLogs(prev => [...prev, { d: dayStr, t: `${startTimeStr} - ${endTimeStr}`, h: parseFloat(hours.toFixed(1)) }]);
-        }
-      }
-      setShiftStart(null);
-    } else {
-      // Clocking in
-      setShiftStart(new Date());
-    }
-    setIsOnline(!isOnline);
-  };
-
-  const chartData = useMemo(() => {
-    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    const currentDayIndex = (new Date().getDay() + 6) % 7; // 0=Mon, 6=Sun
-
-    return days.map((day, i) => {
-      let hours = 0;
-      if (i === currentDayIndex) {
-        // Today
-        const sessionHours = (isOnline && shiftStart) ? (Date.now() - shiftStart.getTime()) / (1000 * 60 * 60) : 0;
-        hours = sessionHours;
-      } else {
-        // From logs
-        const log = shiftLogs.find(l => l.d === day);
-        hours = log ? log.h : 0;
-      }
-      // Scale: 12 hours is 100% height
-      const percentage = Math.min((hours / 12) * 100, 100);
-      return { day, percentage, isToday: i === currentDayIndex, label: day[0] };
-    });
-  }, [shiftLogs, shiftStart, isOnline]);
-
-  const totalTodayHours = useMemo(() => {
-    const dayStr = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date().getDay()];
-    const logsToday = shiftLogs.filter(l => l.d === dayStr || (l.d === 'Today' && dayStr === dayStr)); // Handle 'Today' label
-    const completedHours = logsToday.reduce((acc, curr) => acc + curr.h, 0);
-    const activeHours = (isOnline && shiftStart) ? (Date.now() - shiftStart.getTime()) / (1000 * 60 * 60) : 0;
-    const total = completedHours + activeHours;
-    const h = Math.floor(total);
-    const m = Math.floor((total - h) * 60);
-    return `${String(h).padStart(2, '0')}h ${String(m).padStart(2, '0')}m`;
-  }, [shiftLogs, isOnline, shiftStart]);
 
   useEffect(() => {
     (async () => {
@@ -500,6 +472,8 @@ export default function StaffDashboard() {
       }
     } catch (e) {
       console.error('[menu] loadMenuFromApi error:', e);
+    } finally {
+      setIsLoadingMenu(false);
     }
   };
 
@@ -527,7 +501,7 @@ export default function StaffDashboard() {
             sound: true,
           },
           trigger: null,
-        }).catch(() => {});
+        }).catch(() => { });
       }
 
       setPickupOrders(
@@ -554,13 +528,7 @@ export default function StaffDashboard() {
     loadTables();
     loadMenuFromApi();
     loadPickupOrders();
-    loadCashLedger();
     loadPendingCashCount();
-    if (staffInfo?.restaurantId) {
-      restaurantApi.getBranding(staffInfo.restaurantId)
-        .then(res => { if ((res as any)?.data?.logoUrl) setRestaurantLogoUrl((res as any).data.logoUrl); })
-        .catch(() => {});
-    }
   }, [staffInfo?.restaurantId]);
 
   const loadPendingCashCount = async () => {
@@ -570,26 +538,9 @@ export default function StaffDashboard() {
     } catch { /* non-fatal — Ably will keep the count fresh */ }
   };
 
-  const loadCashLedger = async () => {
-    setIsLoadingLedger(true);
-    try {
-      const data = await crewPayments.getCashLedger();
-      setCashLedger(data);
-    } catch {
-      // non-fatal — show stale data if any
-    } finally {
-      setIsLoadingLedger(false);
-    }
-  };
-
   // Immediately refresh pickup orders when switching to Orders tab
   useEffect(() => {
     if (activeTab === 'orders') void loadPickupOrders();
-  }, [activeTab]);
-
-  // Load cash ledger when switching to that tab
-  useEffect(() => {
-    if (activeTab === 'cash_ledger') void loadCashLedger();
   }, [activeTab]);
 
   // Ably: waiter:{restaurantId} — pure push, no polling
@@ -629,8 +580,6 @@ export default function StaffDashboard() {
 
     const off6 = subscribeChannel(`waiter:${restaurantId}`, 'payment_confirmed', () => {
       void loadTables();
-      // Refresh ledger if the tab is open — cash collection just confirmed
-      if (activeTab === 'cash_ledger') void loadCashLedger();
     });
 
     const off7 = subscribeChannel(`waiter:${restaurantId}`, 'item_bumped', () => {
@@ -650,7 +599,7 @@ export default function StaffDashboard() {
           sound: true,
         },
         trigger: null,
-      }).catch(() => {});
+      }).catch(() => { });
       void loadTables();
     });
 
@@ -751,131 +700,71 @@ export default function StaffDashboard() {
     }
   };
 
-  const handleLogout = () => {
-    // Automated clock-out on logout
-    if (isOnline && shiftStart) {
-      const diff = Date.now() - shiftStart.getTime();
-      const hours = diff / (1000 * 60 * 60);
-      const startTimeStr = `${String(shiftStart.getHours()).padStart(2, '0')}:${String(shiftStart.getMinutes()).padStart(2, '0')}`;
-      const endTimeStr = formatNow();
-      console.log(`Auto clock-out: ${startTimeStr} - ${endTimeStr} (${hours.toFixed(1)}h)`);
-    }
-
-    logout();
-    router.replace('/login');
-  };
-
-  const handleChangePhoto = async () => {
-    try {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 1, // pick the best source — we re-compress below
-      });
-      if (result.canceled || !result.assets?.[0]?.uri) return;
-
-      setIsUploadingPhoto(true);
-      try {
-        // Resize to 400×400 JPEG @ 75% on-device first → ~30-50 KB upload
-        // payload instead of multi-MB raw image. Server still re-optimizes
-        // to WebP for storage, but this keeps the wire payload tiny.
-        const manipulated = await ImageManipulator.manipulateAsync(
-          result.assets[0].uri,
-          [{ resize: { width: 400, height: 400 } }],
-          {
-            compress: 0.75,
-            format: ImageManipulator.SaveFormat.JPEG,
-            base64: true,
-          },
-        );
-        if (!manipulated.base64) throw new Error('image manipulation produced no base64');
-
-        const resp = await crewAuth.uploadPhoto(manipulated.base64);
-        const cdnUrl = resp.data?.photoUrl;
-        if (!cdnUrl) throw new Error('server did not return photoUrl');
-
-        setPhotoUrl(cdnUrl);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      } catch (err) {
-        console.warn('Failed to upload photo', err);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        showDialog(
-          'Photo upload failed',
-          err instanceof Error ? err.message : 'Please try again with a smaller image.',
-          [{ label: 'OK', onPress: () => {} }],
-        );
-      } finally {
-        setIsUploadingPhoto(false);
-      }
-    } catch (err) {
-      console.warn('Image picker error', err);
-    }
-  };
-
   const FILTER_CHIPS = [
     { key: 'all', label: 'All', count: counts.all },
     { key: 'available', label: 'Available', count: counts.available },
     { key: 'occupied', label: 'Occupied', count: counts.occupied },
   ] as const;
 
-  const showHeader = activeTab !== 'profile' && activeTab !== 'cash_ledger' && activeTab !== 'activity';
-
   return (
     <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
-      {showHeader && (
-        <View style={styles.topBar}>
-          <View style={styles.brandGroup}>
-            <Text style={styles.brandTitle}>{staffInfo?.restaurantName ?? 'The Grill Room'}</Text>
-            <View style={styles.statusRow}>
-              <View style={[styles.statusDot, { backgroundColor: isOnline ? QuinckleColors.success : QuinckleColors.textTertiary }]} />
-              <Text style={styles.statusText}>{isOnline ? 'Online' : 'Off-duty'}</Text>
-              {!realtimeOk && (
-                <>
-                  <Text style={[styles.statusText, { color: QuinckleColors.textTertiary, marginHorizontal: 2 }]}>·</Text>
-                  <View style={[styles.statusDot, { backgroundColor: QuinckleColors.warning }]} />
-                  <Text style={[styles.statusText, { color: QuinckleColors.warning }]}>No live updates</Text>
-                </>
-              )}
+      {/* Subtle graph-paper grid texture at top */}
+      <GridTexture height={120} />
+      <View style={styles.topBar}>
+        <View style={styles.brandGroup}>
+          <Text style={styles.brandTitle}>{staffInfo?.restaurantName ?? 'The Grill Room'}</Text>
+          <View style={styles.badgeRow}>
+            <View style={styles.roleBadge}>
+              <Text style={styles.roleBadgeText}>Staff</Text>
             </View>
-          </View>
-
-          <View style={styles.headerActions}>
-            {/* Cash-collection icon: tap to see pending requests + today's history.
-                Red dot appears when there's at least one unresolved request. */}
-            <TouchableOpacity
-              style={styles.cashIconBtn}
-              onPress={() => router.push('/(staff)/cash-collection')}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="cash-outline" size={22} color={QuinckleColors.textPrimary} />
-              {pendingCashCount > 0 && (
-                <View style={styles.cashBadge}>
-                  <Text style={styles.cashBadgeText}>
-                    {pendingCashCount > 9 ? '9+' : String(pendingCashCount)}
-                  </Text>
-                </View>
-              )}
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.avatarBtn}
-              onPress={() => setActiveTab('profile')}
-              activeOpacity={0.7}
-            >
-              {staffInfo?.photoUrl ? (
-                <Image source={{ uri: staffInfo.photoUrl }} style={styles.avatarImage} />
-              ) : (
-                <View style={[styles.avatarImage, { backgroundColor: '#F35D3B', alignItems: 'center', justifyContent: 'center' }]}>
-                  <Text style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>
-                    {(staffInfo?.name ?? 'S').split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase()}
-                  </Text>
-                </View>
-              )}
-            </TouchableOpacity>
+            {!realtimeOk && (
+              <View style={styles.statusRow}>
+                <View style={[styles.statusDot, { backgroundColor: QuinckleColors.warning }]} />
+                <Text style={[styles.statusText, { color: QuinckleColors.warning }]}>No live updates</Text>
+              </View>
+            )}
           </View>
         </View>
-      )}
+
+        <View style={styles.headerActions}>
+          {/* Cash-collection icon: tap to see pending requests + today's history.
+                Red dot appears when there's at least one unresolved request. */}
+          <TouchableOpacity
+            style={styles.cashIconBtn}
+            onPress={() => router.push('/(staff)/cash-collection')}
+            activeOpacity={0.7}
+          >
+            <Image
+              source={require('../../assets/images/icons/staff/orders/cash collection icon.webp')}
+              style={styles.cashIconImage}
+              resizeMode="contain"
+            />
+            {pendingCashCount > 0 && (
+              <View style={styles.cashBadge}>
+                <Text style={styles.cashBadgeText}>
+                  {pendingCashCount > 9 ? '9+' : String(pendingCashCount)}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.avatarBtn}
+            onPress={() => router.push('/(staff)/profile')}
+            activeOpacity={0.7}
+          >
+            {staffInfo?.photoUrl ? (
+              <Image source={{ uri: staffInfo.photoUrl }} style={styles.avatarImage} />
+            ) : (
+              <View style={[styles.avatarImage, { backgroundColor: '#F35D3B', alignItems: 'center', justifyContent: 'center' }]}>
+                <Text style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>
+                  {(staffInfo?.name ?? 'S').split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase()}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        </View>
+      </View>
 
       {activeTab === 'tables' ? (
         <>
@@ -940,12 +829,23 @@ export default function StaffDashboard() {
                 const meta = STATUS_META[item.status] || STATUS_META.available;
                 return (
                   <TouchableOpacity
-                    style={[styles.tableCard, item.status === 'offline' && styles.offlineCard]}
+                    style={[
+                      styles.tableCard,
+                      { borderColor: `${meta.color}55` },
+                      item.status === 'offline' && styles.offlineCard,
+                    ]}
                     onPress={() => handleTablePress(item.number, item.status)}
                     onLongPress={() => handleLongPress(item.id, item.status)}
                     activeOpacity={0.85}
                     delayLongPress={500}
                   >
+                    <LinearGradient
+                      colors={[`${meta.color}33`, `${meta.color}0D`, 'transparent']}
+                      locations={[0, 0.55, 1]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={StyleSheet.absoluteFillObject}
+                    />
                     <View style={styles.cardHeader}>
                       <View>
                         <Text style={styles.tableTitle}>T{String(item.number).padStart(2, '0')}</Text>
@@ -953,10 +853,6 @@ export default function StaffDashboard() {
                           <Ionicons name="people-outline" size={11} color={QuinckleColors.textTertiary} />
                           <Text style={styles.seatsText}>{item.seats} seats</Text>
                         </View>
-                      </View>
-                      <View style={[styles.statusPill, { backgroundColor: `${meta.color}1F`, borderColor: `${meta.color}40` }]}>
-                        <View style={[styles.statusPillDot, { backgroundColor: meta.color }]} />
-                        <Text style={[styles.statusPillText, { color: meta.color }]}>{meta.label}</Text>
                       </View>
                     </View>
 
@@ -988,196 +884,108 @@ export default function StaffDashboard() {
           )}
         </>
       ) : activeTab === 'menu' ? (
-        showCombosScreen ? (
-          /* ── Combos sub-screen ── */
-          <View style={{ flex: 1 }}>
-            <View style={styles.subScreenHeader}>
-              <TouchableOpacity onPress={() => setShowCombosScreen(false)} style={styles.breadcrumbBack} activeOpacity={0.6}>
-                <Ionicons name="chevron-back" size={16} color={QuinckleColors.textTertiary} />
-                <Text style={styles.breadcrumbParent}>Menu</Text>
-              </TouchableOpacity>
-              <Ionicons name="chevron-forward" size={12} color={QuinckleColors.textTertiary} style={{ marginHorizontal: 4 }} />
-              <Text style={styles.breadcrumbCurrent}>Combos</Text>
-            </View>
-            <ScrollView contentContainerStyle={{ paddingVertical: 16, gap: 12 }} showsVerticalScrollIndicator={false}>
-              {combos.length === 0 ? (
-                <Text style={{ color: QuinckleColors.textTertiary, textAlign: 'center', marginTop: 40 }}>No combos available</Text>
-              ) : combos.map(combo => {
-                const orig = parseFloat(combo.originalPrice);
-                const price = parseFloat(combo.price);
-                const savings = orig > price ? Math.round(((orig - price) / orig) * 100) : 0;
-                const detailItems: any[] = combo.itemDetails
-                  ? (typeof combo.itemDetails === 'string' ? JSON.parse(combo.itemDetails) : combo.itemDetails)
-                  : [];
-                return (
-                  <View key={combo.id} style={styles.comboListCard}>
-                    {combo.imageUrl && <Image source={{ uri: combo.imageUrl }} style={styles.comboListImg} />}
-                    <View style={styles.comboListBody}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                        <Text style={styles.comboListName}>{combo.title}</Text>
-                        {savings > 0 && <View style={styles.comboBadge}><Text style={styles.comboBadgeText}>{savings}% off</Text></View>}
-                      </View>
-                      {combo.description ? <Text style={styles.comboListDesc}>{combo.description}</Text> : null}
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }}>
-                        <Text style={styles.comboCardPrice}>₹{price.toFixed(0)}</Text>
-                        {savings > 0 && <Text style={styles.comboCardOrig}>₹{orig.toFixed(0)}</Text>}
-                      </View>
-                      {detailItems.length > 0 && (
-                        <View style={styles.comboItemsBlock}>
-                          <Text style={styles.comboItemsLabel}>Includes</Text>
-                          {detailItems.map((i: any, idx: number) => (
-                            <View key={idx} style={styles.comboItemEntry}>
-                              <View style={styles.comboItemDot} />
-                              <Text style={styles.comboItemList}>{i.name ?? i.menuItemName ?? 'Item'}</Text>
-                              {(i.comboPrice || i.price) ? (
-                                <Text style={styles.comboItemPrice}>₹{parseFloat(i.comboPrice ?? i.price ?? 0).toFixed(0)}</Text>
-                              ) : null}
-                            </View>
-                          ))}
-                        </View>
-                      )}
-                    </View>
+        <>
+          {/* Main menu view */}
+          {isLoadingMenu ? (
+            <MenuSkeleton />
+          ) : (
+            <ScrollView style={styles.tabContent} showsVerticalScrollIndicator={false}>
+              {/* Two shortcut tiles */}
+              <View style={styles.menuTileRow}>
+                <TouchableOpacity
+                  style={[styles.menuTile, { opacity: combos.length === 0 ? 0.45 : 1 }]}
+                  onPress={() => combos.length > 0 && router.push('/(staff)/combos')}
+                  activeOpacity={0.75}
+                >
+                  <LinearGradient
+                    colors={['rgba(245, 158, 11, 0.18)', 'rgba(255, 255, 255, 0.03)', 'transparent']}
+                    style={StyleSheet.absoluteFillObject}
+                    start={{ x: 0.5, y: 0 }}
+                    end={{ x: 0.5, y: 1 }}
+                  />
+                  <Image
+                    source={require('../../assets/images/icons/staff/menu/combo icon.webp')}
+                    style={styles.menuTileImg}
+                  />
+                  <View style={styles.menuTileTextCol}>
+                    <Text style={styles.menuTileLabel}>Combos</Text>
+                    <Text style={styles.menuTileCount}>{combos.length} deal{combos.length !== 1 ? 's' : ''}</Text>
                   </View>
-                );
-              })}
-              <View style={{ height: 80 }} />
-            </ScrollView>
-          </View>
-        ) : showFeaturedScreen ? (
-          /* ── Featured sub-screen ── */
-          <View style={{ flex: 1 }}>
-            <View style={styles.subScreenHeader}>
-              <TouchableOpacity onPress={() => setShowFeaturedScreen(false)} style={styles.breadcrumbBack} activeOpacity={0.6}>
-                <Ionicons name="chevron-back" size={16} color={QuinckleColors.textTertiary} />
-                <Text style={styles.breadcrumbParent}>Menu</Text>
-              </TouchableOpacity>
-              <Ionicons name="chevron-forward" size={12} color={QuinckleColors.textTertiary} style={{ marginHorizontal: 4 }} />
-              <Text style={styles.breadcrumbCurrent}>{highlightedSection?.title ?? 'Featured'}</Text>
-            </View>
-            <ScrollView contentContainerStyle={{ paddingVertical: 16 }} showsVerticalScrollIndicator={false}>
-              {!highlightedSection ? (
-                <Text style={{ color: QuinckleColors.textTertiary, textAlign: 'center', marginTop: 40 }}>No featured section configured</Text>
-              ) : (
-                <View style={styles.comboListCard}>
-                  {/* Section header */}
-                  <View style={styles.featuredSectionHeader}>
-                    <MaterialIcons name="star" size={16} color={QuinckleColors.primary} />
-                    <Text style={styles.featuredSectionEyebrow}>FEATURED SECTION</Text>
-                  </View>
-                  <View style={styles.comboListBody}>
-                    <Text style={styles.comboListName}>{highlightedSection.title}</Text>
-                    {highlightedSection.subtitle ? (
-                      <Text style={styles.comboListDesc}>{highlightedSection.subtitle}</Text>
-                    ) : null}
-                    <View style={styles.featuredItemsDivider} />
-                    <Text style={styles.featuredItemsLabel}>{highlightedSection.itemIds?.length ?? 0} items in this section</Text>
-                    {menuData.filter(m => highlightedSection.itemIds?.includes(m.id)).map(item => (
-                      <View key={item.id} style={styles.featuredItemRow}>
-                        {item.image
-                          ? <Image source={{ uri: item.image }} style={styles.featuredItemThumb} />
-                          : <View style={[styles.featuredItemThumb, { backgroundColor: 'rgba(255,255,255,0.06)', alignItems: 'center', justifyContent: 'center' }]}>
-                            <Ionicons name="fast-food-outline" size={14} color={QuinckleColors.textTertiary} />
-                          </View>}
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.featuredItemName} numberOfLines={1}>{item.name}</Text>
-                          <Text style={styles.featuredItemPrice}>₹{item.price}</Text>
-                        </View>
-                        {!item.available && (
-                          <View style={styles.featuredUnavailableBadge}>
-                            <Text style={styles.featuredUnavailableText}>Off</Text>
-                          </View>
-                        )}
-                      </View>
-                    ))}
-                  </View>
-                </View>
-              )}
-              <View style={{ height: 80 }} />
-            </ScrollView>
-          </View>
-        ) : (
-          /* ── Main menu view ── */
-          <ScrollView style={styles.tabContent} showsVerticalScrollIndicator={false}>
-            {/* Two shortcut tiles */}
-            <View style={styles.menuTileRow}>
-              <TouchableOpacity
-                style={[styles.menuTile, { opacity: combos.length === 0 ? 0.45 : 1 }]}
-                onPress={() => combos.length > 0 && setShowCombosScreen(true)}
-                activeOpacity={0.75}
-              >
-                <View style={styles.menuTileIcon}><MaterialIcons name="local-offer" size={24} color={QuinckleColors.primary} /></View>
-                <Text style={styles.menuTileLabel}>Combos</Text>
-                <Text style={styles.menuTileCount}>{combos.length} deal{combos.length !== 1 ? 's' : ''}</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.menuTile, { opacity: !highlightedSection ? 0.45 : 1 }]}
-                onPress={() => highlightedSection && setShowFeaturedScreen(true)}
-                activeOpacity={0.75}
-              >
-                <View style={styles.menuTileIcon}><MaterialIcons name="star" size={24} color={QuinckleColors.primary} /></View>
-                <Text style={styles.menuTileLabel}>Featured</Text>
-                <Text style={styles.menuTileCount}>
-                  {highlightedSection ? `${highlightedSection.itemIds?.length ?? 0} item${highlightedSection.itemIds?.length !== 1 ? 's' : ''}` : 'Not set'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Search + Category chips */}
-            <View style={[styles.searchBoxFull, { marginBottom: 8 }]}>
-              <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
-              <TextInput
-                style={styles.searchInput}
-                placeholder="Search menu items…"
-                placeholderTextColor={QuinckleColors.textTertiary}
-                value={searchText}
-                onChangeText={setSearchText}
-              />
-            </View>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipScroll} style={styles.chipRow}>
-              {menuCategories.map(cat => (
-                <TouchableOpacity key={cat} style={[styles.chip, menuFilter === cat && styles.chipActive]} onPress={() => setMenuFilter(cat)}>
-                  <Text style={[styles.chipText, menuFilter === cat && styles.chipTextActive]}>{cat}</Text>
                 </TouchableOpacity>
-              ))}
-            </ScrollView>
 
-            {/* Menu Items */}
-            {menuData
-              .filter(item => (menuFilter === 'All' || item.category === menuFilter) && item.name.toLowerCase().includes(searchText.toLowerCase()))
-              .map(item => (
-                <View key={item.id} style={styles.menuItemRow}>
-                  <View style={styles.menuItemLeft}>
-                    {item.image
-                      ? <Image source={{ uri: item.image }} style={[styles.menuItemImage, !item.available && styles.dimmed]} />
-                      : <View style={[styles.menuItemImagePlaceholder, !item.available && styles.dimmed]}><Ionicons name="fast-food-outline" size={20} color={QuinckleColors.textTertiary} /></View>}
-                    <View style={styles.menuItemInfo}>
-                      <Text style={[styles.menuItemName, !item.available && styles.dimmedText]}>{item.name}</Text>
-                      <Text style={styles.menuItemPrice}>₹{item.price}</Text>
-                    </View>
+                <TouchableOpacity
+                  style={[styles.menuTile, { opacity: !highlightedSection ? 0.45 : 1 }]}
+                  onPress={() => highlightedSection && router.push('/(staff)/featured')}
+                  activeOpacity={0.75}
+                >
+                  <LinearGradient
+                    colors={['rgba(0, 112, 244, 0.18)', 'rgba(255, 255, 255, 0.03)', 'transparent']}
+                    style={StyleSheet.absoluteFillObject}
+                    start={{ x: 0.5, y: 0 }}
+                    end={{ x: 0.5, y: 1 }}
+                  />
+                  <Image
+                    source={require('../../assets/images/icons/staff/menu/featured icon.webp')}
+                    style={styles.menuTileImg}
+                  />
+                  <View style={styles.menuTileTextCol}>
+                    <Text style={styles.menuTileLabel}>Featured</Text>
+                    <Text style={styles.menuTileCount}>
+                      {highlightedSection ? `${highlightedSection.itemIds?.length ?? 0} item${highlightedSection.itemIds?.length !== 1 ? 's' : ''}` : 'Not set'}
+                    </Text>
                   </View>
-                  <TouchableOpacity
-                    onPress={() => setMenuData(prev => prev.map(m => m.id === item.id ? { ...m, available: !m.available } : m))}
-                    style={[styles.toggleBase, item.available ? styles.toggleOn : styles.toggleOff]}
-                  >
-                    <View style={[styles.toggleCircle, item.available ? styles.toggleCircleOn : styles.toggleCircleOff]} />
+                </TouchableOpacity>
+              </View>
+
+              {/* Search + Category chips */}
+              <View style={[styles.searchBoxFull, { marginBottom: 8 }]}>
+                <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
+                <TextInput
+                  style={styles.searchInput}
+                  placeholder="Search menu items…"
+                  placeholderTextColor={QuinckleColors.textTertiary}
+                  value={searchText}
+                  onChangeText={setSearchText}
+                />
+              </View>
+
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipScroll} style={styles.chipRow}>
+                {menuCategories.map(cat => (
+                  <TouchableOpacity key={cat} style={[styles.chip, menuFilter === cat && styles.chipActive]} onPress={() => setMenuFilter(cat)}>
+                    <Text style={[styles.chipText, menuFilter === cat && styles.chipTextActive]}>{cat}</Text>
                   </TouchableOpacity>
-                </View>
-              ))}
-            <View style={{ height: 120 }} />
-          </ScrollView>
-        )
+                ))}
+              </ScrollView>
+
+              {/* Menu Items */}
+              {menuData
+                .filter(item => (menuFilter === 'All' || item.category === menuFilter) && item.name.toLowerCase().includes(searchText.toLowerCase()))
+                .map(item => (
+                  <View key={item.id} style={styles.menuItemRow}>
+                    <View style={styles.menuItemLeft}>
+                      {item.image
+                        ? <Image source={{ uri: item.image }} style={[styles.menuItemImage, !item.available && styles.dimmed]} />
+                        : <View style={[styles.menuItemImagePlaceholder, !item.available && styles.dimmed]}><Ionicons name="fast-food-outline" size={20} color={QuinckleColors.textTertiary} /></View>}
+                      <View style={styles.menuItemInfo}>
+                        <Text style={[styles.menuItemName, !item.available && styles.dimmedText]}>{item.name}</Text>
+                        <Text style={styles.menuItemPrice}>₹{item.price}</Text>
+                      </View>
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => setMenuData(prev => prev.map(m => m.id === item.id ? { ...m, available: !m.available } : m))}
+                      style={[styles.toggleBase, item.available ? styles.toggleOn : styles.toggleOff]}
+                    >
+                      <View style={[styles.toggleCircle, item.available ? styles.toggleCircleOn : styles.toggleCircleOff]} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              <View style={{ height: 120 }} />
+            </ScrollView>
+          )}
+        </>
+
       ) : activeTab === 'orders' ? (
         <View style={styles.tabContent}>
-          <View style={[styles.sectionHeading, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}>
-            <View>
-              <Text style={styles.sectionTitle}>Kitchen Pickup</Text>
-              <Text style={styles.sectionSubtitle}>Tap a tick to mark items served</Text>
-            </View>
-            <TouchableOpacity onPress={simulateNewOrder} style={{ padding: 8, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 8 }}>
-              <Ionicons name="notifications-outline" size={20} color={QuinckleColors.primary} />
-            </TouchableOpacity>
-          </View>
 
           <View style={styles.segmentWrap}>
             <PickupSegmented
@@ -1214,367 +1022,9 @@ export default function StaffDashboard() {
             }
           />
         </View>
-      ) : activeTab === 'profile' ? (
-        <ScrollView
-          style={styles.tabContent}
-          contentContainerStyle={styles.profileContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* Full-bleed photo with an identity card overlapping its bottom */}
-          <View style={styles.heroWrap}>
-            <View style={styles.heroImageWrap}>
-              {staffInfo?.photoUrl ? (
-                <Image
-                  source={{ uri: staffInfo.photoUrl }}
-                  style={styles.heroImage}
-                  resizeMode="cover"
-                />
-              ) : (
-                <View style={[styles.heroImage, styles.heroFallback]}>
-                  <Text style={styles.heroFallbackInitials}>
-                    {(staffInfo?.name ?? 'S')
-                      .split(' ')
-                      .map((w: string) => w[0])
-                      .join('')
-                      .slice(0, 2)
-                      .toUpperCase()}
-                  </Text>
-                </View>
-              )}
-
-              {/* Soft top vignette so the back button stays readable */}
-              <LinearGradient
-                colors={['rgba(0,0,0,0.55)', 'rgba(0,0,0,0)']}
-                locations={[0, 1]}
-                style={styles.heroTopVignette}
-                pointerEvents="none"
-              />
-
-              {/* Bottom fade so the card has a smooth seat against the photo */}
-              <LinearGradient
-                colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.35)']}
-                locations={[0, 1]}
-                style={styles.heroBottomVignette}
-                pointerEvents="none"
-              />
-
-              {/* Back button overlays top-left of the photo */}
-              <TouchableOpacity
-                style={[styles.heroBackBtn, { top: insets.top + Spacing.sm }]}
-                onPress={() => setActiveTab('tables')}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="chevron-back" size={22} color="#fff" />
-              </TouchableOpacity>
-            </View>
-
-            {/* Identity card — overlaps the photo's bottom edge */}
-            <View style={styles.identityCard}>
-              <View style={styles.identityNameRow}>
-                <Text style={styles.identityName} numberOfLines={1}>
-                  {staffInfo?.name ?? 'Staff Member'}
-                </Text>
-                <TouchableOpacity
-                  style={styles.identityEditBtn}
-                  onPress={handleChangePhoto}
-                  disabled={isUploadingPhoto}
-                  activeOpacity={0.7}
-                >
-                  {isUploadingPhoto ? (
-                    <ActivityIndicator size="small" color={QuinckleColors.textPrimary} />
-                  ) : (
-                    <Ionicons name="camera-outline" size={18} color={QuinckleColors.textPrimary} />
-                  )}
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.identityInfoRow}>
-                <Ionicons name="call-outline" size={15} color={QuinckleColors.textSecondary} />
-                <Text style={styles.identityInfoText}>{formatPhone(staffInfo?.phone) || '—'}</Text>
-              </View>
-
-              <View style={styles.identityInfoRow}>
-                <Ionicons name="briefcase-outline" size={15} color={QuinckleColors.textSecondary} />
-                <Text style={styles.identityInfoText}>
-                  {(staffInfo?.role ?? 'STAFF').charAt(0) + (staffInfo?.role ?? 'STAFF').slice(1).toLowerCase()}
-                  {staffInfo?.restaurantName ? ` · ${staffInfo.restaurantName}` : ''}
-                </Text>
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.card}>
-            <View style={styles.dutyRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.cardTitle}>Duty Status</Text>
-                <Text style={styles.cardSubtitle}>
-                  {isOnline ? 'Receiving live orders' : 'Currently off-duty'}
-                </Text>
-              </View>
-              <TouchableOpacity
-                onPress={handleToggleOnline}
-                style={[styles.toggleBase, isOnline ? styles.toggleOn : styles.toggleOff]}
-              >
-                <View style={[styles.toggleCircle, isOnline ? styles.toggleCircleOn : styles.toggleCircleOff]} />
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          <View style={styles.card}>
-            <View style={styles.shiftStatsRow}>
-              <View style={styles.shiftStatItem}>
-                <Text style={styles.shiftStatLabel}>Today's Hours</Text>
-                <Text style={styles.shiftStatValue}>{totalTodayHours}</Text>
-              </View>
-              <View style={styles.shiftStatDivider} />
-              <View style={styles.shiftStatItem}>
-                <Text style={styles.shiftStatLabel}>Current Session</Text>
-                <Text style={[styles.shiftStatValue, isOnline && { color: QuinckleColors.success }]}>
-                  {activeDuration}
-                </Text>
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.card}>
-            <View style={styles.venueRow}>
-              {restaurantLogoUrl ? (
-                <Image source={{ uri: restaurantLogoUrl }} style={styles.venueLogo} resizeMode="contain" />
-              ) : (
-                <View style={[styles.venueLogo, { backgroundColor: QuinckleColors.primary, alignItems: 'center', justifyContent: 'center' }]}>
-                  <Text style={{ color: '#fff', fontWeight: '800', fontSize: 18 }}>
-                    {(staffInfo?.restaurantName ?? 'R').slice(0, 1).toUpperCase()}
-                  </Text>
-                </View>
-              )}
-              <View style={styles.venueInfo}>
-                <Text style={styles.venueLabel}>Linked Restaurant</Text>
-                <Text style={styles.venueName}>{staffInfo?.restaurantName ?? '—'}</Text>
-                <Text style={styles.venueId} selectable>{staffInfo?.restaurantId ?? '—'}</Text>
-              </View>
-            </View>
-          </View>
-
-          <TouchableOpacity style={styles.card} onPress={() => setActiveTab('cash_ledger')} activeOpacity={0.7}>
-            <View style={styles.cashRow}>
-              <View style={styles.cashIcon}>
-                <Ionicons name="wallet-outline" size={20} color={QuinckleColors.primary} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.cardTitle}>Cash Collected</Text>
-                <Text style={styles.cashValue}>₹{(cashLedger?.shiftTotal ?? 0).toLocaleString('en-IN')}</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
-            </View>
-          </TouchableOpacity>
-
-          <View style={styles.card}>
-            <View style={styles.cardHeaderRow}>
-              <View>
-                <Text style={styles.cardTitle}>Shift Insights</Text>
-                <Text style={styles.cardSubtitle}>
-                  {shiftPeriod === 'today' ? "Today's session details" : "Performance this week"}
-                </Text>
-              </View>
-              <View style={styles.periodPicker}>
-                <TouchableOpacity
-                  onPress={() => setShiftPeriod('today')}
-                  style={[styles.periodBtn, shiftPeriod === 'today' && styles.periodBtnActive]}
-                >
-                  <Text style={[styles.periodBtnText, shiftPeriod === 'today' && styles.periodBtnTextActive]}>Today</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => setShiftPeriod('week')}
-                  style={[styles.periodBtn, shiftPeriod === 'week' && styles.periodBtnActive]}
-                >
-                  <Text style={[styles.periodBtnText, shiftPeriod === 'week' && styles.periodBtnTextActive]}>Week</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            <View style={styles.weeklyGrid}>
-              {chartData.map((data, i) => {
-                return (
-                  <View key={i} style={styles.dayColumn}>
-                    <View style={styles.dayBarTrack}>
-                      <View style={[
-                        styles.dayBar,
-                        { height: `${data.percentage}%` },
-                        data.isToday ? { backgroundColor: QuinckleColors.primary } : { backgroundColor: QuinckleColors.primarySoftBorder }
-                      ]} />
-                    </View>
-                    <Text style={[styles.dayLabel, data.isToday && { color: QuinckleColors.primary, fontWeight: '700' }]}>
-                      {data.label}
-                    </Text>
-                  </View>
-                );
-              })}
-            </View>
-
-            <View style={styles.timingDetails}>
-              {shiftPeriod === 'today' ? (
-                <View style={styles.todayTiming}>
-                  <View style={styles.timingRow}>
-                    <Ionicons name="time-outline" size={14} color={QuinckleColors.textTertiary} />
-                    <Text style={styles.timingText}>Shift Started: <Text style={styles.timingVal}>
-                      {shiftStart ? `${String(shiftStart.getHours()).padStart(2, '0')}:${String(shiftStart.getMinutes()).padStart(2, '0')} ${shiftStart.getHours() >= 12 ? 'PM' : 'AM'}` : '--:--'}
-                    </Text></Text>
-                  </View>
-                  <View style={styles.timingRow}>
-                    <Ionicons name="log-out-outline" size={14} color={QuinckleColors.textTertiary} />
-                    <Text style={styles.timingText}>Current Session: <Text style={styles.timingVal}>{activeDuration}</Text></Text>
-                  </View>
-                  <View style={styles.timingDivider} />
-                  <Text style={styles.timingSummary}>
-                    {isOnline
-                      ? `You are currently ${activeDuration} into your shift. Keep it up!`
-                      : "You are currently off-duty. Your timings will appear here once you go online."}
-                  </Text>
-                </View>
-              ) : (
-                <View style={styles.weekTiming}>
-                  {shiftLogs.map((log, idx) => (
-                    <View key={idx} style={styles.weekLogItem}>
-                      <Text style={styles.weekLogDay}>{log.d}</Text>
-                      <Text style={styles.weekLogTime}>{log.t}</Text>
-                      <Text style={styles.weekLogHours}>{log.h}h</Text>
-                    </View>
-                  ))}
-                  {isOnline && (
-                    <View style={styles.weekLogItem}>
-                      <Text style={[styles.weekLogDay, { color: QuinckleColors.primary }]}>Today</Text>
-                      <Text style={styles.weekLogTime}>Active Session</Text>
-                      <Text style={styles.weekLogHours}>{activeDuration}</Text>
-                    </View>
-                  )}
-                  <View style={styles.weekSubtotal}>
-                    <Text style={styles.subtotalLabel}>Weekly Total</Text>
-                    <Text style={styles.subtotalVal}>
-                      {(shiftLogs.reduce((acc, curr) => acc + curr.h, 0) + (isOnline && shiftStart ? (Date.now() - shiftStart.getTime()) / (1000 * 60 * 60) : 0)).toFixed(1)} Hours
-                    </Text>
-                  </View>
-                </View>
-              )}
-            </View>
-          </View>
-
-          <TouchableOpacity style={styles.card} onPress={() => setActiveTab('activity')} activeOpacity={0.7}>
-            <View style={styles.cashRow}>
-              <View style={styles.cashIcon}>
-                <Ionicons name="pulse-outline" size={20} color={QuinckleColors.primary} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.cardTitle}>Recent Activity</Text>
-                <Text style={[styles.cardSubtitle, { color: QuinckleColors.textPrimary }]}>Updates from your shift</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
-            </View>
-          </TouchableOpacity>
-
-          <Text style={styles.adminText}>
-            Contact your restaurant administrator to update profile details.
-          </Text>
-
-          <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout} activeOpacity={0.7}>
-            <Ionicons name="log-out-outline" size={18} color={QuinckleColors.danger} />
-            <Text style={styles.logoutBtnText}>Log Out</Text>
-          </TouchableOpacity>
-        </ScrollView>
-      ) : activeTab === 'cash_ledger' ? (
-        <View style={styles.tabContent}>
-          <View style={styles.profileHeaderRow}>
-            <TouchableOpacity style={styles.iconBtn} onPress={() => setActiveTab('profile')}>
-              <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
-            </TouchableOpacity>
-            <Text style={styles.screenTitle}>Cash Ledger</Text>
-            <View style={styles.iconBtnPlaceholder} />
-          </View>
-
-          <FlatList
-            data={cashLedger?.groups ?? []}
-            keyExtractor={(item) => item.date}
-            contentContainerStyle={styles.ledgerListContent}
-            ListEmptyComponent={
-              <View style={{ alignItems: 'center', paddingTop: 48 }}>
-                <Text style={{ color: QuinckleColors.textTertiary, fontSize: 13 }}>
-                  {isLoadingLedger ? 'Loading…' : 'No cash collections yet.'}
-                </Text>
-              </View>
-            }
-            ListHeaderComponent={
-              <View style={styles.ledgerSummary}>
-                <Text style={styles.ledgerSummaryLabel}>Shift Total</Text>
-                <Text style={styles.ledgerSummaryValue}>₹{(cashLedger?.shiftTotal ?? 0).toLocaleString('en-IN')}</Text>
-              </View>
-            }
-            renderItem={({ item }) => {
-              const isExpanded = expandedDate === item.date;
-              return (
-                <View style={styles.ledgerCard}>
-                  <TouchableOpacity
-                    style={styles.ledgerHeader}
-                    onPress={() => setExpandedDate(isExpanded ? null : item.date)}
-                    activeOpacity={0.6}
-                  >
-                    <Text style={styles.ledgerDate}>{item.date}</Text>
-                    <View style={styles.ledgerHeaderRight}>
-                      <Text style={styles.ledgerTotal}>₹{item.total.toLocaleString()}</Text>
-                      <Ionicons
-                        name={isExpanded ? 'chevron-up' : 'chevron-down'}
-                        size={14}
-                        color={QuinckleColors.textTertiary}
-                      />
-                    </View>
-                  </TouchableOpacity>
-
-                  {isExpanded && (
-                    <View style={styles.ledgerExpanded}>
-                      {item.items.map((subItem) => (
-                        <View key={subItem.id} style={styles.ledgerSubRow}>
-                          <View style={styles.ledgerSubLeft}>
-                            <Text style={styles.ledgerSubTable}>{subItem.tableNo}</Text>
-                            <Text style={styles.ledgerSubTime}>{subItem.time}</Text>
-                          </View>
-                          <Text style={styles.ledgerSubAmount}>₹{subItem.amount.toLocaleString()}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  )}
-                </View>
-              );
-            }}
-          />
-        </View>
-      ) : activeTab === 'activity' ? (
-        <View style={styles.tabContent}>
-          <View style={styles.profileHeaderRow}>
-            <TouchableOpacity style={styles.iconBtn} onPress={() => setActiveTab('profile')}>
-              <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
-            </TouchableOpacity>
-            <Text style={styles.screenTitle}>Activity Log</Text>
-            <View style={styles.iconBtnPlaceholder} />
-          </View>
-          <FlatList
-            data={ACTIVITY_DATA}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={styles.activityListContent}
-            renderItem={({ item }) => (
-              <View style={styles.activityItem}>
-                <Text style={styles.activityMessage}>{item.message}</Text>
-                <View style={styles.activityMeta}>
-                  <Text style={styles.activityDate}>{item.date}</Text>
-                  <Text style={styles.activityDot}>·</Text>
-                  <Text style={styles.activityTime}>{item.time}</Text>
-                </View>
-              </View>
-            )}
-          />
-        </View>
       ) : null}
 
-      {showHeader && (
-        <BottomNavbar activeTab={activeTab as any} onTabChange={setActiveTab as any} />
-      )}
+      <BottomNavbar activeTab={activeTab as any} onTabChange={setActiveTab as any} />
 
       <ThemedDialog
         visible={dialog.visible}
@@ -1621,22 +1071,43 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   statusText: {
-    color: QuinckleColors.textSecondary,
+    color: QuinckleColors.success,
     fontSize: 12,
     fontWeight: '500',
   },
+  badgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 4,
+    flexWrap: 'wrap',
+  },
+  roleBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: 'rgba(99, 102, 241, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(129, 140, 248, 0.4)',
+  },
+  roleBadgeText: {
+    color: '#A5B4FC',
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+  },
   avatarBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 45,
+    height: 45,
+    borderRadius: 10,
     borderWidth: 1.5,
-    borderColor: QuinckleColors.primary,
     padding: 1.5,
   },
   avatarImage: {
     width: '100%',
     height: '100%',
-    borderRadius: 18,
+    borderRadius: 10,
   },
   headerActions: {
     flexDirection: 'row',
@@ -1644,15 +1115,19 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
   },
   cashIconBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
-    backgroundColor: QuinckleColors.surface,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
+    overflow: 'visible',
+    top: 5
+  },
+  cashIconImage: {
+    width: 108,
+    height: 108,
+    marginTop: 2,
   },
   cashBadge: {
     position: 'absolute',
@@ -1795,6 +1270,7 @@ const styles = StyleSheet.create({
     minHeight: 130,
     justifyContent: 'space-between',
     maxWidth: '49%',
+    overflow: 'hidden',
   },
   offlineCard: {
     opacity: 0.55,
@@ -1940,14 +1416,28 @@ const styles = StyleSheet.create({
   },
   menuTile: {
     flex: 1,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: 'rgba(20,20,22,0.6)',
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.09)',
+    borderColor: 'rgba(255,255,255,0.08)',
     padding: 16,
-    gap: 4,
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    overflow: 'hidden',
   },
-  menuTileIcon: { marginBottom: 4 },
+  menuTileTextCol: {
+    alignItems: 'center',
+    gap: 2,
+  },
+  menuTileImg: {
+    width: 140,
+    height: 140,
+    resizeMode: 'contain',
+    marginTop: -25,
+    marginBottom: -35,
+  },
   menuTileLabel: {
     fontSize: 15,
     fontWeight: '700',
@@ -2236,535 +1726,82 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '500',
   },
-
-  profileContent: {
-    paddingBottom: Spacing.huge,
+  stickyHeader: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 100,
+    overflow: 'hidden',
   },
-  profileHeaderRow: {
+  stickyHeaderBg: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#141416',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: QuinckleColors.border,
+  },
+  stickyHeaderContent: {
+    height: 56,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: Spacing.xl,
-    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
   },
-  iconBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: Radius.md,
-    backgroundColor: QuinckleColors.surfaceMuted,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
+  headerActionBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
   },
-  iconBtnPlaceholder: {
-    width: 40,
-    height: 40,
-  },
-  screenTitle: {
+  stickyHeaderTitleText: {
     color: QuinckleColors.textPrimary,
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '700',
-    letterSpacing: -0.2,
   },
-
-  // ── Full-bleed hero with overlapping identity card ─────────────────────
-  // heroWrap breaks out of the container's horizontal padding + safe-area
-  // top so the photo runs edge-to-edge. The identity card sits BELOW the
-  // image but uses a negative marginTop to overlap the photo's bottom edge.
-  heroWrap: {
-    marginHorizontal: -Spacing.lg,
-    marginTop: -(Spacing.sm),
-    marginBottom: Spacing.lg,
-  },
-  heroImageWrap: {
+  heroContainer: {
+    height: 220,
     width: '100%',
-    aspectRatio: 1, // square photos (we upload at 400×400)
     position: 'relative',
-    backgroundColor: QuinckleColors.surface,
+    overflow: 'hidden',
   },
   heroImage: {
     width: '100%',
     height: '100%',
   },
-  heroFallback: {
-    backgroundColor: QuinckleColors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  heroFallbackInitials: {
-    color: '#fff',
-    fontSize: 72,
-    fontWeight: '800',
-    letterSpacing: -2,
-  },
-  heroTopVignette: {
+  heroTextSection: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 120,
-  },
-  heroBottomVignette: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: 80,
-  },
-  heroBackBtn: {
-    position: 'absolute',
+    bottom: Spacing.md,
     left: Spacing.lg,
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
+    gap: Spacing.xs,
+    maxWidth: '65%',
   },
-
-  identityCard: {
-    marginTop: -Spacing.xxl, // pulls the card up to overlap the photo
-    marginHorizontal: Spacing.lg,
-    backgroundColor: QuinckleColors.surfaceElevated,
-    borderRadius: Radius.xl,
-    padding: Spacing.lg,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
-    shadowColor: '#000',
-    shadowOpacity: 0.45,
-    shadowOffset: { width: 0, height: 8 },
-    shadowRadius: 18,
-    elevation: 10,
-  },
-  identityNameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: Spacing.md,
-    marginBottom: Spacing.md,
-  },
-  identityName: {
-    flex: 1,
+  heroTitle: {
     color: QuinckleColors.textPrimary,
-    fontSize: 22,
+    fontSize: 26,
     fontWeight: '800',
-    letterSpacing: -0.4,
+    letterSpacing: -0.6,
   },
-  identityEditBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: QuinckleColors.surfaceMuted,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  identityInfoRow: {
+  statsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.sm,
-    paddingVertical: 6,
+    gap: Spacing.xs,
   },
-  identityInfoText: {
-    color: QuinckleColors.textSecondary,
-    fontSize: 14,
-    fontWeight: '500',
-    letterSpacing: 0.1,
-    flexShrink: 1,
-  },
-
-  card: {
-    backgroundColor: QuinckleColors.surface,
-    borderRadius: Radius.lg,
-    padding: Spacing.lg,
-    marginBottom: Spacing.md,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
-  },
-  cardTitle: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  cardSubtitle: {
-    color: QuinckleColors.textTertiary,
-    fontSize: 12,
-    marginTop: 2,
-  },
-
-  dutyRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-
-  shiftStatsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  shiftStatItem: {
-    flex: 1,
-    alignItems: 'center',
-    gap: 4,
-  },
-  shiftStatDivider: {
-    width: 1,
-    height: 30,
-    backgroundColor: QuinckleColors.border,
-    marginHorizontal: Spacing.md,
-  },
-  shiftStatLabel: {
-    color: QuinckleColors.textTertiary,
-    fontSize: 10,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  shiftStatValue: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 18,
-    fontWeight: '700',
-    letterSpacing: -0.5,
-  },
-
-  venueRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-  },
-  venueLogo: {
-    width: 50,
-    height: 50,
-    borderRadius: Radius.sm,
-    backgroundColor: QuinckleColors.surfaceMuted,
-  },
-  venueInfo: {
-    flex: 1,
-    gap: 2,
-  },
-  venueLabel: {
-    color: QuinckleColors.textTertiary,
-    fontSize: 10,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-    marginBottom: 2,
-  },
-  venueName: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  venueId: {
-    color: QuinckleColors.textTertiary,
-    fontSize: 12,
-    fontWeight: '500',
-  },
-
-  cashRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-  },
-  cashIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: Radius.sm,
-    backgroundColor: QuinckleColors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cashValue: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 18,
-    fontWeight: '700',
-    marginTop: 2,
-  },
-
-  weeklyGrid: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-end',
-    height: 100,
-    marginTop: Spacing.lg,
-    paddingHorizontal: Spacing.sm,
-  },
-  dayColumn: {
-    alignItems: 'center',
-    gap: 8,
-    flex: 1,
-  },
-  dayBarTrack: {
-    width: 6,
-    height: 70,
-    backgroundColor: QuinckleColors.surfaceMuted,
-    borderRadius: 3,
-    justifyContent: 'flex-end',
-  },
-  dayBar: {
-    width: '100%',
-    borderRadius: 3,
-  },
-  dayLabel: {
-    color: QuinckleColors.textTertiary,
-    fontSize: 10,
-    fontWeight: '600',
-  },
-  weeklyStats: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: Spacing.xl,
-    paddingTop: Spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: QuinckleColors.borderSubtle,
-  },
-  cardHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  periodPicker: {
-    flexDirection: 'row',
-    backgroundColor: QuinckleColors.surfaceMuted,
-    borderRadius: Radius.sm,
-    padding: 3,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
-  },
-  periodBtn: {
-    paddingHorizontal: 10,
+  statPill: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 999,
+    paddingHorizontal: 12,
     paddingVertical: 5,
-    borderRadius: Radius.sm,
-  },
-  periodBtnActive: {
-    backgroundColor: QuinckleColors.surface,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 2,
-  },
-  periodBtnText: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: QuinckleColors.textTertiary,
-  },
-  periodBtnTextActive: {
-    color: QuinckleColors.primary,
-  },
-  timingDetails: {
-    marginTop: Spacing.xl,
-    paddingTop: Spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: QuinckleColors.borderSubtle,
-  },
-  todayTiming: {
-    gap: 10,
-  },
-  timingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  timingText: {
-    color: QuinckleColors.textSecondary,
-    fontSize: 13,
-  },
-  timingVal: {
-    color: QuinckleColors.textPrimary,
-    fontWeight: '600',
-  },
-  timingDivider: {
-    height: 1,
-    backgroundColor: QuinckleColors.borderSubtle,
-    marginVertical: 4,
-  },
-  timingSummary: {
-    color: QuinckleColors.textTertiary,
-    fontSize: 12,
-    lineHeight: 18,
-  },
-  weekTiming: {
-    gap: 12,
-  },
-  weekLogItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  weekLogDay: {
-    width: 45,
-    fontSize: 12,
-    fontWeight: '600',
-    color: QuinckleColors.textSecondary,
-  },
-  weekLogTime: {
-    flex: 1,
-    fontSize: 12,
-    color: QuinckleColors.textTertiary,
-    textAlign: 'center',
-  },
-  weekLogHours: {
-    width: 50,
-    fontSize: 12,
-    fontWeight: '700',
-    color: QuinckleColors.textPrimary,
-    textAlign: 'right',
-  },
-  weekSubtotal: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 8,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: QuinckleColors.borderSubtle,
-  },
-  subtotalLabel: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: QuinckleColors.textPrimary,
-  },
-  subtotalVal: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: QuinckleColors.primary,
-  },
-  weeklyStatVal: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 15,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  weeklyStatLab: {
-    color: QuinckleColors.textTertiary,
-    fontSize: 10,
-    fontWeight: '500',
-    textAlign: 'center',
-    marginTop: 2,
-  },
-  statDot: {
-    width: 3,
-    height: 3,
-    borderRadius: 1.5,
-    backgroundColor: QuinckleColors.border,
-  },
-
-  adminText: {
-    color: QuinckleColors.textTertiary,
-    fontSize: 12,
-    textAlign: 'center',
-    lineHeight: 18,
-    marginTop: Spacing.xl,
-    paddingHorizontal: Spacing.lg,
-  },
-
-  logoutBtn: {
-    marginTop: Spacing.xxl,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.sm,
-    paddingVertical: Spacing.md,
-    borderRadius: Radius.md,
     borderWidth: 1,
-    borderColor: QuinckleColors.dangerBorder,
-    backgroundColor: QuinckleColors.dangerSoft,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
   },
-  logoutBtnText: {
-    color: QuinckleColors.danger,
-    fontSize: 14,
+  statPillText: {
+    color: QuinckleColors.textSecondary,
+    fontSize: 12,
     fontWeight: '600',
   },
 
-  ledgerListContent: {
-    paddingBottom: Spacing.huge,
-  },
-  ledgerSummary: {
-    paddingVertical: Spacing.xxl,
-    alignItems: 'center',
-    marginBottom: Spacing.md,
-  },
-  ledgerSummaryLabel: {
-    color: QuinckleColors.textTertiary,
-    fontSize: 12,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 1.2,
-    marginBottom: Spacing.sm,
-  },
-  ledgerSummaryValue: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 38,
-    fontWeight: '800',
-    letterSpacing: -1,
-  },
-  ledgerCard: {
-    backgroundColor: QuinckleColors.surface,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
-    marginBottom: Spacing.sm,
-    overflow: 'hidden',
-  },
-  ledgerHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: Spacing.lg,
-  },
-  ledgerDate: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  ledgerHeaderRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-  },
-  ledgerTotal: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  ledgerExpanded: {
-    borderTopWidth: 1,
-    borderTopColor: QuinckleColors.borderSubtle,
-    paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.sm,
-  },
-  ledgerSubRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: QuinckleColors.borderSubtle,
-  },
-  ledgerSubLeft: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: Spacing.sm,
-  },
-  ledgerSubTable: {
-    color: QuinckleColors.primary,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  ledgerSubTime: {
-    color: QuinckleColors.textTertiary,
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  ledgerSubAmount: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 14,
-    fontWeight: '600',
-  },
 });

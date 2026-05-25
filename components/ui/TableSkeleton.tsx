@@ -12,7 +12,7 @@ const SWEEP_DISTANCE = 220;
  * absolutely-positioned linear gradient sweeps across via the native driver,
  * so the animation stays at 60fps even while React is hydrating real data.
  */
-const ShimmerBlock: React.FC<{
+export const ShimmerBlock: React.FC<{
   width: number | `${number}%`;
   height: number;
   style?: ViewStyle;

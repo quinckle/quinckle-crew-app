@@ -89,7 +89,7 @@ export const crewAuth = {
   },
 
   getProfile: () =>
-    request<{ success: boolean; data: { id: string; name: string; phone: string; role: StaffRole; photoUrl: string | null; restaurantId: string; restaurantName: string } }>(
+    request<{ success: boolean; data: { id: string; name: string; phone: string; role: StaffRole; photoUrl: string | null; restaurantId: string; restaurantName: string; joinedAt: string } }>(
       'GET', '/api/crew/auth/profile', undefined, true
     ),
 

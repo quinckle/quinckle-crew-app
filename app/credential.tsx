@@ -10,6 +10,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
@@ -212,14 +213,29 @@ export default function CredentialScreen() {
             <Text style={styles.subtitle}>
               {step === 1
                 ? 'We will send a one-time code to your\nregistered number.'
-                : `A 6-digit code was sent to\n+91 ${phone}.`}
+                : `A 6-digit code was sent to\n+91 ******${phone.slice(-4)}.`}
             </Text>
           </View>
 
           <View style={styles.inputSection}>
-            <Text style={styles.fieldLabel}>
-              {step === 1 ? 'Mobile Number' : 'One-Time Code'}
-            </Text>
+            <View style={styles.labelRow}>
+              <Text style={styles.fieldLabel}>
+                {step === 1 ? 'Mobile Number' : 'One-Time Code'}
+              </Text>
+              
+              {step === 2 && (
+                <TouchableOpacity
+                  activeOpacity={resendCooldown > 0 ? 1 : 0.7}
+                  onPress={handleResend}
+                  disabled={resendCooldown > 0 || isLoading}
+                >
+                  {resendCooldown > 0
+                    ? <Text style={[styles.resendLink, { color: QuinckleColors.textTertiary }]}>Resend in {resendCooldown}s</Text>
+                    : <Text style={styles.resendLink}>Resend OTP</Text>
+                  }
+                </TouchableOpacity>
+              )}
+            </View>
 
             {step === 1 ? (
               <Animated.View style={[styles.phoneInputWrap, { borderColor }]}>
@@ -298,20 +314,7 @@ export default function CredentialScreen() {
             )}
           </View>
 
-          {step === 2 && (
-            <TouchableOpacity
-              style={styles.resendRow}
-              activeOpacity={resendCooldown > 0 ? 1 : 0.7}
-              onPress={handleResend}
-              disabled={resendCooldown > 0 || isLoading}
-            >
-              <Text style={styles.resendText}>Didn&apos;t receive the code? </Text>
-              {resendCooldown > 0
-                ? <Text style={[styles.resendLink, { color: QuinckleColors.textTertiary }]}>Resend in {resendCooldown}s</Text>
-                : <Text style={styles.resendLink}>Resend OTP</Text>
-              }
-            </TouchableOpacity>
-          )}
+
 
           {error ? (
             <View style={styles.errorRow}>
@@ -320,18 +323,19 @@ export default function CredentialScreen() {
             </View>
           ) : null}
 
-          <View style={{ flex: 1 }} />
-
           <TouchableOpacity
             style={[styles.ctaButton, ctaDisabled && styles.ctaDisabled]}
             onPress={handleNext}
             activeOpacity={0.85}
             disabled={ctaDisabled}
           >
-            <Text style={styles.ctaText}>
-              {isLoading ? 'Processing…' : step === 1 ? 'Send Code' : 'Verify & Continue'}
-            </Text>
-            {!isLoading && <Ionicons name="arrow-forward" size={18} color="#fff" />}
+            {isLoading ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <Text style={styles.ctaText}>
+                {step === 1 ? 'Send Code' : 'Verify & Continue'}
+              </Text>
+            )}
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
@@ -384,6 +388,11 @@ const styles = StyleSheet.create({
   inputSection: {
     gap: Spacing.sm,
     marginBottom: Spacing.lg,
+  },
+  labelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   fieldLabel: {
     color: QuinckleColors.textTertiary,
@@ -493,15 +502,7 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
-  resendRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    marginTop: Spacing.lg,
-  },
-  resendText: {
-    fontSize: 13,
-    color: QuinckleColors.textSecondary,
-  },
+
   resendLink: {
     fontSize: 13,
     color: QuinckleColors.primary,

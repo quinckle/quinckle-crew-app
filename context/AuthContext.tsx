@@ -92,7 +92,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [crewToken, setCrewTokenState] = useState<string | null>(null);
   const [isRestoring, setIsRestoring] = useState(true);
 
-  // Restore auth on app start
   useEffect(() => {
     loadPersisted()
       .then(saved => {
@@ -133,7 +132,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const setPhotoUrl = (url: string) => {
     setStaffInfo(prev => {
       const next = prev ? { ...prev, photoUrl: url } : prev;
-      // Re-persist the updated staffInfo (token is unchanged so don't touch it)
       if (next) void AsyncStorage.setItem(STAFF_KEY, JSON.stringify({ role, staffInfo: next })).catch(() => {});
       return next;
     });
@@ -145,7 +143,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ role, staffInfo, crewToken, isRestoring, login, logout, setPhotoUrl }}>
+    <AuthContext.Provider value={{
+      role, staffInfo, crewToken, isRestoring, login, logout, setPhotoUrl,
+    }}>
       {children}
     </AuthContext.Provider>
   );
