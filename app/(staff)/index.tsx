@@ -146,25 +146,8 @@ const MENU_DATA_INITIAL = [
   { id: '9', name: 'Special Salad', price: 150, category: 'Appetizers', available: true },
 ];
 
-type PickupItem = { id: string; name: string; qty: number; orderedAt: string; isServed: boolean };
+type PickupItem = { id: string; name: string; qty: number; orderedAt: string; isServed: boolean; isReady: boolean };
 type PickupOrder = { id: string; tableNo: string; items: PickupItem[]; completedAt?: string };
-
-const READY_ORDERS_INITIAL: PickupOrder[] = [
-  { id: 'o1', tableNo: 'T02', items: [{ id: 'i1', name: 'Chicken Biryani', qty: 2, orderedAt: '14:05', isServed: false }] },
-  {
-    id: 'o2', tableNo: 'T05', items: [
-      { id: 'i2', name: 'Cold Coffee', qty: 1, orderedAt: '14:15', isServed: false },
-      { id: 'i3', name: 'Lemon Soda', qty: 1, orderedAt: '14:16', isServed: false },
-    ]
-  },
-  { id: 'o3', tableNo: 'T01', items: [{ id: 'i4', name: 'Paneer Tikka', qty: 1, orderedAt: '14:20', isServed: false }] },
-  {
-    id: 'o4', tableNo: 'T04', items: [
-      { id: 'i5', name: 'Butter Chicken', qty: 1, orderedAt: '13:30', isServed: true },
-      { id: 'i6', name: 'Garlic Naan', qty: 2, orderedAt: '13:31', isServed: true },
-    ], completedAt: '13:55'
-  },
-];
 
 // Real-time activity feed — populated from session/order events on the
 // waiter:{restaurantId} Ably channel as they happen. Empty by default;
@@ -278,49 +261,57 @@ export default function StaffDashboard() {
     });
   };
 
-  const formatNow = () => {
-    const now = new Date();
-    return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-  };
+  const togglePickupItem = (orderId: string, itemId: string) => {
+    Haptics.selectionAsync().catch(() => {});
 
-  const togglePickupItem = async (orderId: string, itemId: string) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-
-    // Optimistic update — mark served immediately
+    // Optimistic update — mark served immediately. If this was the last
+    // pending item, flag the card as "completing" so PickupCard runs its
+    // calm in-place celebration. completedAt stays unset during the
+    // celebration; handleCompletionFinished sets it (as ISO) when the
+    // animation finishes, which is what moves the card to the Completed list.
+    let triggersCompletion = false;
     setPickupOrders((prev) =>
       prev.map((order) => {
         if (order.id !== orderId) return order;
         const items = order.items.map((it) =>
           it.id === itemId ? { ...it, isServed: true } : it,
         );
-        const allServed = items.every((it) => it.isServed);
-        return { ...order, items, completedAt: allServed && !order.completedAt ? 'now' : order.completedAt };
+        if (!order.completedAt && items.every((it) => it.isServed)) {
+          triggersCompletion = true;
+        }
+        return { ...order, items };
       }),
     );
 
-    try {
-      await crewOrders.serveItem(orderId, itemId);
-      // Refresh from server — same pattern as kitchen screen
-      await loadPickupOrders();
-    } catch {
-      // Revert on failure
-      setPickupOrders((prev) =>
-        prev.map((o) =>
-          o.id !== orderId ? o : {
-            ...o,
-            items: o.items.map((it) =>
-              it.id === itemId ? { ...it, isServed: false } : it,
-            ),
-          }
-        ),
-      );
+    if (triggersCompletion) {
+      setCompletingIds((prev) => (prev.includes(orderId) ? prev : [...prev, orderId]));
     }
+
+    // Fire-and-forget — realtime `order_served` event drives the refresh.
+    // Awaiting loadPickupOrders here used to snap the list mid-animation.
+    void crewOrders
+      .serveItem(orderId, itemId)
+      .catch(() => {
+        // Revert on failure
+        setPickupOrders((prev) =>
+          prev.map((o) =>
+            o.id !== orderId ? o : {
+              ...o,
+              items: o.items.map((it) =>
+                it.id === itemId ? { ...it, isServed: false } : it,
+              ),
+            }
+          ),
+        );
+        setCompletingIds((prev) => prev.filter((id) => id !== orderId));
+      });
   };
 
   const handleCompletionFinished = (orderId: string) => {
     LayoutAnimation.configureNext(PICKUP_LAYOUT_PRESET);
+    const completedIso = new Date().toISOString();
     setPickupOrders((prev) =>
-      prev.map((o) => (o.id === orderId ? { ...o, completedAt: formatNow() } : o)),
+      prev.map((o) => (o.id === orderId ? { ...o, completedAt: completedIso } : o)),
     );
     setCompletingIds((prev) => prev.filter((id) => id !== orderId));
   };
@@ -489,9 +480,33 @@ export default function StaffDashboard() {
         o.items.some(i => !i.served)
       );
 
-      // Fire notification if new READY orders appeared
-      const prevReadyIds = new Set(pickupOrders.map(o => o.id));
-      const newReadyOrders = allOrders.filter(o => o.status === 'ready' && !prevReadyIds.has(o.order_id));
+      // Diff per-item readiness so we can notify the moment a single kitchen
+      // item flips to done, not only when an entire order completes.
+      const prevReadyItemKeys = new Set<string>();
+      pickupOrders.forEach(o => {
+        o.items.forEach(i => {
+          if (i.isReady && !i.isServed) prevReadyItemKeys.add(`${o.id}:${i.id}`);
+        });
+      });
+
+      const newlyReadyItems: { orderId: string; tableNumber: number; itemName: string; qty: number }[] = [];
+      allOrders.forEach(o => {
+        o.items.forEach(i => {
+          const key = `${o.order_id}:${i.item_id}`;
+          if (i.item_status === 'done' && !i.served && !prevReadyItemKeys.has(key)) {
+            newlyReadyItems.push({
+              orderId: o.order_id,
+              tableNumber: o.table_number,
+              itemName: i.name,
+              qty: i.qty,
+            });
+          }
+        });
+      });
+
+      // Fire notification if new READY orders appeared (whole-order beat)
+      const prevReadyOrderIds = new Set(pickupOrders.map(o => o.id));
+      const newReadyOrders = allOrders.filter(o => o.status === 'ready' && !prevReadyOrderIds.has(o.order_id));
       if (newReadyOrders.length > 0) {
         void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
         Notifications.scheduleNotificationAsync({
@@ -502,24 +517,58 @@ export default function StaffDashboard() {
           },
           trigger: null,
         }).catch(() => { });
+      } else if (newlyReadyItems.length > 0) {
+        // Partial readiness: just one (or a few) items in a still-preparing order
+        // went ready. Lighter beat — sound + a single notification.
+        void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
+        const first = newlyReadyItems[0]!;
+        const more = newlyReadyItems.length - 1;
+        const body = more > 0
+          ? `${first.qty}× ${first.itemName} · +${more} more`
+          : `${first.qty}× ${first.itemName} ready to plate`;
+        Notifications.scheduleNotificationAsync({
+          content: {
+            title: `Item ready — Table ${first.tableNumber}`,
+            body,
+            sound: true,
+          },
+          trigger: null,
+        }).catch(() => { });
       }
 
-      setPickupOrders(
-        serveableOrders.map(order => ({
-          id: order.order_id,
-          tableNo: `T${order.table_number}`,
-          items: order.items.map(item => ({
-            id: item.item_id,
-            name: `${item.qty}× ${item.name}`,
-            qty: item.qty,
-            orderedAt: (() => {
-              const d = new Date(order.placed_at);
-              return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-            })(),
-            isServed: item.served,
-          })),
-        }))
-      );
+      const refreshedActive = serveableOrders.map(order => ({
+        id: order.order_id,
+        tableNo: `T${order.table_number}`,
+        items: order.items.map(item => ({
+          id: item.item_id,
+          name: `${item.qty}× ${item.name}`,
+          qty: item.qty,
+          orderedAt: (() => {
+            const d = new Date(order.placed_at);
+            return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+          })(),
+          isServed: item.served,
+          isReady: item.item_status === 'done',
+        })),
+      }));
+
+      // Backend /orders/active drops orders once they flip to SERVED, but the
+      // staff Completed tab still needs to surface "just-served" tickets so
+      // the waiter can see what they finished and undo if needed. Carry any
+      // locally-completed orders forward across refetches, and auto-prune
+      // anything completed >1h ago so the list stays calm.
+      const refreshedIds = new Set(refreshedActive.map(o => o.id));
+      const oneHourAgo = Date.now() - 60 * 60 * 1000;
+      setPickupOrders(prev => {
+        const survivingCompleted = prev.filter(o => {
+          if (!o.completedAt || refreshedIds.has(o.id)) return false;
+          const ts = Date.parse(o.completedAt);
+          // Unparseable (legacy 'now' / HH:MM) → keep for this session
+          if (isNaN(ts)) return true;
+          return ts >= oneHourAgo;
+        });
+        return [...refreshedActive, ...survivingCompleted];
+      });
     } catch (e) { console.error('[pickup] loadPickupOrders error:', e); }
   };
 
@@ -586,6 +635,14 @@ export default function StaffDashboard() {
       void loadPickupOrders();
     });
 
+    // Per-item ready: drives a refetch the moment the cook flips a single item.
+    // The sound + notification are emitted by loadPickupOrders' own diff so
+    // the same UX fires whether the realtime event or a manual refresh
+    // surfaces a newly-ready item.
+    const off7b = subscribeChannel(`waiter:${restaurantId}`, 'item_ready', () => {
+      void loadPickupOrders();
+    });
+
     const off8 = subscribeChannel(`waiter:${restaurantId}`, 'cash_collection_requested', (data: any) => {
       const tableNumber = data?.tableNumber as number | undefined;
       const amount = data?.amount as number | undefined;
@@ -609,7 +666,7 @@ export default function StaffDashboard() {
       setPendingCashCount(c => Math.max(0, c - 1));
     });
 
-    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off7(); off8(); off9(); };
+    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off7(); off7b(); off8(); off9(); };
   }, [staffInfo?.restaurantId]);
 
   // C1: Track Ably connection health — show a warning when the waiter channel drops.
@@ -831,7 +888,7 @@ export default function StaffDashboard() {
                   <TouchableOpacity
                     style={[
                       styles.tableCard,
-                      { borderColor: `${meta.color}55` },
+                      { borderColor: `${meta.color}99` },
                       item.status === 'offline' && styles.offlineCard,
                     ]}
                     onPress={() => handleTablePress(item.number, item.status)}
@@ -840,7 +897,7 @@ export default function StaffDashboard() {
                     delayLongPress={500}
                   >
                     <LinearGradient
-                      colors={[`${meta.color}33`, `${meta.color}0D`, 'transparent']}
+                      colors={[`${meta.color}B3`, `${meta.color}4D`, `${meta.color}1A`]}
                       locations={[0, 0.55, 1]}
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 1 }}
@@ -1013,10 +1070,16 @@ export default function StaffDashboard() {
             )}
             ListEmptyComponent={
               <View style={styles.emptyOrders}>
+                <Ionicons
+                  name={ordersSubTab === 'active' ? 'checkmark-circle-outline' : 'time-outline'}
+                  size={36}
+                  color={QuinckleColors.textTertiary}
+                  style={styles.emptyOrdersIcon}
+                />
                 <Text style={styles.emptyOrdersText}>
                   {ordersSubTab === 'active'
-                    ? 'All caught up — kitchen has nothing pending.'
-                    : 'Completed orders show up here.'}
+                    ? 'All caught up.\nThe kitchen has nothing pending.'
+                    : 'Served orders appear here for an hour.'}
                 </Text>
               </View>
             }
@@ -1684,12 +1747,16 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.huge,
     paddingHorizontal: Spacing.lg,
     alignItems: 'center',
+    gap: Spacing.md,
+  },
+  emptyOrdersIcon: {
+    opacity: 0.6,
   },
   emptyOrdersText: {
     color: QuinckleColors.textTertiary,
-    fontSize: 14,
+    fontSize: 13,
     textAlign: 'center',
-    lineHeight: 21,
+    lineHeight: 20,
   },
 
   activityListContent: {

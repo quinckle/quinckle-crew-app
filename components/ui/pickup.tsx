@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   Easing,
@@ -7,22 +7,22 @@ import {
   Pressable,
   StyleSheet,
   Text,
-  TouchableOpacity,
   UIManager,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { Swipeable } from 'react-native-gesture-handler';
+import * as Haptics from 'expo-haptics';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
+// Gentle reflow used when cards enter/leave Active or Completed lists.
 export const PICKUP_LAYOUT_PRESET = {
-  duration: 320,
+  duration: 280,
   create: { type: LayoutAnimation.Types.easeInEaseOut, property: LayoutAnimation.Properties.opacity },
-  update: { type: LayoutAnimation.Types.spring, springDamping: 0.85 },
+  update: { type: LayoutAnimation.Types.easeInEaseOut },
   delete: { type: LayoutAnimation.Types.easeInEaseOut, property: LayoutAnimation.Properties.opacity },
 };
 
@@ -32,12 +32,14 @@ export type PickupItemData = {
   qty: number;
   orderedAt: string;
   isServed: boolean;
+  isReady: boolean;
 };
 
 export type PickupOrderData = {
   id: string;
   tableNo: string;
   items: PickupItemData[];
+  /** ISO timestamp when the order was finished. Drives Active/Completed split. */
   completedAt?: string;
 };
 
@@ -118,15 +120,10 @@ const segStyles = StyleSheet.create({
     top: 4,
     bottom: 4,
     left: 4,
-    backgroundColor: QuinckleColors.primary,
+    backgroundColor: QuinckleColors.surfaceMutedHover,
     borderRadius: Radius.sm,
     borderWidth: 1,
-    borderColor: QuinckleColors.primary,
-    shadowColor: '#000',
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 1 },
-    elevation: 1,
+    borderColor: QuinckleColors.borderStrong,
   },
   btn: {
     flex: 1,
@@ -143,7 +140,7 @@ const segStyles = StyleSheet.create({
     fontWeight: '600',
   },
   textActive: {
-    color: '#fff',
+    color: QuinckleColors.textPrimary,
   },
   badge: {
     minWidth: 20,
@@ -155,7 +152,7 @@ const segStyles = StyleSheet.create({
     justifyContent: 'center',
   },
   badgeActive: {
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: QuinckleColors.surface,
   },
   badgeText: {
     color: QuinckleColors.textTertiary,
@@ -163,47 +160,75 @@ const segStyles = StyleSheet.create({
     fontWeight: '700',
   },
   badgeTextActive: {
-    color: '#fff',
+    color: QuinckleColors.textPrimary,
   },
 });
 
-/* ───────────── Status row ───────────── */
+/* ───────────── Item row ───────────── */
 
 type ItemRowProps = {
   item: PickupItemData;
   onToggle: () => void;
   disabled?: boolean;
+  isCompleted?: boolean;
 };
 
-function PickupItemRow({ item, onToggle, disabled }: ItemRowProps) {
+function PickupItemRow({ item, onToggle, disabled, isCompleted }: ItemRowProps) {
+  // Three calm states:
+  //   served  → filled check, collapsed, line-through
+  //   ready   → empty check, bold text, green dot, tap-row enabled
+  //   pending → empty check, faded text, kitchen dot, untappable
+  const tappable = item.isReady && !item.isServed && !disabled && !isCompleted;
+
+  const handlePress = () => {
+    if (!tappable) return;
+    Haptics.selectionAsync().catch(() => {});
+    onToggle();
+  };
+
   return (
-    <View style={rowStyles.row}>
-      <View style={rowStyles.left}>
-        <Text style={[rowStyles.qty, item.isServed && rowStyles.qtyServed]}>{item.qty}×</Text>
-        <View style={{ flex: 1 }}>
-          <Text style={[rowStyles.name, item.isServed && rowStyles.nameServed]} numberOfLines={1}>
-            {item.name}
-          </Text>
-          <Text style={rowStyles.time}>ordered {item.orderedAt}</Text>
-        </View>
+    <Pressable
+      onPress={handlePress}
+      disabled={!tappable}
+      android_ripple={tappable ? { color: 'rgba(255,255,255,0.05)' } : undefined}
+      style={[rowStyles.row, item.isServed && rowStyles.rowServed]}
+    >
+      <View style={[
+        rowStyles.checkbox,
+        item.isServed && rowStyles.checkboxFilled,
+        item.isReady && !item.isServed && rowStyles.checkboxReady,
+      ]}>
+        {item.isServed && <Ionicons name="checkmark" size={12} color="#fff" />}
       </View>
 
-      {item.isServed ? (
-        <View style={rowStyles.servedBadge}>
-          <Ionicons name="checkmark" size={11} color={QuinckleColors.success} />
-          <Text style={rowStyles.servedText}>Served</Text>
+      <Text style={[
+        rowStyles.qty,
+        item.isServed && rowStyles.textMuted,
+        !item.isReady && !item.isServed && rowStyles.textMuted,
+      ]}>
+        {item.qty}×
+      </Text>
+
+      <Text
+        numberOfLines={1}
+        style={[
+          rowStyles.name,
+          item.isServed && rowStyles.nameServed,
+          !item.isReady && !item.isServed && rowStyles.textMuted,
+        ]}
+      >
+        {item.name}
+      </Text>
+
+      {!item.isServed && (
+        <View style={rowStyles.statusDotWrap}>
+          <View style={[
+            rowStyles.statusDot,
+            { backgroundColor: item.isReady ? QuinckleColors.success : QuinckleColors.textTertiary },
+          ]} />
         </View>
-      ) : (
-        <TouchableOpacity
-          style={rowStyles.serveCta}
-          onPress={onToggle}
-          disabled={disabled}
-          activeOpacity={0.75}
-        >
-          <Text style={rowStyles.serveCtaText}>Mark served</Text>
-        </TouchableOpacity>
       )}
-    </View>
+    </Pressable>
   );
 }
 
@@ -211,70 +236,58 @@ const rowStyles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.md,
+    gap: Spacing.sm,
+    paddingVertical: 10,
+    paddingHorizontal: Spacing.sm,
     borderRadius: Radius.sm,
-    backgroundColor: QuinckleColors.surfaceMuted,
-    borderWidth: 1,
-    borderColor: QuinckleColors.borderSubtle,
   },
-  left: {
-    flexDirection: 'row',
+  rowServed: {
+    paddingVertical: 6,
+  },
+  checkbox: {
+    width: 18,
+    height: 18,
+    borderRadius: 5,
+    borderWidth: 1.5,
+    borderColor: QuinckleColors.borderStrong,
+    backgroundColor: 'transparent',
     alignItems: 'center',
-    gap: Spacing.md,
-    flex: 1,
-    marginRight: Spacing.md,
+    justifyContent: 'center',
+  },
+  checkboxReady: {
+    borderColor: QuinckleColors.success,
+  },
+  checkboxFilled: {
+    backgroundColor: QuinckleColors.success,
+    borderColor: QuinckleColors.success,
   },
   qty: {
-    color: QuinckleColors.primary,
-    fontSize: 15,
+    color: QuinckleColors.textPrimary,
+    fontSize: 14,
     fontWeight: '700',
+    minWidth: 24,
   },
-  qtyServed: { color: QuinckleColors.textTertiary },
   name: {
+    flex: 1,
     color: QuinckleColors.textPrimary,
     fontSize: 14,
     fontWeight: '600',
   },
   nameServed: {
-    color: QuinckleColors.textTertiary,
     textDecorationLine: 'line-through',
-  },
-  time: {
     color: QuinckleColors.textTertiary,
-    fontSize: 11,
     fontWeight: '500',
-    marginTop: 2,
   },
-  serveCta: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: QuinckleColors.primary,
-    backgroundColor: 'rgba(243,93,59,0.08)',
-    flexShrink: 0,
+  textMuted: {
+    color: QuinckleColors.textTertiary,
   },
-  serveCtaText: {
-    color: QuinckleColors.primary,
-    fontSize: 11,
-    fontWeight: '700',
+  statusDotWrap: {
+    paddingHorizontal: 4,
   },
-  servedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 6,
-    backgroundColor: 'rgba(34,197,94,0.1)',
-    flexShrink: 0,
-  },
-  servedText: {
-    color: QuinckleColors.success,
-    fontSize: 11,
-    fontWeight: '700',
+  statusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
   },
 });
 
@@ -288,8 +301,8 @@ type CardProps = {
   onReopen?: () => void;
 };
 
-const COMPLETION_HOLD_MS = 650;
-const CARD_SLIDE_OUT_MS = 320;
+const COMPLETION_HOLD_MS = 700;   // hold in Active list with calm state shown
+const UNDO_WINDOW_MS = 60_000;
 
 export function PickupCard({
   order,
@@ -299,270 +312,244 @@ export function PickupCard({
   onReopen,
 }: CardProps) {
   const isCompleted = !!order.completedAt;
+  const items = order.items;
 
-  const cardX = useRef(new Animated.Value(0)).current;
-  const cardOpacity = useRef(new Animated.Value(1)).current;
-  const pillY = useRef(new Animated.Value(-24)).current;
-  const pillOpacity = useRef(new Animated.Value(0)).current;
-  const glow = useRef(new Animated.Value(0)).current;
+  // Cross-fade between active/completed visual treatment + list slot.
+  const opacity = useRef(new Animated.Value(1)).current;
+  const accentPulse = useRef(new Animated.Value(0)).current;
+  const calmness = useRef(new Animated.Value(isCompleted ? 1 : 0)).current; // 0 = active surface, 1 = muted
 
+  // 60s Undo timer for fresh completions
+  const [undoVisible, setUndoVisible] = useState(false);
   useEffect(() => {
-    if (isCompleting) {
-      cardX.setValue(0);
-      cardOpacity.setValue(1);
-
-      Animated.parallel([
-        Animated.spring(pillY, {
-          toValue: 0,
-          friction: 6,
-          tension: 110,
-          useNativeDriver: true,
-        }),
-        Animated.timing(pillOpacity, {
-          toValue: 1,
-          duration: 220,
-          useNativeDriver: true,
-        }),
-        Animated.timing(glow, {
-          toValue: 1,
-          duration: 260,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: false,
-        }),
-      ]).start();
-
-      const t = setTimeout(() => {
-        Animated.parallel([
-          Animated.timing(cardX, {
-            toValue: 360,
-            duration: CARD_SLIDE_OUT_MS,
-            easing: Easing.in(Easing.cubic),
-            useNativeDriver: false,
-          }),
-          Animated.timing(cardOpacity, {
-            toValue: 0,
-            duration: CARD_SLIDE_OUT_MS - 40,
-            useNativeDriver: false,
-          }),
-        ]).start(({ finished }) => {
-          if (finished) onCompletionFinished();
-        });
-      }, COMPLETION_HOLD_MS);
-
-      return () => clearTimeout(t);
-    } else {
-      Animated.parallel([
-        Animated.timing(pillY, {
-          toValue: -24,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-        Animated.timing(pillOpacity, {
-          toValue: 0,
-          duration: 160,
-          useNativeDriver: true,
-        }),
-        Animated.timing(glow, {
-          toValue: 0,
-          duration: 240,
-          useNativeDriver: false,
-        }),
-        Animated.spring(cardX, {
-          toValue: 0,
-          useNativeDriver: false,
-          friction: 8,
-          tension: 100,
-        }),
-        Animated.timing(cardOpacity, {
-          toValue: 1,
-          duration: 200,
-          useNativeDriver: false,
-        }),
-      ]).start();
+    if (!isCompleted || !order.completedAt || !onReopen) {
+      setUndoVisible(false);
+      return;
     }
-  }, [isCompleting, cardOpacity, cardX, glow, onCompletionFinished, pillOpacity, pillY]);
+    const completedTs = Date.parse(order.completedAt);
+    if (isNaN(completedTs)) return;
+    const elapsed = Date.now() - completedTs;
+    if (elapsed >= UNDO_WINDOW_MS) {
+      setUndoVisible(false);
+      return;
+    }
+    setUndoVisible(true);
+    const t = setTimeout(() => setUndoVisible(false), UNDO_WINDOW_MS - elapsed);
+    return () => clearTimeout(t);
+  }, [isCompleted, order.completedAt, onReopen]);
 
-  const borderColor = glow.interpolate({
+  // Completion celebration: calm in place, single accent pulse, then signal
+  // parent to flip completedAt (which moves the card to Completed list via
+  // LayoutAnimation cross-fade). No flying objects.
+  useEffect(() => {
+    if (!isCompleting) return;
+    Animated.timing(calmness, {
+      toValue: 1,
+      duration: 320,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+    Animated.sequence([
+      Animated.timing(accentPulse, {
+        toValue: 1,
+        duration: 280,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: false,
+      }),
+      Animated.timing(accentPulse, {
+        toValue: 0,
+        duration: 380,
+        easing: Easing.in(Easing.quad),
+        useNativeDriver: false,
+      }),
+    ]).start();
+
+    const t = setTimeout(() => onCompletionFinished(), COMPLETION_HOLD_MS);
+    return () => clearTimeout(t);
+  }, [isCompleting, accentPulse, calmness, onCompletionFinished]);
+
+  // When the card transitions to completed (post-celebration), keep the
+  // muted-surface look already set by `calmness`. When a completed card is
+  // reopened, calm back down.
+  useEffect(() => {
+    Animated.timing(calmness, {
+      toValue: isCompleted ? 1 : 0,
+      duration: 240,
+      useNativeDriver: false,
+    }).start();
+  }, [isCompleted, calmness]);
+
+  // Accent strip color: encodes most-advanced item state. Driven by the
+  // current items so a partial-ready ticket gets a green-tinted strip, etc.
+  const accentBase = useMemo(() => {
+    if (isCompleted) return QuinckleColors.textTertiary;
+    const someServed = items.some(i => i.isServed);
+    const allReady = items.every(i => i.isReady || i.isServed);
+    const someReady = items.some(i => i.isReady && !i.isServed);
+    if (allReady && !someServed) return QuinckleColors.success;
+    if (allReady && someServed) return QuinckleColors.success;
+    if (someReady) return 'rgba(34,197,94,0.55)';
+    return QuinckleColors.textTertiary;
+  }, [items, isCompleted]);
+
+  const accentColor = accentPulse.interpolate({
     inputRange: [0, 1],
-    outputRange: [QuinckleColors.border, QuinckleColors.successBorder],
+    outputRange: [accentBase, QuinckleColors.success],
   });
 
-  const remaining = order.items.filter((i) => !i.isServed).length;
+  const cardBackground = calmness.interpolate({
+    inputRange: [0, 1],
+    outputRange: [QuinckleColors.surface, QuinckleColors.surfaceMuted],
+  });
 
-  const cardInner = (
+  // Single status phrase
+  const remaining = items.filter(i => !i.isServed).length;
+  const readyButNotServed = items.filter(i => i.isReady && !i.isServed).length;
+  const totalCount = items.length;
+  let statusPhrase: string;
+  if (isCompleted) {
+    statusPhrase = `Completed${order.completedAt ? ` · ${formatClock(order.completedAt)}` : ''}`;
+  } else if (remaining === 0) {
+    statusPhrase = 'All served';
+  } else if (readyButNotServed > 0 && readyButNotServed < remaining) {
+    statusPhrase = `${readyButNotServed} of ${totalCount} ready to plate`;
+  } else if (readyButNotServed === remaining) {
+    statusPhrase = `All ready · ${remaining} pending pickup`;
+  } else {
+    statusPhrase = `Preparing · ${remaining} of ${totalCount} pending`;
+  }
+
+  const orderedAt = items[0]?.orderedAt;
+
+  return (
     <Animated.View
       style={[
         cardStyles.card,
-        isCompleted && cardStyles.cardCompleted,
         {
-          transform: [{ translateX: cardX }],
-          opacity: cardOpacity,
-          borderColor,
+          opacity,
+          backgroundColor: cardBackground,
         },
       ]}
     >
-      {isCompleting && (
-        <Animated.View
-          style={[
-            cardStyles.completePill,
-            { transform: [{ translateY: pillY }], opacity: pillOpacity },
-          ]}
-        >
-          <Ionicons name="checkmark-circle" size={14} color="#fff" />
-          <Text style={cardStyles.completePillText}>Order Complete</Text>
-        </Animated.View>
-      )}
+      <Animated.View style={[cardStyles.accentStrip, { backgroundColor: accentColor }]} />
 
-      <View style={cardStyles.header}>
-        <View style={cardStyles.tableBadge}>
-          <Text style={cardStyles.tableBadgeText}>{order.tableNo}</Text>
-        </View>
-        {isCompleted ? (
-          <View style={cardStyles.completedCorner}>
-            <Ionicons name="checkmark-circle" size={12} color={QuinckleColors.success} />
-            <Text style={cardStyles.completedCornerText}>
-              Completed · {order.completedAt}
+      <View style={cardStyles.body}>
+        <View style={cardStyles.header}>
+          <View style={cardStyles.headerLeft}>
+            <Text style={cardStyles.tableNo}>{order.tableNo}</Text>
+            <Text style={cardStyles.metaLine}>
+              {orderedAt ? `Ordered ${orderedAt}` : `${totalCount} item${totalCount === 1 ? '' : 's'}`}
+              {orderedAt ? ` · ${totalCount} item${totalCount === 1 ? '' : 's'}` : ''}
+            </Text>
+            <Text style={[
+              cardStyles.statusPhrase,
+              isCompleted && cardStyles.statusPhraseMuted,
+            ]}>
+              {statusPhrase}
             </Text>
           </View>
-        ) : (
-          <Text style={cardStyles.pendingText}>
-            {remaining === 0 ? 'All served' : `${remaining} of ${order.items.length} pending`}
-          </Text>
-        )}
-      </View>
 
-      <View style={cardStyles.itemList}>
-        {order.items.map((it) => (
-          <PickupItemRow
-            key={it.id}
-            item={it}
-            onToggle={() => onToggleItem(it.id)}
-            disabled={isCompleting}
-          />
-        ))}
+          {isCompleted && undoVisible && onReopen && (
+            <Pressable
+              onPress={() => {
+                Haptics.selectionAsync().catch(() => {});
+                onReopen();
+              }}
+              hitSlop={8}
+              style={cardStyles.undoBtn}
+            >
+              <Ionicons name="arrow-undo" size={13} color={QuinckleColors.textSecondary} />
+              <Text style={cardStyles.undoText}>Undo</Text>
+            </Pressable>
+          )}
+        </View>
+
+        <View style={cardStyles.itemList}>
+          {items.map((it) => (
+            <PickupItemRow
+              key={it.id}
+              item={it}
+              onToggle={() => onToggleItem(it.id)}
+              disabled={isCompleting}
+              isCompleted={isCompleted}
+            />
+          ))}
+        </View>
       </View>
     </Animated.View>
   );
+}
 
-  if (isCompleted && onReopen) {
-    return (
-      <Swipeable
-        renderRightActions={() => (
-          <View style={cardStyles.swipeAction}>
-            <Ionicons name="arrow-undo" size={18} color="#fff" />
-            <Text style={cardStyles.swipeActionText}>Reopen</Text>
-          </View>
-        )}
-        overshootRight={false}
-        onSwipeableOpen={onReopen}
-        containerStyle={cardStyles.swipeWrap}
-      >
-        {cardInner}
-      </Swipeable>
-    );
-  }
-
-  return cardInner;
+function formatClock(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 const cardStyles = StyleSheet.create({
-  swipeWrap: {
-    marginBottom: Spacing.md,
-    borderRadius: Radius.lg,
-    overflow: 'hidden',
-  },
   card: {
-    backgroundColor: QuinckleColors.surface,
+    flexDirection: 'row',
     borderRadius: Radius.lg,
-    padding: Spacing.lg,
     marginBottom: Spacing.md,
     borderWidth: 1,
+    borderColor: QuinckleColors.border,
     overflow: 'hidden',
   },
-  cardCompleted: {
-    backgroundColor: QuinckleColors.surfaceMuted,
-    opacity: 0.92,
+  accentStrip: {
+    width: 4,
   },
-  completePill: {
-    position: 'absolute',
-    top: Spacing.sm,
-    alignSelf: 'center',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 6,
-    borderRadius: Radius.pill,
-    backgroundColor: QuinckleColors.success,
-    shadowColor: QuinckleColors.success,
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 4,
-    zIndex: 10,
+  body: {
+    flex: 1,
+    padding: Spacing.lg,
   },
-  completePillText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0.2,
-  },
-
   header: {
     flexDirection: 'row',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
-    alignItems: 'center',
     marginBottom: Spacing.md,
-  },
-  tableBadge: {
-    backgroundColor: QuinckleColors.primarySoft,
-    borderWidth: 1,
-    borderColor: QuinckleColors.primarySoftBorder,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 5,
-    borderRadius: Radius.sm,
-  },
-  tableBadgeText: {
-    color: QuinckleColors.primary,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  pendingText: {
-    color: QuinckleColors.textTertiary,
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  completedCorner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: QuinckleColors.successSoft,
-    borderWidth: 1,
-    borderColor: QuinckleColors.successBorder,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 3,
-    borderRadius: Radius.pill,
-  },
-  completedCornerText: {
-    color: QuinckleColors.success,
-    fontSize: 11,
-    fontWeight: '600',
-  },
-
-  itemList: {
     gap: Spacing.sm,
   },
-
-  swipeAction: {
-    width: 92,
-    backgroundColor: QuinckleColors.primary,
-    justifyContent: 'center',
+  headerLeft: {
+    flex: 1,
+    gap: 2,
+  },
+  tableNo: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 18,
+    fontWeight: '700',
+    letterSpacing: -0.4,
+  },
+  metaLine: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  statusPhrase: {
+    color: QuinckleColors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  statusPhraseMuted: {
+    color: QuinckleColors.textTertiary,
+  },
+  undoBtn: {
+    flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: Radius.sm,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: 1,
+    borderColor: QuinckleColors.borderSubtle,
   },
-  swipeActionText: {
-    color: '#fff',
+  undoText: {
+    color: QuinckleColors.textSecondary,
     fontSize: 12,
-    fontWeight: '700',
+    fontWeight: '600',
+  },
+  itemList: {
+    gap: 2,
   },
 });
