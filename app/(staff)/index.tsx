@@ -797,6 +797,22 @@ export default function StaffDashboard() {
         </View>
 
         <View style={styles.headerActions}>
+          {/* Manual refresh — Ably push usually keeps things live, but
+              the partner asked for a fallback so staff can force a pull
+              without restarting the app. */}
+          <TouchableOpacity
+            style={styles.refreshBtn}
+            onPress={() => { void loadTables(); }}
+            activeOpacity={0.7}
+            disabled={isLoadingTables}
+          >
+            <Ionicons
+              name="refresh"
+              size={16}
+              color={isLoadingTables ? QuinckleColors.textTertiary : QuinckleColors.textPrimary}
+            />
+          </TouchableOpacity>
+
           {/* Cash-collection icon: tap to see pending requests + today's history.
                 Red dot appears when there's at least one unresolved request. */}
           <TouchableOpacity
@@ -895,6 +911,8 @@ export default function StaffDashboard() {
               numColumns={2}
               columnWrapperStyle={styles.columnWrapper}
               contentContainerStyle={styles.listContent}
+              refreshing={isLoadingTables}
+              onRefresh={() => { void loadTables(); }}
               renderItem={({ item }) => {
                 const meta = STATUS_META[item.status] || STATUS_META.available;
                 return (
@@ -1189,6 +1207,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
+  },
+  refreshBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   cashIconBtn: {
     width: 42,
