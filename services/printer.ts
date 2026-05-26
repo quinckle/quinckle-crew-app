@@ -47,7 +47,6 @@ interface QueueItem {
 
 let _config: PrinterConfig | null = null;
 let _status: PrinterStatus = 'unpaired';
-let _isConnecting = false;
 
 // ── Init (call on app launch) ─────────────────────────────────────────────────
 
@@ -56,8 +55,10 @@ export async function initPrinter(): Promise<void> {
     const raw = await AsyncStorage.getItem(KEY_CONFIG);
     if (raw) {
       _config = JSON.parse(raw) as PrinterConfig;
-      _status = 'disconnected';
-      await reconnect();
+      // react-native-thermal-printer has no persistent connection —
+      // it connects per-job via printBluetooth(). Mark as 'connected'
+      // optimistically; actual errors will surface on first print attempt.
+      _status = 'connected';
     }
   } catch {
     _status = 'error';
@@ -88,7 +89,8 @@ export async function pair(device: BluetoothDevice, paperWidth: 58 | 80 = 58): P
     pairedAt: new Date().toISOString(),
   };
   await AsyncStorage.setItem(KEY_CONFIG, JSON.stringify(_config));
-  await reconnect();
+  // No BT connection step — react-native-thermal-printer connects per print job.
+  _status = 'connected';
 }
 
 // ── unpair ────────────────────────────────────────────────────────────────────
@@ -109,34 +111,19 @@ export function getConfig(): PrinterConfig | null {
   return _config;
 }
 
-// ── reconnect ────────────────────────────────────────────────────────────────
-
-async function reconnect(): Promise<boolean> {
-  if (!_config || _isConnecting) return false;
-  _isConnecting = true;
-  try {
-    await (ThermalPrinter as any).connectBluetooth(_config.address);
-    _status = 'connected';
-    // Flush pending queue after reconnect
-    void flushQueue();
-    return true;
-  } catch {
-    _status = 'disconnected';
-    return false;
-  } finally {
-    _isConnecting = false;
-  }
-}
-
 // ── printRaw ─────────────────────────────────────────────────────────────────
+// react-native-thermal-printer connects, prints, then disconnects per call.
+// No persistent connection or reconnect step is needed or supported.
 
 async function printRaw(text: string): Promise<void> {
   if (!_config) throw new Error('PRINTER_NOT_PAIRED');
-  if (_status !== 'connected') {
-    const ok = await reconnect();
-    if (!ok) throw new Error('PRINTER_DISCONNECTED');
-  }
-  await (ThermalPrinter as any).printText({ payload: text, printerWidthMM: _config.paperWidth });
+  await ThermalPrinter.printBluetooth({
+    macAddress: _config.address,
+    payload: text,
+    printerWidthMM: _config.paperWidth,
+    printerNbrCharactersPerLine: _config.paperWidth === 58 ? 32 : 48,
+    autoCut: true,
+  });
 }
 
 // ── printKot ─────────────────────────────────────────────────────────────────
@@ -231,7 +218,7 @@ async function flushQueue(): Promise<void> {
 export async function retryUnprintedOnLaunch(
   fetchUnprinted: () => Promise<KotOrder[]>,
 ): Promise<void> {
-  if (!_config || _status !== 'connected') return;
+  if (!_config) return;
   try {
     const orders = await fetchUnprinted();
     for (const order of orders) {
