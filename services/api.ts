@@ -451,6 +451,7 @@ export const printerApi = {
 
   /**
    * Set or clear the printer pairing on behalf of the current crew member.
+   * Uses the crew-auth endpoint (not the partner-auth one).
    * Pass pairedTo: null to unpair.
    */
   setPairing: (data: {
@@ -461,7 +462,7 @@ export const printerApi = {
   }) =>
     request<{ success: true; data: any }>(
       'PATCH',
-      '/api/v1/partner/profile/printer',
+      '/api/crew/print/pair',
       data,
       true,
     ),
