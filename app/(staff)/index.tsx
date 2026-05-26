@@ -639,6 +639,10 @@ export default function StaffDashboard() {
     const off6b = subscribeChannel(`waiter:${restaurantId}`, 'table_online', () => {
       void loadTables();
     });
+    // Session swap from another device — both source + target need re-render.
+    const off6c = subscribeChannel(`waiter:${restaurantId}`, 'session_moved', () => {
+      void loadTables();
+    });
 
     const off7 = subscribeChannel(`waiter:${restaurantId}`, 'item_bumped', () => {
       void loadPickupOrders();
@@ -675,7 +679,7 @@ export default function StaffDashboard() {
       setPendingCashCount(c => Math.max(0, c - 1));
     });
 
-    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off7(); off7b(); off8(); off9(); };
+    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off7(); off7b(); off8(); off9(); };
   }, [staffInfo?.restaurantId]);
 
   // C1: Track Ably connection health — show a warning when the waiter channel drops.

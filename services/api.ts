@@ -162,6 +162,18 @@ export const crewTables = {
   list: () => request<{ tables: CrewTable[] }>('GET', '/api/crew/tables', undefined, true),
   updateStatus: (tableId: string, status: 'available' | 'reserved') =>
     request<unknown>('PATCH', `/api/crew/tables/${tableId}/status`, { status }, true),
+  /**
+   * Move the active session from one table to another. Mirrors the partner
+   * endpoint — backend re-stamps order.tableNumber and fires session_moved
+   * realtime on partner/waiter/dine channels.
+   */
+  transferSession: (fromTableId: string, targetTableId: string) =>
+    request<{ success: true; data: { sessionId: string; fromTableNumber: number; toTableNumber: number; ordersMoved: number } }>(
+      'POST',
+      `/api/crew/tables/${fromTableId}/transfer-session`,
+      { target_table_id: targetTableId },
+      true,
+    ),
 };
 
 // ── Crew Sessions (STEWARD/ADMIN) ─────────────────────────────────────────────

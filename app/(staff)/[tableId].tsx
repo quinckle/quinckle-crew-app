@@ -5,7 +5,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
-import { crewSessions, crewOrders, crewPayments, restaurantApi } from '../../services/api';
+import { crewSessions, crewTables, crewOrders, crewPayments, restaurantApi } from '../../services/api';
+import type { CrewTable } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { subscribeChannel } from '../../services/realtime';
 import type { BillOrderItem, BillOrder, MenuItem } from '../../services/api';
@@ -76,6 +77,44 @@ export default function TableDetail() {
   const [paymentLinkUrl, setPaymentLinkUrl] = useState('');
   const [paymentLinkAmount, setPaymentLinkAmount] = useState(0);
   const [isGeneratingLink, setIsGeneratingLink] = useState(false);
+
+  // Action menu + swap-table state for the 3-dot header
+  const [actionMenuOpen, setActionMenuOpen] = useState(false);
+  const [swapOpen, setSwapOpen] = useState(false);
+  const [swapTargets, setSwapTargets] = useState<CrewTable[]>([]);
+  const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
+  const [swapSubmitting, setSwapSubmitting] = useState(false);
+
+  const openSwapModal = async () => {
+    setActionMenuOpen(false);
+    setSwapTargetId(null);
+    setSwapOpen(true);
+    try {
+      const { tables } = await crewTables.list();
+      setSwapTargets(tables.filter(t => t.status === 'available' && t.table_id !== tableId));
+    } catch {
+      setSwapTargets([]);
+    }
+  };
+
+  const confirmSwap = async () => {
+    if (!swapTargetId) return;
+    setSwapSubmitting(true);
+    try {
+      const res = await crewTables.transferSession(tableId, swapTargetId);
+      setSwapOpen(false);
+      router.replace('/(staff)');
+      showDialog(
+        'Moved',
+        `Guest moved to T${String(res.data.toTableNumber).padStart(2, '0')} — ${res.data.ordersMoved} order${res.data.ordersMoved === 1 ? '' : 's'} relocated.`,
+        [{ label: 'OK', onPress: () => {} }]
+      );
+    } catch (e: any) {
+      showDialog('Could not move', e?.message ?? 'Please try again.', [{ label: 'OK', onPress: () => {} }]);
+    } finally {
+      setSwapSubmitting(false);
+    }
+  };
 
   const [dialog, setDialog] = useState<{
     visible: boolean; title: string; message: string;
@@ -314,9 +353,32 @@ export default function TableDetail() {
             {since ? <Text style={styles.sinceText}>since {since}</Text> : null}
           </View>
         </View>
-        <TouchableOpacity onPress={handleEndSession} style={styles.iconBtn} activeOpacity={0.7}>
-          <Ionicons name="ellipsis-horizontal" size={18} color={QuinckleColors.textPrimary} />
-        </TouchableOpacity>
+        <View style={{ position: 'relative' }}>
+          <TouchableOpacity onPress={() => setActionMenuOpen(o => !o)} style={styles.iconBtn} activeOpacity={0.7}>
+            <Ionicons name="ellipsis-horizontal" size={18} color={QuinckleColors.textPrimary} />
+          </TouchableOpacity>
+          {actionMenuOpen && (
+            <View style={styles.actionMenu}>
+              <TouchableOpacity
+                onPress={() => { void openSwapModal(); }}
+                style={styles.actionMenuItem}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="swap-horizontal" size={14} color={QuinckleColors.textPrimary} />
+                <Text style={styles.actionMenuText}>Swap table</Text>
+              </TouchableOpacity>
+              <View style={styles.actionMenuDivider} />
+              <TouchableOpacity
+                onPress={() => { setActionMenuOpen(false); handleEndSession(); }}
+                style={styles.actionMenuItem}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="log-out-outline" size={14} color={QuinckleColors.danger} />
+                <Text style={[styles.actionMenuText, { color: QuinckleColors.danger }]}>End session</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
       </View>
 
       {!isPaid && (
@@ -475,6 +537,55 @@ export default function TableDetail() {
       </View>
 
       <ThemedDialog visible={dialog.visible} title={dialog.title} message={dialog.message} actions={dialog.actions} onClose={closeDialog} />
+
+      {/* Swap-table modal */}
+      <Modal visible={swapOpen} transparent animationType="fade" onRequestClose={() => !swapSubmitting && setSwapOpen(false)}>
+        <View style={styles.swapBackdrop}>
+          <View style={styles.swapCard}>
+            <Text style={styles.swapEyebrow}>Move guest</Text>
+            <Text style={styles.swapTitle}>Swap T{tableNum} to another table</Text>
+            <Text style={styles.swapSubtitle}>Pick an empty table. The cart, orders, and bill move with them.</Text>
+
+            {swapTargets.length === 0 ? (
+              <View style={styles.swapEmpty}>
+                <Text style={styles.swapEmptyText}>No available tables right now.</Text>
+              </View>
+            ) : (
+              <ScrollView style={{ maxHeight: 280 }} contentContainerStyle={styles.swapGrid}>
+                {swapTargets.map(t => {
+                  const active = swapTargetId === t.table_id;
+                  return (
+                    <TouchableOpacity
+                      key={t.table_id}
+                      onPress={() => setSwapTargetId(t.table_id)}
+                      disabled={swapSubmitting}
+                      style={[styles.swapTile, active && styles.swapTileActive]}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[styles.swapTileNum, active && styles.swapTileNumActive]}>T{String(t.table_number).padStart(2, '0')}</Text>
+                      <Text style={styles.swapTileSeats}>{t.capacity} seats</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
+
+            <View style={styles.swapFooter}>
+              <TouchableOpacity onPress={() => setSwapOpen(false)} disabled={swapSubmitting} style={styles.swapCancel} activeOpacity={0.7}>
+                <Text style={styles.swapCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={confirmSwap}
+                disabled={!swapTargetId || swapSubmitting || swapTargets.length === 0}
+                style={[styles.swapConfirm, (!swapTargetId || swapSubmitting) && { opacity: 0.4 }]}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.swapConfirmText}>{swapSubmitting ? 'Moving…' : 'Move guest'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Online Payment QR Modal */}
       <Modal
@@ -665,6 +776,143 @@ export default function TableDetail() {
 }
 
 const styles = StyleSheet.create({
+  actionMenu: {
+    position: 'absolute',
+    top: 44,
+    right: 0,
+    minWidth: 180,
+    backgroundColor: QuinckleColors.surface,
+    borderColor: QuinckleColors.border,
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    paddingVertical: 4,
+    zIndex: 50,
+    shadowColor: '#000',
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 6,
+  },
+  actionMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 10,
+  },
+  actionMenuText: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  actionMenuDivider: {
+    height: 1,
+    backgroundColor: QuinckleColors.border,
+    marginVertical: 2,
+  },
+  swapBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: Spacing.lg,
+  },
+  swapCard: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: QuinckleColors.surface,
+    borderRadius: Radius.xl,
+    padding: Spacing.lg,
+    borderColor: QuinckleColors.border,
+    borderWidth: 1,
+  },
+  swapEyebrow: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+  },
+  swapTitle: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 17,
+    fontWeight: '700',
+    marginTop: 4,
+    letterSpacing: -0.3,
+  },
+  swapSubtitle: {
+    color: QuinckleColors.textSecondary,
+    fontSize: 12.5,
+    marginTop: 4,
+    marginBottom: Spacing.md,
+  },
+  swapEmpty: {
+    paddingVertical: Spacing.lg,
+    alignItems: 'center',
+  },
+  swapEmptyText: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 13,
+  },
+  swapGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
+  },
+  swapTile: {
+    width: '23%',
+    aspectRatio: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surfaceMuted,
+  },
+  swapTileActive: {
+    borderColor: QuinckleColors.success,
+    backgroundColor: 'rgba(34, 197, 94, 0.12)',
+  },
+  swapTileNum: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  swapTileNumActive: {
+    color: QuinckleColors.success,
+  },
+  swapTileSeats: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 10,
+    marginTop: 2,
+  },
+  swapFooter: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginTop: Spacing.lg,
+  },
+  swapCancel: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 10,
+  },
+  swapCancelText: {
+    color: QuinckleColors.textSecondary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  swapConfirm: {
+    backgroundColor: QuinckleColors.success,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: 10,
+  },
+  swapConfirmText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
+  },
   container: { flex: 1, backgroundColor: QuinckleColors.background, paddingHorizontal: Spacing.lg },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.xl },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
