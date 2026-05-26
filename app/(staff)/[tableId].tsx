@@ -91,17 +91,21 @@ export default function TableDetail() {
     setSwapOpen(true);
     try {
       const { tables } = await crewTables.list();
-      setSwapTargets(tables.filter(t => t.status === 'available' && t.table_id !== tableId));
+      // tableDbId, not the URL `tableId` (which is the display number)
+      setSwapTargets(tables.filter(t => t.status === 'available' && t.table_id !== tableDbId));
     } catch {
       setSwapTargets([]);
     }
   };
 
   const confirmSwap = async () => {
-    if (!swapTargetId) return;
+    if (!swapTargetId || !tableDbId) return;
     setSwapSubmitting(true);
     try {
-      const res = await crewTables.transferSession(tableId, swapTargetId);
+      // Backend expects the DB id, not the table number. The URL's
+      // `tableId` is the display number (e.g. "5") — `tableDbId` is the
+      // actual Table.id cuid that the swap endpoint needs.
+      const res = await crewTables.transferSession(tableDbId, swapTargetId);
       setSwapOpen(false);
       router.replace('/(staff)');
       showDialog(
