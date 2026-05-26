@@ -150,48 +150,54 @@ export default function CookDashboard() {
       }
       void loadOrders();
 
-      // ── Auto-print: only fires when this device is the paired print sink ──
-      const myStaffId = staffInfo?.id;
-      if (myStaffId && data?.printerPairedTo === myStaffId && getPrinterStatus() === 'connected') {
-        // Build KotOrder from the Ably payload (backend sends full order shape on new_order)
-        if (data?.order) {
-          const isAddOn = !!data.order.isAddOnPrint;
+      // ── Auto-print: fires on ANY device that has a printer locally paired ──
+      // The backend NewOrderEvent doesn't carry printerPairedTo, so we rely on
+      // local printer state. A physical BT printer can only connect to one
+      // device, so only one phone will actually succeed; duplicate acks are
+      // idempotent on the backend (kotPrintedAt only stamps on first success).
+      if (getPrinterStatus() === 'connected') {
+        // items come directly from the NewOrderEvent shape
+        const items = (data?.items ?? []).map((i: any) => ({
+          name: i.menuItemName ?? i.name ?? '',
+          quantity: i.quantity,
+          notes: i.notes,
+          modifiersSummary: i.modifiersSummary ?? undefined,
+          category: i.category ?? undefined,
+        }));
+        if (data?.orderId && items.length > 0) {
           void printKot({
-            id: data.order.id,
-            tableNumber: data.order.tableNumber ?? data.order.session?.table?.tableNumber ?? '?',
+            id: data.orderId,
+            orderNumber: data.orderNumber != null ? String(data.orderNumber) : undefined,
+            tableNumber: String(data.tableNumber ?? '?'),
             restaurantName: staffInfo?.restaurantName ?? '',
-            createdAt: data.order.createdAt,
-            items: (data.order.items ?? []).map((i: any) => ({
-              name: i.name,
-              quantity: i.quantity,
-              notes: i.notes,
-            })),
-            isAddOn,
-          }, isAddOn);
+            createdAt: data.createdAt ?? new Date().toISOString(),
+            items,
+            isAddOn: false,
+          }, false);
         }
       }
     });
     const unsubBumped    = subscribeChannel(`kitchen:${restaurantId}`, 'item_bumped',     () => void loadOrders());
     const unsubCancelled = subscribeChannel(`kitchen:${restaurantId}`, 'order_cancelled', () => void loadOrders());
 
-    // Reprint request — only the paired device should act
+    // Reprint request — fires on any device with printer connected
     const unsubReprint = subscribeChannel(`partner:${restaurantId}`, 'reprint_request', (data: any) => {
-      const myStaffId = staffInfo?.id;
-      if (myStaffId && data?.printerPairedTo === myStaffId && getPrinterStatus() === 'connected') {
-        if (data?.order) {
-          void printKot({
-            id: data.order.id,
-            tableNumber: data.order.tableNumber ?? '?',
-            restaurantName: staffInfo?.restaurantName ?? '',
-            createdAt: data.order.createdAt,
-            items: (data.order.items ?? []).map((i: any) => ({
-              name: i.name,
-              quantity: i.quantity,
-              notes: i.notes,
-            })),
-            isAddOn: false,
-          }, false);
-        }
+      if (getPrinterStatus() === 'connected' && data?.order) {
+        const items = (data.order.items ?? []).map((i: any) => ({
+          name: i.name ?? i.menuItemName ?? '',
+          quantity: i.quantity,
+          notes: i.notes,
+          modifiersSummary: i.modifiersSummary ?? undefined,
+          category: i.category ?? undefined,
+        }));
+        void printKot({
+          id: data.order.id,
+          tableNumber: String(data.order.tableNumber ?? '?'),
+          restaurantName: staffInfo?.restaurantName ?? '',
+          createdAt: data.order.createdAt ?? new Date().toISOString(),
+          items,
+          isAddOn: false,
+        }, false);
       }
     });
 

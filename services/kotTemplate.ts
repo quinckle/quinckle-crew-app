@@ -11,13 +11,16 @@ export interface KotItem {
   name: string;
   quantity: number;
   notes?: string | null;
+  modifiersSummary?: string | null;
+  category?: string;
   modifiers?: Array<{ name: string; priceAdjustment?: string }>;
 }
 
 export interface KotOrder {
   id: string;
   tableNumber: number | string;
-  orderNumber?: string;
+  /** Sequential day-counter (e.g. 1, 2, 42). Takes priority over id-derived suffix. */
+  orderNumber?: string | number;
   restaurantName: string;
   createdAt: string; // ISO string
   items: KotItem[];
@@ -80,26 +83,53 @@ export function buildKotText(order: KotOrder, paperWidth: 58 | 80 = 58): string 
   // ── Table + Order # ───────────────────────────────────────────────────────
   lines.push(`[C]<b><font size="big">*** TABLE ${String(order.tableNumber).padStart(2, '0')} ***</font></b>`);
 
-  const ordNum = order.orderNumber ?? order.id.slice(-6).toUpperCase();
+  // Use sequential day-counter when available; fall back to last-6-chars of id
+  const ordNum = order.orderNumber != null
+    ? `#${order.orderNumber}`
+    : `#${order.id.slice(-6).toUpperCase()}`;
   const timeStr = formatTime(order.createdAt);
   const ago = minutesAgo(order.createdAt);
-  lines.push(`[C]Order #${ordNum}`);
-  lines.push(`[C]${timeStr}  ·  in ${ago} min`);
+  lines.push(`[C]Order ${ordNum}`);
+  lines.push(`[C]${timeStr}  ·  ${ago} min ago`);
 
   lines.push(`[L]${d}`);
 
-  // ── Items ─────────────────────────────────────────────────────────────────
+  // ── Items — grouped by category ───────────────────────────────────────────
+  // Build category buckets preserving insertion order
+  const categoryOrder: string[] = [];
+  const categoryMap = new Map<string, KotItem[]>();
   for (const item of order.items) {
-    lines.push(`[L]<b> ${item.quantity} x  ${item.name}</b>`);
-    if (item.notes) {
-      lines.push(`[L]       — ${item.notes}`);
+    const cat = item.category?.trim() || '';
+    if (!categoryMap.has(cat)) {
+      categoryOrder.push(cat);
+      categoryMap.set(cat, []);
     }
-    if (item.modifiers?.length) {
-      for (const mod of item.modifiers) {
-        lines.push(`[L]       + ${mod.name}`);
+    categoryMap.get(cat)!.push(item);
+  }
+
+  const hasCategories = categoryOrder.some(c => c !== '');
+
+  for (const cat of categoryOrder) {
+    const catItems = categoryMap.get(cat) ?? [];
+    if (hasCategories && cat) {
+      // Category header — small caps label
+      lines.push(`[L]<b>${cat.toUpperCase()}</b>`);
+    }
+    for (const item of catItems) {
+      lines.push(`[L]<b> ${item.quantity} x  ${item.name}</b>`);
+      // Variant / modifier summary (e.g. "Medium, Extra Shot")
+      if (item.modifiersSummary) {
+        lines.push(`[L]       * ${item.modifiersSummary}`);
+      } else if (item.modifiers?.length) {
+        for (const mod of item.modifiers) {
+          lines.push(`[L]       + ${mod.name}`);
+        }
       }
+      if (item.notes) {
+        lines.push(`[L]       — ${item.notes}`);
+      }
+      lines.push('[L] ');
     }
-    lines.push('[L] ');
   }
 
   lines.push(`[L]${d}`);
