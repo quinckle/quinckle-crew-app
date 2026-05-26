@@ -226,8 +226,10 @@ export interface PendingCashRequest {
   customerName: string | null;
   customerPhone: string;
   requestedAt: string;
-  /** "CASH" or "UPI_DIRECT" — drives the chip + confirmation endpoint to call. */
-  method?: 'CASH' | 'UPI_DIRECT';
+  /** Drives the chip + confirmation endpoint to call:
+   *    STAFF_COLLECT → new v3 Collection Sheet (one-tap + split)
+   *    CASH / UPI_DIRECT → legacy per-method confirm (back-compat for in-flight orders) */
+  method?: 'CASH' | 'UPI_DIRECT' | 'STAFF_COLLECT';
 }
 
 export interface CollectedCashRecord {
@@ -263,6 +265,33 @@ export const crewPayments = {
       staff_id:        staffId,
       amount_collected: amountCollected,
       upi_reference:   upiReference ?? null,
+    }, true),
+
+  // v3: Unified Collection endpoint. Supports 1-method (all cash or all UPI)
+  // or 2-method splits like [{method:'CASH', amount:200},{method:'UPI_DIRECT', amount:320}].
+  // Works on PENDING_STAFF_COLLECTION (v3) AND legacy PENDING_CASH/UPI_DIRECT/UNPAID
+  // orders — staff can use this single sheet for all of them.
+  collectPayment: (
+    orderId: string,
+    staffId: string,
+    splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[],
+    upiReference?: string | null,
+  ) =>
+    request<{
+      success: true;
+      order_id: string;
+      session_id: string;
+      status: 'paid';
+      payment_method: 'cash' | 'upi_direct' | 'mixed';
+      total: number;
+      splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number; payment_id: string }[];
+      collected_by: string;
+      paid_at: string;
+    }>('POST', '/api/crew/payments/collect', {
+      order_id:      orderId,
+      staff_id:      staffId,
+      splits,
+      upi_reference: upiReference ?? null,
     }, true),
 
   // Powers the cash-collection screen: pending requests + today's history.
@@ -345,10 +374,22 @@ export const restaurantApi = {
   getMenu: (restaurantId: string) =>
     request<{ success: true; data: MenuCategory[] }>('GET', `/api/v1/dine/menu/${restaurantId}`),
 
+  // Branding includes everything the Collection Sheet needs to render the
+  // partner's UPI QR + display name when the staff picks "UPI" for a split.
   getBranding: (restaurantId: string) =>
-    request<{ success: true; data: { name: string; logoUrl: string | null; dineTheme: string } }>(
-      'GET', `/api/v1/dine/restaurant/${restaurantId}`
-    ),
+    request<{
+      success: true;
+      data: {
+        name: string;
+        logoUrl: string | null;
+        dineTheme: string;
+        upiId?: string | null;
+        upiDisplayName?: string | null;
+        acceptCash?: boolean;
+        acceptUpiDirect?: boolean;
+        acceptStaffCollect?: boolean;
+      };
+    }>('GET', `/api/v1/dine/restaurant/${restaurantId}`),
 
   getCombos: (restaurantId: string) =>
     request<{ success: true; data: Combo[] }>('GET', `/api/v1/dine/combos/${restaurantId}`),

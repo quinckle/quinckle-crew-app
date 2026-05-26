@@ -27,10 +27,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useAuth } from '../../context/AuthContext';
-import { crewPayments, type PendingCashRequest, type CollectedCashRecord } from '../../services/api';
+import { crewPayments, restaurantApi, type PendingCashRequest, type CollectedCashRecord } from '../../services/api';
 import { subscribeChannel } from '../../services/realtime';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { CashCollectionSkeleton } from '../../components/ui/CashCollectionSkeleton';
+import { CollectionSheet } from '../../components/ui/CollectionSheet';
 
 type Row =
   | { kind: 'sectionHeader'; title: string; subtitle: string }
@@ -66,6 +67,10 @@ export default function CashCollectionScreen() {
   // waiter can't double-tap and double-confirm.
   const [collectingIds, setCollectingIds] = useState<Set<string>>(new Set());
 
+  // v3 Collection Sheet state.
+  const [sheetBill, setSheetBill] = useState<PendingCashRequest | null>(null);
+  const [partnerUpi, setPartnerUpi] = useState<{ vpa: string | null; merchantName: string | null }>({ vpa: null, merchantName: null });
+
   const scrollY = useRef(new Animated.Value(0)).current;
 
   const renderHeader = () => (
@@ -84,7 +89,7 @@ export default function CashCollectionScreen() {
 
       {/* Floating Header Content */}
       <View style={styles.heroTextSection}>
-        <Text style={styles.heroTitle}>Cash Collection</Text>
+        <Text style={styles.heroTitle}>Payment Collection</Text>
         {pending.length > 0 ? (
           <View style={styles.statsRow}>
             <View style={styles.statPill}>
@@ -120,6 +125,24 @@ export default function CashCollectionScreen() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Fetch the partner's branding once on mount — needed for the Collection
+  // Sheet's UPI QR (vpa + display name).
+  useEffect(() => {
+    const restaurantId = staffInfo?.restaurantId;
+    if (!restaurantId) return;
+    (async () => {
+      try {
+        const r = await restaurantApi.getBranding(restaurantId);
+        setPartnerUpi({
+          vpa:          r?.data?.upiId ?? null,
+          merchantName: r?.data?.upiDisplayName ?? r?.data?.name ?? null,
+        });
+      } catch (err) {
+        console.warn('[cash-collection] failed to fetch branding', err);
+      }
+    })();
+  }, [staffInfo?.restaurantId]);
+
   // Live updates from Ably so the list stays fresh across crew devices
   useEffect(() => {
     const restaurantId = staffInfo?.restaurantId;
@@ -144,28 +167,34 @@ export default function CashCollectionScreen() {
       Alert.alert('Not signed in', 'Please reopen the app and sign in again.');
       return;
     }
-    // Optimistically remove from pending so the UI updates immediately
-    setCollectingIds(prev => new Set(prev).add(req.orderId));
+
+    // v3: PENDING_STAFF_COLLECTION orders open the Collection Sheet so the
+    // staff member can pick Cash / UPI / split right at the table. Legacy
+    // PENDING_CASH / PENDING_UPI_DIRECT rows can ALSO use the sheet (the
+    // backend /collect endpoint accepts both), so this single path serves
+    // every pending payment in the system.
+    setSheetBill(req);
+  };
+
+  // v3 Collection Sheet submit — called from the sheet with splits[].
+  // Returns true on success so the sheet can close + reset its state.
+  const handleSheetSubmit = async (splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[]): Promise<boolean> => {
+    const staffId = staffInfo?.id;
+    if (!staffId || !sheetBill) return false;
+    setCollectingIds(prev => new Set(prev).add(sheetBill.orderId));
     try {
-      // Route to the correct confirmation endpoint based on the payment method.
-      // Defaults to cash for legacy rows that don't carry a method field.
-      if (req.method === 'UPI_DIRECT') {
-        await crewPayments.upiDirectConfirm(req.orderId, staffId, req.amount);
-      } else {
-        await crewPayments.cashConfirm(req.orderId, staffId, req.amount);
-      }
-      setPending(prev => prev.filter(p => p.orderId !== req.orderId));
-      // Refresh to pull the newly-collected row into the history section
+      await crewPayments.collectPayment(sheetBill.orderId, staffId, splits);
+      setPending(prev => prev.filter(p => p.orderId !== sheetBill.orderId));
+      setSheetBill(null);
       void load();
+      return true;
     } catch (err: any) {
-      Alert.alert(
-        req.method === 'UPI_DIRECT' ? 'Could not confirm UPI payment' : 'Could not record collection',
-        err?.message ?? 'Please try again.',
-      );
+      Alert.alert('Could not record payment', err?.message ?? 'Please try again.');
+      return false;
     } finally {
       setCollectingIds(prev => {
         const next = new Set(prev);
-        next.delete(req.orderId);
+        if (sheetBill) next.delete(sheetBill.orderId);
         return next;
       });
     }
@@ -224,7 +253,7 @@ export default function CashCollectionScreen() {
               }),
             }}
           >
-            <Text style={styles.stickyHeaderTitleText}>Cash Collection</Text>
+            <Text style={styles.stickyHeaderTitleText}>Payment Collection</Text>
           </Animated.View>
 
           {/* Refresh button (right) */}
@@ -271,7 +300,10 @@ export default function CashCollectionScreen() {
             if (item.kind === 'pending') {
               const p = item.data;
               const busy = collectingIds.has(p.orderId);
-              const isUpi = p.method === 'UPI_DIRECT';
+              // Method chip — defaults to "Payment" for the new v3 STAFF_COLLECT flow.
+              // Legacy in-flight orders still show "Cash" or "UPI Direct" chips.
+              const isUpi   = p.method === 'UPI_DIRECT';
+              const isStaff = p.method === 'STAFF_COLLECT' || !p.method;
               return (
                 <View style={styles.pendingCard}>
                   <View style={styles.cardTopRow}>
@@ -279,20 +311,22 @@ export default function CashCollectionScreen() {
                       <Ionicons name="restaurant-outline" size={12} color={QuinckleColors.primary} />
                       <Text style={styles.tablePillText}>Table {p.tableNumber || '—'}</Text>
                     </View>
-                    {/* Method chip — Cash (orange) vs UPI Direct (blue). Tells the waiter
-                        at a glance whether they're collecting physical cash or verifying
-                        a UPI payment on the soundbox. */}
                     <View style={[
                       styles.tablePill,
-                      isUpi && { backgroundColor: 'rgba(59,130,246,0.12)', borderColor: 'rgba(59,130,246,0.3)' },
+                      isUpi   && { backgroundColor: 'rgba(59,130,246,0.12)', borderColor: 'rgba(59,130,246,0.3)' },
+                      isStaff && { backgroundColor: 'rgba(46,125,50,0.12)', borderColor: 'rgba(46,125,50,0.3)' },
                     ]}>
                       <Ionicons
-                        name={isUpi ? 'phone-portrait-outline' : 'cash-outline'}
+                        name={isUpi ? 'phone-portrait-outline' : isStaff ? 'wallet-outline' : 'cash-outline'}
                         size={11}
-                        color={isUpi ? '#60a5fa' : QuinckleColors.primary}
+                        color={isUpi ? '#60a5fa' : isStaff ? '#86efac' : QuinckleColors.primary}
                       />
-                      <Text style={[styles.tablePillText, isUpi && { color: '#93c5fd' }]}>
-                        {isUpi ? 'UPI Direct' : 'Cash'}
+                      <Text style={[
+                        styles.tablePillText,
+                        isUpi   && { color: '#93c5fd' },
+                        isStaff && { color: '#bbf7d0' },
+                      ]}>
+                        {isStaff ? 'Payment' : isUpi ? 'UPI Direct' : 'Cash'}
                       </Text>
                     </View>
                     <Text style={styles.timeAgo}>{timeAgo(p.requestedAt)}</Text>
@@ -317,10 +351,8 @@ export default function CashCollectionScreen() {
                         <ActivityIndicator color="#fff" size="small" />
                       ) : (
                         <>
-                          <Ionicons name={isUpi ? 'shield-checkmark' : 'checkmark-circle'} size={16} color="#fff" />
-                          <Text style={styles.collectBtnText}>
-                            {isUpi ? `Confirm ₹${p.amount}` : `Collect ₹${p.amount}`}
-                          </Text>
+                          <Ionicons name="checkmark-circle" size={16} color="#fff" />
+                          <Text style={styles.collectBtnText}>Collect Payment</Text>
                         </>
                       )}
                     </TouchableOpacity>
@@ -367,6 +399,21 @@ export default function CashCollectionScreen() {
           }
         />
       )}
+
+      {/* v3 Collection Sheet — opens when staff taps "Collect Payment" on any pending row. */}
+      <CollectionSheet
+        visible={!!sheetBill}
+        onClose={() => setSheetBill(null)}
+        bill={sheetBill ? {
+          orderId:       sheetBill.orderId,
+          tableNumber:   sheetBill.tableNumber,
+          customerName:  sheetBill.customerName,
+          customerPhone: sheetBill.customerPhone,
+          amount:        sheetBill.amount,
+        } : null}
+        partner={partnerUpi}
+        onConfirm={handleSheetSubmit}
+      />
     </View>
   );
 }
