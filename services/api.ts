@@ -398,3 +398,71 @@ export const restaurantApi = {
   getHighlighted: (restaurantId: string) =>
     request<{ success: true; data: HighlightedSection | null }>('GET', `/api/v1/dine/highlighted/${restaurantId}`),
 };
+
+// ── Print Status types ────────────────────────────────────────────────────────
+
+export type KitchenMode = 'DIGITAL_ONLY' | 'PAPER_ONLY' | 'HYBRID';
+
+export interface PrintStatus {
+  kitchenMode: KitchenMode;
+  paired: boolean;
+  printerName: string | null;
+  printerPaperWidth: number | null;
+  printerPairedAt: string | null;
+  pairedByName: string | null;
+  pairedById: string | null;
+}
+
+// ── Printer API ───────────────────────────────────────────────────────────────
+
+export const printerApi = {
+  /**
+   * Report a print result to the backend (printed or failed).
+   */
+  ack: (orderId: string, status: 'printed' | 'failed', errorMessage?: string, isAddOn?: boolean) =>
+    request<{ success: true; data: any }>(
+      'POST',
+      '/api/crew/print/ack',
+      { orderId, status, errorMessage, isAddOn },
+      true,
+    ),
+
+  /**
+   * Request a reprint of an order from any crew device.
+   */
+  reprint: (orderId: string, reason?: string) =>
+    request<{ success: boolean }>(
+      'POST',
+      '/api/crew/print/reprint',
+      { orderId, reason },
+      true,
+    ),
+
+  /**
+   * Fetch the current printer pairing state + kitchen mode.
+   */
+  getStatus: () =>
+    request<{ success: true; data: PrintStatus }>(
+      'GET',
+      '/api/crew/print/status',
+      undefined,
+      true,
+    ),
+
+  /**
+   * Set or clear the printer pairing on behalf of the current crew member.
+   * Pass pairedTo: null to unpair.
+   */
+  setPairing: (data: {
+    pairedTo: string | null;
+    name?: string;
+    address?: string;
+    paperWidth?: 58 | 80;
+  }) =>
+    request<{ success: true; data: any }>(
+      'PATCH',
+      '/api/v1/partner/profile/printer',
+      data,
+      true,
+    ),
+};

@@ -49,6 +49,7 @@ interface Props {
   index:            number;
   onTogglePrepared: (itemId: string) => void;
   isCompletedTab:   boolean;
+  onReprint?:       () => void;  // Optional — only shown when printer is paired
 }
 
 // Format elapsed time as "0:42" / "06:18" / "1h 24m"
@@ -141,6 +142,7 @@ export function KitchenTicketCard({
   index,
   onTogglePrepared,
   isCompletedTab,
+  onReprint,
 }: Props) {
   const disabled    = ticket.status === 'bumped';
   const total       = ticket.items.length;
@@ -224,9 +226,23 @@ export function KitchenTicketCard({
             </View>
           </View>
 
-          <View style={styles.elapsedChip}>
-            <Ionicons name="time-outline" size={11} color={QuinckleColors.textSecondary} />
-            <Text style={styles.elapsedText}>{elapsed}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <View style={styles.elapsedChip}>
+              <Ionicons name="time-outline" size={11} color={QuinckleColors.textSecondary} />
+              <Text style={styles.elapsedText}>{elapsed}</Text>
+            </View>
+            {onReprint && (
+              <TouchableOpacity
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  onReprint();
+                }}
+                hitSlop={8}
+                style={styles.reprintBtn}
+              >
+                <Ionicons name="print-outline" size={14} color={QuinckleColors.textSecondary} />
+              </TouchableOpacity>
+            )}
           </View>
         </View>
 
@@ -353,6 +369,16 @@ const styles = StyleSheet.create({
     fontWeight:   '600',
     fontVariant:  ['tabular-nums'],
     letterSpacing: 0.2,
+  },
+  reprintBtn: {
+    width:            26,
+    height:           26,
+    borderRadius:     Radius.sm,
+    backgroundColor:  QuinckleColors.surfaceMutedHover,
+    borderWidth:      1,
+    borderColor:      QuinckleColors.borderSubtle,
+    alignItems:       'center',
+    justifyContent:   'center',
   },
 
   // ── Progress ───────────────────────────────────────────

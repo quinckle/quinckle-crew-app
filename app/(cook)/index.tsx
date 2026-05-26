@@ -25,8 +25,9 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { kitchen } from '../../services/api';
+import { kitchen, printerApi } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
+import { printKot, getStatus as getPrinterStatus } from '../../services/printer';
 import { useAuth } from '../../context/AuthContext';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { PICKUP_LAYOUT_PRESET } from '../../components/ui/pickup';
@@ -148,14 +149,57 @@ export default function CookDashboard() {
         void playSound(require('../../assets/audio/notifications/kitchen notification.wav'));
       }
       void loadOrders();
+
+      // ── Auto-print: only fires when this device is the paired print sink ──
+      const myStaffId = staffInfo?.id;
+      if (myStaffId && data?.printerPairedTo === myStaffId && getPrinterStatus() === 'connected') {
+        // Build KotOrder from the Ably payload (backend sends full order shape on new_order)
+        if (data?.order) {
+          const isAddOn = !!data.order.isAddOnPrint;
+          void printKot({
+            id: data.order.id,
+            tableNumber: data.order.tableNumber ?? data.order.session?.table?.tableNumber ?? '?',
+            restaurantName: staffInfo?.restaurantName ?? '',
+            createdAt: data.order.createdAt,
+            items: (data.order.items ?? []).map((i: any) => ({
+              name: i.name,
+              quantity: i.quantity,
+              notes: i.notes,
+            })),
+            isAddOn,
+          }, isAddOn);
+        }
+      }
     });
     const unsubBumped    = subscribeChannel(`kitchen:${restaurantId}`, 'item_bumped',     () => void loadOrders());
     const unsubCancelled = subscribeChannel(`kitchen:${restaurantId}`, 'order_cancelled', () => void loadOrders());
+
+    // Reprint request — only the paired device should act
+    const unsubReprint = subscribeChannel(`partner:${restaurantId}`, 'reprint_request', (data: any) => {
+      const myStaffId = staffInfo?.id;
+      if (myStaffId && data?.printerPairedTo === myStaffId && getPrinterStatus() === 'connected') {
+        if (data?.order) {
+          void printKot({
+            id: data.order.id,
+            tableNumber: data.order.tableNumber ?? '?',
+            restaurantName: staffInfo?.restaurantName ?? '',
+            createdAt: data.order.createdAt,
+            items: (data.order.items ?? []).map((i: any) => ({
+              name: i.name,
+              quantity: i.quantity,
+              notes: i.notes,
+            })),
+            isAddOn: false,
+          }, false);
+        }
+      }
+    });
 
     return () => {
       unsubNew();
       unsubBumped();
       unsubCancelled();
+      unsubReprint();
     };
   }, [staffInfo?.restaurantId, loadOrders]);
 
@@ -330,6 +374,9 @@ export default function CookDashboard() {
               }
               onTogglePrepared={(itemId) => toggleItemPrepared(item.id, itemId)}
               isCompletedTab={navTab === 'completed'}
+              onReprint={getPrinterStatus() === 'connected' ? () => {
+                void printerApi.reprint(item.id, 'Manual reprint from cook screen');
+              } : undefined}
             />
           )}
           ListEmptyComponent={

@@ -76,6 +76,17 @@ export default function CookProfile() {
             Contact your restaurant administrator to update profile details.
           </Text>
 
+          {/* KOT Printer */}
+          <TouchableOpacity
+            style={styles.printerBtn}
+            onPress={() => router.push('/printer')}
+            activeOpacity={0.75}
+          >
+            <Ionicons name="print-outline" size={18} color={QuinckleColors.textPrimary} />
+            <Text style={styles.printerBtnText}>KOT Printer</Text>
+            <Ionicons name="chevron-forward" size={16} color={QuinckleColors.textTertiary} style={{ marginLeft: 'auto' }} />
+          </TouchableOpacity>
+
           <TouchableOpacity style={styles.logoutBtn} onPress={logout} activeOpacity={0.7}>
             <Ionicons name="log-out-outline" size={18} color={QuinckleColors.danger} />
             <Text style={styles.logoutBtnText}>Log Out</Text>
@@ -188,6 +199,23 @@ const styles = StyleSheet.create({
     color: QuinckleColors.textTertiary,
     fontSize: 12,
     textAlign: 'center',
+  },
+  printerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surface,
+    marginTop: Spacing.md,
+  },
+  printerBtnText: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 14,
+    fontWeight: '500',
   },
   logoutBtn: {
     flexDirection: 'row',

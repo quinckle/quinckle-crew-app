@@ -254,6 +254,26 @@ export default function StaffProfile() {
           </TouchableOpacity>
         </View>
 
+        {/* ─── KOT PRINTER ─── */}
+        <View style={styles.section}>
+          <TouchableOpacity
+            style={styles.sectionRow}
+            onPress={() => router.push('/printer')}
+            activeOpacity={0.6}
+          >
+            <View style={styles.sectionRowLeft}>
+              <View style={[styles.sectionIconWrap]}>
+                <Ionicons name="print-outline" size={18} color='white' />
+              </View>
+              <View style={styles.sectionTextGroup}>
+                <Text style={styles.sectionTitle}>KOT Printer</Text>
+                <Text style={styles.sectionSubtitle}>Pair or manage Bluetooth printer</Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
+          </TouchableOpacity>
+        </View>
+
         {/* ─── LINKED RESTAURANT ─── */}
         <View style={styles.section}>
           <View style={styles.sectionRow}>
