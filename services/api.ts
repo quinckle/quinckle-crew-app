@@ -237,6 +237,7 @@ export interface CollectedCashRecord {
   sessionId: string;
   tableNumber: number;
   amount: number;
+  method: 'CASH' | 'UPI_DIRECT';
   customerName: string | null;
   customerPhone: string;
   collectedAt: string;

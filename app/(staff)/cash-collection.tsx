@@ -210,7 +210,7 @@ export default function CashCollectionScreen() {
     ...(pending.length === 0
       ? [{ kind: 'empty' as const, message: 'No cash requests right now. Diners paying by cash will appear here.' }]
       : pending.map(p => ({ kind: 'pending' as const, data: p }))),
-    { kind: 'sectionHeader', title: 'Collected today', subtitle: `${todayCollected.length} order${todayCollected.length === 1 ? '' : 's'}` },
+    { kind: 'sectionHeader', title: 'Collected today', subtitle: `${todayCollected.length} payment${todayCollected.length === 1 ? '' : 's'}` },
     ...(todayCollected.length === 0
       ? [{ kind: 'empty' as const, message: 'Nothing collected yet today.' }]
       : todayCollected.map(c => ({ kind: 'collected' as const, data: c }))),
@@ -280,7 +280,7 @@ export default function CashCollectionScreen() {
           data={rows}
           keyExtractor={(row, i) => {
             if (row.kind === 'pending')   return `p-${row.data.orderId}`;
-            if (row.kind === 'collected') return `c-${row.data.orderId}-${i}`;
+            if (row.kind === 'collected') return `c-${row.data.orderId}-${row.data.method}`;
             if (row.kind === 'sectionHeader') return `h-${row.title}`;
             return `e-${i}`;
           }}
@@ -362,12 +362,29 @@ export default function CashCollectionScreen() {
             }
             // collected
             const c = item.data;
+            const isUpiCollected = c.method === 'UPI_DIRECT';
             return (
               <View style={styles.collectedCard}>
                 <View style={styles.cardTopRow}>
                   <View style={styles.collectedPill}>
                     <Ionicons name="checkmark" size={11} color={QuinckleColors.success} />
                     <Text style={styles.collectedPillText}>Table {c.tableNumber || '—'}</Text>
+                  </View>
+                  <View style={[
+                    styles.collectedMethodChip,
+                    isUpiCollected && styles.collectedMethodChipUpi,
+                  ]}>
+                    <Ionicons
+                      name={isUpiCollected ? 'phone-portrait-outline' : 'cash-outline'}
+                      size={10}
+                      color={isUpiCollected ? '#93c5fd' : '#86efac'}
+                    />
+                    <Text style={[
+                      styles.collectedMethodChipText,
+                      isUpiCollected && styles.collectedMethodChipTextUpi,
+                    ]}>
+                      {isUpiCollected ? 'UPI' : 'Cash'}
+                    </Text>
                   </View>
                   <Text style={styles.timeAgo}>{timeOfDay(c.collectedAt)}</Text>
                 </View>
@@ -640,6 +657,30 @@ const styles = StyleSheet.create({
     color: QuinckleColors.success,
     fontSize: 11,
     fontWeight: '600',
+  },
+  collectedMethodChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: 'rgba(46,125,50,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(46,125,50,0.25)',
+    borderRadius: 999,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  collectedMethodChipUpi: {
+    backgroundColor: 'rgba(59,130,246,0.12)',
+    borderColor: 'rgba(59,130,246,0.25)',
+  },
+  collectedMethodChipText: {
+    color: '#86efac',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  collectedMethodChipTextUpi: {
+    color: '#93c5fd',
   },
   collectedBody: {
     flexDirection: 'row',
