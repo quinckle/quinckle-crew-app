@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { router } from 'expo-router';
 import { setCrewToken, setOn401Callback } from '../services/api';
 import type { StaffInfo } from '../services/api';
 import { setRealtimeAuth, disconnectRealtime } from '../services/realtime';
@@ -127,6 +128,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setCrewTokenState(null);
     setCrewToken(null);
     void clearPersisted();
+    // Replace the entire navigation stack with the login screen so the user
+    // cannot swipe back into an authenticated route after logging out.
+    router.replace('/login');
   };
 
   const setPhotoUrl = (url: string) => {
