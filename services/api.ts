@@ -149,7 +149,7 @@ export const kitchen = {
   updateItemStatus: (orderId: string, itemId: string, status: 'done' | 'pending') =>
     request<unknown>('PATCH', `/api/kitchen/orders/${orderId}/items/${itemId}/status`, { item_status: status }, true),
   bumpOrder: (orderId: string) =>
-    request<unknown>('PATCH', `/api/kitchen/orders/${orderId}/status`, undefined, true),
+    request<unknown>('PATCH', `/api/kitchen/orders/${orderId}/status`, {}, true),
   undoBump: (orderId: string) =>
     request<unknown>('POST', `/api/kitchen/orders/${orderId}/undo`, undefined, true),
 };
