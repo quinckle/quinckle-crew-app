@@ -614,9 +614,30 @@ export default function StaffDashboard() {
       void loadTables();
     });
 
-    const off3 = subscribeChannel(`waiter:${restaurantId}`, 'new_order', () => {
+    const off3 = subscribeChannel(`waiter:${restaurantId}`, 'new_order', (data: any) => {
       void loadPickupOrders();
       void loadTables();
+      // Auto-print KOT on whichever crew device has a printer connected.
+      // NewOrderEvent carries the full order payload so we don't need an
+      // extra API fetch — map it straight to KotOrder and fire.
+      if (getPrinterStatus() === 'connected' && data?.orderId) {
+        const kotItems = (data.items ?? []).map((i: any) => ({
+          name: i.menuItemName ?? i.name ?? '',
+          quantity: Number(i.quantity ?? 1),
+          notes: i.notes ?? null,
+          modifiersSummary: i.modifiersSummary ?? null,
+          category: i.category,
+        }));
+        void printKot({
+          id: data.orderId,
+          orderNumber: data.orderNumber,
+          tableNumber: data.tableNumber,
+          restaurantName: staffInfo?.restaurantName ?? '',
+          createdAt: data.createdAt ?? new Date().toISOString(),
+          items: kotItems,
+          isAddOn: false,
+        });
+      }
     });
 
     const off4 = subscribeChannel(`waiter:${restaurantId}`, 'session_ended', () => {
