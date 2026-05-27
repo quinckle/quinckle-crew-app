@@ -46,7 +46,10 @@ export default function PrinterScreen() {
     pairedByName: string | null;
     pairedById: string | null;
     kitchenMode: string;
+    kotAutoPrint?: boolean;
   } | null>(null);
+  const [kotAutoPrint, setKotAutoPrint] = useState(true);
+  const [autoPrintSaving, setAutoPrintSaving] = useState(false);
 
   const [isScanning, setIsScanning] = useState(false);
   const [devices, setDevices] = useState<BluetoothDevice[]>([]);
@@ -68,8 +71,27 @@ export default function PrinterScreen() {
     try {
       const res = await printerApi.getStatus();
       setServerStatus(res.data);
+      if (typeof res.data?.kotAutoPrint === 'boolean') {
+        setKotAutoPrint(res.data.kotAutoPrint);
+      }
     } catch { /* non-fatal */ }
   }, []);
+
+  const handleAutoPrintToggle = async () => {
+    if (autoPrintSaving) return;
+    const next = !kotAutoPrint;
+    setKotAutoPrint(next);
+    setAutoPrintSaving(true);
+    try {
+      await printerApi.setAutoPrint(next);
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch {
+      setKotAutoPrint(!next); // revert on failure
+      showToast('Could not update auto-print setting', false);
+    } finally {
+      setAutoPrintSaving(false);
+    }
+  };
 
   useEffect(() => {
     loadServerStatus();
@@ -257,6 +279,22 @@ export default function PrinterScreen() {
               </Text>
             </View>
           )}
+
+          {/* Auto-print toggle */}
+          <View style={styles.autoPrintRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.autoPrintLabel}>Auto-print KOT</Text>
+              <Text style={styles.autoPrintSub}>Print automatically on every new order</Text>
+            </View>
+            <TouchableOpacity
+              onPress={handleAutoPrintToggle}
+              disabled={autoPrintSaving}
+              activeOpacity={0.8}
+              style={[styles.toggleTrack, kotAutoPrint && styles.toggleTrackOn]}
+            >
+              <View style={[styles.toggleThumb, kotAutoPrint && styles.toggleThumbOn]} />
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Actions */}
@@ -430,6 +468,45 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
   },
   modeBadgeText: { fontSize: 11, color: QuinckleColors.textSecondary },
+
+  autoPrintRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: Spacing.md,
+    paddingTop: Spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: QuinckleColors.border,
+  },
+  autoPrintLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: QuinckleColors.textPrimary,
+  },
+  autoPrintSub: {
+    fontSize: 11,
+    color: QuinckleColors.textTertiary,
+    marginTop: 2,
+  },
+  toggleTrack: {
+    width: 44,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: QuinckleColors.borderStrong,
+    justifyContent: 'center',
+    paddingHorizontal: 2,
+  },
+  toggleTrackOn: { backgroundColor: QuinckleColors.primary },
+  toggleThumb: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#fff',
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  toggleThumbOn: { alignSelf: 'flex-end' },
 
   actionsCard: {
     backgroundColor: QuinckleColors.surface,

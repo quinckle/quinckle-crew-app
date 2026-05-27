@@ -72,7 +72,7 @@ function GridTexture({ height = 100 }: { height?: number }) {
 }
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
-import { crewTables, crewSessions, crewOrders, crewPayments, restaurantApi, crewAuth, crewNotifications } from '../../services/api';
+import { crewTables, crewSessions, crewOrders, crewPayments, restaurantApi, crewAuth, crewNotifications, printerApi } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { printKot, getStatus as getPrinterStatus } from '../../services/printer';
 
@@ -205,6 +205,11 @@ export default function StaffDashboard() {
   const [liveOrders, setLiveOrders] = useState<ActiveOrder[]>([]);
   const [ordersSubTab, setOrdersSubTab] = useState<'active' | 'completed'>('active');
   const [completingIds, setCompletingIds] = useState<string[]>([]);
+  // KOT auto-print toggle — loaded from server, synced via Ably.
+  // Stored in both state (for UI) and a ref (so Ably callbacks always see latest value).
+  const [kotAutoPrint, setKotAutoPrint] = useState(true);
+  const kotAutoPrintRef = useRef(true);
+  const setKotAutoPrintSync = (v: boolean) => { kotAutoPrintRef.current = v; setKotAutoPrint(v); };
 
   useEffect(() => {
     (async () => {
@@ -579,6 +584,12 @@ export default function StaffDashboard() {
     loadMenuFromApi();
     loadPickupOrders();
     loadPendingCashCount();
+    // Load KOT auto-print toggle from server
+    printerApi.getStatus().then(res => {
+      if (typeof res?.data?.kotAutoPrint === 'boolean') {
+        setKotAutoPrintSync(res.data.kotAutoPrint);
+      }
+    }).catch(() => { /* non-fatal */ });
   }, [staffInfo?.restaurantId]);
 
   const loadPendingCashCount = async () => {
@@ -617,10 +628,9 @@ export default function StaffDashboard() {
     const off3 = subscribeChannel(`waiter:${restaurantId}`, 'new_order', (data: any) => {
       void loadPickupOrders();
       void loadTables();
-      // Auto-print KOT on whichever crew device has a printer connected.
-      // NewOrderEvent carries the full order payload so we don't need an
-      // extra API fetch — map it straight to KotOrder and fire.
-      if (getPrinterStatus() === 'connected' && data?.orderId) {
+      // Auto-print KOT on whichever crew device has a printer connected,
+      // but only when the auto-print toggle is enabled.
+      if (kotAutoPrintRef.current && getPrinterStatus() === 'connected' && data?.orderId) {
         const kotItems = (data.items ?? []).map((i: any) => ({
           name: i.menuItemName ?? i.name ?? '',
           quantity: Number(i.quantity ?? 1),
@@ -638,6 +648,11 @@ export default function StaffDashboard() {
           isAddOn: false,
         });
       }
+    });
+
+    // Sync auto-print toggle from any device (crew app or partner dashboard)
+    const offAutoPrint = subscribeChannel(`partner:${restaurantId}`, 'kot_autoprint_changed', (data: any) => {
+      if (typeof data?.enabled === 'boolean') setKotAutoPrintSync(data.enabled);
     });
 
     const off4 = subscribeChannel(`waiter:${restaurantId}`, 'session_ended', () => {
@@ -720,7 +735,7 @@ export default function StaffDashboard() {
       }
     });
 
-    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off7(); off7b(); off8(); off9(); offReprint(); };
+    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off7(); off7b(); off8(); off9(); offReprint(); offAutoPrint(); };
   }, [staffInfo?.restaurantId]);
 
   // C1: Track Ably connection health — show a warning when the waiter channel drops.

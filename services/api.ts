@@ -180,7 +180,39 @@ export const crewTables = {
 
 export interface BillOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; modifiers_summary?: string | null; }
 export interface BillOrder { order_id: string; placed_at: string; status: 'received' | 'preparing' | 'ready' | 'served'; items: BillOrderItem[]; order_total: number; }
-export interface SessionBill { session_id: string; table_number: number; status: 'active' | 'paid' | 'closed'; orders: BillOrder[]; session_total: number; /** Actual GST rate used (5, 12, or 18; 0 = no GST). */ tax_rate?: number; tax_total?: number; total_payable?: number; payment_method?: 'cash' | 'upi_direct' | 'mixed'; splits?: Array<{ method: 'CASH' | 'UPI_DIRECT'; amount: number }>; }
+/**
+ * Canonical bill breakdown — same shape returned by /dine/cart/preview and
+ * /checkout/staff-collect on the diner side. Always read from this object;
+ * the flat fields (tax_total, total_payable, etc.) are aliases kept for
+ * back-compat with older crew screens.
+ */
+export interface BillBreakdown {
+  subtotal:     number;
+  discount:     number;
+  chargesTotal: number;
+  taxRate:      number;
+  taxAmount:    number;
+  tip:          number;
+  total:        number;
+  currency:     'INR';
+}
+export interface SessionBill {
+  session_id: string;
+  table_number: number;
+  status: 'active' | 'paid' | 'closed';
+  orders: BillOrder[];
+  session_total: number;
+  tax_rate?: number;
+  tax_total?: number;
+  service_charge_total?: number;
+  discount_total?: number;
+  tip_total?: number;
+  total_payable?: number;
+  /** Canonical breakdown — render from this when present. */
+  breakdown?: BillBreakdown;
+  payment_method?: 'cash' | 'upi_direct' | 'mixed';
+  splits?: Array<{ method: 'CASH' | 'UPI_DIRECT'; amount: number }>;
+}
 
 export const crewSessions = {
   start: (tableId: string) =>
@@ -223,6 +255,8 @@ export interface PendingCashRequest {
   sessionId: string;
   tableNumber: number;
   amount: number;
+  /** Itemised total breakdown — render this on the payment-collect screen. */
+  breakdown?: BillBreakdown;
   customerName: string | null;
   customerPhone: string;
   requestedAt: string;
@@ -411,6 +445,7 @@ export interface PrintStatus {
   printerPairedAt: string | null;
   pairedByName: string | null;
   pairedById: string | null;
+  kotAutoPrint: boolean;
 }
 
 // ── Printer API ───────────────────────────────────────────────────────────────
@@ -464,6 +499,14 @@ export const printerApi = {
       'PATCH',
       '/api/crew/print/pair',
       data,
+      true,
+    ),
+
+  setAutoPrint: (enabled: boolean) =>
+    request<{ success: true; data: { kotAutoPrint: boolean } }>(
+      'PATCH',
+      '/api/crew/print/autoprint',
+      { enabled },
       true,
     ),
 };
