@@ -365,9 +365,11 @@ export default function StaffDashboard() {
         if (billAmount === undefined && t.session_id) {
           try {
             const bill = await crewSessions.getBill(t.session_id);
+            // Never assume a tax rate as fallback — the partner may have GST
+            // off entirely. If tax_total is null, treat it as zero.
             billAmount = typeof bill.total_payable === 'number'
               ? bill.total_payable
-              : bill.session_total + (bill.tax_total ?? bill.session_total * 0.05);
+              : bill.session_total + (bill.tax_total ?? 0);
           } catch {
             billAmount = undefined;
           }
