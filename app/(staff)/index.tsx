@@ -480,62 +480,22 @@ export default function StaffDashboard() {
       const allOrders = res.orders ?? [];
       setLiveOrders(allOrders);
 
-      // Show ALL active orders (READY + PREPARING) in pickup — waiter can serve any done item
+      // Simplified flow: show any order that has unserved items, regardless of
+      // order status. Serving is always open — no kitchen pipeline gate.
       const serveableOrders = allOrders.filter(o =>
-        (o.status === 'ready' || o.status === 'preparing') &&
         o.items.some(i => !i.served)
       );
 
-      // Diff per-item readiness so we can notify the moment a single kitchen
-      // item flips to done, not only when an entire order completes.
-      const prevReadyItemKeys = new Set<string>();
-      pickupOrders.forEach(o => {
-        o.items.forEach(i => {
-          if (i.isReady && !i.isServed) prevReadyItemKeys.add(`${o.id}:${i.id}`);
-        });
-      });
-
-      const newlyReadyItems: { orderId: string; tableNumber: number; itemName: string; qty: number }[] = [];
-      allOrders.forEach(o => {
-        o.items.forEach(i => {
-          const key = `${o.order_id}:${i.item_id}`;
-          if (i.item_status === 'done' && !i.served && !prevReadyItemKeys.has(key)) {
-            newlyReadyItems.push({
-              orderId: o.order_id,
-              tableNumber: o.table_number,
-              itemName: i.name,
-              qty: i.qty,
-            });
-          }
-        });
-      });
-
-      // Fire notification if new READY orders appeared (whole-order beat)
-      const prevReadyOrderIds = new Set(pickupOrders.map(o => o.id));
-      const newReadyOrders = allOrders.filter(o => o.status === 'ready' && !prevReadyOrderIds.has(o.order_id));
-      if (newReadyOrders.length > 0) {
+      // Notify staff the moment a brand-new order lands on the floor — they
+      // no longer need to wait for kitchen to flip status to READY.
+      const prevOrderIds = new Set(pickupOrders.map(o => o.id));
+      const newOrders = serveableOrders.filter(o => !prevOrderIds.has(o.order_id));
+      if (newOrders.length > 0) {
         void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
         Notifications.scheduleNotificationAsync({
           content: {
-            title: '🔔 Order Ready for Pickup',
-            body: newReadyOrders.map(o => `T${o.table_number}`).join(', ') + ' — ready to serve',
-            sound: true,
-          },
-          trigger: null,
-        }).catch(() => { });
-      } else if (newlyReadyItems.length > 0) {
-        // Partial readiness: just one (or a few) items in a still-preparing order
-        // went ready. Lighter beat — sound + a single notification.
-        void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
-        const first = newlyReadyItems[0]!;
-        const more = newlyReadyItems.length - 1;
-        const body = more > 0
-          ? `${first.qty}× ${first.itemName} · +${more} more`
-          : `${first.qty}× ${first.itemName} ready to plate`;
-        Notifications.scheduleNotificationAsync({
-          content: {
-            title: `Item ready — Table ${first.tableNumber}`,
-            body,
+            title: '🔔 New Order',
+            body: newOrders.map(o => `T${o.table_number}`).join(', ') + ' — ready to serve',
             sound: true,
           },
           trigger: null,
@@ -554,7 +514,9 @@ export default function StaffDashboard() {
             return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
           })(),
           isServed: item.served,
-          isReady: item.item_status === 'done',
+          // In the simplified flow kitchen does not mark items — all unserved
+          // items are immediately available for staff to serve.
+          isReady: !item.served,
         })),
       }));
 

@@ -462,21 +462,19 @@ export function PickupCard({
     outputRange: [0.6, 1],
   });
 
-  // Single status phrase
+  // Single status phrase — simplified for direct-serve flow (no kitchen gate)
   const remaining = items.filter(i => !i.isServed).length;
-  const readyButNotServed = items.filter(i => i.isReady && !i.isServed).length;
+  const servedCount = items.filter(i => i.isServed).length;
   const totalCount = items.length;
   let statusPhrase: string;
   if (isCompleted) {
     statusPhrase = `Completed${order.completedAt ? ` · ${formatClock(order.completedAt)}` : ''}`;
   } else if (remaining === 0) {
     statusPhrase = 'All served';
-  } else if (readyButNotServed > 0 && readyButNotServed < remaining) {
-    statusPhrase = `${readyButNotServed} of ${totalCount} ready to plate`;
-  } else if (readyButNotServed === remaining) {
-    statusPhrase = `All ready · ${remaining} pending pickup`;
+  } else if (servedCount > 0) {
+    statusPhrase = `${servedCount} of ${totalCount} served · ${remaining} remaining`;
   } else {
-    statusPhrase = `Preparing · ${remaining} of ${totalCount} pending`;
+    statusPhrase = `${remaining} item${remaining === 1 ? '' : 's'} · tap to serve`;
   }
 
   const orderedAt = items[0]?.orderedAt;
