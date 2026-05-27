@@ -94,9 +94,13 @@ export default function PrinterScreen() {
     try {
       const found = await scan();
       setDevices(found);
-      if (found.length === 0) showToast('No Bluetooth devices found. Make sure the printer is on.', false);
-    } catch {
-      showToast('Bluetooth scan failed. Grant permissions and try again.', false);
+      if (found.length === 0) showToast('No Bluetooth devices found. Make sure the printer is on and paired in Android Settings.', false);
+    } catch (err: any) {
+      if (err?.message === 'BLUETOOTH_PERMISSION_DENIED') {
+        showToast('Bluetooth permission denied. Go to Settings → App Permissions and allow Nearby Devices.', false);
+      } else {
+        showToast('Bluetooth scan failed. Make sure Bluetooth is on and try again.', false);
+      }
     } finally {
       setIsScanning(false);
     }

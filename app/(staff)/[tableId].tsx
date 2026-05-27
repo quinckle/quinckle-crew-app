@@ -5,8 +5,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
-import { crewSessions, crewTables, crewOrders, crewPayments, restaurantApi } from '../../services/api';
-import type { CrewTable } from '../../services/api';
+import { crewSessions, crewTables, crewOrders, crewPayments, restaurantApi, printerApi } from '../../services/api';
+import type { CrewTable, SessionBill } from '../../services/api';
+import { printBill, getStatus as getPrinterStatus } from '../../services/printer';
+import type { InvoiceBill } from '../../services/invoiceTemplate';
 import { useAuth } from '../../context/AuthContext';
 import { subscribeChannel } from '../../services/realtime';
 import type { BillOrderItem, BillOrder, MenuItem } from '../../services/api';
@@ -59,6 +61,9 @@ export default function TableDetail() {
   const [sessionStatus, setSessionStatus] = useState<'active' | 'paid' | 'closed'>('active');
   const [since, setSince] = useState('');
   const [isPaid, setIsPaid] = useState(false);
+  const [billTaxRate, setBillTaxRate] = useState(0);
+  const [billPaymentMethod, setBillPaymentMethod] = useState<SessionBill['payment_method']>(undefined);
+  const [billSplits, setBillSplits] = useState<SessionBill['splits']>(undefined);
   const [isExpanded, setIsExpanded] = useState(false);
 
   // Add items modal
@@ -80,6 +85,7 @@ export default function TableDetail() {
 
   // Action menu + swap-table state for the 3-dot header
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
+  const [printMenuOpen, setPrintMenuOpen] = useState(false);
   const [swapOpen, setSwapOpen] = useState(false);
   const [swapTargets, setSwapTargets] = useState<CrewTable[]>([]);
   const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
@@ -134,13 +140,17 @@ export default function TableDetail() {
     if (!sessionId) { setIsLoading(false); return; }
     try {
       const bill = await crewSessions.getBill(sessionId);
-      const nextTax = typeof bill.tax_total === 'number' ? bill.tax_total : bill.session_total * 0.05;
+      const rate = bill.tax_rate ?? 0;
+      const nextTax = typeof bill.tax_total === 'number' ? bill.tax_total : bill.session_total * (rate / 100);
       setOrders(bill.orders);
       setSessionTotal(bill.session_total);
+      setBillTaxRate(rate);
       setTaxTotal(nextTax);
       setPayableTotal(typeof bill.total_payable === 'number' ? bill.total_payable : bill.session_total + nextTax);
       setSessionStatus(bill.status);
       setIsPaid(bill.status === 'paid');
+      setBillPaymentMethod(bill.payment_method);
+      setBillSplits(bill.splits);
     } catch {
       // keep current
     } finally {
@@ -316,6 +326,70 @@ export default function TableDetail() {
     }
   };
 
+  // ── Print handlers ──────────────────────────────────────────────────────────
+
+  const handlePrintKot = () => {
+    setPrintMenuOpen(false);
+    const latestOrder = [...orders].sort(
+      (a, b) => new Date(b.placed_at).getTime() - new Date(a.placed_at).getTime(),
+    )[0];
+    if (!latestOrder) {
+      showDialog('No Orders', 'There are no orders to reprint.', [{ label: 'OK', onPress: () => {} }]);
+      return;
+    }
+    void printerApi
+      .reprint(latestOrder.order_id, 'Manual reprint from staff screen')
+      .then(() =>
+        showDialog('Sent', 'Reprint request sent to kitchen printer.', [{ label: 'OK', onPress: () => {} }]),
+      )
+      .catch(() =>
+        showDialog('Error', 'Could not send reprint request. Please try again.', [{ label: 'OK', onPress: () => {} }]),
+      );
+  };
+
+  const handlePrintInvoice = async () => {
+    setPrintMenuOpen(false);
+    if (getPrinterStatus() !== 'connected') {
+      showDialog(
+        'No Printer Paired',
+        'No Bluetooth printer is connected to this device. Go to Profile → Printer Settings to pair one.',
+        [{ label: 'OK', onPress: () => {} }],
+      );
+      return;
+    }
+
+    const invoiceItems: InvoiceBill['items'] = orders.flatMap(order =>
+      order.items.map(item => ({
+        name: item.name,
+        qty: item.qty,
+        unitPrice: item.price,
+        modifiersSummary: item.modifiers_summary,
+      })),
+    );
+
+    const result = await printBill({
+      restaurantName: staffInfo?.restaurantName ?? '',
+      tableNumber: tableNum,
+      items: invoiceItems,
+      subtotal: sessionTotal,
+      tax: taxTotal,
+      taxRate: billTaxRate,
+      grandTotal,
+      isPaid,
+      paymentMethod: billPaymentMethod,
+      splits: billSplits?.map(s => ({ method: s.method ?? '', amount: Number(s.amount ?? 0) })),
+      generatedAt: new Date().toISOString(),
+    });
+
+    if (result === 'failed') {
+      showDialog(
+        'Print Failed',
+        'Could not print the invoice. Check that the printer is nearby and powered on.',
+        [{ label: 'OK', onPress: () => {} }],
+      );
+    }
+  };
+
   const handleEndSession = () => {
     showDialog(
       'End Session',
@@ -357,20 +431,54 @@ export default function TableDetail() {
             {since ? <Text style={styles.sinceText}>since {since}</Text> : null}
           </View>
         </View>
-        <View style={{ position: 'relative' }}>
-          <TouchableOpacity onPress={() => setActionMenuOpen(o => !o)} style={styles.iconBtn} activeOpacity={0.7}>
-            <Ionicons name="ellipsis-horizontal" size={18} color={QuinckleColors.textPrimary} />
-          </TouchableOpacity>
-          {actionMenuOpen && (
-            <View style={styles.actionMenu}>
-              <TouchableOpacity
-                onPress={() => { void openSwapModal(); }}
-                style={styles.actionMenuItem}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="swap-horizontal" size={14} color={QuinckleColors.textPrimary} />
-                <Text style={styles.actionMenuText}>Swap table</Text>
-              </TouchableOpacity>
+        <View style={styles.headerRight}>
+          {/* ── Print icon + popover ── */}
+          <View style={{ position: 'relative' }}>
+            <TouchableOpacity
+              onPress={() => { setActionMenuOpen(false); setPrintMenuOpen(o => !o); }}
+              style={styles.iconBtn}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="print-outline" size={18} color={QuinckleColors.textPrimary} />
+            </TouchableOpacity>
+            {printMenuOpen && (
+              <View style={styles.actionMenu}>
+                <TouchableOpacity
+                  onPress={handlePrintKot}
+                  style={styles.actionMenuItem}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="restaurant-outline" size={14} color={QuinckleColors.textPrimary} />
+                  <Text style={styles.actionMenuText}>Print KOT</Text>
+                </TouchableOpacity>
+                <View style={styles.actionMenuDivider} />
+                <TouchableOpacity
+                  onPress={() => { void handlePrintInvoice(); }}
+                  style={styles.actionMenuItem}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="receipt-outline" size={14} color={QuinckleColors.textPrimary} />
+                  <Text style={styles.actionMenuText}>Print Invoice</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+
+          {/* ── Three-dot menu ── */}
+          <View style={{ position: 'relative' }}>
+            <TouchableOpacity onPress={() => { setPrintMenuOpen(false); setActionMenuOpen(o => !o); }} style={styles.iconBtn} activeOpacity={0.7}>
+              <Ionicons name="ellipsis-horizontal" size={18} color={QuinckleColors.textPrimary} />
+            </TouchableOpacity>
+            {actionMenuOpen && (
+              <View style={styles.actionMenu}>
+                <TouchableOpacity
+                  onPress={() => { void openSwapModal(); }}
+                  style={styles.actionMenuItem}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="swap-horizontal" size={14} color={QuinckleColors.textPrimary} />
+                  <Text style={styles.actionMenuText}>Swap table</Text>
+                </TouchableOpacity>
               <View style={styles.actionMenuDivider} />
               <TouchableOpacity
                 onPress={() => { setActionMenuOpen(false); handleEndSession(); }}
@@ -382,8 +490,9 @@ export default function TableDetail() {
               </TouchableOpacity>
             </View>
           )}
-        </View>
-      </View>
+          </View>{/* end three-dot position:relative */}
+        </View>{/* end headerRight */}
+      </View>{/* end header */}
 
       {!isPaid && (
         <TouchableOpacity
@@ -489,10 +598,12 @@ export default function TableDetail() {
               <Text style={styles.summaryLabel}>Subtotal</Text>
               <Text style={styles.summaryValue}>₹{sessionTotal.toFixed(0)}</Text>
             </View>
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>GST (5%)</Text>
-              <Text style={styles.summaryValue}>₹{tax.toFixed(2)}</Text>
-            </View>
+            {billTaxRate > 0 && (
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>GST ({billTaxRate}%)</Text>
+                <Text style={styles.summaryValue}>₹{tax.toFixed(2)}</Text>
+              </View>
+            )}
             <View style={styles.grandTotalRow}>
               <Text style={styles.grandTotalLabel}>Grand Total</Text>
               <Text style={styles.grandTotalValue}>₹{grandTotal.toFixed(2)}</Text>
@@ -503,8 +614,43 @@ export default function TableDetail() {
 
         {isPaid ? (
           <View style={styles.paidStrip}>
-            <Ionicons name="checkmark-circle" size={18} color="#4ade80" />
-            <Text style={styles.paidStripText}>Payment Collected</Text>
+            <Ionicons name="checkmark-circle" size={16} color="#4ade80" />
+            {billPaymentMethod === 'mixed' && billSplits ? (() => {
+              const cash = billSplits.find(s => s.method === 'CASH');
+              const upi  = billSplits.find(s => s.method === 'UPI_DIRECT');
+              return (
+                <>
+                  {cash && (
+                    <View style={styles.paidMethodChip}>
+                      <Ionicons name="cash-outline" size={13} color="#86efac" />
+                      <Text style={styles.paidMethodAmt}>₹{cash.amount}</Text>
+                      <Text style={styles.paidMethodTag}>Cash</Text>
+                    </View>
+                  )}
+                  {upi && (
+                    <View style={[styles.paidMethodChip, styles.paidMethodChipUpi]}>
+                      <Ionicons name="qr-code-outline" size={13} color="#93c5fd" />
+                      <Text style={[styles.paidMethodAmt, { color: '#93c5fd' }]}>₹{upi.amount}</Text>
+                      <Text style={[styles.paidMethodTag, { color: '#93c5fd' }]}>UPI</Text>
+                    </View>
+                  )}
+                </>
+              );
+            })() : (
+              <View style={[styles.paidMethodChip, billPaymentMethod === 'upi_direct' && styles.paidMethodChipUpi]}>
+                <Ionicons
+                  name={billPaymentMethod === 'upi_direct' ? 'qr-code-outline' : 'cash-outline'}
+                  size={13}
+                  color={billPaymentMethod === 'upi_direct' ? '#93c5fd' : '#86efac'}
+                />
+                <Text style={[styles.paidMethodAmt, billPaymentMethod === 'upi_direct' && { color: '#93c5fd' }]}>
+                  ₹{grandTotal.toFixed(0)}
+                </Text>
+                <Text style={[styles.paidMethodTag, billPaymentMethod === 'upi_direct' && { color: '#93c5fd' }]}>
+                  {billPaymentMethod === 'upi_direct' ? 'UPI' : 'Cash'}
+                </Text>
+              </View>
+            )}
           </View>
         ) : (
           <TouchableOpacity
@@ -529,7 +675,12 @@ export default function TableDetail() {
             <Text style={styles.totalLabel}>Total Payable</Text>
             <View style={[styles.paidBadge, isPaid ? styles.paidBadgeActive : styles.paidBadgeInactive]}>
               <Text style={[styles.paidBadgeText, isPaid ? styles.paidBadgeTextActive : styles.paidBadgeTextInactive]}>
-                {isPaid ? 'Settled' : 'Pending'}
+                {isPaid
+                  ? billPaymentMethod === 'cash' ? 'via Cash'
+                  : billPaymentMethod === 'upi_direct' ? 'via UPI'
+                  : billPaymentMethod === 'mixed' ? 'Split'
+                  : 'Settled'
+                  : 'Pending'}
               </Text>
             </View>
           </View>
@@ -920,6 +1071,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: QuinckleColors.background, paddingHorizontal: Spacing.lg },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.xl },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
   iconBtn: { width: 40, height: 40, borderRadius: Radius.md, backgroundColor: QuinckleColors.surfaceMuted, borderWidth: 1, borderColor: QuinckleColors.border, alignItems: 'center', justifyContent: 'center' },
   tableTitle: { fontSize: 22, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.4 },
   sinceText: { fontSize: 11, color: QuinckleColors.textTertiary, fontWeight: '500', marginTop: 1 },
@@ -1055,7 +1207,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   paidStrip: {
-    height: 50,
+    minHeight: 50,
     borderRadius: 25,
     backgroundColor: 'rgba(74,222,128,0.08)',
     borderWidth: 1,
@@ -1063,8 +1215,37 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    flexWrap: 'wrap',
     gap: Spacing.sm,
+    paddingHorizontal: Spacing.md,
     marginVertical: Spacing.md,
+  },
+  paidMethodChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(134,239,172,0.1)',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(134,239,172,0.2)',
+  },
+  paidMethodChipUpi: {
+    backgroundColor: 'rgba(147,197,253,0.1)',
+    borderColor: 'rgba(147,197,253,0.2)',
+  },
+  paidMethodAmt: {
+    color: '#86efac',
+    fontSize: 14,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  paidMethodTag: {
+    color: '#86efac',
+    fontSize: 10,
+    fontWeight: '600',
+    opacity: 0.75,
   },
   paidStripText: {
     color: '#4ade80',

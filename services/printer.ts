@@ -12,8 +12,10 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { PermissionsAndroid, Platform } from 'react-native';
 import ThermalPrinter from 'react-native-thermal-printer';
 import { buildKotText, type KotOrder } from './kotTemplate';
+import { buildInvoiceText, type InvoiceBill } from './invoiceTemplate';
 import { printerApi } from './api';
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -65,11 +67,43 @@ export async function initPrinter(): Promise<void> {
   }
 }
 
+// ── Runtime Bluetooth permissions ────────────────────────────────────────────
+
+async function requestBluetoothPermissions(): Promise<boolean> {
+  if (Platform.OS !== 'android') return true;
+  if ((Platform.Version as number) >= 31) {
+    // Android 12+ needs BLUETOOTH_SCAN + BLUETOOTH_CONNECT at runtime
+    const results = await PermissionsAndroid.requestMultiple([
+      PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+      PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+    ]);
+    return (
+      results[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN] === PermissionsAndroid.RESULTS.GRANTED &&
+      results[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT] === PermissionsAndroid.RESULTS.GRANTED
+    );
+  } else {
+    // Android < 12 needs ACCESS_FINE_LOCATION for BT discovery
+    const result = await PermissionsAndroid.request(
+      PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+    );
+    return result === PermissionsAndroid.RESULTS.GRANTED;
+  }
+}
+
 // ── scan ──────────────────────────────────────────────────────────────────────
 
 export async function scan(): Promise<BluetoothDevice[]> {
+  const hasPermission = await requestBluetoothPermissions();
+  if (!hasPermission) throw new Error('BLUETOOTH_PERMISSION_DENIED');
+
   try {
-    const devices = await (ThermalPrinter as any).getBluetoothDeviceList();
+    // Timeout guard — getBluetoothDeviceList can hang if BT is off or denied
+    const devices = await Promise.race([
+      (ThermalPrinter as any).getBluetoothDeviceList(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('SCAN_TIMEOUT')), 10_000),
+      ),
+    ]);
     return (devices as any[]).map((d: any) => ({
       name: d.name ?? d.deviceName ?? 'Unknown',
       address: d.address ?? d.macAddress ?? '',
@@ -150,6 +184,23 @@ export async function printKot(
     try {
       await printerApi.ack(order.id, 'failed', errorMessage, isAddOn);
     } catch { /* non-fatal */ }
+    return 'failed';
+  }
+}
+
+// ── printBill ─────────────────────────────────────────────────────────────────
+
+/**
+ * Prints a diner invoice / bill receipt on the locally-paired Bluetooth printer.
+ * Unlike printKot (which goes via Ably to the kitchen device), this prints
+ * directly from whatever device calls it — intended for the staff/waiter device.
+ */
+export async function printBill(bill: InvoiceBill): Promise<'printed' | 'failed'> {
+  const text = buildInvoiceText(bill, _config?.paperWidth ?? 58);
+  try {
+    await printRaw(text);
+    return 'printed';
+  } catch {
     return 'failed';
   }
 }

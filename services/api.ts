@@ -180,7 +180,7 @@ export const crewTables = {
 
 export interface BillOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; modifiers_summary?: string | null; }
 export interface BillOrder { order_id: string; placed_at: string; status: 'received' | 'preparing' | 'ready' | 'served'; items: BillOrderItem[]; order_total: number; }
-export interface SessionBill { session_id: string; table_number: number; status: 'active' | 'paid' | 'closed'; orders: BillOrder[]; session_total: number; tax_total?: number; total_payable?: number; }
+export interface SessionBill { session_id: string; table_number: number; status: 'active' | 'paid' | 'closed'; orders: BillOrder[]; session_total: number; /** Actual GST rate used (5, 12, or 18; 0 = no GST). */ tax_rate?: number; tax_total?: number; total_payable?: number; payment_method?: 'cash' | 'upi_direct' | 'mixed'; splits?: Array<{ method: 'CASH' | 'UPI_DIRECT'; amount: number }>; }
 
 export const crewSessions = {
   start: (tableId: string) =>

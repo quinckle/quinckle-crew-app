@@ -74,6 +74,7 @@ import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
 import { crewTables, crewSessions, crewOrders, crewPayments, restaurantApi, crewAuth, crewNotifications } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
+import { printKot, getStatus as getPrinterStatus } from '../../services/printer';
 
 async function playSound(file: any) {
   try {
@@ -679,7 +680,26 @@ export default function StaffDashboard() {
       setPendingCashCount(c => Math.max(0, c - 1));
     });
 
-    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off7(); off7b(); off8(); off9(); };
+    // Reprint request — fires on any device with printer connected
+    const offReprint = subscribeChannel(`partner:${restaurantId}`, 'reprint_request', (data: any) => {
+      if (getPrinterStatus() === 'connected' && data?.order) {
+        const items = (data.order.items ?? []).map((i: any) => ({
+          name: i.name ?? i.menuItemName ?? '',
+          quantity: i.quantity,
+          notes: i.notes,
+        }));
+        void printKot({
+          id: data.order.id,
+          tableNumber: String(data.order.tableNumber ?? '?'),
+          restaurantName: staffInfo?.restaurantName ?? '',
+          createdAt: data.order.createdAt ?? new Date().toISOString(),
+          items,
+          isAddOn: false,
+        }, false);
+      }
+    });
+
+    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off7(); off7b(); off8(); off9(); offReprint(); };
   }, [staffInfo?.restaurantId]);
 
   // C1: Track Ably connection health — show a warning when the waiter channel drops.
