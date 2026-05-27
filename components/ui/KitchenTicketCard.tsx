@@ -1,11 +1,9 @@
 /**
  * KitchenTicketCard — simplified kitchen view.
  *
- * Shows the order ticket with read-only item list and a single Bump button.
- * Bumping removes the card from the active queue — it does NOT affect the
- * staff's ability to serve items. No checkboxes, no status pipeline.
- *
- * Completed-tab cards are shown dimmed with no Bump button.
+ * Shows the order ticket with a read-only item list. No manual actions —
+ * the card disappears automatically when the waiter marks all items served.
+ * Completed-tab cards (status SERVED) are shown dimmed.
  */
 
 import React, { useEffect, useRef } from 'react';
@@ -32,16 +30,15 @@ export type KitchenTicket = {
   table:     string;
   location:  string;
   placedAt?: string;
-  status:    'new' | 'bumped';
+  status:    'new' | 'completed';
   items:     KitchenItem[];
 };
 
 interface Props {
-  ticket:           KitchenTicket;
-  index:            number;
-  onBump?:          () => void;   // undefined on completed tab
-  isCompletedTab:   boolean;
-  onReprint?:       () => void;
+  ticket:         KitchenTicket;
+  index:          number;
+  isCompletedTab: boolean;
+  onReprint?:     () => void;
 }
 
 // Format elapsed time as "0:42" / "06:18" / "1h 24m"
@@ -61,7 +58,6 @@ function formatElapsed(placedAt?: string): string {
 export function KitchenTicketCard({
   ticket,
   index,
-  onBump,
   isCompletedTab,
   onReprint,
 }: Props) {
@@ -77,16 +73,15 @@ export function KitchenTicketCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Live elapsed timer
+  // Live elapsed timer (active cards only)
   const [, setTick] = React.useState(0);
   useEffect(() => {
-    if (isCompletedTab) return; // no need to tick on completed cards
+    if (isCompletedTab) return;
     const id = setInterval(() => setTick((t) => t + 1), 20_000);
     return () => clearInterval(id);
   }, [isCompletedTab]);
 
   const elapsed = formatElapsed(ticket.placedAt);
-
   const accentColor = isCompletedTab ? QuinckleColors.borderStrong : QuinckleColors.primary;
 
   return (
@@ -111,10 +106,18 @@ export function KitchenTicketCard({
           </View>
 
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <View style={styles.elapsedChip}>
-              <Ionicons name="time-outline" size={11} color={QuinckleColors.textSecondary} />
-              <Text style={styles.elapsedText}>{elapsed}</Text>
-            </View>
+            {!isCompletedTab && (
+              <View style={styles.elapsedChip}>
+                <Ionicons name="time-outline" size={11} color={QuinckleColors.textSecondary} />
+                <Text style={styles.elapsedText}>{elapsed}</Text>
+              </View>
+            )}
+            {isCompletedTab && (
+              <View style={[styles.elapsedChip, styles.servedChip]}>
+                <Ionicons name="checkmark-circle-outline" size={11} color={QuinckleColors.success} />
+                <Text style={[styles.elapsedText, { color: QuinckleColors.success }]}>Served</Text>
+              </View>
+            )}
             {onReprint && (
               <TouchableOpacity
                 onPress={() => {
@@ -144,21 +147,6 @@ export function KitchenTicketCard({
             </View>
           ))}
         </View>
-
-        {/* ── Bump button (active tab only) ─────────────────── */}
-        {!isCompletedTab && onBump && (
-          <TouchableOpacity
-            style={styles.bumpBtn}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-              onBump();
-            }}
-            activeOpacity={0.75}
-          >
-            <Ionicons name="checkmark-done" size={14} color={QuinckleColors.success} />
-            <Text style={styles.bumpBtnText}>Bump</Text>
-          </TouchableOpacity>
-        )}
       </View>
     </Animated.View>
   );
@@ -174,11 +162,11 @@ const styles = StyleSheet.create({
     overflow:        'hidden',
   },
   cardDim: {
-    opacity: 0.5,
+    opacity: 0.55,
   },
   accentStrip: {
-    width:      3,
-    alignSelf:  'stretch',
+    width:     3,
+    alignSelf: 'stretch',
   },
   cardBody: {
     flex:    1,
@@ -228,6 +216,10 @@ const styles = StyleSheet.create({
     paddingVertical:   3,
     borderRadius:      Radius.sm,
   },
+  servedChip: {
+    backgroundColor: QuinckleColors.successSoft,
+    borderColor:     QuinckleColors.successBorder,
+  },
   elapsedText: {
     color:         QuinckleColors.textSecondary,
     fontSize:      12,
@@ -249,12 +241,11 @@ const styles = StyleSheet.create({
   // ── Items ──────────────────────────────────────────────
   itemList: {
     gap: 2,
-    marginBottom: Spacing.md,
   },
   itemRow: {
-    flexDirection: 'row',
-    alignItems:    'flex-start',
-    gap:           Spacing.sm,
+    flexDirection:  'row',
+    alignItems:     'flex-start',
+    gap:            Spacing.sm,
     paddingVertical: 3,
   },
   itemLine: {
@@ -264,28 +255,9 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
   itemModifiers: {
-    color:      QuinckleColors.textTertiary,
-    fontSize:   11,
-    fontStyle:  'italic',
-    marginTop:  1,
-  },
-
-  // ── Bump button ────────────────────────────────────────
-  bumpBtn: {
-    flexDirection:   'row',
-    alignItems:      'center',
-    justifyContent:  'center',
-    gap:             6,
-    paddingVertical: 8,
-    borderRadius:    Radius.md,
-    backgroundColor: QuinckleColors.successSoft,
-    borderWidth:     1,
-    borderColor:     QuinckleColors.successBorder,
-  },
-  bumpBtnText: {
-    color:         QuinckleColors.success,
-    fontSize:      13,
-    fontWeight:    '700',
-    letterSpacing: 0.3,
+    color:     QuinckleColors.textTertiary,
+    fontSize:  11,
+    fontStyle: 'italic',
+    marginTop: 1,
   },
 });

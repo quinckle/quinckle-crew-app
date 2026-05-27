@@ -14,7 +14,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   FlatList,
   Image,
-  LayoutAnimation,
   Platform,
   StyleSheet,
   Text,
@@ -30,7 +29,6 @@ import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { printKot, getStatus as getPrinterStatus } from '../../services/printer';
 import { useAuth } from '../../context/AuthContext';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
-import { PICKUP_LAYOUT_PRESET } from '../../components/ui/pickup';
 import { BottomNavbar, type BottomNavTab } from '../../components/ui/BottomNavbar';
 import {
   KitchenTicketCard,
@@ -79,19 +77,19 @@ export default function CookDashboard() {
   const knownOrderIdsRef = useRef<Set<string>>(new Set());
 
   const [orders,        setOrders]        = useState<KitchenTicket[]>([]);
-  const [bumpedOrders,  setBumpedOrders]  = useState<KitchenTicket[]>([]);
+  const [completedOrders, setCompletedOrders] = useState<KitchenTicket[]>([]);
   const [isLoading,     setIsLoading]     = useState(true);
   const [searchText,    setSearchText]    = useState('');
   const [navTab,        setNavTab]        = useState<CookTab>('active');
   const [realtimeOk,    setRealtimeOk]    = useState(true);
 
   // ── Data mapping ─────────────────────────────────────────────────────────
-  const mapTicket = (t: any, isBumped = false): KitchenTicket => ({
+  const mapTicket = (t: any, isCompleted = false): KitchenTicket => ({
     id:       t.order_id,
     table:    `T${t.table_number}`,
     location: '',
     placedAt: t.placed_at,
-    status:   isBumped ? 'bumped' : 'new',
+    status:   isCompleted ? 'completed' : 'new',
     items: t.items.map((item: any) => ({
       id:               item.item_id,
       name:             `${item.qty}× ${item.name}${item.note ? ` — ${item.note}` : ''}`,
@@ -116,7 +114,7 @@ export default function CookDashboard() {
 
       setOrders(tickets.map((t) => mapTicket(t)));
       const completedTickets: any[] = completedRes?.tickets ?? [];
-      setBumpedOrders(completedTickets.map((t) => mapTicket(t, true)));
+      setCompletedOrders(completedTickets.map((t) => mapTicket(t, true)));
     } catch {
       // keep existing data on network error
     } finally {
@@ -213,12 +211,12 @@ export default function CookDashboard() {
   }, [staffInfo?.restaurantId]);
 
   const counts = useMemo(
-    () => ({ active: orders.length, completed: bumpedOrders.length }),
-    [orders, bumpedOrders],
+    () => ({ active: orders.length, completed: completedOrders.length }),
+    [orders, completedOrders],
   );
 
   const filteredOrders = useMemo(() => {
-    const source = navTab === 'completed' ? bumpedOrders : orders;
+    const source = navTab === 'completed' ? completedOrders : orders;
     const query = searchText.trim().toLowerCase();
     if (!query) return source;
     return source.filter((order) => {
@@ -227,29 +225,12 @@ export default function CookDashboard() {
         .join(' ')}`.toLowerCase();
       return blob.includes(query);
     });
-  }, [orders, bumpedOrders, searchText, navTab]);
-
-  // Bump a ticket: optimistic move to completed, then persist via API
-  const handleBump = async (orderId: string) => {
-    LayoutAnimation.configureNext(PICKUP_LAYOUT_PRESET);
-    setOrders((prev) => {
-      const order = prev.find((o) => o.id === orderId);
-      if (!order) return prev;
-      setBumpedOrders((b) => [{ ...order, status: 'bumped' as const }, ...b]);
-      return prev.filter((o) => o.id !== orderId);
-    });
-    try {
-      await kitchen.bumpOrder(orderId);
-    } catch {
-      // On failure reload from server to restore correct state
-      await loadOrders();
-    }
-  };
+  }, [orders, completedOrders, searchText, navTab]);
 
   // ── Header line ──────────────────────────────────────────────────────────
   const headerLine = useMemo(() => {
     if (navTab === 'completed') {
-      return counts.completed === 1 ? '1 bumped today' : `${counts.completed} bumped today`;
+      return counts.completed === 1 ? '1 served today' : `${counts.completed} served today`;
     }
     if (counts.active === 0) return 'No active tickets';
     return counts.active === 1 ? '1 active ticket' : `${counts.active} active tickets`;
@@ -331,12 +312,7 @@ export default function CookDashboard() {
           renderItem={({ item, index }) => (
             <KitchenTicketCard
               ticket={item}
-              index={
-                navTab === 'completed'
-                  ? bumpedOrders.indexOf(item) + 1
-                  : index + 1
-              }
-              onBump={navTab === 'active' ? () => void handleBump(item.id) : undefined}
+              index={index + 1}
               isCompletedTab={navTab === 'completed'}
               onReprint={getPrinterStatus() === 'connected' ? () => {
                 void printerApi.reprint(item.id, 'Manual reprint from cook screen');
@@ -364,7 +340,7 @@ export default function CookDashboard() {
               <Text style={styles.emptySubtitle}>
                 {navTab === 'active'
                   ? 'New tickets will appear here as they come in.'
-                  : 'Bumped tickets show up here for the rest of the day.'}
+                  : 'Orders served by staff today will appear here.'}
               </Text>
             </View>
           }
