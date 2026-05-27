@@ -1,8 +1,17 @@
 import { AuthProvider } from '@/context/AuthContext';
 import { Stack } from 'expo-router';
+import * as Notifications from 'expo-notifications';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
 import { QuinckleColors } from '@/constants/Colors';
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  } as any),
+});
 
 export default function RootLayout() {
   return (

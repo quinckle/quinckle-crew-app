@@ -357,8 +357,18 @@ export const crewPayments = {
 // ── Crew Notifications ────────────────────────────────────────────────────────
 
 export const crewNotifications = {
-  registerToken: (expoPushToken: string) =>
-    request<{ success: boolean }>('POST', '/api/crew/notifications/token', { token: expoPushToken }, true),
+  registerToken: (expoPushToken: string, metadata?: {
+    platform?: string;
+    deviceId?: string;
+    deviceName?: string;
+    appVersion?: string;
+  }) =>
+    request<{ success: boolean }>(
+      'POST',
+      '/api/crew/notifications/token',
+      { token: expoPushToken, ...(metadata ?? {}) },
+      true,
+    ),
 };
 
 // ── Restaurant / Menu (public) ────────────────────────────────────────────────

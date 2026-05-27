@@ -5,6 +5,7 @@ import { router } from 'expo-router';
 import { setCrewToken, setOn401Callback } from '../services/api';
 import type { StaffInfo } from '../services/api';
 import { setRealtimeAuth, disconnectRealtime } from '../services/realtime';
+import { registerCrewPushNotifications } from '../services/pushNotifications';
 
 type Role = 'staff' | 'cook' | null;
 
@@ -107,6 +108,14 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       })
       .finally(() => setIsRestoring(false));
   }, []);
+
+  useEffect(() => {
+    if (!crewToken || !staffInfo?.id) return;
+
+    registerCrewPushNotifications().catch(err => {
+      console.warn('[push] token registration failed', err);
+    });
+  }, [crewToken, staffInfo?.id]);
 
   const login = (selectedRole: Role, token?: string, staff?: StaffInfo) => {
     setRole(selectedRole);

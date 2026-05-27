@@ -72,7 +72,7 @@ function GridTexture({ height = 100 }: { height?: number }) {
 }
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
-import { crewTables, crewSessions, crewOrders, crewPayments, restaurantApi, crewAuth, crewNotifications, printerApi } from '../../services/api';
+import { crewTables, crewSessions, crewOrders, crewPayments, restaurantApi, crewAuth, printerApi } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { printKot, getStatus as getPrinterStatus } from '../../services/printer';
 
@@ -92,7 +92,6 @@ import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
-import Constants from 'expo-constants';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { BottomNavbar } from '../../components/ui/BottomNavbar';
@@ -210,39 +209,6 @@ export default function StaffDashboard() {
   const [kotAutoPrint, setKotAutoPrint] = useState(true);
   const kotAutoPrintRef = useRef(true);
   const setKotAutoPrintSync = (v: boolean) => { kotAutoPrintRef.current = v; setKotAutoPrint(v); };
-
-  useEffect(() => {
-    (async () => {
-      const { status: existingStatus } = await Notifications.getPermissionsAsync();
-      let finalStatus = existingStatus;
-      if (existingStatus !== 'granted') {
-        const { status } = await Notifications.requestPermissionsAsync();
-        finalStatus = status;
-      }
-      if (finalStatus !== 'granted') {
-        console.warn('Failed to get push token for push notification!');
-        return;
-      }
-      // getExpoPushTokenAsync only works in a real dev/prod build — skip in Expo Go
-      // (SDK 53 removed remote notification support from Expo Go).
-      const isExpoGo = Constants.appOwnership === 'expo';
-      if (!isExpoGo) {
-        try {
-          const projectId: string | undefined =
-            Constants.expoConfig?.extra?.eas?.projectId ??
-            (Constants as any).easConfig?.projectId;
-          if (!projectId || projectId === 'REPLACE_WITH_EAS_PROJECT_ID') {
-            console.warn('[push] EAS projectId not configured in app.json');
-          } else {
-            const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
-            await crewNotifications.registerToken(tokenData.data);
-          }
-        } catch (err) {
-          console.warn('[push] token registration failed', err);
-        }
-      }
-    })();
-  }, []);
 
   const simulateNewOrder = async () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
