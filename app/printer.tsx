@@ -262,24 +262,6 @@ export default function PrinterScreen() {
             </View>
           </View>
 
-          {/* Kitchen mode badge */}
-          {serverStatus && (
-            <View style={styles.modeBadge}>
-              <Ionicons
-                name={serverStatus.kitchenMode === 'DIGITAL_ONLY' ? 'tablet-portrait' : serverStatus.kitchenMode === 'PAPER_ONLY' ? 'print' : 'layers'}
-                size={13}
-                color={QuinckleColors.textSecondary}
-              />
-              <Text style={styles.modeBadgeText}>
-                {serverStatus.kitchenMode === 'DIGITAL_ONLY'
-                  ? 'Digital Only mode'
-                  : serverStatus.kitchenMode === 'PAPER_ONLY'
-                    ? 'Paper Only mode — auto-printing'
-                    : 'Hybrid mode — print + cook screen'}
-              </Text>
-            </View>
-          )}
-
           {/* Auto-print toggle */}
           <View style={styles.autoPrintRow}>
             <View style={{ flex: 1 }}>

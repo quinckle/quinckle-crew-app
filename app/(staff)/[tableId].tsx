@@ -13,7 +13,7 @@ import { useAuth } from '../../context/AuthContext';
 import { subscribeChannel } from '../../services/realtime';
 import type { BillOrderItem, BillOrder, MenuItem } from '../../services/api';
 
-type ItemStatus = 'prep' | 'ready' | 'served';
+type ItemStatus = 'prep' | 'served';
 
 type FlatItem = {
   key: string;
@@ -28,14 +28,12 @@ type FlatItem = {
 };
 
 const STATUS_META: Record<ItemStatus, { label: string; color: string; bg: string }> = {
-  prep:   { label: 'Preparing', color: QuinckleColors.warning,      bg: QuinckleColors.warningSoft },
-  ready:  { label: 'Ready',     color: QuinckleColors.success,      bg: QuinckleColors.successSoft },
+  prep:   { label: 'Preparing', color: QuinckleColors.warning, bg: QuinckleColors.warningSoft },
   served: { label: 'Served',    color: QuinckleColors.textTertiary, bg: 'transparent' },
 };
 
-function itemStatus(item: BillOrderItem, orderStatus: BillOrder['status']): ItemStatus {
+function itemStatus(item: BillOrderItem): ItemStatus {
   if (item.served) return 'served';
-  if (orderStatus === 'ready' || item.item_status === 'done') return 'ready';
   return 'prep';
 }
 
@@ -57,6 +55,9 @@ export default function TableDetail() {
   const [orders, setOrders] = useState<BillOrder[]>([]);
   const [sessionTotal, setSessionTotal] = useState(0);
   const [taxTotal, setTaxTotal] = useState(0);
+  const [serviceChargeTotal, setServiceChargeTotal] = useState(0);
+  const [discountTotal, setDiscountTotal] = useState(0);
+  const [tipTotal, setTipTotal] = useState(0);
   const [payableTotal, setPayableTotal] = useState(0);
   const [sessionStatus, setSessionStatus] = useState<'active' | 'paid' | 'closed'>('active');
   const [since, setSince] = useState('');
@@ -140,13 +141,24 @@ export default function TableDetail() {
     if (!sessionId) { setIsLoading(false); return; }
     try {
       const bill = await crewSessions.getBill(sessionId);
-      const rate = bill.tax_rate ?? 0;
-      const nextTax = typeof bill.tax_total === 'number' ? bill.tax_total : bill.session_total * (rate / 100);
+      // Prefer the canonical breakdown when present; fall back to legacy flat
+      // fields for older backend responses.
+      const bd = bill.breakdown;
+      const rate    = bd?.taxRate ?? bill.tax_rate ?? 0;
+      const subt    = bd?.subtotal ?? bill.session_total;
+      const tax     = bd?.taxAmount ?? bill.tax_total ?? (subt * (rate / 100));
+      const charges = bd?.chargesTotal ?? bill.service_charge_total ?? 0;
+      const disc    = bd?.discount ?? bill.discount_total ?? 0;
+      const tipV    = bd?.tip ?? bill.tip_total ?? 0;
+      const grand   = bd?.total ?? bill.total_payable ?? (subt + tax + charges + tipV - disc);
       setOrders(bill.orders);
-      setSessionTotal(bill.session_total);
+      setSessionTotal(subt);
       setBillTaxRate(rate);
-      setTaxTotal(nextTax);
-      setPayableTotal(typeof bill.total_payable === 'number' ? bill.total_payable : bill.session_total + nextTax);
+      setTaxTotal(tax);
+      setServiceChargeTotal(charges);
+      setDiscountTotal(disc);
+      setTipTotal(tipV);
+      setPayableTotal(grand);
       setSessionStatus(bill.status);
       setIsPaid(bill.status === 'paid');
       setBillPaymentMethod(bill.payment_method);
@@ -259,7 +271,7 @@ export default function TableDetail() {
         order_id: order.order_id,
         name: `${item.qty}× ${item.name}`,
         modifiersSummary: item.modifiers_summary,
-        status: itemStatus(item, order.status),
+        status: itemStatus(item),
         price: item.price * item.qty,
         orderedAt: formatTime(order.placed_at),
         qty: item.qty,
@@ -279,7 +291,7 @@ export default function TableDetail() {
   const grandTotal = payableTotal;
 
   const handleServe = async (item: FlatItem) => {
-    if (item.status !== 'ready') return;
+    if (item.status === 'served') return; // already served, no-op
     // Optimistic update
     setOrders(prev => prev.map(o => {
       if (o.order_id !== item.order_id) return o;
@@ -402,8 +414,21 @@ export default function TableDetail() {
           onPress: async () => {
             try {
               if (sessionId) await crewSessions.end(sessionId);
-            } catch { /* ignore */ }
-            router.replace('/(staff)');
+              router.replace('/(staff)');
+            } catch (err: any) {
+              const code = err?.error || err?.message || '';
+              if (code === 'SESSION_ALREADY_CLOSED') {
+                // Session was already closed (e.g. by diner payment or partner) —
+                // table is already free, just go back.
+                router.replace('/(staff)');
+              } else {
+                showDialog(
+                  'Could Not Free Table',
+                  'Something went wrong while ending the session. Please try again.',
+                  [{ label: 'OK', onPress: () => {} }],
+                );
+              }
+            }
           },
         },
       ],
@@ -533,8 +558,6 @@ export default function TableDetail() {
         }
         renderItem={({ item }) => {
           const isServed = item.status === 'served';
-          const isReady = item.status === 'ready';
-          const meta = STATUS_META[item.status];
           return (
             <View style={[styles.orderItemRow, isServed && { opacity: 0.55 }]}>
               <View style={styles.orderItemLeft}>
@@ -556,7 +579,7 @@ export default function TableDetail() {
                   <Ionicons name="checkmark" size={11} color="#4ade80" />
                   <Text style={styles.servedBadgeText}>Served</Text>
                 </View>
-              ) : isReady ? (
+              ) : (
                 <TouchableOpacity
                   style={styles.markServedBtn}
                   onPress={() => void handleServe(item)}
@@ -564,10 +587,6 @@ export default function TableDetail() {
                 >
                   <Text style={styles.markServedText}>Mark served</Text>
                 </TouchableOpacity>
-              ) : (
-                <View style={[styles.statusTag, { backgroundColor: meta.bg }]}>
-                  <Text style={[styles.statusTagText, { color: meta.color }]}>{meta.label}</Text>
-                </View>
               )}
             </View>
           );
@@ -598,10 +617,28 @@ export default function TableDetail() {
               <Text style={styles.summaryLabel}>Subtotal</Text>
               <Text style={styles.summaryValue}>₹{sessionTotal.toFixed(0)}</Text>
             </View>
-            {billTaxRate > 0 && (
+            {discountTotal > 0 && (
               <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>GST ({billTaxRate}%)</Text>
+                <Text style={styles.summaryLabel}>Discount</Text>
+                <Text style={[styles.summaryValue, { color: '#86efac' }]}>−₹{discountTotal.toFixed(0)}</Text>
+              </View>
+            )}
+            {serviceChargeTotal > 0 && (
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>Service charge</Text>
+                <Text style={styles.summaryValue}>₹{serviceChargeTotal.toFixed(0)}</Text>
+              </View>
+            )}
+            {tax > 0 && (
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>{billTaxRate > 0 ? `GST (${billTaxRate}%)` : 'Tax'}</Text>
                 <Text style={styles.summaryValue}>₹{tax.toFixed(2)}</Text>
+              </View>
+            )}
+            {tipTotal > 0 && (
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>Tip</Text>
+                <Text style={styles.summaryValue}>₹{tipTotal.toFixed(0)}</Text>
               </View>
             )}
             <View style={styles.grandTotalRow}>

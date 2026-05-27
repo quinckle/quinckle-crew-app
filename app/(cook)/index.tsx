@@ -42,8 +42,6 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-const READY_FADE_DELAY = 700;
-
 async function playSound(file: any) {
   try {
     await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
@@ -87,26 +85,19 @@ export default function CookDashboard() {
   const [navTab,        setNavTab]        = useState<CookTab>('active');
   const [realtimeOk,    setRealtimeOk]    = useState(true);
 
-  // ── Data mapping (unchanged) ─────────────────────────────────────────────
-  const mapTicket = (t: any, statusOverride?: KitchenTicket['status']): KitchenTicket => {
-    const allDone = t.items.every((i: any) => i.item_status === 'done');
-    const anyDone = t.items.some((i: any) => i.item_status === 'done');
-    const status: KitchenTicket['status'] =
-      statusOverride ?? (allDone ? 'ready' : anyDone ? 'preparing' : 'new');
-    return {
-      id:       t.order_id,
-      table:    `T${t.table_number}`,
-      location: '',
-      placedAt: t.placed_at,
-      status,
-      items: t.items.map((item: any) => ({
-        id:               item.item_id,
-        name:             `${item.qty}× ${item.name}${item.note ? ` — ${item.note}` : ''}`,
-        modifiersSummary: item.modifiers_summary ?? null,
-        isPrepared:       item.item_status === 'done',
-      })),
-    };
-  };
+  // ── Data mapping ─────────────────────────────────────────────────────────
+  const mapTicket = (t: any, isBumped = false): KitchenTicket => ({
+    id:       t.order_id,
+    table:    `T${t.table_number}`,
+    location: '',
+    placedAt: t.placed_at,
+    status:   isBumped ? 'bumped' : 'new',
+    items: t.items.map((item: any) => ({
+      id:               item.item_id,
+      name:             `${item.qty}× ${item.name}${item.note ? ` — ${item.note}` : ''}`,
+      modifiersSummary: item.modifiers_summary ?? item.modifiersSummary ?? null,
+    })),
+  });
 
   const loadOrders = useCallback(async () => {
     try {
@@ -125,7 +116,7 @@ export default function CookDashboard() {
 
       setOrders(tickets.map((t) => mapTicket(t)));
       const completedTickets: any[] = completedRes?.tickets ?? [];
-      setBumpedOrders(completedTickets.map((t) => mapTicket(t, 'bumped')));
+      setBumpedOrders(completedTickets.map((t) => mapTicket(t, true)));
     } catch {
       // keep existing data on network error
     } finally {
@@ -217,11 +208,7 @@ export default function CookDashboard() {
   }, [staffInfo?.restaurantId]);
 
   const counts = useMemo(
-    () => ({
-      active:    orders.length,
-      ready:     orders.filter((o) => o.status === 'ready').length,
-      completed: bumpedOrders.length,
-    }),
+    () => ({ active: orders.length, completed: bumpedOrders.length }),
     [orders, bumpedOrders],
   );
 
@@ -237,64 +224,30 @@ export default function CookDashboard() {
     });
   }, [orders, bumpedOrders, searchText, navTab]);
 
-  // Auto-bump to Completed when the last item flips to done — unchanged
-  const sweepReadyOrderToCompleted = (id: string) => {
-    setTimeout(() => {
-      LayoutAnimation.configureNext(PICKUP_LAYOUT_PRESET);
-      setOrders((prev) => {
-        const order = prev.find((o) => o.id === id);
-        if (!order) return prev;
-        setBumpedOrders((b) => [{ ...order, status: 'bumped' as const }, ...b]);
-        return prev.filter((o) => o.id !== id);
-      });
-    }, READY_FADE_DELAY);
-  };
-
-  const toggleItemPrepared = async (orderId: string, itemId: string) => {
-    const order = orders.find((o) => o.id === orderId);
-    if (!order || order.status === 'bumped') return;
-    const item = order.items.find((i) => i.id === itemId);
-    if (!item) return;
-    const newIsPrepared = !item.isPrepared;
-
-    let becameFullyReady = false;
-
-    setOrders((prev) =>
-      prev.map((o) => {
-        if (o.id !== orderId) return o;
-        const updated = o.items.map((i) =>
-          i.id === itemId ? { ...i, isPrepared: newIsPrepared } : i,
-        );
-        const allDone = updated.every((i) => i.isPrepared);
-        const anyDone = updated.some((i) => i.isPrepared);
-        const status: KitchenTicket['status'] = allDone ? 'ready' : anyDone ? 'preparing' : 'new';
-        if (allDone && o.status !== 'ready') becameFullyReady = true;
-        return { ...o, items: updated, status };
-      }),
-    );
-
-    if (becameFullyReady) sweepReadyOrderToCompleted(orderId);
-
+  // Bump a ticket: optimistic move to completed, then persist via API
+  const handleBump = async (orderId: string) => {
+    LayoutAnimation.configureNext(PICKUP_LAYOUT_PRESET);
+    setOrders((prev) => {
+      const order = prev.find((o) => o.id === orderId);
+      if (!order) return prev;
+      setBumpedOrders((b) => [{ ...order, status: 'bumped' as const }, ...b]);
+      return prev.filter((o) => o.id !== orderId);
+    });
     try {
-      await kitchen.updateItemStatus(orderId, itemId, newIsPrepared ? 'done' : 'pending');
+      await kitchen.bumpOrder(orderId);
     } catch {
+      // On failure reload from server to restore correct state
       await loadOrders();
     }
   };
 
-  // ── Header line: "5 cooking · 2 ready" / "12 completed today" ───────────
+  // ── Header line ──────────────────────────────────────────────────────────
   const headerLine = useMemo(() => {
     if (navTab === 'completed') {
-      return counts.completed === 1
-        ? '1 completed today'
-        : `${counts.completed} completed today`;
+      return counts.completed === 1 ? '1 bumped today' : `${counts.completed} bumped today`;
     }
     if (counts.active === 0) return 'No active tickets';
-    const cooking = counts.active - counts.ready;
-    const parts: string[] = [];
-    if (cooking > 0) parts.push(`${cooking} cooking`);
-    if (counts.ready > 0) parts.push(`${counts.ready} ready`);
-    return parts.join(' · ');
+    return counts.active === 1 ? '1 active ticket' : `${counts.active} active tickets`;
   }, [navTab, counts]);
 
   return (
@@ -378,7 +331,7 @@ export default function CookDashboard() {
                   ? bumpedOrders.indexOf(item) + 1
                   : index + 1
               }
-              onTogglePrepared={(itemId) => toggleItemPrepared(item.id, itemId)}
+              onBump={navTab === 'active' ? () => void handleBump(item.id) : undefined}
               isCompletedTab={navTab === 'completed'}
               onReprint={getPrinterStatus() === 'connected' ? () => {
                 void printerApi.reprint(item.id, 'Manual reprint from cook screen');
