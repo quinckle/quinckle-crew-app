@@ -15,6 +15,7 @@
     },
     "android": {
       "package": "com.quinckle.crew",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#0A0A0B",
         "foregroundImage": "./assets/images/logo/quinckle crew icon.png"

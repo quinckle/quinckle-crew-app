@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "54883776036",
+    "project_id": "quinckle-fcm",
+    "storage_bucket": "quinckle-fcm.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:54883776036:android:a0655e1ad69b5844ffcab1",
+        "android_client_info": {
+          "package_name": "com.quinckle.crew"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDJ9Q9TqfIFVdN7wt2kQa6sZGMjkXZyGc0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
