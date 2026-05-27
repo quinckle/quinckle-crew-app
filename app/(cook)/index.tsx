@@ -170,6 +170,10 @@ export default function CookDashboard() {
     });
     const unsubBumped    = subscribeChannel(`kitchen:${restaurantId}`, 'item_bumped',     () => void loadOrders());
     const unsubCancelled = subscribeChannel(`kitchen:${restaurantId}`, 'order_cancelled', () => void loadOrders());
+    // When staff marks the last item served the order flips to SERVED and the
+    // backend publishes order_served to the kitchen channel — reload so the
+    // ticket disappears from the active queue in real-time.
+    const unsubServed    = subscribeChannel(`kitchen:${restaurantId}`, 'order_served',    () => void loadOrders());
 
     // Reprint request — fires on any device with printer connected
     const unsubReprint = subscribeChannel(`partner:${restaurantId}`, 'reprint_request', (data: any) => {
@@ -196,6 +200,7 @@ export default function CookDashboard() {
       unsubNew();
       unsubBumped();
       unsubCancelled();
+      unsubServed();
       unsubReprint();
     };
   }, [staffInfo?.restaurantId, loadOrders]);

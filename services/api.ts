@@ -228,11 +228,13 @@ export const crewSessions = {
 // ── Crew Orders (STEWARD/ADMIN) ───────────────────────────────────────────────
 
 export interface ActiveOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; }
-export interface ActiveOrder { order_id: string; table_number: number; session_id: string; status: 'received' | 'preparing' | 'ready' | 'served'; placed_at: string; items: ActiveOrderItem[]; }
+export interface ActiveOrder { order_id: string; table_number: number; session_id: string; status: 'received' | 'preparing' | 'ready' | 'served'; placed_at: string; served_at?: string; items: ActiveOrderItem[]; }
 
 export const crewOrders = {
   getActive: () =>
     request<{ orders: ActiveOrder[] }>('GET', '/api/crew/orders/active', undefined, true),
+  getServedToday: () =>
+    request<{ orders: ActiveOrder[] }>('GET', '/api/crew/orders/served-today', undefined, true),
 
   // Backend's Fastify schema requires `{ served: true }` in the body — sending
   // no body fails validation and the optimistic UI flip reverts when the

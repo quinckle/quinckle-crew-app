@@ -540,11 +540,47 @@ export default function StaffDashboard() {
     } catch (e) { console.error('[pickup] loadPickupOrders error:', e); }
   };
 
+  // Re-hydrate the Completed tab with today's served orders so history
+  // survives an app reload. Runs once on mount; only seeds orders that are
+  // not already in the pickupOrders list (i.e. carried from this session).
+  const loadServedToday = async () => {
+    try {
+      const res = await crewOrders.getServedToday();
+      const served = res.orders ?? [];
+      if (served.length === 0) return;
+      setPickupOrders(prev => {
+        const existingIds = new Set(prev.map(o => o.id));
+        const toAdd = served
+          .filter(o => !existingIds.has(o.order_id))
+          .map(order => ({
+            id: order.order_id,
+            tableNo: `T${order.table_number}`,
+            completedAt: order.served_at ?? order.placed_at,
+            items: order.items.map(item => ({
+              id: item.item_id,
+              name: `${item.qty}× ${item.name}`,
+              qty: item.qty,
+              orderedAt: (() => {
+                const d = new Date(order.placed_at);
+                return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+              })(),
+              isServed: true,
+              isReady: true,
+            })),
+          }));
+        if (toAdd.length === 0) return prev;
+        // Put seeded completed orders behind any live active orders
+        return [...prev, ...toAdd];
+      });
+    } catch (e) { console.error('[pickup] loadServedToday error:', e); }
+  };
+
   // Load once on mount — Ably drives all subsequent updates
   useEffect(() => {
     loadTables();
     loadMenuFromApi();
     loadPickupOrders();
+    loadServedToday();
     loadPendingCashCount();
     // Load KOT auto-print toggle from server
     printerApi.getStatus().then(res => {
