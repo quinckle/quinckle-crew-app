@@ -133,26 +133,6 @@ export function buildInvoiceText(bill: InvoiceBill, paperWidth: 58 | 80 = 58): s
   lines.push(`[L]<b>${leftRight('TOTAL', fmt(bill.grandTotal), W)}</b>`);
   lines.push(`[L]${D}`);
 
-  // ── Payment status ────────────────────────────────────────────────────────
-  if (bill.isPaid) {
-    if (bill.paymentMethod === 'mixed' && bill.splits?.length) {
-      lines.push('[C]<b>*** PAID — Split Payment ***</b>');
-      for (const split of bill.splits) {
-        const method =
-          split.method === 'CASH'       ? 'Cash' :
-          split.method === 'UPI_DIRECT' ? 'UPI'  : split.method;
-        lines.push(`[C]${method}: ${fmt(split.amount)}`);
-      }
-    } else {
-      const methodLabel =
-        bill.paymentMethod === 'cash'       ? 'Cash' :
-        bill.paymentMethod === 'upi_direct' ? 'UPI'  : 'Card';
-      lines.push(`[C]<b>*** PAID via ${methodLabel} ***</b>`);
-    }
-  } else {
-    lines.push('[C]<b>*** PAYMENT PENDING ***</b>');
-  }
-
   // ── Footer ────────────────────────────────────────────────────────────────
   lines.push(`[L]${d}`);
   lines.push('[C]Thank you for dining with us.');
