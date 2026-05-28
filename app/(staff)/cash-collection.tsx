@@ -57,9 +57,37 @@ export default function CashCollectionScreen() {
 
   const load = useCallback(async () => {
     try {
-      const data = await crewPayments.getCashRequests();
-      setPending(Array.isArray(data?.pending) ? data.pending : []);
-      setTodayCollected(Array.isArray(data?.todayCollected) ? data.todayCollected : []);
+      const [legacy, intents] = await Promise.all([
+        crewPayments.getCashRequests(),
+        crewPayments.getPendingPaymentIntents().catch(() => []),
+      ]);
+      const legacyPending = Array.isArray(legacy?.pending) ? legacy.pending : [];
+      const mappedIntents: PendingCashRequest[] = intents.map((i) => ({
+        orderId: `intent:${i.id}`,
+        intentId: i.id,
+        source: 'INTENT',
+        intentMethod: i.method,
+        sessionId: i.sessionId,
+        tableNumber: i.tableNumber,
+        amount: Number(i.amount.total ?? 0),
+        breakdown: {
+          subtotal: Number(i.amount.subtotal ?? 0),
+          discount: Number(i.amount.discount ?? 0),
+          chargesTotal: Number(i.amount.charges ?? 0),
+          taxRate: 0,
+          taxAmount: Number(i.amount.tax ?? 0),
+          tip: Number(i.amount.tip ?? 0),
+          total: Number(i.amount.total ?? 0),
+          currency: 'INR',
+        },
+        customerName: null,
+        customerPhone: '',
+        requestedAt: i.createdAt,
+        method: i.method === 'UPI_DIRECT' ? 'UPI_DIRECT' : 'STAFF_COLLECT',
+        upi: i.upi ? { vpa: i.upi.vpa, displayName: i.upi.displayName } : null,
+      }));
+      setPending([...mappedIntents, ...legacyPending]);
+      setTodayCollected(Array.isArray(legacy?.todayCollected) ? legacy.todayCollected : []);
     } catch (err) {
       console.error('[cash-collection] load failed', err);
     } finally {
@@ -75,7 +103,11 @@ export default function CashCollectionScreen() {
     if (!restaurantId) return;
     const off1 = subscribeChannel(`waiter:${restaurantId}`, 'cash_collection_requested', () => void load());
     const off2 = subscribeChannel(`waiter:${restaurantId}`, 'cash_payment_collected', () => void load());
-    return () => { off1(); off2(); };
+    // Diner cancelled their pending staff-collect request — remove the stale card.
+    const off3 = subscribeChannel(`waiter:${restaurantId}`, 'payment_request_cancelled', () => void load());
+    const off4 = subscribeChannel(`waiter:${restaurantId}`, 'payment_intent_created', () => void load());
+    const off5 = subscribeChannel(`waiter:${restaurantId}`, 'payment_intent_updated', () => void load());
+    return () => { off1(); off2(); off3(); off4(); off5(); };
   }, [staffInfo?.restaurantId, load]);
 
   const handleRefresh = () => { setIsRefreshing(true); void load(); };
@@ -89,6 +121,13 @@ export default function CashCollectionScreen() {
         amount:        String(req.amount),
         customerName:  req.customerName ?? '',
         customerPhone: req.customerPhone,
+        intentId:      req.intentId ?? '',
+        intentMethod:  req.intentMethod ?? '',
+        upiVpa:        req.upi?.vpa ?? '',
+        upiName:       req.upi?.displayName ?? '',
+        // Serialize breakdown so the payment-collect screen can render the
+        // itemised breakdown without a second API call.
+        breakdown:     req.breakdown ? JSON.stringify(req.breakdown) : '',
       },
     });
   };

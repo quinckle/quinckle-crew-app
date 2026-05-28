@@ -22,7 +22,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import QRCode from 'react-native-qrcode-svg';
 import { useAuth } from '../../context/AuthContext';
-import { crewPayments, restaurantApi } from '../../services/api';
+import { crewPayments, restaurantApi, type BillBreakdown } from '../../services/api';
+import { BillBreakdownView } from '../../components/ui/BillBreakdownView';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 
 function buildUpiUri(vpa: string, merchantName: string, amount: number): string {
@@ -199,6 +200,11 @@ export default function PaymentCollectScreen() {
   const params  = useLocalSearchParams<{
     orderId: string; tableNumber: string; amount: string;
     customerName: string; customerPhone: string;
+    intentId?: string;
+    intentMethod?: 'STAFF_COLLECT' | 'UPI_DIRECT';
+    upiVpa?: string;
+    upiName?: string;
+    breakdown?: string;
   }>();
 
   const orderId       = params.orderId ?? '';
@@ -206,6 +212,12 @@ export default function PaymentCollectScreen() {
   const total         = Number(params.amount ?? 0);
   const customerName  = params.customerName && params.customerName.length > 0 ? params.customerName : null;
   const customerPhone = params.customerPhone ?? '';
+  const intentId      = params.intentId ?? '';
+  const intentMethod  = (params.intentMethod as 'STAFF_COLLECT' | 'UPI_DIRECT' | undefined) ?? undefined;
+  const breakdown: BillBreakdown | null = useMemo(() => {
+    if (!params.breakdown) return null;
+    try { return JSON.parse(params.breakdown) as BillBreakdown; } catch { return null; }
+  }, [params.breakdown]);
 
   const [mode, setMode]           = useState<Mode>('normal');
   const [step, setStep]           = useState<Step>('choose');
@@ -217,12 +229,19 @@ export default function PaymentCollectScreen() {
 
   useEffect(() => {
     const restaurantId = staffInfo?.restaurantId;
-    if (!restaurantId) { setIsLoadingUpi(false); return; }
+    if (!restaurantId) {
+      setPartnerUpi({ vpa: params.upiVpa ?? null, merchantName: params.upiName ?? null });
+      setIsLoadingUpi(false);
+      return;
+    }
     restaurantApi.getBranding(restaurantId)
-      .then(r => setPartnerUpi({ vpa: r?.data?.upiId ?? null, merchantName: r?.data?.upiDisplayName ?? r?.data?.name ?? null }))
+      .then(r => setPartnerUpi({
+        vpa: r?.data?.upiId ?? params.upiVpa ?? null,
+        merchantName: r?.data?.upiDisplayName ?? r?.data?.name ?? params.upiName ?? null,
+      }))
       .catch(() => {})
       .finally(() => setIsLoadingUpi(false));
-  }, [staffInfo?.restaurantId]);
+  }, [staffInfo?.restaurantId, params.upiVpa, params.upiName]);
 
   const cashNum    = Number(cashInput || 0);
   const upiNum     = Math.max(0, total - cashNum);
@@ -240,7 +259,16 @@ export default function PaymentCollectScreen() {
     if (!staffId) { Alert.alert('Not signed in', 'Please reopen the app and sign in again.'); return; }
     setLoading(true);
     try {
-      await crewPayments.collectPayment(orderId, staffId, splits);
+      if (intentId) {
+        if (splits.length > 0 && intentMethod === 'UPI_DIRECT' && splits[0].method !== 'UPI_DIRECT') {
+          Alert.alert('Invalid method', 'This request must be confirmed as UPI Direct.');
+          setLoading(false);
+          return;
+        }
+        await crewPayments.confirmPaymentIntent(intentId);
+      } else {
+        await crewPayments.collectPayment(orderId, staffId, splits);
+      }
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setSuccessInfo({ tableNumber, total, splits });
     } catch (err: any) {
@@ -254,7 +282,11 @@ export default function PaymentCollectScreen() {
   const handleCashTap     = () => { void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); setStep('confirm_cash'); };
   const handleCashConfirm = () => { void submit([{ method: 'CASH', amount: total }]); };
   const handleSplitPaid   = () => { if (!splitValid) return; void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); void submit([{ method: 'CASH', amount: cashNum }, { method: 'UPI_DIRECT', amount: upiNum }]); };
-  const enterSplitMode    = () => { void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setMode('split'); setStep('choose'); setCashInput(''); };
+  const enterSplitMode    = () => {
+    if (intentId) return;
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setMode('split'); setStep('choose'); setCashInput('');
+  };
   const exitSplitMode     = () => { setMode('normal'); setStep('choose'); setCashInput(''); Keyboard.dismiss(); };
 
   const splitHint =
@@ -278,14 +310,16 @@ export default function PaymentCollectScreen() {
           <Ionicons name="chevron-back" size={24} color={QuinckleColors.textPrimary} />
         </TouchableOpacity>
         <Text style={s.headerTitle}>Collect Payment</Text>
-        {mode === 'normal' ? (
+        {mode === 'normal' && !intentId ? (
           <TouchableOpacity onPress={enterSplitMode} activeOpacity={0.6} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Text style={s.splitLink}>Split</Text>
           </TouchableOpacity>
-        ) : (
+        ) : mode !== 'normal' ? (
           <TouchableOpacity onPress={exitSplitMode} activeOpacity={0.6} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Text style={s.cancelLink}>Cancel</Text>
           </TouchableOpacity>
+        ) : (
+          <View style={{ width: 44 }} />
         )}
       </View>
 
@@ -301,6 +335,11 @@ export default function PaymentCollectScreen() {
             </TouchableOpacity>
           ) : null}
         </View>
+        {breakdown && (breakdown.chargesTotal > 0 || breakdown.taxAmount > 0 || breakdown.discount > 0 || breakdown.tip > 0) && (
+          <View style={s.breakdownWrap}>
+            <BillBreakdownView breakdown={breakdown} compact />
+          </View>
+        )}
       </View>
 
       <View style={s.divider} />
@@ -392,11 +431,13 @@ export default function PaymentCollectScreen() {
 
         {mode === 'normal' && step === 'choose' && (
           <View style={s.btnRow}>
-            <TouchableOpacity style={s.btnCash} onPress={handleCashTap} disabled={loading} activeOpacity={0.8}>
-              {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>Cash</Text>}
-            </TouchableOpacity>
+            {intentMethod !== 'UPI_DIRECT' && (
+              <TouchableOpacity style={s.btnCash} onPress={handleCashTap} disabled={loading} activeOpacity={0.8}>
+                {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>Cash</Text>}
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
-              style={[s.btnUpi, (isLoadingUpi || !partnerUpi.vpa) && s.btnMuted]}
+              style={[s.btnUpi, (isLoadingUpi || !partnerUpi.vpa) && s.btnMuted, intentMethod === 'UPI_DIRECT' && { flex: 2 }]}
               onPress={handleUpiPay}
               disabled={loading || isLoadingUpi || !partnerUpi.vpa}
               activeOpacity={0.8}
@@ -457,6 +498,14 @@ const s = StyleSheet.create({
   customerRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   customerText: { color: QuinckleColors.textSecondary, fontSize: 14, fontWeight: '500' },
   phoneText: { color: QuinckleColors.textTertiary, fontSize: 14 },
+  breakdownWrap: {
+    marginTop: Spacing.md,
+    padding: Spacing.md,
+    backgroundColor: QuinckleColors.surface,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+  },
 
   divider: { height: StyleSheet.hairlineWidth, backgroundColor: QuinckleColors.border, marginHorizontal: Spacing.xl },
 

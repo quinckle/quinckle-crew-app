@@ -254,9 +254,13 @@ export interface CashLedger { shiftTotal: number; groups: CashLedgerGroup[]; }
 
 export interface PendingCashRequest {
   orderId: string;
+  intentId?: string;
+  source?: 'ORDER' | 'INTENT';
+  intentMethod?: 'STAFF_COLLECT' | 'UPI_DIRECT';
   sessionId: string;
   tableNumber: number;
   amount: number;
+  upi?: { vpa: string; displayName: string | null } | null;
   /** Itemised total breakdown — render this on the payment-collect screen. */
   breakdown?: BillBreakdown;
   customerName: string | null;
@@ -283,6 +287,25 @@ export interface CollectedCashRecord {
 export interface CashRequestsResponse {
   pending: PendingCashRequest[];
   todayCollected: CollectedCashRecord[];
+}
+
+export interface PendingPaymentIntent {
+  id: string;
+  sessionId: string;
+  tableNumber: number;
+  method: 'STAFF_COLLECT' | 'UPI_DIRECT';
+  amount: {
+    subtotal: number;
+    tax: number;
+    charges: number;
+    discount: number;
+    tip: number;
+    total: number;
+    currency: string;
+  };
+  upi: { vpa: string; displayName: string | null } | null;
+  expiresAt: string;
+  createdAt: string;
 }
 
 export const crewPayments = {
@@ -352,6 +375,23 @@ export const crewPayments = {
 
   getCashLedger: () =>
     request<CashLedger>('GET', '/api/crew/payments/cash-ledger', undefined, true),
+
+  getPendingPaymentIntents: async (): Promise<PendingPaymentIntent[]> => {
+    const res = await request<{ success: boolean; data?: PendingPaymentIntent[] }>(
+      'GET', '/api/crew/payments/intents/pending', undefined, true,
+    );
+    return Array.isArray(res.data) ? res.data : [];
+  },
+
+  confirmPaymentIntent: (intentId: string) =>
+    request<{ success: boolean; data: { id: string; status: 'CONFIRMED' } }>(
+      'POST', `/api/crew/payments/intents/${intentId}/confirm`, {}, true,
+    ),
+
+  rejectPaymentIntent: (intentId: string, reason?: string) =>
+    request<{ success: boolean; data: { id: string; status: 'CANCELLED' } }>(
+      'POST', `/api/crew/payments/intents/${intentId}/reject`, reason ? { reason } : {}, true,
+    ),
 };
 
 // ── Crew Notifications ────────────────────────────────────────────────────────
