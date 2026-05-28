@@ -21,6 +21,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import QRCode from 'react-native-qrcode-svg';
+import Svg, { Path } from 'react-native-svg';
 import { useAuth } from '../../context/AuthContext';
 import { crewPayments, restaurantApi, type BillBreakdown } from '../../services/api';
 import { BillBreakdownView } from '../../components/ui/BillBreakdownView';
@@ -111,7 +112,12 @@ function SuccessScreen({ info, onDone }: { info: SuccessInfo; onDone: () => void
       <Animated.View style={[sc.body, { transform: [{ translateY: riseAnim }] }]}>
         {/* Check icon */}
         <View style={sc.iconWrap}>
-          <Ionicons name="checkmark" size={56} color="#fff" />
+          <Svg width={52} height={52} viewBox="0 0 16 16" fill="none">
+            <Path
+              fill="#fff"
+              d="M10.067.87a2.89 2.89 0 0 0-4.134 0l-.622.638-.89-.011a2.89 2.89 0 0 0-2.924 2.924l.01.89-.636.622a2.89 2.89 0 0 0 0 4.134l.637.622-.011.89a2.89 2.89 0 0 0 2.924 2.924l.89-.01.622.636a2.89 2.89 0 0 0 4.134 0l.622-.637.89.011a2.89 2.89 0 0 0 2.924-2.924l-.01-.89.636-.622a2.89 2.89 0 0 0 0-4.134l-.637-.622.011-.89a2.89 2.89 0 0 0-2.924-2.924l-.89.01zm.287 5.984-3 3a.5.5 0 0 1-.708 0l-1.5-1.5a.5.5 0 1 1 .708-.708L7 8.793l2.646-2.647a.5.5 0 0 1 .708.708"
+            />
+          </Svg>
         </View>
 
         <Text style={sc.title}>Collected</Text>
@@ -223,6 +229,7 @@ export default function PaymentCollectScreen() {
   const [step, setStep]           = useState<Step>('choose');
   const [cashInput, setCashInput] = useState('');
   const [loading, setLoading]     = useState(false);
+  const [isRejecting, setIsRejecting] = useState(false);
   const [isLoadingUpi, setIsLoadingUpi] = useState(true);
   const [partnerUpi, setPartnerUpi]     = useState<{ vpa: string | null; merchantName: string | null }>({ vpa: null, merchantName: null });
   const [successInfo, setSuccessInfo]   = useState<SuccessInfo | null>(null);
@@ -275,6 +282,20 @@ export default function PaymentCollectScreen() {
       Alert.alert('Could not record payment', err?.message ?? 'Please try again.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleCancelIntent = async () => {
+    if (!intentId || isRejecting) return;
+    setIsRejecting(true);
+    try {
+      await crewPayments.rejectPaymentIntent(intentId, 'Cancelled by staff');
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      router.back();
+    } catch (err: any) {
+      Alert.alert('Could not cancel request', err?.message ?? 'Please try again.');
+    } finally {
+      setIsRejecting(false);
     }
   };
 
@@ -442,9 +463,24 @@ export default function PaymentCollectScreen() {
               disabled={loading || isLoadingUpi || !partnerUpi.vpa}
               activeOpacity={0.8}
             >
-              {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>UPI</Text>}
+              {loading
+                ? <ActivityIndicator color="#fff" size="small" />
+                : <Text style={s.btnLabel}>{intentId ? 'Confirm Paid' : 'UPI'}</Text>}
             </TouchableOpacity>
           </View>
+        )}
+
+        {intentId && mode === 'normal' && step === 'choose' && (
+          <TouchableOpacity
+            style={[s.btnGhost, { marginTop: Spacing.sm }, isRejecting && { opacity: 0.5 }]}
+            onPress={handleCancelIntent}
+            disabled={isRejecting || loading}
+            activeOpacity={0.8}
+          >
+            {isRejecting
+              ? <ActivityIndicator color={QuinckleColors.textPrimary} size="small" />
+              : <Text style={s.btnGhostLabel}>Cancel Request</Text>}
+          </TouchableOpacity>
         )}
 
         {mode === 'normal' && step === 'confirm_cash' && (

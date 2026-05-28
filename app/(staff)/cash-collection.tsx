@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState, useRef } from 'react';
 import {
   ActivityIndicator,
   Animated,
-  FlatList,
+  Dimensions,
   Image,
   RefreshControl,
   StyleSheet,
@@ -26,6 +26,7 @@ type Row =
   | { kind: 'pending'; data: PendingCashRequest }
   | { kind: 'collected'; data: CollectedCashRecord }
   | { kind: 'empty'; message: string };
+type TabKey = 'active' | 'confirmed';
 
 function timeAgo(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -52,8 +53,13 @@ export default function CashCollectionScreen() {
   const [todayCollected, setTodayCollected] = useState<CollectedCashRecord[]>([]);
   const [isLoading, setIsLoading]         = useState(true);
   const [isRefreshing, setIsRefreshing]   = useState(false);
-  const [collectingIds]                   = useState<Set<string>>(new Set());
+  const [collectingIds, setCollectingIds] = useState<Set<string>>(new Set());
+  const [intentBusyIds, setIntentBusyIds] = useState<Set<string>>(new Set());
+  const [activeTab, setActiveTab]         = useState<TabKey>('active');
+  const [openMenuOrderId, setOpenMenuOrderId] = useState<string | null>(null);
+  const [upiSuccessingOrderId, setUpiSuccessingOrderId] = useState<string | null>(null);
   const scrollY = useRef(new Animated.Value(0)).current;
+  const successSweep = useRef(new Animated.Value(0)).current;
 
   const load = useCallback(async () => {
     try {
@@ -63,28 +69,37 @@ export default function CashCollectionScreen() {
       ]);
       const legacyPending = Array.isArray(legacy?.pending) ? legacy.pending : [];
       const mappedIntents: PendingCashRequest[] = intents.map((i) => ({
-        orderId: `intent:${i.id}`,
-        intentId: i.id,
-        source: 'INTENT',
-        intentMethod: i.method,
-        sessionId: i.sessionId,
-        tableNumber: i.tableNumber,
-        amount: Number(i.amount.total ?? 0),
-        breakdown: {
-          subtotal: Number(i.amount.subtotal ?? 0),
-          discount: Number(i.amount.discount ?? 0),
-          chargesTotal: Number(i.amount.charges ?? 0),
-          taxRate: 0,
-          taxAmount: Number(i.amount.tax ?? 0),
-          tip: Number(i.amount.tip ?? 0),
-          total: Number(i.amount.total ?? 0),
-          currency: 'INR',
-        },
-        customerName: null,
-        customerPhone: '',
-        requestedAt: i.createdAt,
-        method: i.method === 'UPI_DIRECT' ? 'UPI_DIRECT' : 'STAFF_COLLECT',
-        upi: i.upi ? { vpa: i.upi.vpa, displayName: i.upi.displayName } : null,
+        // Normalize intent method defensively — backend may return case variants.
+        // We keep a strict UPI_DIRECT flag so cards render in the right bucket.
+        ...(() => {
+          const m = String((i as any).method ?? '').toUpperCase();
+          const hasUpiPayload = !!(i as any).upi?.vpa;
+          const isUpi = m.includes('UPI') || hasUpiPayload;
+          return {
+            orderId: `intent:${i.id}`,
+            intentId: i.id,
+            source: 'INTENT',
+            intentMethod: isUpi ? 'UPI_DIRECT' : 'STAFF_COLLECT',
+            sessionId: i.sessionId,
+            tableNumber: i.tableNumber,
+            amount: Number(i.amount.total ?? 0),
+            breakdown: {
+              subtotal: Number(i.amount.subtotal ?? 0),
+              discount: Number(i.amount.discount ?? 0),
+              chargesTotal: Number(i.amount.charges ?? 0),
+              taxRate: 0,
+              taxAmount: Number(i.amount.tax ?? 0),
+              tip: Number(i.amount.tip ?? 0),
+              total: Number(i.amount.total ?? 0),
+              currency: 'INR',
+            },
+            customerName: null,
+            customerPhone: '',
+            requestedAt: i.createdAt,
+            method: isUpi ? 'UPI_DIRECT' : 'STAFF_COLLECT',
+            upi: i.upi ? { vpa: i.upi.vpa, displayName: i.upi.displayName } : null,
+          };
+        })(),
       }));
       setPending([...mappedIntents, ...legacyPending]);
       setTodayCollected(Array.isArray(legacy?.todayCollected) ? legacy.todayCollected : []);
@@ -131,6 +146,66 @@ export default function CashCollectionScreen() {
       },
     });
   };
+  const markIntentBusy = (intentId: string, busy: boolean) => {
+    setIntentBusyIds((prev) => {
+      const next = new Set(prev);
+      if (busy) next.add(intentId);
+      else next.delete(intentId);
+      return next;
+    });
+  };
+  const markOrderBusy = (orderId: string, busy: boolean) => {
+    setCollectingIds((prev) => {
+      const next = new Set(prev);
+      if (busy) next.add(orderId);
+      else next.delete(orderId);
+      return next;
+    });
+  };
+  const handleConfirmUpiDirect = async (req: PendingCashRequest) => {
+    if (req.intentId) markIntentBusy(req.intentId, true);
+    else markOrderBusy(req.orderId, true);
+    try {
+      if (req.intentId) {
+        await crewPayments.confirmPaymentIntent(req.intentId);
+      } else {
+        const staffId = staffInfo?.id;
+        if (!staffId) return;
+        await crewPayments.collectPayment(req.orderId, staffId, [{ method: 'UPI_DIRECT', amount: req.amount }]);
+      }
+      setOpenMenuOrderId(null);
+      setUpiSuccessingOrderId(req.orderId);
+      successSweep.setValue(0);
+      Animated.timing(successSweep, {
+        toValue: 1,
+        duration: 700,
+        useNativeDriver: true,
+      }).start();
+      setTimeout(async () => {
+        await load();
+        setUpiSuccessingOrderId(null);
+        successSweep.setValue(0);
+      }, 780);
+    } catch (err) {
+      console.error('[cash-collection] confirm UPI direct failed', err);
+    } finally {
+      if (req.intentId) markIntentBusy(req.intentId, false);
+      else markOrderBusy(req.orderId, false);
+    }
+  };
+  const handleCancelUpiDirect = async (req: PendingCashRequest) => {
+    // Cancel API exists only for intent-backed requests.
+    if (!req.intentId) return;
+    markIntentBusy(req.intentId, true);
+    try {
+      await crewPayments.rejectPaymentIntent(req.intentId, 'Cancelled by staff');
+      await load();
+    } catch (err) {
+      console.error('[cash-collection] cancel UPI direct failed', err);
+    } finally {
+      markIntentBusy(req.intentId, false);
+    }
+  };
 
   const totalDue = pending.reduce((s, p) => s + p.amount, 0);
 
@@ -157,16 +232,44 @@ export default function CashCollectionScreen() {
     </View>
   );
 
-  const rows: Row[] = [
-    { kind: 'sectionHeader', title: 'Pending', subtitle: pending.length === 0 ? 'None' : `${pending.length} · ₹${totalDue.toLocaleString('en-IN')} due` },
-    ...(pending.length === 0
-      ? [{ kind: 'empty' as const, message: 'No pending requests.' }]
-      : pending.map(p => ({ kind: 'pending' as const, data: p }))),
-    { kind: 'sectionHeader', title: 'Collected today', subtitle: `${todayCollected.length} payment${todayCollected.length === 1 ? '' : 's'}` },
-    ...(todayCollected.length === 0
-      ? [{ kind: 'empty' as const, message: 'Nothing collected yet.' }]
-      : todayCollected.map(c => ({ kind: 'collected' as const, data: c }))),
-  ];
+  const renderTabBar = () => (
+    <View style={s.tabBarWrap}>
+      <View style={s.tabBar}>
+        <TouchableOpacity
+          style={[s.tabBtn, activeTab === 'active' && s.tabBtnActive]}
+          onPress={() => setActiveTab('active')}
+          activeOpacity={0.8}
+        >
+          <Text style={[s.tabBtnText, activeTab === 'active' && s.tabBtnTextActive]}>
+            Active Requests
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[s.tabBtn, activeTab === 'confirmed' && s.tabBtnActive]}
+          onPress={() => setActiveTab('confirmed')}
+          activeOpacity={0.8}
+        >
+          <Text style={[s.tabBtnText, activeTab === 'confirmed' && s.tabBtnTextActive]}>
+            Confirmed Paid
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  const rows: Row[] = activeTab === 'active'
+    ? [
+        { kind: 'sectionHeader', title: 'Active Requests', subtitle: pending.length === 0 ? 'None' : `${pending.length} · ₹${totalDue.toLocaleString('en-IN')} due` },
+        ...(pending.length === 0
+          ? [{ kind: 'empty' as const, message: 'No active requests.' }]
+          : pending.map(p => ({ kind: 'pending' as const, data: p }))),
+      ]
+    : [
+        { kind: 'sectionHeader', title: 'Confirmed Paid', subtitle: `${todayCollected.length} payment${todayCollected.length === 1 ? '' : 's'}` },
+        ...(todayCollected.length === 0
+          ? [{ kind: 'empty' as const, message: 'Nothing confirmed yet.' }]
+          : todayCollected.map(c => ({ kind: 'collected' as const, data: c }))),
+      ];
 
   return (
     <View style={s.root}>
@@ -196,9 +299,10 @@ export default function CashCollectionScreen() {
         <Animated.ScrollView
           onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
           scrollEventThrottle={16}
-          contentContainerStyle={{ paddingBottom: insets.bottom + Spacing.xl }}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 88 }}
         >
           {renderHero()}
+          {renderTabBar()}
           <CashCollectionSkeleton />
         </Animated.ScrollView>
       ) : (
@@ -210,7 +314,12 @@ export default function CashCollectionScreen() {
             if (row.kind === 'sectionHeader') return `h-${row.title}`;
             return `e-${i}`;
           }}
-          ListHeaderComponent={renderHero}
+          ListHeaderComponent={() => (
+            <View>
+              {renderHero()}
+              {renderTabBar()}
+            </View>
+          )}
           onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
           scrollEventThrottle={16}
           renderItem={({ item, index }) => {
@@ -230,30 +339,118 @@ export default function CashCollectionScreen() {
             if (item.kind === 'pending') {
               const p   = item.data;
               const busy = collectingIds.has(p.orderId);
+              const methodRaw = String(p.intentMethod ?? p.method ?? '').toUpperCase();
+              const isUpiDirect = methodRaw.includes('UPI') || !!p.upi?.vpa;
+              const intentBusy = !!(p.intentId && intentBusyIds.has(p.intentId));
+              const orderBusy = collectingIds.has(p.orderId);
+              const menuOpen = openMenuOrderId === p.orderId;
+              const isSuccessing = upiSuccessingOrderId === p.orderId;
+              const screenWidth = Dimensions.get('window').width;
+              const sweepTranslate = successSweep.interpolate({
+                inputRange: [0, 1],
+                outputRange: [-screenWidth, 0],
+              });
               return (
-                <View style={s.pendingCard}>
+                <View style={[s.pendingCard, isUpiDirect ? s.pendingCardUpi : s.pendingCardStaff]}>
+                  {isSuccessing && (
+                    <Animated.View
+                      pointerEvents="none"
+                      style={[
+                        StyleSheet.absoluteFillObject,
+                        {
+                          backgroundColor: '#18a957',
+                          transform: [{ translateX: sweepTranslate }],
+                        },
+                      ]}
+                    />
+                  )}
                   <View style={s.pendingTop}>
-                    <Text style={s.pendingTable}>Table {p.tableNumber || '—'}</Text>
-                    <Text style={s.pendingTime}>{timeAgo(p.requestedAt)}</Text>
-                  </View>
-                  <Text style={s.pendingAmount}>₹{p.amount.toLocaleString('en-IN')}</Text>
-                  <View style={s.pendingBottom}>
-                    <View style={{ flex: 1 }}>
-                      <TouchableOpacity onPress={() => Linking.openURL(`tel:${p.customerPhone}`).catch(() => {})} activeOpacity={0.6}>
-                        <Text style={s.pendingPhone}>{p.customerPhone}</Text>
-                      </TouchableOpacity>
+                    <View style={s.pendingTitleRow}>
+                      <Text style={s.pendingTableTitle}>{`T${p.tableNumber || '—'}`}</Text>
+                      <View style={[s.methodBadge, isUpiDirect ? s.methodBadgeUpi : s.methodBadgeStaff, s.methodBadgeInline]}>
+                        <Text style={[s.methodBadgeText, isUpiDirect ? s.methodBadgeTextUpi : s.methodBadgeTextStaff]}>
+                          {isUpiDirect ? 'UPI DIRECT' : 'PAY VIA STAFF'}
+                        </Text>
+                      </View>
                     </View>
-                    <TouchableOpacity
-                      style={[s.collectBtn, busy && s.collectBtnBusy]}
-                      onPress={() => handleCollect(p)}
-                      disabled={busy}
-                      activeOpacity={0.8}
-                    >
-                      {busy
-                        ? <ActivityIndicator color="#fff" size="small" />
-                        : <Text style={s.collectBtnText}>Collect</Text>}
-                    </TouchableOpacity>
+                    <View style={s.pendingTopRight}>
+                      <Text style={s.pendingTime}>{timeAgo(p.requestedAt)}</Text>
+                      {isUpiDirect && (
+                        <View style={s.menuWrap}>
+                          <TouchableOpacity
+                            style={s.menuBtn}
+                            onPress={() => setOpenMenuOrderId(menuOpen ? null : p.orderId)}
+                            activeOpacity={0.7}
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          >
+                            <Ionicons name="ellipsis-vertical" size={14} color={QuinckleColors.textTertiary} />
+                          </TouchableOpacity>
+                          {menuOpen && (
+                            <View style={s.menuPanel}>
+                              <TouchableOpacity
+                                style={s.menuItem}
+                                onPress={() => {
+                                  setOpenMenuOrderId(null);
+                                  void handleCancelUpiDirect(p);
+                                }}
+                                disabled={intentBusy || orderBusy || !p.intentId}
+                                activeOpacity={0.75}
+                              >
+                                <Text style={s.menuItemDanger}>Cancel request</Text>
+                              </TouchableOpacity>
+                            </View>
+                          )}
+                        </View>
+                      )}
+                    </View>
                   </View>
+                  {!isSuccessing ? (
+                    <>
+                      <View style={s.pendingBody}>
+                        <View style={s.pendingAmountBlock}>
+                          <Text style={s.pendingAmountLabel}>Amount due</Text>
+                          <Text style={s.pendingAmount}>₹{p.amount.toLocaleString('en-IN')}</Text>
+                        </View>
+                        <View style={s.pendingMetaRow}>
+                          {p.customerName ? <Text style={s.pendingName}>{p.customerName}</Text> : null}
+                          <TouchableOpacity onPress={() => Linking.openURL(`tel:${p.customerPhone}`).catch(() => {})} activeOpacity={0.6}>
+                            <Text style={s.pendingPhone}>{p.customerPhone || 'No phone'}</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                      {isUpiDirect ? (
+                        <TouchableOpacity
+                          style={[s.collectBtn, s.collectBtnFull, intentBusy && s.collectBtnBusy]}
+                          onPress={() => { void handleConfirmUpiDirect(p); }}
+                          disabled={intentBusy || orderBusy}
+                          activeOpacity={0.8}
+                        >
+                          {intentBusy || orderBusy
+                            ? <ActivityIndicator color="#fff" size="small" />
+                            : <Text style={s.collectBtnText}>Confirm Paid</Text>}
+                        </TouchableOpacity>
+                      ) : (
+                        <TouchableOpacity
+                          style={[s.collectBtn, s.collectBtnFull, busy && s.collectBtnBusy]}
+                          onPress={() => handleCollect(p)}
+                          disabled={busy}
+                          activeOpacity={0.8}
+                        >
+                          {busy
+                            ? <ActivityIndicator color="#fff" size="small" />
+                            : <Text style={s.collectBtnText}>Collect</Text>}
+                        </TouchableOpacity>
+                      )}
+                    </>
+                  ) : (
+                    <View style={s.successConfirmWrap}>
+                      <View style={s.successIcon}>
+                        <Ionicons name="checkmark" size={24} color="#fff" />
+                      </View>
+                      <Text style={s.successTitle}>Confirmed collected</Text>
+                      <Text style={s.successSub}>Moving to confirmed paid</Text>
+                    </View>
+                  )}
                 </View>
               );
             }
@@ -266,6 +463,11 @@ export default function CashCollectionScreen() {
                   <View style={s.collectedTableRow}>
                     <Ionicons name="checkmark-circle" size={14} color={QuinckleColors.success} />
                     <Text style={s.collectedTable}>Table {c.tableNumber || '—'}</Text>
+                    {String(c.method).toLowerCase() === 'upi_direct' && (
+                      <View style={s.confirmedUpiBadge}>
+                        <Text style={s.confirmedUpiBadgeText}>UPI DIRECT</Text>
+                      </View>
+                    )}
                   </View>
                   <Text style={s.collectedPhone}>{c.customerPhone}</Text>
                   {c.collectedByName && <Text style={s.collectedBy}>{c.collectedByName}</Text>}
@@ -278,9 +480,9 @@ export default function CashCollectionScreen() {
             );
           }}
           ItemSeparatorComponent={({ leadingItem }) =>
-            leadingItem?.kind === 'collected' ? <View style={s.separator} /> : null
+            (leadingItem?.kind === 'collected' && activeTab === 'confirmed') ? <View style={s.separator} /> : null
           }
-          contentContainerStyle={{ paddingBottom: insets.bottom + Spacing.xl }}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 88 }}
           refreshControl={
             <RefreshControl
               refreshing={isRefreshing}
@@ -316,6 +518,28 @@ const s = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
   },
   stickyTitle: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '600' },
+  tabBarWrap: {
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.sm,
+  },
+  tabBar: {
+    flexDirection: 'row',
+    borderRadius: Radius.md,
+    backgroundColor: QuinckleColors.surface,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    overflow: 'hidden',
+  },
+  tabBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 42,
+  },
+  tabBtnActive: { backgroundColor: 'rgba(81,136,255,0.16)' },
+  tabBtnText: { color: QuinckleColors.textTertiary, fontSize: 13, fontWeight: '600' },
+  tabBtnTextActive: { color: QuinckleColors.primary },
 
   // Hero banner
   heroWrap: { height: 220, width: '100%', overflow: 'hidden' },
@@ -360,43 +584,144 @@ const s = StyleSheet.create({
     marginHorizontal: Spacing.lg,
     marginBottom: Spacing.sm,
     backgroundColor: QuinckleColors.surface,
-    borderRadius: Radius.lg,
+    borderRadius: 22,
     padding: Spacing.lg,
     borderWidth: 1,
     borderColor: QuinckleColors.border,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 2,
+  },
+  pendingCardStaff: { backgroundColor: QuinckleColors.surface },
+  pendingCardUpi: {
+    backgroundColor: '#173B6C',
+    borderColor: 'rgba(255,255,255,0.10)',
   },
   pendingTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     marginBottom: 8,
   },
-  pendingTable: {
-    color: QuinckleColors.textTertiary,
-    fontSize: 11,
-    fontWeight: '600',
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
+  pendingTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 10,
+    flex: 1,
+    paddingRight: 12,
   },
-  pendingTime: { color: QuinckleColors.textTertiary, fontSize: 11 },
-  pendingAmount: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 36,
-    fontWeight: '700',
-    letterSpacing: -1,
+  pendingTopRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  pendingTableTitle: {
+    color: '#fff',
+    fontSize: 30,
+    lineHeight: 34,
+    fontWeight: '800',
+    letterSpacing: -0.9,
+  },
+  pendingTime: { color: 'rgba(255,255,255,0.72)', fontSize: 11 },
+  menuWrap: {
+    position: 'relative',
+  },
+  menuBtn: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  menuPanel: {
+    position: 'absolute',
+    top: 24,
+    right: 0,
+    minWidth: 120,
+    borderRadius: Radius.sm,
+    backgroundColor: QuinckleColors.surface,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    zIndex: 40,
+  },
+  menuItem: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  menuItemDanger: {
+    color: QuinckleColors.danger,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  methodBadge: {
+    alignSelf: 'flex-start',
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    marginBottom: 10,
+  },
+  methodBadgeInline: {
+    marginBottom: 0,
+  },
+  methodBadgeStaff: {
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderColor: QuinckleColors.border,
+  },
+  methodBadgeUpi: {
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderColor: 'rgba(255,255,255,0.18)',
+  },
+  methodBadgeText: { fontSize: 9, fontWeight: '700', letterSpacing: 0.8 },
+  methodBadgeTextStaff: { color: QuinckleColors.textSecondary },
+  methodBadgeTextUpi: { color: '#fff' },
+  pendingBody: {
+    marginTop: 2,
+    marginBottom: 14,
+  },
+  pendingAmountBlock: {
     marginBottom: 12,
   },
-  pendingBottom: {
+  pendingAmountLabel: {
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    marginBottom: 2,
+  },
+  pendingAmount: {
+    color: '#fff',
+    fontSize: 34,
+    fontWeight: '700',
+    letterSpacing: -1,
+  },
+  pendingMetaRow: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
+    alignItems: 'center',
     justifyContent: 'space-between',
     gap: Spacing.md,
+    minHeight: 24,
   },
-  pendingPhone: { color: QuinckleColors.textTertiary, fontSize: 13, marginTop: 2 },
+  pendingName: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
+    flex: 1,
+    paddingRight: 8,
+  },
+  pendingPhone: { color: 'rgba(255,255,255,0.72)', fontSize: 13, marginTop: 0 },
+  collectBtnFull: {
+    width: '100%',
+  },
   collectBtn: {
     backgroundColor: QuinckleColors.primary,
     paddingHorizontal: 20,
-    paddingVertical: 11,
+    paddingVertical: 13,
     borderRadius: Radius.md,
     minWidth: 100,
     alignItems: 'center',
@@ -404,6 +729,37 @@ const s = StyleSheet.create({
   },
   collectBtnBusy: { opacity: 0.5 },
   collectBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  inlineActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  successConfirmWrap: {
+    minHeight: 126,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 6,
+  },
+  successIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  successTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: -0.2,
+  },
+  successSub: {
+    color: 'rgba(255,255,255,0.82)',
+    fontSize: 12,
+    fontWeight: '500',
+  },
 
   // Collected rows
   collectedRow: {
@@ -420,6 +776,21 @@ const s = StyleSheet.create({
   },
   collectedLeft: { flex: 1, gap: 2 },
   collectedTableRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  confirmedUpiBadge: {
+    marginLeft: 6,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: 'rgba(81,136,255,0.32)',
+    backgroundColor: 'rgba(81,136,255,0.16)',
+  },
+  confirmedUpiBadgeText: {
+    color: '#9ec0ff',
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+  },
   collectedTable: {
     color: QuinckleColors.textPrimary,
     fontSize: 14,

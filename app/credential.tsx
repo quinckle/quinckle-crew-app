@@ -21,11 +21,16 @@ import { crewAuth } from '../services/api';
 const OTP_LENGTH = 4;
 const BLINK_DURATION = 500;
 
-// Offline fallback: used when the local API server is unreachable
-const MOCK_CREDENTIALS: Record<string, { otp: string; role: 'staff' | 'cook' }> = {
-  '1234567890': { otp: '123456', role: 'staff' },
-  '0987654321': { otp: '654321', role: 'cook' },
-};
+// Offline fallback: used ONLY in development when the local API server is
+// unreachable. In production builds Metro replaces `__DEV__` with `false` and
+// dead-code-eliminates this object, so the lookup below can never match.
+// NEVER add real or shared credentials here.
+const MOCK_CREDENTIALS: Record<string, { otp: string; role: 'staff' | 'cook' }> = __DEV__
+  ? {
+      '1234567890': { otp: '123456', role: 'staff' },
+      '0987654321': { otp: '654321', role: 'cook' },
+    }
+  : {};
 
 export default function CredentialScreen() {
   const insets = useSafeAreaInsets();
@@ -147,14 +152,17 @@ export default function CredentialScreen() {
       login(role, crewToken, staff);
       router.replace(role === 'staff' ? '/(staff)' : '/(cook)');
     } catch (apiError: any) {
-      // Try offline mock credentials if API is unreachable
-      const mock = MOCK_CREDENTIALS[phone];
-      if (mock && otp === mock.otp) {
-        if (__DEV__) console.warn('[API] verify-otp failed, using mock credentials');
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        login(mock.role);
-        router.replace(mock.role === 'staff' ? '/(staff)' : '/(cook)');
-        return;
+      // Dev-only offline fallback. In production builds MOCK_CREDENTIALS is
+      // an empty object (see above), so this branch is unreachable.
+      if (__DEV__) {
+        const mock = MOCK_CREDENTIALS[phone];
+        if (mock && otp === mock.otp) {
+          console.warn('[API] verify-otp failed, using mock credentials (DEV ONLY)');
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          login(mock.role);
+          router.replace(mock.role === 'staff' ? '/(staff)' : '/(cook)');
+          return;
+        }
       }
       // Show actual error from backend
       const msg = apiError?.message ?? 'Verification failed. Please try again.';

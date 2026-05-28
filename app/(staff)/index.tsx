@@ -819,22 +819,6 @@ export default function StaffDashboard() {
         </View>
 
         <View style={styles.headerActions}>
-          {/* Manual refresh — Ably push usually keeps things live, but
-              the partner asked for a fallback so staff can force a pull
-              without restarting the app. */}
-          <TouchableOpacity
-            style={styles.refreshBtn}
-            onPress={() => { void loadTables(); }}
-            activeOpacity={0.7}
-            disabled={isLoadingTables}
-          >
-            <Ionicons
-              name="refresh"
-              size={16}
-              color={isLoadingTables ? QuinckleColors.textTertiary : QuinckleColors.textPrimary}
-            />
-          </TouchableOpacity>
-
           {/* Cash-collection icon: tap to see pending requests + today's history.
                 Red dot appears when there's at least one unresolved request. */}
           <TouchableOpacity
@@ -887,6 +871,19 @@ export default function StaffDashboard() {
                 style={styles.searchInput}
               />
             </View>
+
+            <TouchableOpacity
+              style={styles.refreshTableBtn}
+              onPress={() => { void loadTables(); }}
+              activeOpacity={0.7}
+              disabled={isLoadingTables}
+            >
+              <Ionicons
+                name="refresh"
+                size={16}
+                color={isLoadingTables ? QuinckleColors.textTertiary : QuinckleColors.textPrimary}
+              />
+            </TouchableOpacity>
 
             <TouchableOpacity
               style={styles.filterDropdown}
@@ -1310,6 +1307,16 @@ const styles = StyleSheet.create({
     flex: 1,
     color: QuinckleColors.textPrimary,
     fontSize: 14,
+  },
+  refreshTableBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: Radius.md,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderColor: QuinckleColors.border,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   filterDropdown: {
     flexDirection: 'row',
