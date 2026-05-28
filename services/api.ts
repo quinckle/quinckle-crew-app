@@ -469,6 +469,10 @@ export const restaurantApi = {
       success: true;
       data: {
         name: string;
+        address?: string | null;
+        phone?: string | null;
+        email?: string | null;
+        fssaiLicenseNumber?: string | null;
         logoUrl: string | null;
         dineTheme: string;
         upiId?: string | null;

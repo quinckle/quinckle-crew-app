@@ -16,6 +16,10 @@ export interface InvoiceItem {
 
 export interface InvoiceBill {
   restaurantName: string;
+  restaurantAddress?: string | null;
+  restaurantPhone?: string | null;
+  restaurantEmail?: string | null;
+  fssaiLicenseNumber?: string | null;
   tableNumber: number | string;
   sessionRef?: string | null;
   items: InvoiceItem[];
@@ -28,6 +32,7 @@ export interface InvoiceBill {
   paymentMethod?: 'cash' | 'upi_direct' | 'mixed' | string | null;
   splits?: Array<{ method: string; amount: number }>;
   generatedAt?: string; // ISO string — defaults to now
+  orderDateTime?: string; // ISO string of order/session time
 }
 
 // ── Character widths ───────────────────────────────────────────────────────────
@@ -80,6 +85,7 @@ export function buildInvoiceText(bill: InvoiceBill, paperWidth: 58 | 80 = 58): s
   const d = divider(W, '-');
 
   const now = bill.generatedAt ?? new Date().toISOString();
+  const orderTime = bill.orderDateTime ?? now;
   const tableStr = String(bill.tableNumber).padStart(2, '0');
 
   // ── Header ────────────────────────────────────────────────────────────────
@@ -91,7 +97,12 @@ export function buildInvoiceText(bill: InvoiceBill, paperWidth: 58 | 80 = 58): s
   if (bill.sessionRef) {
     lines.push(`[C]Session ${bill.sessionRef}`);
   }
-  lines.push(`[C]${formatDateTime(now)}`);
+  lines.push(`[C]Order: ${formatDateTime(orderTime)}`);
+  if (bill.restaurantAddress) lines.push(`[C]${bill.restaurantAddress}`);
+  if (bill.restaurantPhone) lines.push(`[C]Phone: ${bill.restaurantPhone}`);
+  if (bill.restaurantEmail) lines.push(`[C]Email: ${bill.restaurantEmail}`);
+  if (bill.fssaiLicenseNumber) lines.push(`[C]FSSAI: ${bill.fssaiLicenseNumber}`);
+  lines.push(`[C]Printed: ${formatDateTime(now)}`);
   lines.push(`[L]${d}`);
 
   // ── Column header ─────────────────────────────────────────────────────────

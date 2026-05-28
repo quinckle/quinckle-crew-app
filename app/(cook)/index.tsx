@@ -185,6 +185,7 @@ export default function CookDashboard() {
         }));
         void printKot({
           id: data.order.id,
+          orderNumber: data.order.orderNumber != null ? String(data.order.orderNumber) : undefined,
           tableNumber: String(data.order.tableNumber ?? '?'),
           restaurantName: staffInfo?.restaurantName ?? '',
           createdAt: data.order.createdAt ?? new Date().toISOString(),

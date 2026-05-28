@@ -52,6 +52,12 @@ export default function TableDetail() {
 
   const [sessionId] = useState(paramSessionId ?? '');
   const [sessionRef, setSessionRef] = useState('');
+  const [restaurantInvoiceMeta, setRestaurantInvoiceMeta] = useState<{
+    address?: string | null;
+    phone?: string | null;
+    email?: string | null;
+    fssaiLicenseNumber?: string | null;
+  } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [orders, setOrders] = useState<BillOrder[]>([]);
   const [sessionTotal, setSessionTotal] = useState(0);
@@ -174,6 +180,24 @@ export default function TableDetail() {
 
   // Load once on mount; Ably drives all subsequent updates
   useEffect(() => { loadBill(); }, [sessionId]);
+
+  useEffect(() => {
+    const restaurantId = staffInfo?.restaurantId;
+    if (!restaurantId) return;
+    let cancelled = false;
+    restaurantApi.getBranding(restaurantId)
+      .then((res) => {
+        if (cancelled || !res?.success) return;
+        setRestaurantInvoiceMeta({
+          address: res.data.address ?? null,
+          phone: res.data.phone ?? null,
+          email: res.data.email ?? null,
+          fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null,
+        });
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [staffInfo?.restaurantId]);
 
   // Ably: waiter:{restaurantId} — refresh bill on any order/payment event
   useEffect(() => {
@@ -383,6 +407,10 @@ export default function TableDetail() {
 
     const result = await printBill({
       restaurantName: staffInfo?.restaurantName ?? '',
+      restaurantAddress: restaurantInvoiceMeta?.address ?? null,
+      restaurantPhone: restaurantInvoiceMeta?.phone ?? null,
+      restaurantEmail: restaurantInvoiceMeta?.email ?? null,
+      fssaiLicenseNumber: restaurantInvoiceMeta?.fssaiLicenseNumber ?? null,
       tableNumber: tableNum,
       sessionRef,
       items: invoiceItems,
@@ -393,6 +421,7 @@ export default function TableDetail() {
       isPaid,
       paymentMethod: billPaymentMethod,
       splits: billSplits?.map(s => ({ method: s.method ?? '', amount: Number(s.amount ?? 0) })),
+      orderDateTime: orders[0]?.placed_at ?? undefined,
       generatedAt: new Date().toISOString(),
     });
 
