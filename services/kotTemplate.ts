@@ -161,6 +161,7 @@ export function buildKotText(order: KotOrder, paperWidth: 58 | 80 = 58): string 
   });
   lines.push('[C]*** END ***');
   lines.push(`[C]${now}`);
+  lines.push('[C]Support: quinckle.com/support');
   lines.push(`[C]${D}`);
 
   // Blank lines + cut

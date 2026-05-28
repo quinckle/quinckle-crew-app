@@ -155,7 +155,10 @@ export function buildInvoiceText(bill: InvoiceBill, paperWidth: 58 | 80 = 58): s
 
   // ── Footer ────────────────────────────────────────────────────────────────
   lines.push(`[L]${d}`);
-  lines.push('[C]Thank you! Visit again.');
+  lines.push('[C]Thank you for dining with us.');
+  lines.push('[C]Support & feedback:');
+  lines.push('[C]quinckle.com/support');
+  lines.push('[C]support@quinckle.com');
   lines.push('[C]Powered by Quinckle');
   lines.push(`[C]${D}`);
 
