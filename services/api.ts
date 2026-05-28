@@ -198,6 +198,7 @@ export interface BillBreakdown {
 }
 export interface SessionBill {
   session_id: string;
+  session_ref: string;
   table_number: number;
   status: 'active' | 'paid' | 'closed';
   orders: BillOrder[];
@@ -216,7 +217,7 @@ export interface SessionBill {
 
 export const crewSessions = {
   start: (tableId: string) =>
-    request<{ success: true; session_id: string; table_id: string; table_number: number; started_at: string }>(
+    request<{ success: true; session_id: string; session_ref: string; table_id: string; table_number: number; started_at: string }>(
       'POST', '/api/crew/sessions', { table_id: tableId }, true
     ),
   end: (sessionId: string) =>

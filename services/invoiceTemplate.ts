@@ -17,6 +17,7 @@ export interface InvoiceItem {
 export interface InvoiceBill {
   restaurantName: string;
   tableNumber: number | string;
+  sessionRef?: string | null;
   items: InvoiceItem[];
   subtotal: number;
   tax: number;
@@ -87,6 +88,9 @@ export function buildInvoiceText(bill: InvoiceBill, paperWidth: 58 | 80 = 58): s
   lines.push(`[C]${D}`);
   lines.push('[C]<b>TAX INVOICE</b>');
   lines.push(`[C]Table T${tableStr}`);
+  if (bill.sessionRef) {
+    lines.push(`[C]Session ${bill.sessionRef}`);
+  }
   lines.push(`[C]${formatDateTime(now)}`);
   lines.push(`[L]${d}`);
 

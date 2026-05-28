@@ -51,6 +51,7 @@ export default function TableDetail() {
   const tableNum = String(tableId ?? '').padStart(2, '0');
 
   const [sessionId] = useState(paramSessionId ?? '');
+  const [sessionRef, setSessionRef] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [orders, setOrders] = useState<BillOrder[]>([]);
   const [sessionTotal, setSessionTotal] = useState(0);
@@ -160,6 +161,7 @@ export default function TableDetail() {
       setTipTotal(tipV);
       setPayableTotal(grand);
       setSessionStatus(bill.status);
+      setSessionRef(bill.session_ref ?? '');
       setIsPaid(bill.status === 'paid');
       setBillPaymentMethod(bill.payment_method);
       setBillSplits(bill.splits);
@@ -382,6 +384,7 @@ export default function TableDetail() {
     const result = await printBill({
       restaurantName: staffInfo?.restaurantName ?? '',
       tableNumber: tableNum,
+      sessionRef,
       items: invoiceItems,
       subtotal: sessionTotal,
       tax: taxTotal,
@@ -453,6 +456,7 @@ export default function TableDetail() {
           </TouchableOpacity>
           <View>
             <Text style={styles.tableTitle}>T{tableNum}</Text>
+            {sessionRef ? <Text style={styles.sessionRefText}>{sessionRef}</Text> : null}
             {since ? <Text style={styles.sinceText}>since {since}</Text> : null}
           </View>
         </View>
@@ -1111,6 +1115,13 @@ const styles = StyleSheet.create({
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
   iconBtn: { width: 40, height: 40, borderRadius: Radius.md, backgroundColor: QuinckleColors.surfaceMuted, borderWidth: 1, borderColor: QuinckleColors.border, alignItems: 'center', justifyContent: 'center' },
   tableTitle: { fontSize: 22, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.4 },
+  sessionRefText: {
+    marginTop: 2,
+    color: QuinckleColors.textSecondary,
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.4,
+  },
   sinceText: { fontSize: 11, color: QuinckleColors.textTertiary, fontWeight: '500', marginTop: 1 },
   sectionHeader: { marginBottom: Spacing.md },
   sectionTitleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.sm },
