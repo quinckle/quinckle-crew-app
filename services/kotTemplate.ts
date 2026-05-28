@@ -18,6 +18,7 @@ export interface KotItem {
 
 export interface KotOrder {
   id: string;
+  sessionId?: string;
   tableNumber: number | string;
   /** Sequential day-counter (e.g. 1, 2, 42). Takes priority over id-derived suffix. */
   orderNumber?: string | number;
@@ -63,6 +64,12 @@ function minutesAgo(iso: string): number {
   }
 }
 
+function toSessionRef(sessionId: string | null | undefined): string {
+  const v = String(sessionId ?? '');
+  const tail = v.slice(-8).toUpperCase();
+  return `S-${tail || 'UNKNOWN'}`;
+}
+
 // ── buildKotText ───────────────────────────────────────────────────────────────
 
 /**
@@ -90,6 +97,9 @@ export function buildKotText(order: KotOrder, paperWidth: 58 | 80 = 58): string 
   const timeStr = formatTime(order.createdAt);
   const ago = minutesAgo(order.createdAt);
   lines.push(`[C]Order ${ordNum}`);
+  if (order.sessionId) {
+    lines.push(`[C]Session ${toSessionRef(order.sessionId)}`);
+  }
   lines.push(`[C]${timeStr}  ·  ${ago} min ago`);
 
   lines.push(`[L]${d}`);

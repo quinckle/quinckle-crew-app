@@ -156,6 +156,7 @@ export default function CookDashboard() {
         if (data?.orderId && items.length > 0) {
           void printKot({
             id: data.orderId,
+            sessionId: data.sessionId ?? undefined,
             orderNumber: data.orderNumber != null ? String(data.orderNumber) : undefined,
             tableNumber: String(data.tableNumber ?? '?'),
             restaurantName: staffInfo?.restaurantName ?? '',
@@ -185,6 +186,7 @@ export default function CookDashboard() {
         }));
         void printKot({
           id: data.order.id,
+          sessionId: data.order.sessionId ?? data.sessionId ?? undefined,
           orderNumber: data.order.orderNumber != null ? String(data.order.orderNumber) : undefined,
           tableNumber: String(data.order.tableNumber ?? '?'),
           restaurantName: staffInfo?.restaurantName ?? '',

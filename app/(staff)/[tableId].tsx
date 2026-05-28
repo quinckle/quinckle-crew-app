@@ -42,6 +42,12 @@ function formatTime(iso: string): string {
   return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 }
 
+function toSessionRef(sessionId: string | null | undefined): string {
+  const v = String(sessionId ?? '');
+  const tail = v.slice(-8).toUpperCase();
+  return `S-${tail || 'UNKNOWN'}`;
+}
+
 export default function TableDetail() {
   const insets = useSafeAreaInsets();
   const { tableId, sessionId: paramSessionId, tableDbId } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string }>();
@@ -405,14 +411,30 @@ export default function TableDetail() {
       })),
     );
 
+    let invoiceMeta = restaurantInvoiceMeta;
+    if (!invoiceMeta && staffInfo?.restaurantId) {
+      try {
+        const res = await restaurantApi.getBranding(staffInfo.restaurantId);
+        if (res?.success) {
+          invoiceMeta = {
+            address: res.data.address ?? null,
+            phone: res.data.phone ?? null,
+            email: res.data.email ?? null,
+            fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null,
+          };
+          setRestaurantInvoiceMeta(invoiceMeta);
+        }
+      } catch {}
+    }
+
     const result = await printBill({
       restaurantName: staffInfo?.restaurantName ?? '',
-      restaurantAddress: restaurantInvoiceMeta?.address ?? null,
-      restaurantPhone: restaurantInvoiceMeta?.phone ?? null,
-      restaurantEmail: restaurantInvoiceMeta?.email ?? null,
-      fssaiLicenseNumber: restaurantInvoiceMeta?.fssaiLicenseNumber ?? null,
+      restaurantAddress: invoiceMeta?.address ?? null,
+      restaurantPhone: invoiceMeta?.phone ?? null,
+      restaurantEmail: invoiceMeta?.email ?? null,
+      fssaiLicenseNumber: invoiceMeta?.fssaiLicenseNumber ?? null,
       tableNumber: tableNum,
-      sessionRef,
+      sessionRef: sessionRef || toSessionRef(sessionId),
       items: invoiceItems,
       subtotal: sessionTotal,
       tax: taxTotal,
