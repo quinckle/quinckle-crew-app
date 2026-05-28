@@ -1,11 +1,12 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { AppState } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import { setCrewToken, setOn401Callback } from '../services/api';
 import type { StaffInfo } from '../services/api';
 import { setRealtimeAuth, disconnectRealtime } from '../services/realtime';
-import { registerCrewPushNotifications } from '../services/pushNotifications';
+import { heartbeatCrewPushToken, registerCrewPushNotifications } from '../services/pushNotifications';
 
 type Role = 'staff' | 'cook' | null;
 
@@ -115,6 +116,21 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     registerCrewPushNotifications().catch(err => {
       console.warn('[push] token registration failed', err);
     });
+
+    const interval = setInterval(() => {
+      void heartbeatCrewPushToken();
+    }, 2 * 60_000);
+
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        void heartbeatCrewPushToken(true);
+      }
+    });
+
+    return () => {
+      clearInterval(interval);
+      sub.remove();
+    };
   }, [crewToken, staffInfo?.id]);
 
   const login = (selectedRole: Role, token?: string, staff?: StaffInfo) => {

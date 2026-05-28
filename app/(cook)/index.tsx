@@ -12,6 +12,7 @@ import { router } from 'expo-router';
 import { Audio } from 'expo-av';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AppState,
   FlatList,
   Image,
   Platform,
@@ -83,6 +84,32 @@ export default function CookDashboard() {
   const [navTab,        setNavTab]        = useState<CookTab>('active');
   const [realtimeOk,    setRealtimeOk]    = useState(true);
 
+  const drainPendingPrintJobs = useCallback(async () => {
+    if (getPrinterStatus() !== 'connected') return;
+    try {
+      const res = await printerApi.getPending(25);
+      const jobs = res?.data ?? [];
+      for (const job of jobs) {
+        await printKot({
+          id: job.id,
+          sessionId: job.sessionId ?? undefined,
+          tableNumber: String(job.tableNumber ?? '?'),
+          restaurantName: staffInfo?.restaurantName ?? '',
+          createdAt: job.createdAt ?? new Date().toISOString(),
+          items: (job.items ?? []).map((i) => ({
+            name: i.name,
+            quantity: i.quantity,
+            notes: i.notes ?? undefined,
+            modifiersSummary: i.modifiersSummary ?? undefined,
+          })),
+          isAddOn: Boolean(job.isAddOn),
+        }, Boolean(job.isAddOn));
+      }
+    } catch {
+      // non-fatal
+    }
+  }, [staffInfo?.restaurantName]);
+
   // ── Data mapping ─────────────────────────────────────────────────────────
   const mapTicket = (t: any, isCompleted = false): KitchenTicket => ({
     id:       t.order_id,
@@ -125,6 +152,22 @@ export default function CookDashboard() {
   useEffect(() => {
     loadOrders();
   }, [loadOrders]);
+
+  useEffect(() => {
+    void drainPendingPrintJobs();
+    const interval = setInterval(() => {
+      void drainPendingPrintJobs();
+    }, 15_000);
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        void drainPendingPrintJobs();
+      }
+    });
+    return () => {
+      clearInterval(interval);
+      appStateSub.remove();
+    };
+  }, [drainPendingPrintJobs]);
 
   // Ably: realtime push for the kitchen channel
   useEffect(() => {
@@ -204,7 +247,7 @@ export default function CookDashboard() {
       unsubServed();
       unsubReprint();
     };
-  }, [staffInfo?.restaurantId, loadOrders]);
+  }, [staffInfo?.restaurantId, staffInfo?.restaurantName, loadOrders]);
 
   // Connection indicator — same pattern as staff
   useEffect(() => {

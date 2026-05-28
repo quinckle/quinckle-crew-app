@@ -395,23 +395,6 @@ export const crewPayments = {
     ),
 };
 
-// ── Crew Notifications ────────────────────────────────────────────────────────
-
-export const crewNotifications = {
-  registerToken: (expoPushToken: string, metadata?: {
-    platform?: string;
-    deviceId?: string;
-    deviceName?: string;
-    appVersion?: string;
-  }) =>
-    request<{ success: boolean }>(
-      'POST',
-      '/api/crew/notifications/token',
-      { token: expoPushToken, ...(metadata ?? {}) },
-      true,
-    ),
-};
-
 // ── Restaurant / Menu (public) ────────────────────────────────────────────────
 
 export interface MenuItem { id: string; name: string; description?: string; price: string; category: string; isVeg: boolean; isAvailable: boolean; imageUrl?: string; }
@@ -541,6 +524,26 @@ export const printerApi = {
       true,
     ),
 
+  getPending: (limit = 25) =>
+    request<{ success: true; data: Array<{
+      id: string;
+      sessionId: string;
+      tableNumber: number;
+      createdAt: string;
+      isAddOn: boolean;
+      items: Array<{
+        name: string;
+        quantity: number;
+        notes?: string;
+        modifiersSummary?: string;
+      }>;
+    }> }>(
+      'GET',
+      `/api/crew/print/pending?limit=${Math.max(1, Math.min(limit, 100))}`,
+      undefined,
+      true,
+    ),
+
   /**
    * Set or clear the printer pairing on behalf of the current crew member.
    * Uses the crew-auth endpoint (not the partner-auth one).
@@ -566,4 +569,24 @@ export const printerApi = {
       { enabled },
       true,
     ),
+};
+
+export const crewNotifications = {
+  registerToken: (
+    token: string,
+    metadata?: { platform?: string; deviceId?: string; deviceName?: string; appVersion?: string },
+  ) =>
+    request<{ success: true }>('POST', '/api/crew/notifications/token', { token, ...metadata }, true),
+
+  heartbeat: (token: string) =>
+    request<{ success: true }>('POST', '/api/crew/notifications/token/heartbeat', { token }, true),
+
+  tokenHealth: () =>
+    request<{ success: true; data: {
+      total: number;
+      active: number;
+      stale: number;
+      byRole: Array<{ role: StaffRole; active: number }>;
+      lastSeenAt: string | null;
+    } }>('GET', '/api/crew/notifications/token-health', undefined, true),
 };

@@ -5,6 +5,7 @@ import * as Notifications from 'expo-notifications';
 import { crewNotifications } from './api';
 
 let lastRegisteredToken: string | null = null;
+let lastHeartbeatAt = 0;
 
 export async function registerCrewPushNotifications(): Promise<void> {
   if (Platform.OS === 'web') return;
@@ -55,4 +56,17 @@ export async function registerCrewPushNotifications(): Promise<void> {
     appVersion: Constants.expoConfig?.version ?? undefined,
   });
   lastRegisteredToken = token;
+  lastHeartbeatAt = Date.now();
+}
+
+export async function heartbeatCrewPushToken(force = false): Promise<void> {
+  if (!lastRegisteredToken) return;
+  const now = Date.now();
+  if (!force && now - lastHeartbeatAt < 5 * 60_000) return;
+  try {
+    await crewNotifications.heartbeat(lastRegisteredToken);
+    lastHeartbeatAt = now;
+  } catch (err) {
+    console.warn('[push] heartbeat failed', err);
+  }
 }
