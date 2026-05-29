@@ -37,17 +37,16 @@ export async function registerCrewPushNotifications(): Promise<void> {
     return;
   }
 
-  const projectId =
-    Constants.expoConfig?.extra?.eas?.projectId ??
-    (Constants as any).easConfig?.projectId;
-
-  if (!projectId || projectId === 'REPLACE_WITH_EAS_PROJECT_ID') {
-    console.warn('[push] EAS projectId not configured in app.json');
+  // Register the NATIVE FCM device token (Android) / APNs token (iOS) rather
+  // than an Expo push token. The backend sends true FCM notification messages
+  // via firebase-admin, which the OS displays even when the app is fully
+  // closed/killed — the Expo-push data-message path did not survive kill.
+  const tokenData = await Notifications.getDevicePushTokenAsync();
+  const token = typeof tokenData.data === 'string' ? tokenData.data : String(tokenData.data);
+  if (!token) {
+    console.warn('[push] no device push token returned');
     return;
   }
-
-  const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
-  const token = tokenData.data;
   if (token === lastRegisteredToken) return;
 
   await crewNotifications.registerToken(token, {
