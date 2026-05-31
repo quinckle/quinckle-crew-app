@@ -208,7 +208,21 @@ export default function StaffDashboard() {
   // Stored in both state (for UI) and a ref (so Ably callbacks always see latest value).
   const [kotAutoPrint, setKotAutoPrint] = useState(true);
   const kotAutoPrintRef = useRef(true);
+  const canAutoPrintFromThisDeviceRef = useRef(false);
   const setKotAutoPrintSync = (v: boolean) => { kotAutoPrintRef.current = v; setKotAutoPrint(v); };
+
+  const refreshPrintSinkOwnership = async () => {
+    try {
+      const res = await printerApi.getStatus();
+      if (typeof res?.data?.kotAutoPrint === 'boolean') {
+        setKotAutoPrintSync(res.data.kotAutoPrint);
+      }
+      canAutoPrintFromThisDeviceRef.current =
+        Boolean(res?.data?.pairedById) && res.data.pairedById === staffInfo?.id;
+    } catch {
+      canAutoPrintFromThisDeviceRef.current = false;
+    }
+  };
 
   const simulateNewOrder = async () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -550,12 +564,7 @@ export default function StaffDashboard() {
     loadPickupOrders();
     loadServedToday();
     loadPendingCashCount();
-    // Load KOT auto-print toggle from server
-    printerApi.getStatus().then(res => {
-      if (typeof res?.data?.kotAutoPrint === 'boolean') {
-        setKotAutoPrintSync(res.data.kotAutoPrint);
-      }
-    }).catch(() => { /* non-fatal */ });
+    void refreshPrintSinkOwnership();
   }, [staffInfo?.restaurantId]);
 
   const loadPendingCashCount = async () => {
@@ -596,7 +605,12 @@ export default function StaffDashboard() {
       void loadTables();
       // Auto-print KOT on whichever crew device has a printer connected,
       // but only when the auto-print toggle is enabled.
-      if (kotAutoPrintRef.current && getPrinterStatus() === 'connected' && data?.orderId) {
+      if (
+        kotAutoPrintRef.current &&
+        canAutoPrintFromThisDeviceRef.current &&
+        getPrinterStatus() === 'connected' &&
+        data?.orderId
+      ) {
         const kotItems = (data.items ?? []).map((i: any) => ({
           name: i.menuItemName ?? i.name ?? '',
           quantity: Number(i.quantity ?? 1),
@@ -684,7 +698,7 @@ export default function StaffDashboard() {
 
     // Reprint request — fires on any device with printer connected
     const offReprint = subscribeChannel(`partner:${restaurantId}`, 'reprint_request', (data: any) => {
-      if (getPrinterStatus() === 'connected' && data?.order) {
+      if (canAutoPrintFromThisDeviceRef.current && getPrinterStatus() === 'connected' && data?.order) {
         const items = (data.order.items ?? []).map((i: any) => ({
           name: i.name ?? i.menuItemName ?? '',
           quantity: i.quantity,

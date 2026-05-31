@@ -76,6 +76,7 @@ export default function CookDashboard() {
   const insets = useSafeAreaInsets();
   const { staffInfo } = useAuth();
   const knownOrderIdsRef = useRef<Set<string>>(new Set());
+  const canAutoPrintFromThisDeviceRef = useRef(false);
 
   const [orders,        setOrders]        = useState<KitchenTicket[]>([]);
   const [completedOrders, setCompletedOrders] = useState<KitchenTicket[]>([]);
@@ -86,6 +87,7 @@ export default function CookDashboard() {
 
   const drainPendingPrintJobs = useCallback(async () => {
     if (getPrinterStatus() !== 'connected') return;
+    if (!canAutoPrintFromThisDeviceRef.current) return;
     try {
       const res = await printerApi.getPending(25);
       const jobs = res?.data ?? [];
@@ -154,6 +156,13 @@ export default function CookDashboard() {
   }, [loadOrders]);
 
   useEffect(() => {
+    void printerApi.getStatus()
+      .then((res) => {
+        canAutoPrintFromThisDeviceRef.current =
+          Boolean(res?.data?.pairedById) && res.data.pairedById === staffInfo?.id;
+      })
+      .catch(() => { canAutoPrintFromThisDeviceRef.current = false; });
+
     void drainPendingPrintJobs();
     const interval = setInterval(() => {
       void drainPendingPrintJobs();
@@ -187,7 +196,7 @@ export default function CookDashboard() {
       // local printer state. A physical BT printer can only connect to one
       // device, so only one phone will actually succeed; duplicate acks are
       // idempotent on the backend (kotPrintedAt only stamps on first success).
-      if (getPrinterStatus() === 'connected') {
+      if (canAutoPrintFromThisDeviceRef.current && getPrinterStatus() === 'connected') {
         // items come directly from the NewOrderEvent shape
         const items = (data?.items ?? []).map((i: any) => ({
           name: i.menuItemName ?? i.name ?? '',
@@ -219,7 +228,7 @@ export default function CookDashboard() {
 
     // Reprint request — fires on any device with printer connected
     const unsubReprint = subscribeChannel(`partner:${restaurantId}`, 'reprint_request', (data: any) => {
-      if (getPrinterStatus() === 'connected' && data?.order) {
+      if (canAutoPrintFromThisDeviceRef.current && getPrinterStatus() === 'connected' && data?.order) {
         const items = (data.order.items ?? []).map((i: any) => ({
           name: i.name ?? i.menuItemName ?? '',
           quantity: i.quantity,
@@ -247,7 +256,7 @@ export default function CookDashboard() {
       unsubServed();
       unsubReprint();
     };
-  }, [staffInfo?.restaurantId, staffInfo?.restaurantName, loadOrders]);
+  }, [staffInfo?.restaurantId, staffInfo?.restaurantName, staffInfo?.id, loadOrders, drainPendingPrintJobs]);
 
   // Connection indicator — same pattern as staff
   useEffect(() => {
