@@ -589,6 +589,17 @@ export default function TableDetail() {
           </View>
         </View>
         <View style={styles.headerRight}>
+          {/* ── Add items (manual order) icon ── */}
+          {!isPaid && (
+            <TouchableOpacity
+              onPress={() => setShowOrderModal(true)}
+              style={styles.iconBtn}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="add-circle-outline" size={20} color={QuinckleColors.primary} />
+            </TouchableOpacity>
+          )}
+
           {/* ── Print icon + popover ── */}
           <View style={{ position: 'relative' }}>
             <TouchableOpacity
@@ -651,16 +662,6 @@ export default function TableDetail() {
         </View>{/* end headerRight */}
       </View>{/* end header */}
 
-      {!isPaid && (
-        <TouchableOpacity
-          style={styles.manualOrderBtn}
-          onPress={() => setShowOrderModal(true)}
-          activeOpacity={0.85}
-        >
-          <Ionicons name="add" size={18} color="#fff" />
-          <Text style={styles.manualOrderText}>Add Items to Order</Text>
-        </TouchableOpacity>
-      )}
 
       <View style={styles.sectionHeader}>
         <View style={styles.sectionTitleRow}>
