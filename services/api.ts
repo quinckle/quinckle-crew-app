@@ -230,6 +230,13 @@ export const crewSessions = {
     ),
 };
 
+export const crewDiners = {
+  lookup: (phone: string) =>
+    request<{ success: boolean; data: { found: boolean; name: string | null } }>(
+      'GET', `/api/crew/diners/lookup?phone=${phone.replace(/\D/g, '')}`, undefined, true
+    ),
+};
+
 // ── Crew Orders (STEWARD/ADMIN) ───────────────────────────────────────────────
 
 export interface ActiveOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; }

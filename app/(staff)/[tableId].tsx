@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
-import { crewSessions, crewTables, crewOrders, crewPayments, restaurantApi, printerApi } from '../../services/api';
+import { crewSessions, crewTables, crewOrders, crewPayments, crewDiners, restaurantApi, printerApi } from '../../services/api';
 import type { CrewTable, SessionBill } from '../../services/api';
 import { printBill, getStatus as getPrinterStatus } from '../../services/printer';
 import type { InvoiceBill } from '../../services/invoiceTemplate';
@@ -80,19 +80,25 @@ export default function TableDetail() {
   const [billSplits, setBillSplits] = useState<SessionBill['splits']>(undefined);
   const [isExpanded, setIsExpanded] = useState(false);
 
-  // Multi-step checkout flow: identity → payment → place+collect
-  const [dinerPhone, setDinerPhone]         = useState('');
-  const [dinerName, setDinerName]           = useState('');
-  const [showDinerModal, setShowDinerModal] = useState(false);
-  const [identitySaved, setIdentitySaved]   = useState(false);
+  // ── Multi-step checkout: identity → payment ──────────────────────────────────
+  type PayMethod = 'CASH' | 'UPI' | 'SPLIT';
+  type CheckoutStep = 'identity' | 'payment';
 
-  // Payment step (shown after identity)
-  type PayMethod = 'CASH' | 'UPI_DIRECT' | 'SPLIT';
-  const [showPayModal, setShowPayModal]   = useState(false);
-  const [payMethod, setPayMethod]         = useState<PayMethod>('CASH');
-  const [upiRef, setUpiRef]               = useState('');
-  // For split: cashAmount is user-entered; upi = total - cash
-  const [splitCash, setSplitCash]         = useState('');
+  const [checkoutOpen, setCheckoutOpen]   = useState(false);
+  const [checkoutStep, setCheckoutStep]   = useState<CheckoutStep>('identity');
+
+  // Identity step
+  const [coPhone, setCoPhone]             = useState('');
+  const [coName, setCoName]               = useState('');
+  const [coLooking, setCoLooking]         = useState(false);
+  const [coFound, setCoFound]             = useState<boolean | null>(null);
+  const [identitySaved, setIdentitySaved] = useState(false);
+
+  // Payment step
+  const [coMethod, setCoMethod]           = useState<PayMethod>('CASH');
+  const [coSplitCash, setCoSplitCash]     = useState('');
+  const [coSubmitting, setCoSubmitting]   = useState(false);
+  const [coError, setCoError]             = useState<string | null>(null);
 
   // Add items modal
   const [showOrderModal, setShowOrderModal] = useState(false);
@@ -285,87 +291,106 @@ export default function TableDetail() {
     });
   }, [menuItems, menuSearchText, activeCategory]);
 
-  const doPlaceAndCollect = async (
-    splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[],
-    upiReference?: string,
-  ) => {
-    const items = Object.entries(cart).map(([item_id, qty]) => ({
-      item_id,
-      qty,
-      ...(cartNotes[item_id]?.trim() ? { note: cartNotes[item_id].trim() } : {}),
-    }));
-    if (items.length === 0 || !sessionId) return;
-    setIsPlacingOrder(true);
-    try {
-      // Step 1: Place the order → get order ID
-      const orderRes = await crewOrders.placeOrder(sessionId, items);
-      const orderId: string = orderRes?.order_id ?? '';
+  // ── Checkout handlers ─────────────────────────────────────────────────────────
 
-      // Step 2: Immediately collect payment on that order
-      if (orderId && staffInfo?.id) {
-        await crewPayments.collectPayment(orderId, staffInfo.id, splits, upiReference || null);
-      }
-
-      setCart({});
-      setCartNotes({});
-      setShowOrderModal(false);
-      setShowPayModal(false);
-      setMenuSearchText('');
-      setActiveCategory('All');
-      setUpiRef('');
-      setSplitCash('');
-      await loadBill();
-    } catch (e: any) {
-      // keep modal open on error
-    } finally {
-      setIsPlacingOrder(false);
-    }
-  };
-
-  const handlePlaceOrder = () => {
+  const openCheckout = () => {
+    setCoError(null);
     if (!identitySaved) {
-      setShowDinerModal(true);
+      setCheckoutStep('identity');
+      setCoPhone('');
+      setCoName('');
+      setCoFound(null);
     } else {
-      // Identity already saved — go straight to payment step
-      setPayMethod('CASH');
-      setShowPayModal(true);
+      setCheckoutStep('payment');
+      setCoMethod('CASH');
+      setCoSplitCash('');
+    }
+    setCheckoutOpen(true);
+  };
+
+  // Auto-lookup diner when 10 digits entered
+  const onCoPhoneChange = async (v: string) => {
+    const digits = v.replace(/\D/g, '').slice(0, 10);
+    setCoPhone(digits);
+    setCoFound(null);
+    if (digits.length === 10) {
+      setCoLooking(true);
+      try {
+        const res = await crewDiners.lookup(digits);
+        if (res.data.found && res.data.name) {
+          setCoName(res.data.name);
+          setCoFound(true);
+        } else {
+          setCoFound(false);
+        }
+      } catch { setCoFound(false); }
+      finally { setCoLooking(false); }
     }
   };
 
-  const handleDinerConfirm = async () => {
-    const phone = dinerPhone.replace(/\D/g, '');
+  const confirmIdentity = () => {
+    const phone = coPhone.replace(/\D/g, '');
     if (phone.length !== 10) return;
-    setShowDinerModal(false);
+    // Save to session (fire-and-forget)
     if (sessionId) {
-      crewSessions.saveCustomer(sessionId, phone, dinerName.trim() || null).catch(() => {});
+      crewSessions.saveCustomer(sessionId, phone, coName.trim() || null).catch(() => {});
     }
     setIdentitySaved(true);
-    // Advance to payment step
-    setPayMethod('CASH');
-    setShowPayModal(true);
+    setCoMethod('CASH');
+    setCoSplitCash('');
+    setCoError(null);
+    setCheckoutStep('payment');
   };
 
-  const handlePayConfirm = () => {
+  const confirmPayment = async () => {
     const total = cartTotal;
     let splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[] = [];
 
-    if (payMethod === 'CASH') {
+    if (coMethod === 'CASH') {
       splits = [{ method: 'CASH', amount: Math.round(total) }];
-    } else if (payMethod === 'UPI_DIRECT') {
+    } else if (coMethod === 'UPI') {
       splits = [{ method: 'UPI_DIRECT', amount: Math.round(total) }];
     } else {
-      // SPLIT
-      const cash = parseFloat(splitCash) || 0;
-      const upiAmt = Math.round(total - cash);
-      if (cash <= 0 || upiAmt <= 0 || cash > total) return;
-      splits = [
-        { method: 'CASH',       amount: Math.round(cash) },
-        { method: 'UPI_DIRECT', amount: upiAmt },
-      ];
+      const cash = parseFloat(coSplitCash) || 0;
+      const upi  = Math.round(total - cash);
+      if (cash <= 0 || upi <= 0 || cash >= total) {
+        setCoError('Enter a valid cash amount less than the total');
+        return;
+      }
+      splits = [{ method: 'CASH', amount: Math.round(cash) }, { method: 'UPI_DIRECT', amount: upi }];
     }
 
-    doPlaceAndCollect(splits, payMethod !== 'CASH' ? upiRef.trim() || undefined : undefined);
+    const items = Object.entries(cart).map(([item_id, qty]) => ({
+      item_id, qty,
+      ...(cartNotes[item_id]?.trim() ? { note: cartNotes[item_id].trim() } : {}),
+    }));
+    if (items.length === 0 || !sessionId) return;
+
+    setCoSubmitting(true);
+    setCoError(null);
+    try {
+      const orderRes = await crewOrders.placeOrder(sessionId, items);
+      const orderId = orderRes?.order_id ?? '';
+      if (orderId && staffInfo?.id) {
+        await crewPayments.collectPayment(orderId, staffInfo.id, splits);
+      }
+      // Clean up
+      setCart({});
+      setCartNotes({});
+      setShowOrderModal(false);
+      setCheckoutOpen(false);
+      setMenuSearchText('');
+      setActiveCategory('All');
+      setCoSplitCash('');
+      await loadBill();
+    } catch (e: any) {
+      setCoError(e?.message ?? 'Failed to place order. Try again.');
+    } finally {
+      setCoSubmitting(false);
+    }
   };
+
+  const handlePlaceOrder = () => openCheckout();
 
   // Flat list of all items across all orders
   const flatItems = useMemo<FlatItem[]>(() =>
@@ -858,155 +883,186 @@ export default function TableDetail() {
 
       <ThemedDialog visible={dialog.visible} title={dialog.title} message={dialog.message} actions={dialog.actions} onClose={closeDialog} />
 
-      {/* ── Diner identity modal — shown before first order is placed ── */}
-      <Modal visible={showDinerModal} transparent animationType="fade" onRequestClose={() => setShowDinerModal(false)}>
+      {/* ── Checkout modal — multi-step: identity → payment ── */}
+      <Modal
+        visible={checkoutOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => !coSubmitting && setCheckoutOpen(false)}
+      >
         <View style={styles.swapBackdrop}>
-          <View style={styles.swapCard}>
-            <Text style={styles.swapEyebrow}>Before placing order</Text>
-            <Text style={styles.swapTitle}>Guest details</Text>
-            <Text style={[styles.swapSub, { marginBottom: 20 }]}>
-              Phone is required. Name is optional.
-            </Text>
+          <View style={[styles.swapCard, { maxHeight: '90%' }]}>
 
-            {/* Phone */}
-            <View style={styles.dinerInputWrap}>
-              <View style={styles.dinerCountryCode}>
-                <Text style={styles.dinerCountryCodeText}>+91</Text>
-              </View>
-              <View style={styles.dinerDivider} />
-              <TextInput
-                style={styles.dinerInput}
-                value={dinerPhone}
-                onChangeText={v => setDinerPhone(v.replace(/\D/g, '').slice(0, 10))}
-                placeholder="Phone number"
-                placeholderTextColor={QuinckleColors.textMuted}
-                keyboardType="phone-pad"
-                returnKeyType="next"
-                maxLength={10}
-              />
-            </View>
+            {/* ─ STEP 1: Identity ─ */}
+            {checkoutStep === 'identity' && (
+              <>
+                <Text style={styles.swapEyebrow}>Step 1 of 2</Text>
+                <Text style={styles.swapTitle}>Guest details</Text>
+                <Text style={styles.swapSubtitle}>Phone required — we'll look them up on Quinckle.</Text>
 
-            {/* Name */}
-            <View style={[styles.dinerInputWrap, { marginTop: 10 }]}>
-              <TextInput
-                style={[styles.dinerInput, { flex: 1, paddingHorizontal: 14 }]}
-                value={dinerName}
-                onChangeText={setDinerName}
-                placeholder="Guest name (optional)"
-                placeholderTextColor={QuinckleColors.textMuted}
-                returnKeyType="done"
-                onSubmitEditing={handleDinerConfirm}
-              />
-            </View>
-
-            <View style={styles.swapFooter}>
-              <TouchableOpacity style={styles.swapCancel} onPress={() => setShowDinerModal(false)} activeOpacity={0.8}>
-                <Text style={styles.swapCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.swapConfirm, dinerPhone.replace(/\D/g, '').length !== 10 && { opacity: 0.4 }]}
-                onPress={handleDinerConfirm}
-                disabled={dinerPhone.replace(/\D/g, '').length !== 10}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.swapConfirmText}>Place Order</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* ── Payment method modal ── */}
-      <Modal visible={showPayModal} transparent animationType="fade" onRequestClose={() => !isPlacingOrder && setShowPayModal(false)}>
-        <View style={styles.swapBackdrop}>
-          <View style={styles.swapCard}>
-            <Text style={styles.swapEyebrow}>Collect payment</Text>
-            <Text style={styles.swapTitle}>₹{cartTotal.toFixed(0)}</Text>
-            <Text style={[styles.swapSubtitle, { marginBottom: 16 }]}>How is the guest paying?</Text>
-
-            {/* Method selector */}
-            <View style={styles.payMethodRow}>
-              {(['CASH', 'UPI_DIRECT', 'SPLIT'] as const).map(m => (
-                <TouchableOpacity
-                  key={m}
-                  style={[styles.payMethodBtn, payMethod === m && styles.payMethodBtnActive]}
-                  onPress={() => setPayMethod(m)}
-                  activeOpacity={0.75}
-                >
-                  <Text style={[styles.payMethodText, payMethod === m && styles.payMethodTextActive]}>
-                    {m === 'UPI_DIRECT' ? 'UPI' : m === 'SPLIT' ? 'Split' : 'Cash'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            {/* UPI reference */}
-            {payMethod === 'UPI_DIRECT' && (
-              <View style={[styles.dinerInputWrap, { marginTop: 14 }]}>
-                <TextInput
-                  style={[styles.dinerInput, { flex: 1, paddingHorizontal: 14 }]}
-                  value={upiRef}
-                  onChangeText={setUpiRef}
-                  placeholder="UPI ref / UTR (optional)"
-                  placeholderTextColor={QuinckleColors.textMuted}
-                  returnKeyType="done"
-                />
-              </View>
-            )}
-
-            {/* Split: cash amount input */}
-            {payMethod === 'SPLIT' && (
-              <View style={{ marginTop: 14, gap: 8 }}>
-                <View style={styles.dinerInputWrap}>
+                {/* Phone input */}
+                <View style={[styles.dinerInputWrap, { marginTop: 16 }]}>
                   <View style={styles.dinerCountryCode}>
-                    <Text style={styles.dinerCountryCodeText}>Cash ₹</Text>
+                    <Text style={styles.dinerCountryCodeText}>+91</Text>
                   </View>
                   <View style={styles.dinerDivider} />
                   <TextInput
-                    style={[styles.dinerInput]}
-                    value={splitCash}
-                    onChangeText={v => setSplitCash(v.replace(/[^0-9.]/g, ''))}
-                    placeholder="0"
+                    style={styles.dinerInput}
+                    value={coPhone}
+                    onChangeText={onCoPhoneChange}
+                    placeholder="10-digit mobile"
                     placeholderTextColor={QuinckleColors.textMuted}
-                    keyboardType="decimal-pad"
+                    keyboardType="phone-pad"
+                    returnKeyType="next"
+                    maxLength={10}
+                    autoFocus
+                  />
+                  {coLooking && <ActivityIndicator size="small" color={QuinckleColors.primary} style={{ marginRight: 12 }} />}
+                </View>
+
+                {coFound === true && (
+                  <View style={styles.dinerFoundBadge}>
+                    <Text style={styles.dinerFoundText}>✓ Found on Quinckle</Text>
+                  </View>
+                )}
+                {coFound === false && coPhone.length === 10 && (
+                  <Text style={styles.dinerNotFoundText}>New guest — enter name below</Text>
+                )}
+
+                {/* Name input */}
+                <View style={[styles.dinerInputWrap, { marginTop: 10 }]}>
+                  <TextInput
+                    style={[styles.dinerInput, { flex: 1, paddingHorizontal: 14 }]}
+                    value={coName}
+                    onChangeText={setCoName}
+                    placeholder="Guest name (optional)"
+                    placeholderTextColor={QuinckleColors.textMuted}
                     returnKeyType="done"
+                    onSubmitEditing={confirmIdentity}
                   />
                 </View>
-                {splitCash ? (
-                  <Text style={{ color: QuinckleColors.textSecondary, fontSize: 12, paddingLeft: 4 }}>
-                    UPI: ₹{Math.max(0, cartTotal - (parseFloat(splitCash) || 0)).toFixed(0)}
-                  </Text>
-                ) : null}
-              </View>
+
+                <View style={styles.swapFooter}>
+                  <TouchableOpacity style={styles.swapCancel} onPress={() => setCheckoutOpen(false)} activeOpacity={0.8}>
+                    <Text style={styles.swapCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.swapConfirm, coPhone.length !== 10 && { opacity: 0.4 }]}
+                    onPress={confirmIdentity}
+                    disabled={coPhone.length !== 10}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.swapConfirmText}>Continue →</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
             )}
 
-            <View style={[styles.swapFooter, { marginTop: 20 }]}>
-              <TouchableOpacity
-                style={styles.swapCancel}
-                onPress={() => setShowPayModal(false)}
-                disabled={isPlacingOrder}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.swapCancelText}>Back</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.swapConfirm,
-                  (isPlacingOrder || (payMethod === 'SPLIT' && (!(parseFloat(splitCash) > 0) || parseFloat(splitCash) >= cartTotal))) && { opacity: 0.4 },
-                ]}
-                onPress={handlePayConfirm}
-                disabled={isPlacingOrder || (payMethod === 'SPLIT' && (!(parseFloat(splitCash) > 0) || parseFloat(splitCash) >= cartTotal))}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.swapConfirmText}>
-                  {isPlacingOrder ? 'Processing…' : 'Place & Collect'}
-                </Text>
-              </TouchableOpacity>
-            </View>
+            {/* ─ STEP 2: Payment ─ */}
+            {checkoutStep === 'payment' && (
+              <>
+                <Text style={styles.swapEyebrow}>Step 2 of 2  ·  {coName || coPhone || 'Guest'}</Text>
+                <Text style={styles.swapTitle}>₹{cartTotal.toFixed(0)}</Text>
+                <Text style={styles.swapSubtitle}>How is the guest paying?</Text>
+
+                {/* Method tabs */}
+                <View style={[styles.payMethodRow, { marginTop: 16 }]}>
+                  {(['CASH', 'UPI', 'SPLIT'] as const).map(m => (
+                    <TouchableOpacity
+                      key={m}
+                      style={[styles.payMethodBtn, coMethod === m && styles.payMethodBtnActive]}
+                      onPress={() => { setCoMethod(m); setCoError(null); setCoSplitCash(''); }}
+                      activeOpacity={0.75}
+                    >
+                      <Text style={[styles.payMethodText, coMethod === m && styles.payMethodTextActive]}>
+                        {m === 'SPLIT' ? 'Split' : m}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                {/* Cash */}
+                {coMethod === 'CASH' && (
+                  <View style={styles.payConfirmBox}>
+                    <Text style={styles.payConfirmLabel}>Collect from guest</Text>
+                    <Text style={styles.payConfirmAmount}>₹{cartTotal.toFixed(0)}</Text>
+                    <Text style={styles.payConfirmHint}>Tap Confirm once cash is in hand.</Text>
+                  </View>
+                )}
+
+                {/* UPI — soundbox */}
+                {coMethod === 'UPI' && (
+                  <View style={styles.payConfirmBox}>
+                    <Text style={styles.payConfirmLabel}>UPI — direct the guest to</Text>
+                    <Text style={styles.payConfirmAmount}>₹{cartTotal.toFixed(0)}</Text>
+                    <Text style={styles.payConfirmHint}>Ask guest to scan the restaurant QR or pay to the UPI ID. Wait for the soundbox, then tap Confirm.</Text>
+                  </View>
+                )}
+
+                {/* Split */}
+                {coMethod === 'SPLIT' && (
+                  <View style={{ marginTop: 14, gap: 10 }}>
+                    <View style={styles.dinerInputWrap}>
+                      <View style={styles.dinerCountryCode}>
+                        <Text style={styles.dinerCountryCodeText}>Cash ₹</Text>
+                      </View>
+                      <View style={styles.dinerDivider} />
+                      <TextInput
+                        style={styles.dinerInput}
+                        value={coSplitCash}
+                        onChangeText={v => { setCoSplitCash(v.replace(/[^0-9.]/g, '')); setCoError(null); }}
+                        placeholder="0"
+                        placeholderTextColor={QuinckleColors.textMuted}
+                        keyboardType="decimal-pad"
+                        returnKeyType="done"
+                        autoFocus
+                      />
+                    </View>
+                    {coSplitCash ? (
+                      <View style={styles.splitBreakdown}>
+                        <View style={styles.splitRow}>
+                          <Text style={styles.splitLabel}>Cash</Text>
+                          <Text style={styles.splitAmt}>₹{(parseFloat(coSplitCash)||0).toFixed(0)}</Text>
+                        </View>
+                        <View style={styles.splitRow}>
+                          <Text style={styles.splitLabel}>UPI (soundbox)</Text>
+                          <Text style={styles.splitAmt}>₹{Math.max(0, cartTotal-(parseFloat(coSplitCash)||0)).toFixed(0)}</Text>
+                        </View>
+                        <View style={[styles.splitRow, { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: QuinckleColors.border, paddingTop: 6, marginTop: 2 }]}>
+                          <Text style={[styles.splitLabel, { color: QuinckleColors.textPrimary }]}>Total</Text>
+                          <Text style={[styles.splitAmt, { color: QuinckleColors.textPrimary }]}>₹{cartTotal.toFixed(0)}</Text>
+                        </View>
+                      </View>
+                    ) : null}
+                  </View>
+                )}
+
+                {coError && <Text style={{ color: QuinckleColors.danger, fontSize: 12, marginTop: 8 }}>{coError}</Text>}
+
+                <View style={styles.swapFooter}>
+                  <TouchableOpacity
+                    style={styles.swapCancel}
+                    onPress={() => setCheckoutStep('identity')}
+                    disabled={coSubmitting}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.swapCancelText}>← Back</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.swapConfirm, coSubmitting && { opacity: 0.5 }]}
+                    onPress={confirmPayment}
+                    disabled={coSubmitting}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.swapConfirmText}>{coSubmitting ? 'Processing…' : 'Confirm & Place'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+
           </View>
         </View>
       </Modal>
-
       {/* Swap-table modal */}
       <Modal visible={swapOpen} transparent animationType="fade" onRequestClose={() => !swapSubmitting && setSwapOpen(false)}>
         <View style={styles.swapBackdrop}>
@@ -1383,9 +1439,10 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   // Payment method selector
-  payMethodRow: { flexDirection: 'row', gap: 8, marginBottom: 4 },
+  // Payment method selector
+  payMethodRow: { flexDirection: 'row', gap: 8 },
   payMethodBtn: {
-    flex: 1, paddingVertical: 10, borderRadius: Radius.md,
+    flex: 1, paddingVertical: 11, borderRadius: Radius.md,
     borderWidth: 1.5, borderColor: QuinckleColors.border,
     backgroundColor: QuinckleColors.surfaceMuted,
     alignItems: 'center',
@@ -1394,8 +1451,39 @@ const styles = StyleSheet.create({
     borderColor: QuinckleColors.primary,
     backgroundColor: 'rgba(243,93,59,0.10)',
   },
-  payMethodText: { fontSize: 13, fontWeight: '600', color: QuinckleColors.textSecondary },
+  payMethodText: { fontSize: 13, fontWeight: '600' as const, color: QuinckleColors.textSecondary },
   payMethodTextActive: { color: QuinckleColors.primary },
+
+  // Payment confirm box
+  payConfirmBox: {
+    marginTop: 16, padding: Spacing.lg,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderRadius: Radius.lg, borderWidth: 1, borderColor: QuinckleColors.border,
+    gap: 4, alignItems: 'center',
+  },
+  payConfirmLabel: { fontSize: 11, fontWeight: '600' as const, color: QuinckleColors.textMuted, textTransform: 'uppercase' as const, letterSpacing: 0.8 },
+  payConfirmAmount: { fontSize: 34, fontWeight: '700' as const, color: QuinckleColors.textPrimary, letterSpacing: -1 },
+  payConfirmHint: { fontSize: 12, color: QuinckleColors.textSecondary, textAlign: 'center' as const, lineHeight: 18 },
+
+  // Split breakdown
+  splitBreakdown: {
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderRadius: Radius.md, borderWidth: 1, borderColor: QuinckleColors.border,
+    padding: Spacing.md, gap: 6,
+  },
+  splitRow: { flexDirection: 'row' as const, justifyContent: 'space-between' as const, alignItems: 'center' as const },
+  splitLabel: { fontSize: 13, color: QuinckleColors.textSecondary },
+  splitAmt: { fontSize: 13, fontWeight: '700' as const, color: QuinckleColors.textPrimary },
+
+  // Diner lookup badges
+  dinerFoundBadge: {
+    marginTop: 8, paddingHorizontal: 10, paddingVertical: 5,
+    backgroundColor: 'rgba(34,197,94,0.12)',
+    borderRadius: Radius.sm, borderWidth: 1, borderColor: 'rgba(34,197,94,0.3)',
+    alignSelf: 'flex-start' as const,
+  },
+  dinerFoundText: { fontSize: 12, fontWeight: '600' as const, color: QuinckleColors.success },
+  dinerNotFoundText: { fontSize: 12, color: QuinckleColors.textMuted, marginTop: 6, fontStyle: 'italic' as const },
 
   // Diner identity input
   dinerInputWrap: {
