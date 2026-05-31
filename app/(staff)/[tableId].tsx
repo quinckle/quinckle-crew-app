@@ -80,11 +80,19 @@ export default function TableDetail() {
   const [billSplits, setBillSplits] = useState<SessionBill['splits']>(undefined);
   const [isExpanded, setIsExpanded] = useState(false);
 
-  // Diner identity — collected before first order is placed
-  const [dinerPhone, setDinerPhone] = useState('');
-  const [dinerName, setDinerName]   = useState('');
+  // Multi-step checkout flow: identity → payment → place+collect
+  const [dinerPhone, setDinerPhone]         = useState('');
+  const [dinerName, setDinerName]           = useState('');
   const [showDinerModal, setShowDinerModal] = useState(false);
-  const [identitySaved, setIdentitySaved] = useState(false);
+  const [identitySaved, setIdentitySaved]   = useState(false);
+
+  // Payment step (shown after identity)
+  type PayMethod = 'CASH' | 'UPI_DIRECT' | 'SPLIT';
+  const [showPayModal, setShowPayModal]   = useState(false);
+  const [payMethod, setPayMethod]         = useState<PayMethod>('CASH');
+  const [upiRef, setUpiRef]               = useState('');
+  // For split: cashAmount is user-entered; upi = total - cash
+  const [splitCash, setSplitCash]         = useState('');
 
   // Add items modal
   const [showOrderModal, setShowOrderModal] = useState(false);
@@ -277,7 +285,10 @@ export default function TableDetail() {
     });
   }, [menuItems, menuSearchText, activeCategory]);
 
-  const doPlaceOrder = async () => {
+  const doPlaceAndCollect = async (
+    splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[],
+    upiReference?: string,
+  ) => {
     const items = Object.entries(cart).map(([item_id, qty]) => ({
       item_id,
       qty,
@@ -286,41 +297,74 @@ export default function TableDetail() {
     if (items.length === 0 || !sessionId) return;
     setIsPlacingOrder(true);
     try {
-      await crewOrders.placeOrder(sessionId, items);
+      // Step 1: Place the order → get order ID
+      const orderRes = await crewOrders.placeOrder(sessionId, items);
+      const orderId: string = orderRes?.order_id ?? '';
+
+      // Step 2: Immediately collect payment on that order
+      if (orderId && staffInfo?.id) {
+        await crewPayments.collectPayment(orderId, staffInfo.id, splits, upiReference || null);
+      }
+
       setCart({});
       setCartNotes({});
       setShowOrderModal(false);
+      setShowPayModal(false);
       setMenuSearchText('');
       setActiveCategory('All');
+      setUpiRef('');
+      setSplitCash('');
       await loadBill();
     } catch (e: any) {
-      // show error in modal — keep it open
+      // keep modal open on error
     } finally {
       setIsPlacingOrder(false);
     }
   };
 
   const handlePlaceOrder = () => {
-    // If diner identity not yet collected, show the identity modal first.
-    // On subsequent orders in the same session, skip the modal.
     if (!identitySaved) {
       setShowDinerModal(true);
     } else {
-      doPlaceOrder();
+      // Identity already saved — go straight to payment step
+      setPayMethod('CASH');
+      setShowPayModal(true);
     }
   };
 
   const handleDinerConfirm = async () => {
     const phone = dinerPhone.replace(/\D/g, '');
-    // Phone is required — must be 10 digits
     if (phone.length !== 10) return;
     setShowDinerModal(false);
-    // Save identity to session (fire-and-forget — don't block order placement)
     if (sessionId) {
       crewSessions.saveCustomer(sessionId, phone, dinerName.trim() || null).catch(() => {});
     }
     setIdentitySaved(true);
-    doPlaceOrder();
+    // Advance to payment step
+    setPayMethod('CASH');
+    setShowPayModal(true);
+  };
+
+  const handlePayConfirm = () => {
+    const total = cartTotal;
+    let splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[] = [];
+
+    if (payMethod === 'CASH') {
+      splits = [{ method: 'CASH', amount: Math.round(total) }];
+    } else if (payMethod === 'UPI_DIRECT') {
+      splits = [{ method: 'UPI_DIRECT', amount: Math.round(total) }];
+    } else {
+      // SPLIT
+      const cash = parseFloat(splitCash) || 0;
+      const upiAmt = Math.round(total - cash);
+      if (cash <= 0 || upiAmt <= 0 || cash > total) return;
+      splits = [
+        { method: 'CASH',       amount: Math.round(cash) },
+        { method: 'UPI_DIRECT', amount: upiAmt },
+      ];
+    }
+
+    doPlaceAndCollect(splits, payMethod !== 'CASH' ? upiRef.trim() || undefined : undefined);
   };
 
   // Flat list of all items across all orders
@@ -872,6 +916,97 @@ export default function TableDetail() {
         </View>
       </Modal>
 
+      {/* ── Payment method modal ── */}
+      <Modal visible={showPayModal} transparent animationType="fade" onRequestClose={() => !isPlacingOrder && setShowPayModal(false)}>
+        <View style={styles.swapBackdrop}>
+          <View style={styles.swapCard}>
+            <Text style={styles.swapEyebrow}>Collect payment</Text>
+            <Text style={styles.swapTitle}>₹{cartTotal.toFixed(0)}</Text>
+            <Text style={[styles.swapSubtitle, { marginBottom: 16 }]}>How is the guest paying?</Text>
+
+            {/* Method selector */}
+            <View style={styles.payMethodRow}>
+              {(['CASH', 'UPI_DIRECT', 'SPLIT'] as const).map(m => (
+                <TouchableOpacity
+                  key={m}
+                  style={[styles.payMethodBtn, payMethod === m && styles.payMethodBtnActive]}
+                  onPress={() => setPayMethod(m)}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[styles.payMethodText, payMethod === m && styles.payMethodTextActive]}>
+                    {m === 'UPI_DIRECT' ? 'UPI' : m === 'SPLIT' ? 'Split' : 'Cash'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {/* UPI reference */}
+            {payMethod === 'UPI_DIRECT' && (
+              <View style={[styles.dinerInputWrap, { marginTop: 14 }]}>
+                <TextInput
+                  style={[styles.dinerInput, { flex: 1, paddingHorizontal: 14 }]}
+                  value={upiRef}
+                  onChangeText={setUpiRef}
+                  placeholder="UPI ref / UTR (optional)"
+                  placeholderTextColor={QuinckleColors.textMuted}
+                  returnKeyType="done"
+                />
+              </View>
+            )}
+
+            {/* Split: cash amount input */}
+            {payMethod === 'SPLIT' && (
+              <View style={{ marginTop: 14, gap: 8 }}>
+                <View style={styles.dinerInputWrap}>
+                  <View style={styles.dinerCountryCode}>
+                    <Text style={styles.dinerCountryCodeText}>Cash ₹</Text>
+                  </View>
+                  <View style={styles.dinerDivider} />
+                  <TextInput
+                    style={[styles.dinerInput]}
+                    value={splitCash}
+                    onChangeText={v => setSplitCash(v.replace(/[^0-9.]/g, ''))}
+                    placeholder="0"
+                    placeholderTextColor={QuinckleColors.textMuted}
+                    keyboardType="decimal-pad"
+                    returnKeyType="done"
+                  />
+                </View>
+                {splitCash ? (
+                  <Text style={{ color: QuinckleColors.textSecondary, fontSize: 12, paddingLeft: 4 }}>
+                    UPI: ₹{Math.max(0, cartTotal - (parseFloat(splitCash) || 0)).toFixed(0)}
+                  </Text>
+                ) : null}
+              </View>
+            )}
+
+            <View style={[styles.swapFooter, { marginTop: 20 }]}>
+              <TouchableOpacity
+                style={styles.swapCancel}
+                onPress={() => setShowPayModal(false)}
+                disabled={isPlacingOrder}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.swapCancelText}>Back</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.swapConfirm,
+                  (isPlacingOrder || (payMethod === 'SPLIT' && (!(parseFloat(splitCash) > 0) || parseFloat(splitCash) >= cartTotal))) && { opacity: 0.4 },
+                ]}
+                onPress={handlePayConfirm}
+                disabled={isPlacingOrder || (payMethod === 'SPLIT' && (!(parseFloat(splitCash) > 0) || parseFloat(splitCash) >= cartTotal))}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.swapConfirmText}>
+                  {isPlacingOrder ? 'Processing…' : 'Place & Collect'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* Swap-table modal */}
       <Modal visible={swapOpen} transparent animationType="fade" onRequestClose={() => !swapSubmitting && setSwapOpen(false)}>
         <View style={styles.swapBackdrop}>
@@ -1247,6 +1382,21 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  // Payment method selector
+  payMethodRow: { flexDirection: 'row', gap: 8, marginBottom: 4 },
+  payMethodBtn: {
+    flex: 1, paddingVertical: 10, borderRadius: Radius.md,
+    borderWidth: 1.5, borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    alignItems: 'center',
+  },
+  payMethodBtnActive: {
+    borderColor: QuinckleColors.primary,
+    backgroundColor: 'rgba(243,93,59,0.10)',
+  },
+  payMethodText: { fontSize: 13, fontWeight: '600', color: QuinckleColors.textSecondary },
+  payMethodTextActive: { color: QuinckleColors.primary },
+
   // Diner identity input
   dinerInputWrap: {
     flexDirection: 'row',

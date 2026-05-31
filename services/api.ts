@@ -248,7 +248,7 @@ export const crewOrders = {
     request<unknown>('PATCH', `/api/crew/orders/${orderId}/items/${itemId}/serve`, { served: true }, true),
 
   placeOrder: (sessionId: string, items: { item_id: string; qty: number; note?: string }[]) =>
-    request<unknown>('POST', '/api/crew/orders', { session_id: sessionId, items }, true),
+    request<{ success: boolean; order_id: string }>('POST', '/api/crew/orders', { session_id: sessionId, items }, true),
 };
 
 // ── Crew Payments (STEWARD/ADMIN) ─────────────────────────────────────────────
