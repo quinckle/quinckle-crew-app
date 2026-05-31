@@ -115,6 +115,32 @@ export default function TableDetail() {
   const [paymentLinkAmount, setPaymentLinkAmount] = useState(0);
   const [isGeneratingLink, setIsGeneratingLink] = useState(false);
 
+  // Mark-as-paid modal
+  type MpMethod = 'CASH' | 'UPI' | 'SPLIT';
+  const [showMarkPaidModal, setShowMarkPaidModal] = useState(false);
+  const [mpMethod, setMpMethod]     = useState<MpMethod>('CASH');
+  const [mpSplitCash, setMpSplitCash] = useState('');
+  const [mpSubmitting, setMpSubmitting] = useState(false);
+  const [mpError, setMpError]       = useState<string | null>(null);
+
+  const confirmMarkPaid = async () => {
+    if (mpMethod === 'SPLIT') {
+      const cash = parseFloat(mpSplitCash) || 0;
+      if (cash <= 0 || cash >= payableTotal) { setMpError('Enter a valid cash amount less than the total'); return; }
+    }
+    setMpSubmitting(true);
+    setMpError(null);
+    try {
+      await crewSessions.markPaid(sessionId);
+      setShowMarkPaidModal(false);
+      await loadBill();
+    } catch (e: any) {
+      setMpError(e?.message ?? 'Could not mark as paid');
+    } finally {
+      setMpSubmitting(false);
+    }
+  };
+
   // UPI QR generator
   const [upiId, setUpiId]           = useState<string | null>(null);
   const [upiName, setUpiName]       = useState<string>('');
@@ -674,28 +700,7 @@ export default function TableDetail() {
                 <>
                   <View style={styles.actionMenuDivider} />
                   <TouchableOpacity
-                    onPress={() => {
-                      setActionMenuOpen(false);
-                      openDialog(
-                        'Mark as paid',
-                        'Mark all pending orders as paid and close the session?',
-                        [
-                          { label: 'Cancel', onPress: closeDialog },
-                          {
-                            label: 'Mark as paid',
-                            onPress: async () => {
-                              closeDialog();
-                              try {
-                                await crewSessions.markPaid(sessionId);
-                                await loadBill();
-                              } catch (e: any) {
-                                openDialog('Failed', e?.message ?? 'Could not mark as paid', [{ label: 'OK', onPress: closeDialog }]);
-                              }
-                            },
-                          },
-                        ],
-                      );
-                    }}
+                    onPress={() => { setActionMenuOpen(false); setShowMarkPaidModal(true); setMpMethod('CASH'); setMpSplitCash(''); setMpError(null); }}
                     style={styles.actionMenuItem}
                     activeOpacity={0.7}
                   >
@@ -982,6 +987,87 @@ export default function TableDetail() {
           </View>
         </View>
       </Modal>
+      {/* ── Mark as paid modal ── */}
+      <Modal visible={showMarkPaidModal} transparent animationType="fade" onRequestClose={() => !mpSubmitting && setShowMarkPaidModal(false)}>
+        <View style={styles.swapBackdrop}>
+          <View style={styles.swapCard}>
+            <Text style={styles.swapEyebrow}>Mark as paid</Text>
+            <Text style={styles.swapTitle}>₹{payableTotal.toFixed(0)}</Text>
+            <Text style={styles.swapSubtitle}>How did the guest pay?</Text>
+
+            {/* Method tabs */}
+            <View style={[styles.payMethodRow, { marginTop: 14 }]}>
+              {(['CASH', 'UPI', 'SPLIT'] as const).map(m => (
+                <TouchableOpacity
+                  key={m}
+                  style={[styles.payMethodBtn, mpMethod === m && styles.payMethodBtnActive]}
+                  onPress={() => { setMpMethod(m); setMpError(null); setMpSplitCash(''); }}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[styles.payMethodText, mpMethod === m && styles.payMethodTextActive]}>
+                    {m === 'UPI' ? 'UPI Direct' : m === 'SPLIT' ? 'Split' : 'Cash'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {/* Split: cash input */}
+            {mpMethod === 'SPLIT' && (
+              <View style={{ marginTop: 12, gap: 8 }}>
+                <View style={styles.dinerInputWrap}>
+                  <View style={styles.dinerCountryCode}>
+                    <Text style={styles.dinerCountryCodeText}>Cash ₹</Text>
+                  </View>
+                  <View style={styles.dinerDivider} />
+                  <TextInput
+                    style={styles.dinerInput}
+                    value={mpSplitCash}
+                    onChangeText={v => { setMpSplitCash(v.replace(/[^0-9.]/g, '')); setMpError(null); }}
+                    placeholder="0"
+                    placeholderTextColor={QuinckleColors.textMuted}
+                    keyboardType="decimal-pad"
+                    returnKeyType="done"
+                    autoFocus
+                  />
+                </View>
+                {mpSplitCash ? (
+                  <View style={styles.splitBreakdown}>
+                    <View style={styles.splitRow}>
+                      <Text style={styles.splitLabel}>Cash</Text>
+                      <Text style={styles.splitAmt}>₹{(parseFloat(mpSplitCash)||0).toFixed(0)}</Text>
+                    </View>
+                    <View style={styles.splitRow}>
+                      <Text style={styles.splitLabel}>UPI Direct</Text>
+                      <Text style={styles.splitAmt}>₹{Math.max(0, payableTotal-(parseFloat(mpSplitCash)||0)).toFixed(0)}</Text>
+                    </View>
+                    <View style={[styles.splitRow, { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: QuinckleColors.border, paddingTop: 6, marginTop: 2 }]}>
+                      <Text style={[styles.splitLabel, { color: QuinckleColors.textPrimary }]}>Total</Text>
+                      <Text style={[styles.splitAmt, { color: QuinckleColors.textPrimary }]}>₹{payableTotal.toFixed(0)}</Text>
+                    </View>
+                  </View>
+                ) : null}
+              </View>
+            )}
+
+            {mpError && <Text style={{ color: QuinckleColors.danger, fontSize: 12, marginTop: 8 }}>{mpError}</Text>}
+
+            <View style={styles.swapFooter}>
+              <TouchableOpacity style={styles.swapCancel} onPress={() => setShowMarkPaidModal(false)} disabled={mpSubmitting} activeOpacity={0.8}>
+                <Text style={styles.swapCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.swapConfirm, { backgroundColor: QuinckleColors.success }, mpSubmitting && { opacity: 0.5 }]}
+                onPress={confirmMarkPaid}
+                disabled={mpSubmitting}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.swapConfirmText}>{mpSubmitting ? 'Marking…' : 'Mark as paid'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* ── UPI QR modal ── */}
       <Modal visible={showUpiModal} transparent animationType="fade" onRequestClose={() => setShowUpiModal(false)}>
         <View style={styles.swapBackdrop}>
