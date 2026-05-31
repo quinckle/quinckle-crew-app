@@ -232,7 +232,7 @@ export const crewSessions = {
 
 export const crewDiners = {
   lookup: (phone: string) =>
-    request<{ success: boolean; data: { found: boolean; name: string | null } }>(
+    request<{ success: boolean; data: { found: boolean; name: string | null; totalSessions: number } }>(
       'GET', `/api/crew/diners/lookup?phone=${phone.replace(/\D/g, '')}`, undefined, true
     ),
 };
