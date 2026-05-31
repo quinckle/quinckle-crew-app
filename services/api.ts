@@ -229,9 +229,9 @@ export const crewSessions = {
       'PATCH', `/api/crew/sessions/${sessionId}/customer`, { phone, name: name ?? null }, true
     ),
 
-  markPaid: (sessionId: string) =>
+  markPaid: (sessionId: string, splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[]) =>
     request<{ success: boolean }>(
-      'POST', `/api/crew/sessions/${sessionId}/mark-paid`, {}, true
+      'POST', `/api/crew/sessions/${sessionId}/mark-paid`, { splits }, true
     ),
 };
 

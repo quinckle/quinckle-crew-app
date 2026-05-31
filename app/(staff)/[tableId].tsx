@@ -124,14 +124,27 @@ export default function TableDetail() {
   const [mpError, setMpError]       = useState<string | null>(null);
 
   const confirmMarkPaid = async () => {
-    if (mpMethod === 'SPLIT') {
-      const cash = parseFloat(mpSplitCash) || 0;
-      if (cash <= 0 || cash >= payableTotal) { setMpError('Enter a valid cash amount less than the total'); return; }
+    const total = Math.round(payableTotal);
+    let splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[] = [];
+
+    if (mpMethod === 'CASH') {
+      splits = [{ method: 'CASH', amount: total }];
+    } else if (mpMethod === 'UPI') {
+      splits = [{ method: 'UPI_DIRECT', amount: total }];
+    } else {
+      const cash = Math.round(parseFloat(mpSplitCash) || 0);
+      const upi  = total - cash;
+      if (cash <= 0 || upi <= 0 || cash >= total) {
+        setMpError('Enter a valid cash amount less than the total');
+        return;
+      }
+      splits = [{ method: 'CASH', amount: cash }, { method: 'UPI_DIRECT', amount: upi }];
     }
+
     setMpSubmitting(true);
     setMpError(null);
     try {
-      await crewSessions.markPaid(sessionId);
+      await crewSessions.markPaid(sessionId, splits);
       setShowMarkPaidModal(false);
       await loadBill();
     } catch (e: any) {
@@ -392,7 +405,7 @@ export default function TableDetail() {
         pathname: '/(staff)/payment-collect',
         params: {
           orderId,
-          tableNumber: String(tableNumber),
+          tableNumber: String(tableId),
           amount: String(Math.round(cartTotal)),
           customerPhone: phone,
           customerName: coName.trim() || '',
