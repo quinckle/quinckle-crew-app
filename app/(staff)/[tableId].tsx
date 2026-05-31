@@ -80,6 +80,12 @@ export default function TableDetail() {
   const [billSplits, setBillSplits] = useState<SessionBill['splits']>(undefined);
   const [isExpanded, setIsExpanded] = useState(false);
 
+  // Diner identity — collected before first order is placed
+  const [dinerPhone, setDinerPhone] = useState('');
+  const [dinerName, setDinerName]   = useState('');
+  const [showDinerModal, setShowDinerModal] = useState(false);
+  const [identitySaved, setIdentitySaved] = useState(false);
+
   // Add items modal
   const [showOrderModal, setShowOrderModal] = useState(false);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
@@ -271,7 +277,7 @@ export default function TableDetail() {
     });
   }, [menuItems, menuSearchText, activeCategory]);
 
-  const handlePlaceOrder = async () => {
+  const doPlaceOrder = async () => {
     const items = Object.entries(cart).map(([item_id, qty]) => ({
       item_id,
       qty,
@@ -292,6 +298,29 @@ export default function TableDetail() {
     } finally {
       setIsPlacingOrder(false);
     }
+  };
+
+  const handlePlaceOrder = () => {
+    // If diner identity not yet collected, show the identity modal first.
+    // On subsequent orders in the same session, skip the modal.
+    if (!identitySaved) {
+      setShowDinerModal(true);
+    } else {
+      doPlaceOrder();
+    }
+  };
+
+  const handleDinerConfirm = async () => {
+    const phone = dinerPhone.replace(/\D/g, '');
+    // Phone is required — must be 10 digits
+    if (phone.length !== 10) return;
+    setShowDinerModal(false);
+    // Save identity to session (fire-and-forget — don't block order placement)
+    if (sessionId) {
+      crewSessions.saveCustomer(sessionId, phone, dinerName.trim() || null).catch(() => {});
+    }
+    setIdentitySaved(true);
+    doPlaceOrder();
   };
 
   // Flat list of all items across all orders
@@ -785,6 +814,64 @@ export default function TableDetail() {
 
       <ThemedDialog visible={dialog.visible} title={dialog.title} message={dialog.message} actions={dialog.actions} onClose={closeDialog} />
 
+      {/* ── Diner identity modal — shown before first order is placed ── */}
+      <Modal visible={showDinerModal} transparent animationType="fade" onRequestClose={() => setShowDinerModal(false)}>
+        <View style={styles.swapBackdrop}>
+          <View style={styles.swapCard}>
+            <Text style={styles.swapEyebrow}>Before placing order</Text>
+            <Text style={styles.swapTitle}>Guest details</Text>
+            <Text style={[styles.swapSub, { marginBottom: 20 }]}>
+              Phone is required. Name is optional.
+            </Text>
+
+            {/* Phone */}
+            <View style={styles.dinerInputWrap}>
+              <View style={styles.dinerCountryCode}>
+                <Text style={styles.dinerCountryCodeText}>+91</Text>
+              </View>
+              <View style={styles.dinerDivider} />
+              <TextInput
+                style={styles.dinerInput}
+                value={dinerPhone}
+                onChangeText={v => setDinerPhone(v.replace(/\D/g, '').slice(0, 10))}
+                placeholder="Phone number"
+                placeholderTextColor={QuinckleColors.textMuted}
+                keyboardType="phone-pad"
+                returnKeyType="next"
+                maxLength={10}
+              />
+            </View>
+
+            {/* Name */}
+            <View style={[styles.dinerInputWrap, { marginTop: 10 }]}>
+              <TextInput
+                style={[styles.dinerInput, { flex: 1, paddingHorizontal: 14 }]}
+                value={dinerName}
+                onChangeText={setDinerName}
+                placeholder="Guest name (optional)"
+                placeholderTextColor={QuinckleColors.textMuted}
+                returnKeyType="done"
+                onSubmitEditing={handleDinerConfirm}
+              />
+            </View>
+
+            <View style={styles.swapFooter}>
+              <TouchableOpacity style={styles.swapCancel} onPress={() => setShowDinerModal(false)} activeOpacity={0.8}>
+                <Text style={styles.swapCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.swapConfirm, dinerPhone.replace(/\D/g, '').length !== 10 && { opacity: 0.4 }]}
+                onPress={handleDinerConfirm}
+                disabled={dinerPhone.replace(/\D/g, '').length !== 10}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.swapConfirmText}>Place Order</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* Swap-table modal */}
       <Modal visible={swapOpen} transparent animationType="fade" onRequestClose={() => !swapSubmitting && setSwapOpen(false)}>
         <View style={styles.swapBackdrop}>
@@ -1160,6 +1247,40 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  // Diner identity input
+  dinerInputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: QuinckleColors.surfaceElevated,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    height: 48,
+    overflow: 'hidden',
+  },
+  dinerCountryCode: {
+    paddingHorizontal: 12,
+    height: '100%',
+    justifyContent: 'center',
+  },
+  dinerCountryCodeText: {
+    color: QuinckleColors.textSecondary,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  dinerDivider: {
+    width: 1,
+    height: '60%',
+    backgroundColor: QuinckleColors.border,
+  },
+  dinerInput: {
+    flex: 1,
+    color: QuinckleColors.textPrimary,
+    fontSize: 15,
+    paddingHorizontal: 12,
+    height: '100%',
+  },
+
   container: { flex: 1, backgroundColor: QuinckleColors.background, paddingHorizontal: Spacing.lg },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.xl },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },

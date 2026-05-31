@@ -224,6 +224,10 @@ export const crewSessions = {
     request<unknown>('DELETE', `/api/crew/sessions/${sessionId}`, undefined, true),
   getBill: (sessionId: string) =>
     request<SessionBill>('GET', `/api/crew/sessions/${sessionId}/bill`, undefined, true),
+  saveCustomer: (sessionId: string, phone: string, name?: string | null) =>
+    request<{ success: boolean }>(
+      'PATCH', `/api/crew/sessions/${sessionId}/customer`, { phone, name: name ?? null }, true
+    ),
 };
 
 // ── Crew Orders (STEWARD/ADMIN) ───────────────────────────────────────────────
