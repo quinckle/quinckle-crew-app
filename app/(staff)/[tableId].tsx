@@ -1,6 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Animated, FlatList, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator, Share } from 'react-native';
+import QRCode from 'react-native-qrcode-svg';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
@@ -114,6 +115,13 @@ export default function TableDetail() {
   const [paymentLinkAmount, setPaymentLinkAmount] = useState(0);
   const [isGeneratingLink, setIsGeneratingLink] = useState(false);
 
+  // UPI QR generator
+  const [upiId, setUpiId]           = useState<string | null>(null);
+  const [upiName, setUpiName]       = useState<string>('');
+  const [showUpiModal, setShowUpiModal] = useState(false);
+  const [upiAmount, setUpiAmount]   = useState('');
+  const [upiUri, setUpiUri]         = useState<string | null>(null);
+
   // Action menu + swap-table state for the 3-dot header
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [printMenuOpen, setPrintMenuOpen] = useState(false);
@@ -217,6 +225,10 @@ export default function TableDetail() {
           email: res.data.email ?? null,
           fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null,
         });
+        if (res.data.upiId) {
+          setUpiId(res.data.upiId);
+          setUpiName(res.data.upiDisplayName ?? res.data.name ?? '');
+        }
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -600,6 +612,17 @@ export default function TableDetail() {
             </TouchableOpacity>
           )}
 
+          {/* ── UPI QR generator ── */}
+          {upiId && (
+            <TouchableOpacity
+              onPress={() => { setUpiAmount(''); setUpiUri(null); setShowUpiModal(true); }}
+              style={styles.iconBtn}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="qr-code-outline" size={18} color={QuinckleColors.textPrimary} />
+            </TouchableOpacity>
+          )}
+
           {/* ── Print icon + popover ── */}
           <View style={{ position: 'relative' }}>
             <TouchableOpacity
@@ -925,6 +948,87 @@ export default function TableDetail() {
           </View>
         </View>
       </Modal>
+      {/* ── UPI QR modal ── */}
+      <Modal visible={showUpiModal} transparent animationType="fade" onRequestClose={() => setShowUpiModal(false)}>
+        <View style={styles.swapBackdrop}>
+          <View style={styles.swapCard}>
+            {!upiUri ? (
+              <>
+                <Text style={styles.swapEyebrow}>UPI Payment</Text>
+                <Text style={styles.swapTitle}>Generate QR</Text>
+                <Text style={styles.swapSubtitle}>{upiId}</Text>
+
+                <View style={[styles.dinerInputWrap, { marginTop: 16 }]}>
+                  <View style={styles.dinerCountryCode}>
+                    <Text style={styles.dinerCountryCodeText}>₹</Text>
+                  </View>
+                  <View style={styles.dinerDivider} />
+                  <TextInput
+                    style={styles.dinerInput}
+                    value={upiAmount}
+                    onChangeText={v => setUpiAmount(v.replace(/[^0-9.]/g, ''))}
+                    placeholder="Enter amount"
+                    placeholderTextColor={QuinckleColors.textMuted}
+                    keyboardType="decimal-pad"
+                    returnKeyType="done"
+                    autoFocus
+                    onSubmitEditing={() => {
+                      const amt = parseFloat(upiAmount);
+                      if (!amt || amt <= 0 || !upiId) return;
+                      const enc = (v: string | number) => encodeURIComponent(String(v));
+                      setUpiUri(`upi://pay?pa=${enc(upiId)}&pn=${enc(upiName)}&am=${enc(amt.toFixed(2))}&cu=INR`);
+                    }}
+                  />
+                </View>
+
+                <View style={styles.swapFooter}>
+                  <TouchableOpacity style={styles.swapCancel} onPress={() => setShowUpiModal(false)} activeOpacity={0.8}>
+                    <Text style={styles.swapCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.swapConfirm, !(parseFloat(upiAmount) > 0) && { opacity: 0.4 }]}
+                    onPress={() => {
+                      const amt = parseFloat(upiAmount);
+                      if (!amt || amt <= 0 || !upiId) return;
+                      const enc = (v: string | number) => encodeURIComponent(String(v));
+                      setUpiUri(`upi://pay?pa=${enc(upiId)}&pn=${enc(upiName)}&am=${enc(amt.toFixed(2))}&cu=INR`);
+                    }}
+                    disabled={!(parseFloat(upiAmount) > 0)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.swapConfirmText}>Generate QR</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.swapEyebrow}>Scan to Pay</Text>
+                <Text style={styles.swapTitle}>₹{parseFloat(upiAmount).toFixed(0)}</Text>
+                <Text style={[styles.swapSubtitle, { marginBottom: 20 }]}>{upiName || upiId}</Text>
+
+                <View style={{ alignItems: 'center', marginBottom: 20 }}>
+                  <View style={{ padding: 16, backgroundColor: '#fff', borderRadius: Radius.lg }}>
+                    <QRCode value={upiUri} size={200} />
+                  </View>
+                  <Text style={{ color: QuinckleColors.textMuted, fontSize: 11, marginTop: 10 }}>
+                    Ask guest to scan with any UPI app
+                  </Text>
+                </View>
+
+                <View style={styles.swapFooter}>
+                  <TouchableOpacity style={styles.swapCancel} onPress={() => setUpiUri(null)} activeOpacity={0.8}>
+                    <Text style={styles.swapCancelText}>← Change amount</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.swapConfirm} onPress={() => setShowUpiModal(false)} activeOpacity={0.8}>
+                    <Text style={styles.swapConfirmText}>Done</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
       {/* Swap-table modal */}
       <Modal visible={swapOpen} transparent animationType="fade" onRequestClose={() => !swapSubmitting && setSwapOpen(false)}>
         <View style={styles.swapBackdrop}>
