@@ -596,7 +596,7 @@ export default function TableDetail() {
               style={styles.iconBtn}
               activeOpacity={0.7}
             >
-              <Ionicons name="add-circle-outline" size={20} color={QuinckleColors.primary} />
+              <Ionicons name="add-circle-outline" size={20} color={QuinckleColors.textPrimary} />
             </TouchableOpacity>
           )}
 
