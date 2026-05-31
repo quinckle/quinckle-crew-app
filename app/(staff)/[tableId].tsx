@@ -670,6 +670,40 @@ export default function TableDetail() {
                   <Ionicons name="swap-horizontal" size={14} color={QuinckleColors.textPrimary} />
                   <Text style={styles.actionMenuText}>Swap table</Text>
                 </TouchableOpacity>
+              {!isPaid && (
+                <>
+                  <View style={styles.actionMenuDivider} />
+                  <TouchableOpacity
+                    onPress={() => {
+                      setActionMenuOpen(false);
+                      openDialog(
+                        'Mark as paid',
+                        'Mark all pending orders as paid and close the session?',
+                        [
+                          { label: 'Cancel', onPress: closeDialog },
+                          {
+                            label: 'Mark as paid',
+                            onPress: async () => {
+                              closeDialog();
+                              try {
+                                await crewSessions.markPaid(sessionId);
+                                await loadBill();
+                              } catch (e: any) {
+                                openDialog('Failed', e?.message ?? 'Could not mark as paid', [{ label: 'OK', onPress: closeDialog }]);
+                              }
+                            },
+                          },
+                        ],
+                      );
+                    }}
+                    style={styles.actionMenuItem}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="checkmark-circle-outline" size={14} color={QuinckleColors.success} />
+                    <Text style={[styles.actionMenuText, { color: QuinckleColors.success }]}>Mark as paid</Text>
+                  </TouchableOpacity>
+                </>
+              )}
               <View style={styles.actionMenuDivider} />
               <TouchableOpacity
                 onPress={() => { setActionMenuOpen(false); handleEndSession(); }}

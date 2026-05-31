@@ -228,6 +228,11 @@ export const crewSessions = {
     request<{ success: boolean }>(
       'PATCH', `/api/crew/sessions/${sessionId}/customer`, { phone, name: name ?? null }, true
     ),
+
+  markPaid: (sessionId: string) =>
+    request<{ success: boolean }>(
+      'POST', `/api/crew/sessions/${sessionId}/mark-paid`, {}, true
+    ),
 };
 
 export const crewDiners = {
