@@ -822,23 +822,7 @@ export default function TableDetail() {
               </View>
             )}
           </View>
-        ) : (
-          <TouchableOpacity
-            style={[styles.onlinePayBtn, isGeneratingLink && styles.onlinePayBtnLoading]}
-            onPress={handleRequestOnlinePayment}
-            activeOpacity={0.85}
-            disabled={isGeneratingLink}
-          >
-            {isGeneratingLink ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Ionicons name="qr-code-outline" size={17} color="#fff" />
-            )}
-            <Text style={styles.onlinePayBtnText}>
-              {isGeneratingLink ? 'Generating…' : 'Send Online Payment Link'}
-            </Text>
-          </TouchableOpacity>
-        )}
+        ) : null}
 
         <TouchableOpacity style={styles.totalRow} activeOpacity={0.85} onPress={() => setIsExpanded(!isExpanded)}>
           <View>
