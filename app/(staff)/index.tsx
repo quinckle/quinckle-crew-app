@@ -1346,7 +1346,6 @@ const styles = StyleSheet.create({
   },
 
   listContent: {
-    paddingHorizontal: Spacing.xl,
     paddingBottom: 100,
   },
   tableGrid: {
