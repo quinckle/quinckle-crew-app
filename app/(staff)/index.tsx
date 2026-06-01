@@ -883,6 +883,7 @@ export default function StaffDashboard() {
             <TableSkeleton />
           ) : (
             <ScrollView
+              style={{ flex: 1 }}
               showsVerticalScrollIndicator={false}
               contentContainerStyle={styles.listContent}
               refreshControl={
