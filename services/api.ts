@@ -196,6 +196,18 @@ export interface BillBreakdown {
   total:        number;
   currency:     'INR';
 }
+
+export interface CrewOrderPaymentContext {
+  order_id: string;
+  session_id: string;
+  table_number: number;
+  payment_status: string;
+  subtotal: number;
+  tax: number;
+  service_charge: number;
+  total: number;
+  currency: 'INR';
+}
 export interface SessionBill {
   session_id: string;
   session_ref: string;
@@ -252,6 +264,8 @@ export const crewOrders = {
     request<{ orders: ActiveOrder[] }>('GET', '/api/crew/orders/active', undefined, true),
   getServedToday: () =>
     request<{ orders: ActiveOrder[] }>('GET', '/api/crew/orders/served-today', undefined, true),
+  getPaymentContext: (orderId: string) =>
+    request<{ success: true; data: CrewOrderPaymentContext }>('GET', `/api/crew/orders/${orderId}/payment-context`, undefined, true),
 
   // Backend's Fastify schema requires `{ served: true }` in the body — sending
   // no body fails validation and the optimistic UI flip reverts when the
@@ -259,8 +273,13 @@ export const crewOrders = {
   serveItem: (orderId: string, itemId: string) =>
     request<unknown>('PATCH', `/api/crew/orders/${orderId}/items/${itemId}/serve`, { served: true }, true),
 
-  placeOrder: (sessionId: string, items: { item_id: string; qty: number; note?: string }[]) =>
-    request<{ success: boolean; order_id: string }>('POST', '/api/crew/orders', { session_id: sessionId, items }, true),
+  placeOrder: (sessionId: string, items: { item_id: string; qty: number; note?: string; selectedModifiers?: { groupId: string; optionId: string }[]; modifiers_summary?: string }[]) =>
+    request<{ success: boolean; order_id: string; totals?: { total?: number } }>(
+      'POST',
+      '/api/crew/orders',
+      { session_id: sessionId, items },
+      true,
+    ),
 };
 
 // ── Crew Payments (STEWARD/ADMIN) ─────────────────────────────────────────────
@@ -326,24 +345,6 @@ export interface PendingPaymentIntent {
 }
 
 export const crewPayments = {
-  // Cash collection is per-ORDER now (decoupled from session lifecycle). The
-  // waiter confirms cash received against one Order at a time — flipping that
-  // order's paymentStatus to PAID_CASH. Session stays ACTIVE until explicitly
-  // freed.
-  cashConfirm: (orderId: string, staffId: string, amountCollected: number) =>
-    request<unknown>('POST', '/api/crew/payments/cash', { order_id: orderId, staff_id: staffId, amount_collected: amountCollected }, true),
-
-  // UPI Direct confirmation — waiter sees the payment on the soundbox and
-  // taps confirm in the crew app. Flips the order from PENDING_UPI_DIRECT
-  // to PAID_UPI_DIRECT and pushes the realtime event back to the diner.
-  upiDirectConfirm: (orderId: string, staffId: string, amountCollected: number, upiReference?: string | null) =>
-    request<unknown>('POST', '/api/crew/payments/upi-direct', {
-      order_id:        orderId,
-      staff_id:        staffId,
-      amount_collected: amountCollected,
-      upi_reference:   upiReference ?? null,
-    }, true),
-
   // v3: Unified Collection endpoint. Supports 1-method (all cash or all UPI)
   // or 2-method splits like [{method:'CASH', amount:200},{method:'UPI_DIRECT', amount:320}].
   // Works on PENDING_STAFF_COLLECTION (v3) AND legacy PENDING_CASH/UPI_DIRECT/UNPAID
@@ -352,6 +353,7 @@ export const crewPayments = {
     orderId: string,
     staffId: string,
     splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[],
+    idempotencyKey: string,
     upiReference?: string | null,
   ) =>
     request<{
@@ -368,6 +370,7 @@ export const crewPayments = {
       order_id:      orderId,
       staff_id:      staffId,
       splits,
+      idempotency_key: idempotencyKey,
       upi_reference: upiReference ?? null,
     }, true),
 
@@ -413,7 +416,9 @@ export const crewPayments = {
 
 // ── Restaurant / Menu (public) ────────────────────────────────────────────────
 
-export interface MenuItem { id: string; name: string; description?: string; price: string; category: string; isVeg: boolean; isAvailable: boolean; imageUrl?: string; }
+export interface ModifierOption { id: string; name: string; priceAdjustment: string; }
+export interface ModifierGroup { id: string; name: string; minSelections: number; maxSelections: number; options: ModifierOption[]; }
+export interface MenuItem { id: string; name: string; description?: string; price: string; category: string; isVeg: boolean; isAvailable: boolean; imageUrl?: string; modifierGroups?: ModifierGroup[]; }
 export interface Restaurant { id: string; name: string; slug: string; upiId: string; }
 
 export interface MenuCategory { name: string; items: MenuItem[]; }

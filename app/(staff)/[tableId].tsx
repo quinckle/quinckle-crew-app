@@ -13,6 +13,7 @@ import type { InvoiceBill } from '../../services/invoiceTemplate';
 import { useAuth } from '../../context/AuthContext';
 import { subscribeChannel } from '../../services/realtime';
 import type { BillOrderItem, BillOrder, MenuItem } from '../../services/api';
+import { CollectionSheet } from '../../components/ui/CollectionSheet';
 
 type ItemStatus = 'prep' | 'served';
 
@@ -81,18 +82,13 @@ export default function TableDetail() {
   const [billSplits, setBillSplits] = useState<SessionBill['splits']>(undefined);
   const [isExpanded, setIsExpanded] = useState(false);
 
-  // ── Multi-step checkout: identity → payment ──────────────────────────────────
-  type CheckoutStep = 'identity' | 'payment';
-
   const [checkoutOpen, setCheckoutOpen]   = useState(false);
-  const [checkoutStep, setCheckoutStep]   = useState<CheckoutStep>('identity');
 
   // Identity step
   const [coPhone, setCoPhone]             = useState('');
   const [coName, setCoName]               = useState('');
   const [coLooking, setCoLooking]         = useState(false);
   const [coFound, setCoFound]             = useState<boolean | null>(null);
-  const [identitySaved, setIdentitySaved] = useState(false);
 
   // Payment step
   const [coSubmitting, setCoSubmitting]   = useState(false);
@@ -104,7 +100,11 @@ export default function TableDetail() {
   const [isMenuLoading, setIsMenuLoading] = useState(false);
   const [cart, setCart] = useState<Record<string, number>>({});
   const [cartNotes, setCartNotes] = useState<Record<string, string>>({});
-  const [isPlacingOrder, setIsPlacingOrder] = useState(false);
+  const [cartModifiers, setCartModifiers] = useState<Record<string, { groupId: string; optionId: string }[]>>({});
+
+  // Modifier selection sheet
+  const [modifierItem, setModifierItem] = useState<MenuItem | null>(null);
+  const [pendingModifiers, setPendingModifiers] = useState<Record<string, string[]>>({});
   const [menuSearchText, setMenuSearchText] = useState('');
   const [activeCategory, setActiveCategory] = useState('All');
   const [menuCategories, setMenuCategories] = useState<string[]>(['All']);
@@ -115,44 +115,15 @@ export default function TableDetail() {
   const [paymentLinkAmount, setPaymentLinkAmount] = useState(0);
   const [isGeneratingLink, setIsGeneratingLink] = useState(false);
 
-  // Mark-as-paid modal
-  type MpMethod = 'CASH' | 'UPI' | 'SPLIT';
-  const [showMarkPaidModal, setShowMarkPaidModal] = useState(false);
-  const [mpMethod, setMpMethod]     = useState<MpMethod>('CASH');
-  const [mpSplitCash, setMpSplitCash] = useState('');
-  const [mpSubmitting, setMpSubmitting] = useState(false);
-  const [mpError, setMpError]       = useState<string | null>(null);
-
-  const confirmMarkPaid = async () => {
-    const total = Math.round(payableTotal);
-    let splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[] = [];
-
-    if (mpMethod === 'CASH') {
-      splits = [{ method: 'CASH', amount: total }];
-    } else if (mpMethod === 'UPI') {
-      splits = [{ method: 'UPI_DIRECT', amount: total }];
-    } else {
-      const cash = Math.round(parseFloat(mpSplitCash) || 0);
-      const upi  = total - cash;
-      if (cash <= 0 || upi <= 0 || cash >= total) {
-        setMpError('Enter a valid cash amount less than the total');
-        return;
-      }
-      splits = [{ method: 'CASH', amount: cash }, { method: 'UPI_DIRECT', amount: upi }];
-    }
-
-    setMpSubmitting(true);
-    setMpError(null);
-    try {
-      await crewSessions.markPaid(sessionId, splits);
-      setShowMarkPaidModal(false);
-      await loadBill();
-    } catch (e: any) {
-      setMpError(e?.message ?? 'Could not mark as paid');
-    } finally {
-      setMpSubmitting(false);
-    }
-  };
+  const [collectionOpen, setCollectionOpen] = useState(false);
+  const [collectionMode, setCollectionMode] = useState<'manual-order' | 'session-settlement'>('manual-order');
+  const [collectionBill, setCollectionBill] = useState<{
+    orderId: string;
+    tableNumber: number;
+    customerName: string | null;
+    customerPhone: string;
+    amount: number;
+  } | null>(null);
 
   // UPI QR generator
   const [upiId, setUpiId]           = useState<string | null>(null);
@@ -320,15 +291,62 @@ export default function TableDetail() {
     }
   }, [showOrderModal]);
 
-  const addToCart = (itemId: string) => setCart(prev => ({ ...prev, [itemId]: (prev[itemId] ?? 0) + 1 }));
+  const addToCart = (itemId: string, selectedMods?: { groupId: string; optionId: string }[]) => {
+    setCart(prev => ({ ...prev, [itemId]: (prev[itemId] ?? 0) + 1 }));
+    if (selectedMods) setCartModifiers(prev => ({ ...prev, [itemId]: selectedMods }));
+  };
   const removeFromCart = (itemId: string) => setCart(prev => {
     const qty = (prev[itemId] ?? 0) - 1;
-    if (qty <= 0) { const next = { ...prev }; delete next[itemId]; return next; }
+    if (qty <= 0) {
+      const next = { ...prev }; delete next[itemId];
+      setCartModifiers(pm => { const nm = { ...pm }; delete nm[itemId]; return nm; });
+      return next;
+    }
     return { ...prev, [itemId]: qty };
   });
+
+  // Open modifier sheet if item has groups, else add directly
+  const handleAddPress = (item: MenuItem) => {
+    if (item.modifierGroups && item.modifierGroups.length > 0) {
+      const init: Record<string, string[]> = {};
+      item.modifierGroups.forEach(g => { init[g.id] = []; });
+      setPendingModifiers(init);
+      setModifierItem(item);
+    } else {
+      addToCart(item.id);
+    }
+  };
+
+  const confirmModifiers = () => {
+    if (!modifierItem) return;
+    const flat: { groupId: string; optionId: string }[] = [];
+    Object.entries(pendingModifiers).forEach(([groupId, optionIds]) => {
+      optionIds.forEach(optionId => flat.push({ groupId, optionId }));
+    });
+    addToCart(modifierItem.id, flat);
+    setModifierItem(null);
+  };
+
+  const toggleModOption = (groupId: string, optionId: string, maxSel: number) => {
+    setPendingModifiers(prev => {
+      const cur = prev[groupId] ?? [];
+      if (cur.includes(optionId)) return { ...prev, [groupId]: cur.filter(id => id !== optionId) };
+      if (maxSel === 1) return { ...prev, [groupId]: [optionId] };
+      if (cur.length >= maxSel) return prev;
+      return { ...prev, [groupId]: [...cur, optionId] };
+    });
+  };
+
   const cartTotal = Object.entries(cart).reduce((sum, [id, qty]) => {
     const item = menuItems.find(m => m.id === id);
-    return sum + (parseFloat(item?.price ?? '0') * qty);
+    let base = parseFloat(item?.price ?? '0') * qty;
+    const mods = cartModifiers[id] ?? [];
+    mods.forEach(({ groupId, optionId }) => {
+      const group = item?.modifierGroups?.find(g => g.id === groupId);
+      const opt = group?.options.find(o => o.id === optionId);
+      if (opt) base += parseFloat(opt.priceAdjustment ?? '0') * qty;
+    });
+    return sum + base;
   }, 0);
 
   const filteredMenuItems = useMemo(() => {
@@ -346,7 +364,6 @@ export default function TableDetail() {
     setCoPhone('');
     setCoName('');
     setCoFound(null);
-    setCheckoutStep('identity');
     setCheckoutOpen(true);
   };
 
@@ -371,46 +388,96 @@ export default function TableDetail() {
     }
   };
 
-  // Place order, save identity, then navigate to existing payment-collect screen
   const confirmIdentityAndPlace = async () => {
     const phone = coPhone.replace(/\D/g, '');
-    if (phone.length !== 10) return;
-    const items = Object.entries(cart).map(([item_id, qty]) => ({
-      item_id, qty,
-      ...(cartNotes[item_id]?.trim() ? { note: cartNotes[item_id].trim() } : {}),
-    }));
-    if (items.length === 0 || !sessionId) return;
+    if (phone.length !== 10) {
+      setCoError('Please enter a valid 10-digit mobile number.');
+      return;
+    }
+    const items = Object.entries(cart).map(([item_id, qty]) => {
+      const mods = cartModifiers[item_id];
+      const menuItem = menuItems.find(m => m.id === item_id);
+      const modSummary = mods?.length
+        ? mods.map(({ groupId, optionId }) => {
+            const g = menuItem?.modifierGroups?.find(g => g.id === groupId);
+            return g?.options.find(o => o.id === optionId)?.name;
+          }).filter(Boolean).join(', ')
+        : undefined;
+      return {
+        item_id, qty,
+        ...(cartNotes[item_id]?.trim() ? { note: cartNotes[item_id].trim() } : {}),
+        ...(mods?.length ? { selectedModifiers: mods, modifiers_summary: modSummary } : {}),
+      };
+    });
+    if (items.length === 0) {
+      setCoError('Cart is empty. Add at least one item before checkout.');
+      return;
+    }
+    if (!sessionId) {
+      setCoError('No active session found for this table. Start/reload session and try again.');
+      return;
+    }
+
+    // Snapshot cart total before clearing — last-resort fallback if the
+    // backend doesn't return a canonical amount.
+    const snapshotTotal = cartTotal;
+    const guestPhone = phone;
+    const guestName = coName.trim() || null;
 
     setCoSubmitting(true);
     setCoError(null);
     try {
-      // Save identity to session
-      crewSessions.saveCustomer(sessionId, phone, coName.trim() || null).catch(() => {});
-      setIdentitySaved(true);
+      crewSessions.saveCustomer(sessionId, guestPhone, guestName).catch(() => {});
 
-      // Place the order → get order ID
       const orderRes = await crewOrders.placeOrder(sessionId, items);
       const orderId = orderRes?.order_id ?? '';
 
-      // Clean up cart & modals
+      // Order exists on the backend — clear cart + close modals immediately
+      // so that a retry can never create a duplicate order.
       setCart({});
       setCartNotes({});
+      setCartModifiers({});
       setShowOrderModal(false);
       setCheckoutOpen(false);
       setMenuSearchText('');
       setActiveCategory('All');
 
-      // Navigate to existing payment-collect screen (Cash / UPI / Split)
-      router.push({
-        pathname: '/(staff)/payment-collect',
-        params: {
-          orderId,
-          tableNumber: String(tableId),
-          amount: String(Math.round(cartTotal)),
-          customerPhone: phone,
-          customerName: coName.trim() || '',
-        },
+      // Resolve canonical total: payment-context > placeOrder response > cart
+      let orderTotal = Number(orderRes?.totals?.total ?? 0);
+      if (orderId) {
+        try {
+          const ctx = await crewOrders.getPaymentContext(orderId);
+          orderTotal = Number(ctx?.data?.total ?? orderTotal);
+        } catch (err) {
+          console.warn('[manual-order] payment-context fetch failed, using fallback', err);
+        }
+      }
+      if (!Number.isFinite(orderTotal) || orderTotal <= 0) {
+        orderTotal = snapshotTotal;
+      }
+
+      // If we still have no usable amount, the order is placed but we
+      // can't open the payment sheet — show a dialog and let the staff
+      // settle later via "Mark as paid".
+      if (!Number.isFinite(orderTotal) || orderTotal <= 0) {
+        await loadBill();
+        showDialog(
+          'Order Placed',
+          'Items were added but we could not determine the payable amount. Use "Mark as paid" from the menu to settle.',
+          [{ label: 'OK', onPress: () => {} }],
+        );
+        return;
+      }
+
+      setCollectionMode('manual-order');
+      setCollectionBill({
+        orderId,
+        tableNumber: Number(tableId ?? 0),
+        customerPhone: guestPhone,
+        customerName: guestName,
+        amount: orderTotal,
       });
+      setCollectionOpen(true);
 
       await loadBill();
     } catch (e: any) {
@@ -478,6 +545,38 @@ export default function TableDetail() {
   useEffect(() => {
     if (isPaid && showQRModal) setShowQRModal(false);
   }, [isPaid]);
+
+  const buildCollectIdempotencyKey = (
+    orderId: string,
+    splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[],
+  ) => {
+    const fingerprint = splits
+      .map(s => `${s.method}:${Number(s.amount).toFixed(2)}`)
+      .join('|');
+    return `crew-collect:${orderId}:${fingerprint}`;
+  };
+
+  const onCollectionConfirm = async (
+    splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[],
+  ): Promise<boolean> => {
+    if (!collectionBill) return false;
+    if (collectionMode === 'session-settlement') {
+      await crewSessions.markPaid(sessionId, splits);
+    } else {
+      const staffId = staffInfo?.id;
+      if (!staffId) throw new Error('Staff profile missing. Please log in again.');
+      await crewPayments.collectPayment(
+        collectionBill.orderId,
+        staffId,
+        splits,
+        buildCollectIdempotencyKey(collectionBill.orderId, splits),
+      );
+    }
+    setCollectionOpen(false);
+    setCollectionBill(null);
+    await loadBill();
+    return true;
+  };
 
   const handleRequestOnlinePayment = async () => {
     if (isPaid || !sessionId || isGeneratingLink) return;
@@ -714,7 +813,18 @@ export default function TableDetail() {
                 <>
                   <View style={styles.actionMenuDivider} />
                   <TouchableOpacity
-                    onPress={() => { setActionMenuOpen(false); setShowMarkPaidModal(true); setMpMethod('CASH'); setMpSplitCash(''); setMpError(null); }}
+                    onPress={() => {
+                      setActionMenuOpen(false);
+                      setCollectionMode('session-settlement');
+                      setCollectionBill({
+                        orderId: `session:${sessionId}`,
+                        tableNumber: Number(tableId ?? 0),
+                        customerPhone: '',
+                        customerName: null,
+                        amount: grandTotal,
+                      });
+                      setCollectionOpen(true);
+                    }}
                     style={styles.actionMenuItem}
                     activeOpacity={0.7}
                   >
@@ -923,7 +1033,7 @@ export default function TableDetail() {
 
       <ThemedDialog visible={dialog.visible} title={dialog.title} message={dialog.message} actions={dialog.actions} onClose={closeDialog} />
 
-      {/* ── Checkout modal — multi-step: identity → payment ── */}
+      {/* ── Checkout modal — guest identity + order placement ── */}
       <Modal
         visible={checkoutOpen}
         transparent
@@ -933,154 +1043,83 @@ export default function TableDetail() {
         <View style={styles.swapBackdrop}>
           <View style={[styles.swapCard, { maxHeight: '90%' }]}>
 
-            {/* ─ STEP 1: Identity ─ */}
-            {checkoutStep === 'identity' && (
-              <>
-                <Text style={styles.swapEyebrow}>Step 1 of 2</Text>
-                <Text style={styles.swapTitle}>Guest details</Text>
-                <Text style={styles.swapSubtitle}>Phone required — we'll look them up on Quinckle.</Text>
+            <Text style={styles.swapEyebrow}>Manual Order</Text>
+            <Text style={styles.swapTitle}>Guest details</Text>
+            <Text style={styles.swapSubtitle}>Phone required — we will look them up on Quinckle.</Text>
 
-                {/* Phone input */}
-                <View style={[styles.dinerInputWrap, { marginTop: 16 }]}>
-                  <View style={styles.dinerCountryCode}>
-                    <Text style={styles.dinerCountryCodeText}>+91</Text>
-                  </View>
-                  <View style={styles.dinerDivider} />
-                  <TextInput
-                    style={styles.dinerInput}
-                    value={coPhone}
-                    onChangeText={onCoPhoneChange}
-                    placeholder="10-digit mobile"
-                    placeholderTextColor={QuinckleColors.textMuted}
-                    keyboardType="phone-pad"
-                    returnKeyType="next"
-                    maxLength={10}
-                    autoFocus
-                  />
-                  {coLooking && <ActivityIndicator size="small" color={QuinckleColors.primary} style={{ marginRight: 12 }} />}
-                </View>
-
-                {coFound === true && (
-                  <View style={styles.dinerFoundBadge}>
-                    <Text style={styles.dinerFoundText}>✓ Found on Quinckle</Text>
-                  </View>
-                )}
-                {coFound === false && coPhone.length === 10 && (
-                  <Text style={styles.dinerNotFoundText}>New guest — enter name below</Text>
-                )}
-
-                {/* Name input */}
-                <View style={[styles.dinerInputWrap, { marginTop: 10 }]}>
-                  <TextInput
-                    style={[styles.dinerInput, { flex: 1, paddingHorizontal: 14 }]}
-                    value={coName}
-                    onChangeText={setCoName}
-                    placeholder="Guest name (optional)"
-                    placeholderTextColor={QuinckleColors.textMuted}
-                    returnKeyType="done"
-                    onSubmitEditing={confirmIdentityAndPlace}
-                  />
-                </View>
-
-                <View style={styles.swapFooter}>
-                  <TouchableOpacity style={styles.swapCancel} onPress={() => setCheckoutOpen(false)} activeOpacity={0.8}>
-                    <Text style={styles.swapCancelText}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.swapConfirm, coPhone.length !== 10 && { opacity: 0.4 }]}
-                    onPress={confirmIdentityAndPlace}
-                    disabled={coPhone.length !== 10}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.swapConfirmText}>Continue to Payment →</Text>
-                  </TouchableOpacity>
-                </View>
-              </>
-            )}
-
-          </View>
-        </View>
-      </Modal>
-      {/* ── Mark as paid modal ── */}
-      <Modal visible={showMarkPaidModal} transparent animationType="fade" onRequestClose={() => !mpSubmitting && setShowMarkPaidModal(false)}>
-        <View style={styles.swapBackdrop}>
-          <View style={styles.swapCard}>
-            <Text style={styles.swapEyebrow}>Mark as paid</Text>
-            <Text style={styles.swapTitle}>₹{payableTotal.toFixed(0)}</Text>
-            <Text style={styles.swapSubtitle}>How did the guest pay?</Text>
-
-            {/* Method tabs */}
-            <View style={[styles.payMethodRow, { marginTop: 14 }]}>
-              {(['CASH', 'UPI', 'SPLIT'] as const).map(m => (
-                <TouchableOpacity
-                  key={m}
-                  style={[styles.payMethodBtn, mpMethod === m && styles.payMethodBtnActive]}
-                  onPress={() => { setMpMethod(m); setMpError(null); setMpSplitCash(''); }}
-                  activeOpacity={0.75}
-                >
-                  <Text style={[styles.payMethodText, mpMethod === m && styles.payMethodTextActive]}>
-                    {m === 'UPI' ? 'UPI Direct' : m === 'SPLIT' ? 'Split' : 'Cash'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+            {/* Phone input */}
+            <View style={[styles.dinerInputWrap, { marginTop: 16 }]}>
+              <View style={styles.dinerCountryCode}>
+                <Text style={styles.dinerCountryCodeText}>+91</Text>
+              </View>
+              <View style={styles.dinerDivider} />
+              <TextInput
+                style={styles.dinerInput}
+                value={coPhone}
+                onChangeText={onCoPhoneChange}
+                placeholder="10-digit mobile"
+                placeholderTextColor={QuinckleColors.textMuted}
+                keyboardType="phone-pad"
+                returnKeyType="next"
+                maxLength={10}
+                autoFocus
+              />
+              {coLooking && <ActivityIndicator size="small" color={QuinckleColors.primary} style={{ marginRight: 12 }} />}
             </View>
 
-            {/* Split: cash input */}
-            {mpMethod === 'SPLIT' && (
-              <View style={{ marginTop: 12, gap: 8 }}>
-                <View style={styles.dinerInputWrap}>
-                  <View style={styles.dinerCountryCode}>
-                    <Text style={styles.dinerCountryCodeText}>Cash ₹</Text>
-                  </View>
-                  <View style={styles.dinerDivider} />
-                  <TextInput
-                    style={styles.dinerInput}
-                    value={mpSplitCash}
-                    onChangeText={v => { setMpSplitCash(v.replace(/[^0-9.]/g, '')); setMpError(null); }}
-                    placeholder="0"
-                    placeholderTextColor={QuinckleColors.textMuted}
-                    keyboardType="decimal-pad"
-                    returnKeyType="done"
-                    autoFocus
-                  />
-                </View>
-                {mpSplitCash ? (
-                  <View style={styles.splitBreakdown}>
-                    <View style={styles.splitRow}>
-                      <Text style={styles.splitLabel}>Cash</Text>
-                      <Text style={styles.splitAmt}>₹{(parseFloat(mpSplitCash)||0).toFixed(0)}</Text>
-                    </View>
-                    <View style={styles.splitRow}>
-                      <Text style={styles.splitLabel}>UPI Direct</Text>
-                      <Text style={styles.splitAmt}>₹{Math.max(0, payableTotal-(parseFloat(mpSplitCash)||0)).toFixed(0)}</Text>
-                    </View>
-                    <View style={[styles.splitRow, { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: QuinckleColors.border, paddingTop: 6, marginTop: 2 }]}>
-                      <Text style={[styles.splitLabel, { color: QuinckleColors.textPrimary }]}>Total</Text>
-                      <Text style={[styles.splitAmt, { color: QuinckleColors.textPrimary }]}>₹{payableTotal.toFixed(0)}</Text>
-                    </View>
-                  </View>
-                ) : null}
+            {coFound === true && (
+              <View style={styles.dinerFoundBadge}>
+                <Text style={styles.dinerFoundText}>✓ Found on Quinckle</Text>
               </View>
             )}
+            {coFound === false && coPhone.length === 10 && (
+              <Text style={styles.dinerNotFoundText}>New guest — enter name below</Text>
+            )}
+            {coError && (
+              <Text style={[styles.dinerNotFoundText, { color: QuinckleColors.danger }]}>
+                {coError}
+              </Text>
+            )}
 
-            {mpError && <Text style={{ color: QuinckleColors.danger, fontSize: 12, marginTop: 8 }}>{mpError}</Text>}
+            {/* Name input */}
+            <View style={[styles.dinerInputWrap, { marginTop: 10 }]}>
+              <TextInput
+                style={[styles.dinerInput, { flex: 1, paddingHorizontal: 14 }]}
+                value={coName}
+                onChangeText={setCoName}
+                placeholder="Guest name (optional)"
+                placeholderTextColor={QuinckleColors.textMuted}
+                returnKeyType="done"
+                onSubmitEditing={confirmIdentityAndPlace}
+              />
+            </View>
 
             <View style={styles.swapFooter}>
-              <TouchableOpacity style={styles.swapCancel} onPress={() => setShowMarkPaidModal(false)} disabled={mpSubmitting} activeOpacity={0.8}>
+              <TouchableOpacity style={styles.swapCancel} onPress={() => setCheckoutOpen(false)} activeOpacity={0.8}>
                 <Text style={styles.swapCancelText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.swapConfirm, { backgroundColor: QuinckleColors.success }, mpSubmitting && { opacity: 0.5 }]}
-                onPress={confirmMarkPaid}
-                disabled={mpSubmitting}
+                style={[styles.swapConfirm, (coPhone.length !== 10 || coLooking || coSubmitting) && { opacity: 0.4 }]}
+                onPress={confirmIdentityAndPlace}
+                disabled={coPhone.length !== 10 || coLooking || coSubmitting}
                 activeOpacity={0.8}
               >
-                <Text style={styles.swapConfirmText}>{mpSubmitting ? 'Marking…' : 'Mark as paid'}</Text>
+                <Text style={styles.swapConfirmText}>
+                  {coSubmitting ? 'Placing…' : 'Place Order & Pay'}
+                </Text>
               </TouchableOpacity>
             </View>
+
           </View>
         </View>
       </Modal>
+      <CollectionSheet
+        visible={collectionOpen}
+        onClose={() => setCollectionOpen(false)}
+        bill={collectionBill}
+        partner={{ vpa: upiId, merchantName: upiName || null }}
+        onConfirm={onCollectionConfirm}
+      />
 
       {/* ── UPI QR modal ── */}
       <Modal visible={showUpiModal} transparent animationType="fade" onRequestClose={() => setShowUpiModal(false)}>
@@ -1273,6 +1312,7 @@ export default function TableDetail() {
           setShowOrderModal(false);
           setCart({});
           setCartNotes({});
+          setCartModifiers({});
           setMenuSearchText('');
           setActiveCategory('All');
         }}
@@ -1285,6 +1325,7 @@ export default function TableDetail() {
                 setShowOrderModal(false);
                 setCart({});
                 setCartNotes({});
+                setCartModifiers({});
                 setMenuSearchText('');
                 setActiveCategory('All');
               }}
@@ -1349,19 +1390,32 @@ export default function TableDetail() {
                 <Ionicons name="search-outline" size={28} color={QuinckleColors.textTertiary} />
                 <Text style={styles.emptyText}>No items match your search.</Text>
               </View>
-            ) : filteredMenuItems.map(item => (
+            ) : filteredMenuItems.map(item => {
+              const hasMods = (item.modifierGroups?.length ?? 0) > 0;
+              const selMods = cartModifiers[item.id];
+              const modSummary = selMods?.length
+                ? selMods.map(({ groupId, optionId }) => {
+                    const g = item.modifierGroups?.find(g => g.id === groupId);
+                    return g?.options.find(o => o.id === optionId)?.name;
+                  }).filter(Boolean).join(', ')
+                : null;
+              return (
               <View key={item.id} style={styles.menuRow}>
                 <View style={styles.menuRowTop}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.menuItemName}>{item.name}</Text>
-                    <Text style={styles.menuItemPrice}>₹{parseFloat(item.price).toFixed(0)}</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={styles.menuItemPrice}>₹{parseFloat(item.price).toFixed(0)}</Text>
+                      {hasMods && <Text style={{ fontSize: 10, color: QuinckleColors.primary, fontWeight: '600' }}>+ options</Text>}
+                    </View>
+                    {modSummary ? <Text style={{ fontSize: 11, color: QuinckleColors.textTertiary, marginTop: 2 }} numberOfLines={1}>{modSummary}</Text> : null}
                   </View>
                   <View style={styles.qtyControl}>
                     <TouchableOpacity onPress={() => removeFromCart(item.id)} style={styles.qtyBtn} disabled={!cart[item.id]}>
                       <Ionicons name="remove" size={16} color={cart[item.id] ? QuinckleColors.primary : QuinckleColors.borderStrong} />
                     </TouchableOpacity>
                     <Text style={styles.qtyText}>{cart[item.id] ?? 0}</Text>
-                    <TouchableOpacity onPress={() => addToCart(item.id)} style={styles.qtyBtn}>
+                    <TouchableOpacity onPress={() => handleAddPress(item)} style={styles.qtyBtn}>
                       <Ionicons name="add" size={16} color={QuinckleColors.primary} />
                     </TouchableOpacity>
                   </View>
@@ -1377,7 +1431,8 @@ export default function TableDetail() {
                   />
                 )}
               </View>
-            ))}
+            );
+            })}
           </ScrollView>
 
           <View style={styles.modalFooter}>
@@ -1386,13 +1441,89 @@ export default function TableDetail() {
               <Text style={styles.cartTotal}>₹{cartTotal.toFixed(0)}</Text>
             </View>
             <TouchableOpacity
-              style={[styles.placeOrderBtn, (Object.keys(cart).length === 0 || isPlacingOrder) && styles.placeOrderBtnDisabled]}
+              style={[styles.placeOrderBtn, Object.keys(cart).length === 0 && styles.placeOrderBtnDisabled]}
               onPress={handlePlaceOrder}
-              disabled={Object.keys(cart).length === 0 || isPlacingOrder}
+              disabled={Object.keys(cart).length === 0}
               activeOpacity={0.85}
             >
-              <Text style={styles.placeOrderText}>{isPlacingOrder ? 'Placing Order…' : 'Place Order'}</Text>
+              <Text style={styles.placeOrderText}>Place Order</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── Modifier selection bottom sheet ── */}
+      <Modal
+        visible={!!modifierItem}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setModifierItem(null)}
+      >
+        <View style={styles.swapBackdrop}>
+          <View style={[styles.swapCard, { maxHeight: '80%' }]}>
+            <Text style={styles.swapEyebrow}>Customise</Text>
+            <Text style={styles.swapTitle}>{modifierItem?.name}</Text>
+            <Text style={styles.swapSubtitle}>₹{parseFloat(modifierItem?.price ?? '0').toFixed(0)}</Text>
+
+            <ScrollView style={{ marginTop: 16 }} showsVerticalScrollIndicator={false}>
+              {modifierItem?.modifierGroups?.map(group => (
+                <View key={group.id} style={{ marginBottom: 20 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <Text style={{ color: QuinckleColors.textPrimary, fontWeight: '700', fontSize: 13 }}>{group.name}</Text>
+                    <Text style={{ color: QuinckleColors.textTertiary, fontSize: 11 }}>
+                      {group.minSelections > 0 ? `Required · ` : ''}
+                      {group.maxSelections === 1 ? 'Pick 1' : `Pick up to ${group.maxSelections}`}
+                    </Text>
+                  </View>
+                  {group.options.map(opt => {
+                    const selected = (pendingModifiers[group.id] ?? []).includes(opt.id);
+                    const adj = parseFloat(opt.priceAdjustment ?? '0');
+                    return (
+                      <TouchableOpacity
+                        key={opt.id}
+                        style={{
+                          flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+                          paddingVertical: 10, paddingHorizontal: 12, borderRadius: Radius.md,
+                          marginBottom: 4,
+                          backgroundColor: selected ? QuinckleColors.primarySoft : QuinckleColors.surfaceElevated,
+                          borderWidth: 1,
+                          borderColor: selected ? QuinckleColors.primarySoftBorder : QuinckleColors.border,
+                        }}
+                        onPress={() => toggleModOption(group.id, opt.id, group.maxSelections)}
+                        activeOpacity={0.7}
+                      >
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                          <View style={{
+                            width: 18, height: 18, borderRadius: group.maxSelections === 1 ? 9 : 4,
+                            borderWidth: 1.5,
+                            borderColor: selected ? QuinckleColors.primary : QuinckleColors.borderStrong,
+                            backgroundColor: selected ? QuinckleColors.primary : 'transparent',
+                            alignItems: 'center', justifyContent: 'center',
+                          }}>
+                            {selected && <Ionicons name="checkmark" size={11} color="#fff" />}
+                          </View>
+                          <Text style={{ color: QuinckleColors.textPrimary, fontSize: 14 }}>{opt.name}</Text>
+                        </View>
+                        {adj !== 0 && (
+                          <Text style={{ color: adj > 0 ? QuinckleColors.textSecondary : QuinckleColors.success, fontSize: 13 }}>
+                            {adj > 0 ? '+' : ''}₹{Math.abs(adj).toFixed(0)}
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              ))}
+            </ScrollView>
+
+            <View style={styles.swapFooter}>
+              <TouchableOpacity style={styles.swapCancel} onPress={() => setModifierItem(null)} activeOpacity={0.8}>
+                <Text style={styles.swapCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.swapConfirm} onPress={confirmModifiers} activeOpacity={0.8}>
+                <Text style={styles.swapConfirmText}>Add to order</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
