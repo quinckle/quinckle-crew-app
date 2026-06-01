@@ -1353,7 +1353,7 @@ const styles = StyleSheet.create({
   tableGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: Spacing.md,
+    justifyContent: 'space-between',
   },
   tableCardOuter: {
     width: CARD_W,
@@ -1361,6 +1361,7 @@ const styles = StyleSheet.create({
     borderRadius: Radius.lg + 1.5,
     padding: 1.5,
     overflow: 'hidden',
+    marginBottom: Spacing.md,
   },
   tableCard: {
     flex: 1,
