@@ -26,7 +26,7 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: QuinckleColors.background }}>
       <AuthProvider>
-        <StatusBar style="dark" />
+        <StatusBar style="light" />
         <Stack
           screenOptions={{
             headerShown: false,
