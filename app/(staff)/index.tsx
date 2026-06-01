@@ -18,7 +18,6 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
-const CARD_W = (SCREEN_WIDTH - Spacing.xl * 2 - Spacing.md) / 2;
 
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
@@ -1356,7 +1355,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   tableCardOuter: {
-    width: CARD_W,
+    width: '48.5%',
     minHeight: 130,
     borderRadius: Radius.lg + 1.5,
     padding: 1.5,
