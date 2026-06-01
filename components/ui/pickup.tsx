@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -479,7 +480,22 @@ export function PickupCard({
 
   const orderedAt = items[0]?.orderedAt;
 
+  const gradColors: [string, string, string, string, string] = [
+    'transparent',
+    `${accentBase}55`,
+    accentBase,
+    `${accentBase}55`,
+    'transparent',
+  ];
+
   return (
+    <View style={cardStyles.cardOuter}>
+      <LinearGradient
+        colors={gradColors}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFillObject}
+      />
     <Animated.View
       onLayout={(e) => setCardWidth(e.nativeEvent.layout.width)}
       style={[
@@ -566,6 +582,7 @@ export function PickupCard({
         </Animated.View>
       )}
     </Animated.View>
+    </View>
   );
 }
 
@@ -576,12 +593,15 @@ function formatClock(iso: string): string {
 }
 
 const cardStyles = StyleSheet.create({
+  cardOuter: {
+    borderRadius: Radius.lg + 1.5,
+    padding: 1.5,
+    overflow: 'hidden',
+    marginBottom: Spacing.md,
+  },
   card: {
     flexDirection: 'row',
     borderRadius: Radius.lg,
-    marginBottom: Spacing.md,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
     overflow: 'hidden',
   },
   accentStrip: {
