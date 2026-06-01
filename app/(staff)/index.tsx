@@ -4,6 +4,7 @@ import {
   Animated,
   Dimensions,
   FlatList,
+  RefreshControl,
   Image,
   LayoutAnimation,
   Modal,
@@ -17,6 +18,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
+const CARD_W = (SCREEN_WIDTH - Spacing.xl * 2 - Spacing.md) / 2;
 
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
@@ -880,70 +882,76 @@ export default function StaffDashboard() {
           {isLoadingTables && tables.length === 0 ? (
             <TableSkeleton />
           ) : (
-            <FlatList
-              data={filteredTables}
-              keyExtractor={(item) => item.id}
-              numColumns={2}
-              columnWrapperStyle={styles.columnWrapper}
+            <ScrollView
+              showsVerticalScrollIndicator={false}
               contentContainerStyle={styles.listContent}
-              refreshing={isLoadingTables}
-              onRefresh={() => { void loadTables(); }}
-              renderItem={({ item }) => {
-                const meta = STATUS_META[item.status] || STATUS_META.available;
-                return (
-                  <TouchableOpacity
-                    style={[
-                      styles.tableCard,
-                      { borderColor: `${meta.color}99` },
-                      item.status === 'offline' && styles.offlineCard,
-                    ]}
-                    onPress={() => handleTablePress(item.number, item.status)}
-                    onLongPress={() => handleLongPress(item.id, item.status)}
-                    activeOpacity={0.85}
-                    delayLongPress={500}
-                  >
-                    <LinearGradient
-                      colors={[`${meta.color}B3`, `${meta.color}4D`, `${meta.color}1A`]}
-                      locations={[0, 0.55, 1]}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={StyleSheet.absoluteFillObject}
-                    />
-                    <View style={styles.cardHeader}>
-                      <View>
-                        <Text style={styles.tableTitle}>T{String(item.number).padStart(2, '0')}</Text>
-                        <View style={styles.seatsRow}>
-                          <Ionicons name="people-outline" size={11} color={QuinckleColors.textTertiary} />
-                          <Text style={styles.seatsText}>{item.seats} seats</Text>
-                        </View>
-                      </View>
-                    </View>
-
-                    <View style={styles.cardBottom}>
-                      {item.status === 'occupied' ? (
-                        <View>
-                          <Text style={styles.billAmount}>₹{(item.billAmount ?? 0).toLocaleString()}</Text>
-                          <Text style={styles.billSubtitle}>{item.since ? `since ${item.since}` : 'active session'}</Text>
-                        </View>
-                      ) : item.status === 'available' ? (
-                        <View style={styles.actionPrompt}>
-                          <Ionicons name="add" size={13} color={QuinckleColors.textTertiary} />
-                          <Text style={styles.actionPromptText}>Start session</Text>
-                        </View>
-                      ) : (
-                        <Text style={styles.actionPromptText}>Marked offline</Text>
-                      )}
-                    </View>
-                  </TouchableOpacity>
-                );
-              }}
-              ListEmptyComponent={
+              refreshControl={
+                <RefreshControl refreshing={isLoadingTables} onRefresh={() => { void loadTables(); }} tintColor={QuinckleColors.textTertiary} />
+              }
+            >
+              {filteredTables.length === 0 ? (
                 <View style={styles.emptyState}>
                   <Ionicons name="grid-outline" size={28} color={QuinckleColors.textTertiary} />
                   <Text style={styles.emptyText}>No tables match this filter.</Text>
                 </View>
-              }
-            />
+              ) : (
+                <View style={styles.tableGrid}>
+                  {filteredTables.map((item) => {
+                    const meta = STATUS_META[item.status] || STATUS_META.available;
+                    const gradColors: [string, string, string, string, string] = [
+                      'transparent',
+                      `${meta.color}55`,
+                      meta.color,
+                      `${meta.color}55`,
+                      'transparent',
+                    ];
+                    return (
+                      <TouchableOpacity
+                        key={item.id}
+                        style={[styles.tableCardOuter, item.status === 'offline' && styles.offlineCard]}
+                        onPress={() => handleTablePress(item.number, item.status)}
+                        onLongPress={() => handleLongPress(item.id, item.status)}
+                        activeOpacity={0.82}
+                        delayLongPress={500}
+                      >
+                        {/* Gradient border */}
+                        <LinearGradient
+                          colors={gradColors}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                          style={StyleSheet.absoluteFillObject}
+                        />
+                        {/* Dark inner card */}
+                        <View style={styles.tableCard}>
+                          <View style={styles.cardHeader}>
+                            <Text style={styles.tableTitle}>T{String(item.number).padStart(2, '0')}</Text>
+                            <View style={styles.seatsRow}>
+                              <Ionicons name="people-outline" size={11} color={QuinckleColors.textTertiary} />
+                              <Text style={styles.seatsText}>{item.seats} seats</Text>
+                            </View>
+                          </View>
+                          <View style={styles.cardBottom}>
+                            {item.status === 'occupied' ? (
+                              <View>
+                                <Text style={styles.billAmount}>₹{(item.billAmount ?? 0).toLocaleString()}</Text>
+                                <Text style={styles.billSubtitle}>{item.since ? `since ${item.since}` : 'active session'}</Text>
+                              </View>
+                            ) : item.status === 'available' ? (
+                              <View style={styles.actionPrompt}>
+                                <Ionicons name="add" size={13} color={QuinckleColors.textTertiary} />
+                                <Text style={styles.actionPromptText}>Start session</Text>
+                              </View>
+                            ) : (
+                              <Text style={styles.actionPromptText}>Marked offline</Text>
+                            )}
+                          </View>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+            </ScrollView>
           )}
         </>
       ) : activeTab === 'menu' ? (
@@ -1338,27 +1346,31 @@ const styles = StyleSheet.create({
   },
 
   listContent: {
+    paddingHorizontal: Spacing.xl,
     paddingBottom: 100,
+  },
+  tableGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: Spacing.md,
   },
-  columnWrapper: {
-    justifyContent: 'space-between',
-    gap: Spacing.md,
+  tableCardOuter: {
+    width: CARD_W,
+    minHeight: 130,
+    borderRadius: Radius.lg + 1.5,
+    padding: 1.5,
+    overflow: 'hidden',
   },
   tableCard: {
     flex: 1,
-    backgroundColor: QuinckleColors.surface,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.background,
     borderRadius: Radius.lg,
     padding: Spacing.lg,
-    minHeight: 130,
+    minHeight: 130 - 3,
     justifyContent: 'space-between',
-    maxWidth: '49%',
-    overflow: 'hidden',
   },
   offlineCard: {
-    opacity: 0.55,
+    opacity: 0.45,
   },
   cardHeader: {
     flexDirection: 'row',
