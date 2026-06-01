@@ -20,6 +20,7 @@ import { crewPayments, type PendingCashRequest, type CollectedCashRecord } from 
 import { subscribeChannel } from '../../services/realtime';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { CashCollectionSkeleton } from '../../components/ui/CashCollectionSkeleton';
+import { CollectionSheet } from '../../components/ui/CollectionSheet';
 
 type Row =
   | { kind: 'sectionHeader'; title: string; subtitle: string }
@@ -58,6 +59,8 @@ export default function CashCollectionScreen() {
   const [activeTab, setActiveTab]         = useState<TabKey>('active');
   const [openMenuOrderId, setOpenMenuOrderId] = useState<string | null>(null);
   const [upiSuccessingOrderId, setUpiSuccessingOrderId] = useState<string | null>(null);
+  const [collectionOpen, setCollectionOpen] = useState(false);
+  const [collectionReq, setCollectionReq] = useState<PendingCashRequest | null>(null);
   const scrollY = useRef(new Animated.Value(0)).current;
   const successSweep = useRef(new Animated.Value(0)).current;
 
@@ -127,24 +130,12 @@ export default function CashCollectionScreen() {
 
   const handleRefresh = () => { setIsRefreshing(true); void load(); };
 
+  const buildCollectIdempotencyKey = (orderId: string, amount: number) =>
+    `crew-collect:${orderId}:UPI_DIRECT:${Number(amount).toFixed(2)}`;
+
   const handleCollect = (req: PendingCashRequest) => {
-    router.push({
-      pathname: '/(staff)/payment-collect',
-      params: {
-        orderId:       req.orderId,
-        tableNumber:   String(req.tableNumber),
-        amount:        String(req.amount),
-        customerName:  req.customerName ?? '',
-        customerPhone: req.customerPhone,
-        intentId:      req.intentId ?? '',
-        intentMethod:  req.intentMethod ?? '',
-        upiVpa:        req.upi?.vpa ?? '',
-        upiName:       req.upi?.displayName ?? '',
-        // Serialize breakdown so the payment-collect screen can render the
-        // itemised breakdown without a second API call.
-        breakdown:     req.breakdown ? JSON.stringify(req.breakdown) : '',
-      },
-    });
+    setCollectionReq(req);
+    setCollectionOpen(true);
   };
   const markIntentBusy = (intentId: string, busy: boolean) => {
     setIntentBusyIds((prev) => {
@@ -171,7 +162,12 @@ export default function CashCollectionScreen() {
       } else {
         const staffId = staffInfo?.id;
         if (!staffId) return;
-        await crewPayments.collectPayment(req.orderId, staffId, [{ method: 'UPI_DIRECT', amount: req.amount }]);
+        await crewPayments.collectPayment(
+          req.orderId,
+          staffId,
+          [{ method: 'UPI_DIRECT', amount: req.amount }],
+          buildCollectIdempotencyKey(req.orderId, req.amount),
+        );
       }
       setOpenMenuOrderId(null);
       setUpiSuccessingOrderId(req.orderId);
@@ -208,6 +204,29 @@ export default function CashCollectionScreen() {
   };
 
   const totalDue = pending.reduce((s, p) => s + p.amount, 0);
+
+  const onCollectionConfirm = async (
+    splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[],
+  ): Promise<boolean> => {
+    const req = collectionReq;
+    const staffId = staffInfo?.id;
+    if (!req) throw new Error('Payment request not found.');
+    if (!staffId) throw new Error('Staff profile missing. Please log in again.');
+    if (req.intentId) {
+      await crewPayments.confirmPaymentIntent(req.intentId);
+    } else {
+      await crewPayments.collectPayment(
+        req.orderId,
+        staffId,
+        splits,
+        `crew-collect:${req.orderId}:${splits.map(s => `${s.method}:${Number(s.amount).toFixed(2)}`).join('|')}`,
+      );
+    }
+    setCollectionOpen(false);
+    setCollectionReq(null);
+    await load();
+    return true;
+  };
 
   const renderHero = () => (
     <View style={s.heroWrap}>
@@ -493,6 +512,26 @@ export default function CashCollectionScreen() {
           }
         />
       )}
+      <CollectionSheet
+        visible={collectionOpen}
+        onClose={() => setCollectionOpen(false)}
+        bill={
+          collectionReq
+            ? {
+                orderId: collectionReq.orderId,
+                tableNumber: collectionReq.tableNumber,
+                customerName: collectionReq.customerName,
+                customerPhone: collectionReq.customerPhone || '',
+                amount: collectionReq.amount,
+              }
+            : null
+        }
+        partner={{
+          vpa: collectionReq?.upi?.vpa ?? null,
+          merchantName: collectionReq?.upi?.displayName ?? null,
+        }}
+        onConfirm={onCollectionConfirm}
+      />
     </View>
   );
 }

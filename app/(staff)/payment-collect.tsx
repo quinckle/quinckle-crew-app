@@ -23,7 +23,7 @@ import * as Haptics from 'expo-haptics';
 import QRCode from 'react-native-qrcode-svg';
 import Svg, { Path } from 'react-native-svg';
 import { useAuth } from '../../context/AuthContext';
-import { crewPayments, restaurantApi, type BillBreakdown } from '../../services/api';
+import { crewOrders, crewPayments, restaurantApi, type BillBreakdown, type CrewOrderPaymentContext } from '../../services/api';
 import { BillBreakdownView } from '../../components/ui/BillBreakdownView';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 
@@ -204,7 +204,7 @@ export default function PaymentCollectScreen() {
   const insets  = useSafeAreaInsets();
   const { staffInfo } = useAuth();
   const params  = useLocalSearchParams<{
-    orderId: string; tableNumber: string; amount: string;
+    orderId: string; tableNumber: string; amount?: string;
     customerName: string; customerPhone: string;
     intentId?: string;
     intentMethod?: 'STAFF_COLLECT' | 'UPI_DIRECT';
@@ -224,6 +224,9 @@ export default function PaymentCollectScreen() {
     if (!params.breakdown) return null;
     try { return JSON.parse(params.breakdown) as BillBreakdown; } catch { return null; }
   }, [params.breakdown]);
+  const [paymentContext, setPaymentContext] = useState<CrewOrderPaymentContext | null>(null);
+  const [isLoadingPaymentContext, setIsLoadingPaymentContext] = useState(false);
+  const [paymentContextError, setPaymentContextError] = useState<string | null>(null);
 
   const [mode, setMode]           = useState<Mode>('normal');
   const [step, setStep]           = useState<Step>('choose');
@@ -250,16 +253,57 @@ export default function PaymentCollectScreen() {
       .finally(() => setIsLoadingUpi(false));
   }, [staffInfo?.restaurantId, params.upiVpa, params.upiName]);
 
-  const cashNum    = Number(cashInput || 0);
-  const upiNum     = Math.max(0, total - cashNum);
-  const remaining  = total - cashNum;
-  const splitValid = mode === 'split' && cashNum > 0 && upiNum > 0 && Math.abs(cashNum + upiNum - total) <= 1;
+  useEffect(() => {
+    let alive = true;
+    const loadPaymentContext = async () => {
+      if (!orderId) return;
+      setIsLoadingPaymentContext(true);
+      setPaymentContextError(null);
+      try {
+        const res = await crewOrders.getPaymentContext(orderId);
+        if (!alive) return;
+        setPaymentContext(res.data);
+      } catch (err: any) {
+        if (!alive) return;
+        setPaymentContextError(err?.message ?? 'Could not load payment details.');
+      } finally {
+        if (alive) setIsLoadingPaymentContext(false);
+      }
+    };
+    void loadPaymentContext();
+    return () => { alive = false; };
+  }, [orderId]);
 
-  const qrAmount = mode === 'normal' ? total : upiNum;
+  const resolvedTotal = paymentContext?.total ?? total;
+  const resolvedBreakdown: BillBreakdown | null = useMemo(() => {
+    if (paymentContext) {
+      return {
+        subtotal: paymentContext.subtotal,
+        discount: 0,
+        chargesTotal: paymentContext.service_charge,
+        taxRate: paymentContext.subtotal > 0 ? (paymentContext.tax / paymentContext.subtotal) * 100 : 0,
+        taxAmount: paymentContext.tax,
+        tip: 0,
+        total: paymentContext.total,
+        currency: 'INR',
+      };
+    }
+    return breakdown;
+  }, [paymentContext, breakdown]);
+
+  const cashNum    = Number(cashInput || 0);
+  const upiNum     = Math.max(0, resolvedTotal - cashNum);
+  const remaining  = resolvedTotal - cashNum;
+  const splitValid = mode === 'split' && cashNum > 0 && upiNum > 0 && Math.abs(cashNum + upiNum - resolvedTotal) <= 1;
+
+  const qrAmount = mode === 'normal' ? resolvedTotal : upiNum;
   const upiUri   = useMemo(() => {
     if (!partnerUpi.vpa || qrAmount <= 0) return '';
     return buildUpiUri(partnerUpi.vpa, partnerUpi.merchantName ?? 'Merchant', qrAmount);
   }, [partnerUpi.vpa, partnerUpi.merchantName, qrAmount]);
+
+  const buildCollectIdempotencyKey = (splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[]) =>
+    `crew-collect:${orderId}:${splits.map(s => `${s.method}:${Number(s.amount).toFixed(2)}`).join('|')}`;
 
   const submit = async (splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[]) => {
     const staffId = staffInfo?.id;
@@ -274,10 +318,10 @@ export default function PaymentCollectScreen() {
         }
         await crewPayments.confirmPaymentIntent(intentId);
       } else {
-        await crewPayments.collectPayment(orderId, staffId, splits);
+        await crewPayments.collectPayment(orderId, staffId, splits, buildCollectIdempotencyKey(splits));
       }
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setSuccessInfo({ tableNumber, total, splits });
+      setSuccessInfo({ tableNumber, total: resolvedTotal, splits });
     } catch (err: any) {
       Alert.alert('Could not record payment', err?.message ?? 'Please try again.');
     } finally {
@@ -299,9 +343,9 @@ export default function PaymentCollectScreen() {
     }
   };
 
-  const handleUpiPay      = () => { void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); void submit([{ method: 'UPI_DIRECT', amount: total }]); };
+  const handleUpiPay      = () => { void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); void submit([{ method: 'UPI_DIRECT', amount: resolvedTotal }]); };
   const handleCashTap     = () => { void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); setStep('confirm_cash'); };
-  const handleCashConfirm = () => { void submit([{ method: 'CASH', amount: total }]); };
+  const handleCashConfirm = () => { void submit([{ method: 'CASH', amount: resolvedTotal }]); };
   const handleSplitPaid   = () => { if (!splitValid) return; void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); void submit([{ method: 'CASH', amount: cashNum }, { method: 'UPI_DIRECT', amount: upiNum }]); };
   const enterSplitMode    = () => {
     if (intentId) return;
@@ -320,6 +364,7 @@ export default function PaymentCollectScreen() {
     splitValid    ? QuinckleColors.success
     : remaining < 0 ? QuinckleColors.danger
     : QuinckleColors.textTertiary;
+  const paymentReady = resolvedTotal > 0 && !isLoadingPaymentContext;
 
   return (
     <KeyboardAvoidingView style={s.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -347,7 +392,7 @@ export default function PaymentCollectScreen() {
       {/* Order summary */}
       <View style={[s.summary, { paddingHorizontal: Spacing.xl }]}>
         <Text style={s.tableLabel}>Table {tableNumber}</Text>
-        <Text style={s.totalAmount}>₹{total.toLocaleString('en-IN')}</Text>
+        <Text style={s.totalAmount}>₹{resolvedTotal.toLocaleString('en-IN')}</Text>
         <View style={s.customerRow}>
           <Text style={s.customerText}>{customerName ?? 'Guest'}</Text>
           {customerPhone ? (
@@ -356,10 +401,13 @@ export default function PaymentCollectScreen() {
             </TouchableOpacity>
           ) : null}
         </View>
-        {breakdown && (breakdown.chargesTotal > 0 || breakdown.taxAmount > 0 || breakdown.discount > 0 || breakdown.tip > 0) && (
+        {resolvedBreakdown && (resolvedBreakdown.chargesTotal > 0 || resolvedBreakdown.taxAmount > 0 || resolvedBreakdown.discount > 0 || resolvedBreakdown.tip > 0) && (
           <View style={s.breakdownWrap}>
-            <BillBreakdownView breakdown={breakdown} compact />
+            <BillBreakdownView breakdown={resolvedBreakdown} compact />
           </View>
+        )}
+        {paymentContextError && (
+          <Text style={s.contextWarning}>{paymentContextError}</Text>
         )}
       </View>
 
@@ -375,9 +423,9 @@ export default function PaymentCollectScreen() {
               <View style={s.qrBlock}>
                 <Text style={s.qrHint}>Ask the diner to scan</Text>
                 <View style={s.qrFrame}>
-                  <QRCode value={upiUri} size={200} backgroundColor="#ffffff" color="#000000" />
+                  {upiUri ? <QRCode value={upiUri} size={200} backgroundColor="#ffffff" color="#000000" /> : null}
                 </View>
-                <Text style={s.qrAmt}>₹{total.toLocaleString('en-IN')}</Text>
+                <Text style={s.qrAmt}>₹{resolvedTotal.toLocaleString('en-IN')}</Text>
                 <Text style={s.qrVpa}>{partnerUpi.vpa}</Text>
                 <TouchableOpacity onPress={() => Linking.openURL(upiUri).catch(() => {})} activeOpacity={0.6} style={s.openLink}>
                   <Text style={s.openLinkText}>Open in UPI app</Text>
@@ -433,7 +481,7 @@ export default function PaymentCollectScreen() {
             )}
 
             {/* Split QR */}
-            {upiNum > 0 && !isLoadingUpi && partnerUpi.vpa && (
+            {upiNum > 0 && !isLoadingUpi && partnerUpi.vpa && upiUri && (
               <View style={s.qrBlock}>
                 <Text style={s.qrHint}>UPI — ₹{upiNum.toLocaleString('en-IN')}</Text>
                 <View style={s.qrFrame}>
@@ -458,9 +506,9 @@ export default function PaymentCollectScreen() {
               </TouchableOpacity>
             )}
             <TouchableOpacity
-              style={[s.btnUpi, (isLoadingUpi || !partnerUpi.vpa) && s.btnMuted, intentMethod === 'UPI_DIRECT' && { flex: 2 }]}
+              style={[s.btnUpi, (isLoadingUpi || isLoadingPaymentContext || !partnerUpi.vpa || !paymentReady) && s.btnMuted, intentMethod === 'UPI_DIRECT' && { flex: 2 }]}
               onPress={handleUpiPay}
-              disabled={loading || isLoadingUpi || !partnerUpi.vpa}
+              disabled={loading || isLoadingUpi || isLoadingPaymentContext || !partnerUpi.vpa || !paymentReady}
               activeOpacity={0.8}
             >
               {loading
@@ -485,12 +533,12 @@ export default function PaymentCollectScreen() {
 
         {mode === 'normal' && step === 'confirm_cash' && (
           <View style={s.confirmWrap}>
-            <Text style={s.confirmMsg}>Confirm ₹{total.toLocaleString('en-IN')} cash received?</Text>
+            <Text style={s.confirmMsg}>Confirm ₹{resolvedTotal.toLocaleString('en-IN')} cash received?</Text>
             <View style={s.btnRow}>
               <TouchableOpacity style={s.btnGhost} onPress={() => setStep('choose')} disabled={loading} activeOpacity={0.7}>
                 <Text style={s.btnGhostLabel}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[s.btnCash, { flex: 2 }, loading && { opacity: 0.5 }]} onPress={handleCashConfirm} disabled={loading} activeOpacity={0.8}>
+              <TouchableOpacity style={[s.btnCash, { flex: 2 }, (loading || isLoadingPaymentContext || !paymentReady) && { opacity: 0.5 }]} onPress={handleCashConfirm} disabled={loading || isLoadingPaymentContext || !paymentReady} activeOpacity={0.8}>
                 {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>Confirm</Text>}
               </TouchableOpacity>
             </View>
@@ -499,9 +547,9 @@ export default function PaymentCollectScreen() {
 
         {mode === 'split' && (
           <TouchableOpacity
-            style={[s.btnPrimary, (!splitValid || loading) && s.btnMuted]}
+            style={[s.btnPrimary, (!splitValid || loading || isLoadingPaymentContext || !paymentReady) && s.btnMuted]}
             onPress={handleSplitPaid}
-            disabled={!splitValid || loading}
+            disabled={!splitValid || loading || isLoadingPaymentContext || !paymentReady}
             activeOpacity={0.8}
           >
             {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>Mark as Paid</Text>}
@@ -579,6 +627,7 @@ const s = StyleSheet.create({
   splitInput: { flex: 1, color: QuinckleColors.textPrimary, fontSize: 22, fontWeight: '600', padding: 0, letterSpacing: -0.4 },
   splitReadonly: { flex: 1, fontSize: 22, fontWeight: '600', letterSpacing: -0.4 },
   splitHint: { fontSize: 13, fontWeight: '500', textAlign: 'right' },
+  contextWarning: { color: QuinckleColors.warning, fontSize: 12, fontWeight: '500', marginTop: 10 },
 
   // Bottom
   bottom: {

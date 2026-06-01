@@ -335,7 +335,7 @@ export function CollectionSheet({ visible, onClose, bill, partner, onConfirm }: 
                   transform: [{ scale: qrAnim.interpolate({ inputRange: [0, 1], outputRange: [0.88, 1] }) }],
                 },
               ]}>
-                {partner.vpa ? (
+                {partner.vpa && upiUri ? (
                   <>
                     <Text style={styles.qrLabel}>Show this to the diner to scan</Text>
                     <View style={styles.qrWrap}>
@@ -348,14 +348,14 @@ export function CollectionSheet({ visible, onClose, bill, partner, onConfirm }: 
                       <Text style={styles.qrAltText}>Or open in any UPI app</Text>
                     </TouchableOpacity>
                   </>
-                ) : (
+                ) : !partner.vpa ? (
                   <>
                     <Ionicons name="warning-outline" size={20} color={QuinckleColors.warning} />
                     <Text style={styles.qrMissingText}>
                       No UPI ID configured. Ask the partner to set their UPI in Settings.
                     </Text>
                   </>
-                )}
+                ) : null}
               </Animated.View>
             )}
 

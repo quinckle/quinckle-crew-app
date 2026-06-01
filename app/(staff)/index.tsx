@@ -569,6 +569,7 @@ export default function StaffDashboard() {
         }));
         void printKot({
           id: data.orderId,
+          sessionId: data.sessionId ?? undefined,
           orderNumber: data.orderNumber,
           tableNumber: data.tableNumber,
           restaurantName: staffInfo?.restaurantName ?? '',
@@ -655,6 +656,7 @@ export default function StaffDashboard() {
         }));
         void printKot({
           id: data.order.id,
+          sessionId: data.order.sessionId ?? undefined,
           tableNumber: String(data.order.tableNumber ?? '?'),
           restaurantName: staffInfo?.restaurantName ?? '',
           createdAt: data.order.createdAt ?? new Date().toISOString(),
