@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 
 export type KitchenItem = {
@@ -84,11 +85,25 @@ export function KitchenTicketCard({
   const elapsed = formatElapsed(ticket.placedAt);
   const accentColor = isCompletedTab ? QuinckleColors.borderStrong : QuinckleColors.primary;
 
+  const gradColors: [string, string, string, string, string] = [
+    'transparent',
+    `${accentColor}55`,
+    accentColor,
+    `${accentColor}55`,
+    'transparent',
+  ];
+
   return (
+    <View style={[styles.cardOuter, isCompletedTab && styles.cardDim]}>
+      <LinearGradient
+        colors={gradColors}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFillObject}
+      />
     <Animated.View
       style={[
         styles.card,
-        isCompletedTab && styles.cardDim,
         { opacity: entryO, transform: [{ translateX: entryT }] },
       ]}
     >
@@ -149,20 +164,24 @@ export function KitchenTicketCard({
         </View>
       </View>
     </Animated.View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  cardOuter: {
+    borderRadius: Radius.lg + 1.5,
+    padding:      1.5,
+    overflow:     'hidden',
+  },
   card: {
     flexDirection:   'row',
     backgroundColor: QuinckleColors.surface,
     borderRadius:    Radius.lg,
-    borderWidth:     1,
-    borderColor:     QuinckleColors.border,
     overflow:        'hidden',
   },
   cardDim: {
-    opacity: 0.55,
+    opacity: 0.45,
   },
   accentStrip: {
     width:     3,
