@@ -21,7 +21,7 @@ There is no test suite configured. TypeScript type-checking runs through the IDE
 
 ### Auth & Routing Flow
 
-`AuthContext` (`context/AuthContext.tsx`) holds role state (`'staff' | 'cook' | null`) in memory only — no persistence. The root `app/index.tsx` redirects based on role:
+`AuthContext` (`context/AuthContext.tsx`) holds role state (`'staff' | 'cook' | null`), the crew JWT, and `staffInfo`. The JWT is persisted in SecureStore (Keychain/Keystore) and `staffInfo` in AsyncStorage, restored on launch (`isRestoring`). A 401 on an authenticated request auto-logs-out via the `setOn401Callback` hook. The root `app/index.tsx` redirects based on role:
 
 - `null` → `/login` → `/credential?role=<staff|cook>` → sets role via `login()` → redirects to role route
 - `'staff'` → `/(staff)` (table floor view)
@@ -34,14 +34,14 @@ Logging out calls `logout()` which sets role to `null`, then navigates to `/logi
 | Route | Purpose |
 |---|---|
 | `app/login.tsx` | Role selection (Staff / Cook buttons) |
-| `app/credential.tsx` | OTP login form; accepts Restaurant ID + email/phone + OTP (validation is front-end only — no real auth backend yet) |
+| `app/credential.tsx` | OTP login form; phone + OTP verified against the ops backend (`crewAuth.sendOtp` / `verifyOtp`) which returns the crew JWT + staff profile |
 | `app/(staff)/index.tsx` | Staff dashboard: table grid with status filters (available / occupied / reserved), search, and quick actions |
 | `app/(staff)/[tableId].tsx` | Table detail: per-item order status, serve button, running bill total |
 | `app/(cook)/index.tsx` | Cook dashboard: kitchen ticket queue with status progression, item-level checkboxes, swipe-to-bump for ready tickets, undo bar |
 
 ### Data
 
-All data is **static/mocked in-memory** — no API or database. `TABLE_ORDER_DATA` in `[tableId].tsx` and `INITIAL_KITCHEN_ORDERS` / `INITIAL_TABLES` in the dashboards are the fixtures. State is local to each screen component via `useState`.
+All data comes from the **ops backend** (`quinckle-user-app-backend`) via `services/api.ts`, with **Ably realtime** (`services/realtime.ts`) pushing live order/table/payment updates. KOT and bill printing go through `services/printer.ts` (Bluetooth thermal, paired config in AsyncStorage — restored on launch by `initPrinter()` in `app/_layout.tsx`). Screen state is local `useState`, hydrated from the API. (Historical note: early versions used in-memory fixtures; that is no longer the case.)
 
 ### Design System
 

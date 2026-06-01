@@ -51,7 +51,17 @@ async function request<T>(
     body: body ? JSON.stringify(body) : undefined,
   });
 
-  const json = await res.json();
+  // Guard against non-JSON responses (e.g. Render.com cold-start splash / 502
+  // HTML page). res.json() would otherwise throw a cryptic
+  // "JSON Parse error: Unexpected character: <" and skip the status handling.
+  const contentType = res.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) {
+    throw new Error('Server is warming up — please try again in a moment.');
+  }
+
+  const json = await res.json().catch(() => {
+    throw new Error('Server is warming up — please try again in a moment.');
+  });
 
   if (res.status === 401) {
     // Only auto-logout on 401 for authenticated requests (expired crew token).

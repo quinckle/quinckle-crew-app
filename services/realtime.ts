@@ -70,6 +70,9 @@ const pool = new Map<string, PoolEntry>();
 // In-flight connection promises so concurrent subscribes wait rather than
 // each starting their own connection.
 const poolInit = new Map<string, Promise<PoolEntry | null>>();
+// Pending close timers — give React a grace period to reclaim a connection on
+// a fast remount / tab switch instead of tearing it down and rebuilding it.
+const closeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 async function getOrCreateEntry(channelName: string): Promise<PoolEntry | null> {
 	// Already connected — return immediately
@@ -132,8 +135,18 @@ async function getOrCreateEntry(channelName: string): Promise<PoolEntry | null> 
 function releaseEntry(channelName: string, entry: PoolEntry): void {
 	entry.refCount -= 1;
 	if (entry.refCount <= 0) {
-		pool.delete(channelName);
-		try { entry.client?.close?.(); } catch { /* non-fatal */ }
+		// Grace period: wait before closing so a React re-mount (strict mode,
+		// fast re-renders, tab switches) can reclaim the connection instead of
+		// tearing it down and immediately rebuilding it.
+		const existing = closeTimers.get(channelName);
+		if (existing) clearTimeout(existing);
+		closeTimers.set(channelName, setTimeout(() => {
+			closeTimers.delete(channelName);
+			if (entry.refCount <= 0) {
+				pool.delete(channelName);
+				try { entry.client?.close?.(); } catch { /* non-fatal */ }
+			}
+		}, 2000));
 	}
 }
 
@@ -164,6 +177,9 @@ export function subscribeChannel(
 			if (!entry) return;
 
 			entry.refCount += 1;
+			// Reclaiming this connection — cancel any pending close.
+			const pendingClose = closeTimers.get(channelName);
+			if (pendingClose) { clearTimeout(pendingClose); closeTimers.delete(channelName); }
 			const listener = (msg: any) => handler(msg?.data);
 			// Ably v2 channel.subscribe returns a Promise. Swallow rejections
 			// (e.g. channel suspended due to token failure) so they don't
@@ -206,6 +222,8 @@ export function subscribeChannel(
 
 /** Call on logout to close all pooled connections. */
 export function disconnectRealtime(): void {
+	for (const [, timer] of closeTimers) clearTimeout(timer);
+	closeTimers.clear();
 	for (const [, entry] of pool) {
 		try { entry.client?.close?.(); } catch { /* non-fatal */ }
 	}

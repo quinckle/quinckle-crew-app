@@ -3,7 +3,9 @@ import { Stack } from 'expo-router';
 import * as Notifications from 'expo-notifications';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
+import { useEffect } from 'react';
 import { QuinckleColors } from '@/constants/Colors';
+import { initPrinter } from '@/services/printer';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -14,6 +16,13 @@ Notifications.setNotificationHandler({
 });
 
 export default function RootLayout() {
+  // Restore the saved Bluetooth printer config so printing survives restarts.
+  // Without this, getStatus() reports 'unpaired' on every launch and all KOT/
+  // bill printing (and the cook's pending-print drain) is silently skipped.
+  useEffect(() => {
+    void initPrinter();
+  }, []);
+
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: QuinckleColors.background }}>
       <AuthProvider>
