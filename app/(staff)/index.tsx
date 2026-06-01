@@ -786,11 +786,7 @@ export default function StaffDashboard() {
             onPress={() => router.push('/(staff)/cash-collection')}
             activeOpacity={0.7}
           >
-            <Image
-              source={require('../../assets/images/icons/staff/orders/cash collection icon.webp')}
-              style={styles.cashIconImage}
-              resizeMode="contain"
-            />
+            <Ionicons name="cash-outline" size={26} color={QuinckleColors.textPrimary} />
             {pendingCashCount > 0 && (
               <View style={styles.cashBadge}>
                 <Text style={styles.cashBadgeText}>
@@ -1207,11 +1203,7 @@ const styles = StyleSheet.create({
     overflow: 'visible',
     top: 5
   },
-  cashIconImage: {
-    width: 108,
-    height: 108,
-    marginTop: 2,
-  },
+
   cashBadge: {
     position: 'absolute',
     top: -2,
