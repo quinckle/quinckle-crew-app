@@ -16,7 +16,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useAuth } from '../../context/AuthContext';
-import { crewPayments, type PendingCashRequest, type CollectedCashRecord } from '../../services/api';
+import { crewPayments, restaurantApi, type PendingCashRequest, type CollectedCashRecord } from '../../services/api';
 import { subscribeChannel } from '../../services/realtime';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { CashCollectionSkeleton } from '../../components/ui/CashCollectionSkeleton';
@@ -61,6 +61,9 @@ export default function CashCollectionScreen() {
   const [upiSuccessingOrderId, setUpiSuccessingOrderId] = useState<string | null>(null);
   const [collectionOpen, setCollectionOpen] = useState(false);
   const [collectionReq, setCollectionReq] = useState<PendingCashRequest | null>(null);
+  // Restaurant's configured UPI VPA — fallback for the Collection Sheet QR when
+  // a request payload doesn't carry one (e.g. older backend).
+  const [partnerVpa, setPartnerVpa] = useState<{ vpa: string | null; name: string | null }>({ vpa: null, name: null });
   const scrollY = useRef(new Animated.Value(0)).current;
   const successSweep = useRef(new Animated.Value(0)).current;
 
@@ -115,6 +118,20 @@ export default function CashCollectionScreen() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Resolve the restaurant's configured UPI VPA once — used as a fallback for
+  // the Collection Sheet QR when a pending request doesn't carry its own.
+  useEffect(() => {
+    const restaurantId = staffInfo?.restaurantId;
+    if (!restaurantId) return;
+    restaurantApi.getBranding(restaurantId)
+      .then(r => {
+        const vpa = (r?.data?.upiId ?? '').trim() || null;
+        const name = (r?.data?.upiDisplayName ?? r?.data?.name ?? '').trim() || null;
+        if (vpa) setPartnerVpa({ vpa, name });
+      })
+      .catch(() => { /* non-fatal — payload VPA still used when present */ });
+  }, [staffInfo?.restaurantId]);
 
   useEffect(() => {
     const restaurantId = staffInfo?.restaurantId;
@@ -527,8 +544,8 @@ export default function CashCollectionScreen() {
             : null
         }
         partner={{
-          vpa: collectionReq?.upi?.vpa ?? null,
-          merchantName: collectionReq?.upi?.displayName ?? null,
+          vpa: collectionReq?.upi?.vpa ?? partnerVpa.vpa,
+          merchantName: collectionReq?.upi?.displayName ?? partnerVpa.name,
         }}
         onConfirm={onCollectionConfirm}
       />
