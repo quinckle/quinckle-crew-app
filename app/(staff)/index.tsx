@@ -18,58 +18,6 @@ import { LinearGradient } from 'expo-linear-gradient';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
-// Graph-paper grid overlay component — renders thin lines that fade to transparent with a golden glow
-function GridTexture({ height = 100 }: { height?: number }) {
-  const gridSize = 18;
-  const cols = Math.ceil(SCREEN_WIDTH / gridSize);
-  const rows = Math.ceil(height / gridSize);
-
-  return (
-    <View style={{ position: 'absolute', top: 0, left: 0, right: 0, height, overflow: 'hidden' }} pointerEvents="none">
-      {/* Golden glow gradient background */}
-      <LinearGradient
-        colors={['rgba(245, 159, 11, 0.25)', 'rgba(245, 159, 11, 0.08)', 'transparent']}
-        locations={[0, 0.5, 1]}
-        style={{ position: 'absolute', top: 0, left: 0, right: 0, height: height * 0.8 }}
-        pointerEvents="none"
-      />
-      {/* Horizontal lines */}
-      {Array.from({ length: rows + 1 }).map((_, i) => (
-        <View
-          key={`h${i}`}
-          style={{
-            position: 'absolute',
-            top: i * gridSize,
-            left: 0,
-            right: 0,
-            height: StyleSheet.hairlineWidth,
-            backgroundColor: 'rgba(245, 158, 11, 0.08)',
-          }}
-        />
-      ))}
-      {/* Vertical lines */}
-      {Array.from({ length: cols + 1 }).map((_, i) => (
-        <View
-          key={`v${i}`}
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: i * gridSize,
-            width: StyleSheet.hairlineWidth,
-            height,
-            backgroundColor: 'rgba(245, 158, 11, 0.08)',
-          }}
-        />
-      ))}
-      {/* Fade to transparent/background */}
-      <LinearGradient
-        colors={['transparent', QuinckleColors.background]}
-        style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: height * 0.6 }}
-        pointerEvents="none"
-      />
-    </View>
-  );
-}
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
 import { crewTables, crewSessions, crewOrders, crewPayments, restaurantApi, crewAuth, printerApi } from '../../services/api';
@@ -814,8 +762,6 @@ export default function StaffDashboard() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
-      {/* Subtle graph-paper grid texture at top */}
-      <GridTexture height={120} />
       <View style={styles.topBar}>
         <View style={styles.brandGroup}>
           <Text style={styles.brandTitle}>{staffInfo?.restaurantName ?? 'The Grill Room'}</Text>
