@@ -24,6 +24,8 @@ export interface InvoiceBill {
   sessionRef?: string | null;
   items: InvoiceItem[];
   subtotal: number;
+  /** Service / packaging / cover charges total. Printed as its own line. */
+  charges?: number;
   tax: number;
   /** GST rate as a percentage integer (5, 12, or 18). Used for the label. */
   taxRate?: number;
@@ -124,7 +126,9 @@ export function buildInvoiceText(bill: InvoiceBill, paperWidth: 58 | 80 = 58): s
 
   // ── Totals ────────────────────────────────────────────────────────────────
   lines.push(`[L]${leftRight('Subtotal', fmt(bill.subtotal), W)}`);
-  // GST — only print if rate > 0
+  if ((bill.charges ?? 0) > 0) {
+    lines.push(`[L]${leftRight('Service charge', fmt(bill.charges!), W)}`);
+  }
   if (bill.tax > 0) {
     const taxLabel = bill.taxRate ? `GST (${bill.taxRate}%)` : 'GST';
     lines.push(`[L]${leftRight(taxLabel, fmt(bill.tax), W)}`);

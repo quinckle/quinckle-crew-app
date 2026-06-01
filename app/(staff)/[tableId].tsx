@@ -565,6 +565,7 @@ export default function TableDetail() {
       sessionRef: sessionRef || toSessionRef(sessionId),
       items: invoiceItems,
       subtotal: sessionTotal,
+      charges: serviceChargeTotal,
       tax: taxTotal,
       taxRate: billTaxRate,
       grandTotal,
