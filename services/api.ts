@@ -186,6 +186,17 @@ export const crewTables = {
       { target_table_id: targetTableId },
       true,
     ),
+  /**
+   * Extend the active session's timer (15/30/45/60 min). Mirrors the partner
+   * dashboard table modal. Returns the new expiresAt.
+   */
+  extendSession: (tableId: string, minutes: 15 | 30 | 45 | 60) =>
+    request<{ success: true; data: { sessionId: string; tableNumber: number; expiresAt: string; extendedBy: number } }>(
+      'PATCH',
+      `/api/crew/tables/${tableId}/extend`,
+      { minutes },
+      true,
+    ),
 };
 
 // ── Crew Sessions (STEWARD/ADMIN) ─────────────────────────────────────────────
@@ -439,7 +450,7 @@ export const crewPayments = {
 
 export interface ModifierOption { id: string; name: string; priceAdjustment: string; }
 export interface ModifierGroup { id: string; name: string; minSelections: number; maxSelections: number; options: ModifierOption[]; }
-export interface MenuItem { id: string; name: string; description?: string; price: string; category: string; isVeg: boolean; isAvailable: boolean; imageUrl?: string; modifierGroups?: ModifierGroup[]; }
+export interface MenuItem { id: string; name: string; description?: string; price: string; originalPrice?: string; category: string; isVeg: boolean; isAvailable: boolean; imageUrl?: string; modifierGroups?: ModifierGroup[]; }
 export interface Restaurant { id: string; name: string; slug: string; upiId: string; }
 
 export interface MenuCategory { name: string; items: MenuItem[]; }

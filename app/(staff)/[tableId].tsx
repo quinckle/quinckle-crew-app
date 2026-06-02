@@ -1,5 +1,5 @@
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useEffect, useMemo, useState } from 'react';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Animated, FlatList, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator, Share } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,7 +16,6 @@ import { subscribeChannel } from '../../services/realtime';
 import type { BillOrderItem, BillOrder, MenuItem } from '../../services/api';
 import { CollectionSheet } from '../../components/ui/CollectionSheet';
 import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
-import { OrderMenuSheet } from '../../components/ui/OrderMenuSheet';
 
 type ItemStatus = 'prep' | 'served';
 
@@ -122,28 +121,6 @@ export default function TableDetail() {
   const [billSplits, setBillSplits] = useState<SessionBill['splits']>(undefined);
   const [isExpanded, setIsExpanded] = useState(false);
 
-  const [checkoutOpen, setCheckoutOpen]   = useState(false);
-
-  // Identity step
-  const [coPhone, setCoPhone]             = useState('');
-  const [coName, setCoName]               = useState('');
-  const [coLooking, setCoLooking]         = useState(false);
-  const [coFound, setCoFound]             = useState<boolean | null>(null);
-
-  // Payment step
-  const [coSubmitting, setCoSubmitting]   = useState(false);
-  const [coError, setCoError]             = useState<string | null>(null);
-
-  // Add items modal
-  const [showOrderModal, setShowOrderModal] = useState(false);
-  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
-  const [isMenuLoading, setIsMenuLoading] = useState(false);
-  const [cart, setCart] = useState<Record<string, number>>({});
-  const [cartNotes, setCartNotes] = useState<Record<string, string>>({});
-  const [cartModifiers, setCartModifiers] = useState<Record<string, { groupId: string; optionId: string }[]>>({});
-
-  // Modifier selection sheet
-  const [menuCategories, setMenuCategories] = useState<string[]>(['All']);
 
   // Online payment QR modal state
   const [showQRModal, setShowQRModal] = useState(false);
@@ -215,6 +192,33 @@ export default function TableDetail() {
     setDialog({ visible: true, title, message, actions: actions.map(a => ({ ...a, onPress: () => { closeDialog(); a.onPress(); } })) });
   };
 
+  // Extend the table's session timer (mirrors the partner dashboard table modal).
+  const extendTime = async (minutes: 15 | 30 | 45 | 60) => {
+    if (!tableDbId) return;
+    try {
+      const res = await crewTables.extendSession(tableDbId, minutes);
+      setExpiresAt(res.data.expiresAt);
+      showDialog('Time extended', `Added ${minutes} min to this table.`, [{ label: 'OK', onPress: () => {} }]);
+    } catch (e: any) {
+      const code = e?.error || e?.message || '';
+      const msg = code === 'NO_ACTIVE_SESSION'
+        ? 'This table has no active session to extend.'
+        : 'Could not extend the timer. Please try again.';
+      showDialog('Could not extend', msg, [{ label: 'OK', onPress: () => {} }]);
+    }
+  };
+
+  const openExtendMenu = () => {
+    setActionMenuOpen(false);
+    showDialog('Extend time', "Add time to this table's session.", [
+      { label: '+15 min', onPress: () => { void extendTime(15); } },
+      { label: '+30 min', onPress: () => { void extendTime(30); } },
+      { label: '+45 min', onPress: () => { void extendTime(45); } },
+      { label: '+60 min', onPress: () => { void extendTime(60); } },
+      { label: 'Cancel', onPress: () => {} },
+    ]);
+  };
+
   const loadBill = async () => {
     if (!sessionId) { setIsLoading(false); return; }
     try {
@@ -264,6 +268,14 @@ export default function TableDetail() {
   // Load once on mount; Ably drives all subsequent updates
   useEffect(() => { loadBill(); }, [sessionId]);
 
+  // Refresh bill whenever screen regains focus — ensures the "Collect Payment"
+  // button and paid badge settle immediately after returning from payment-collect.
+  useFocusEffect(
+    useCallback(() => {
+      void loadBill();
+    }, [sessionId]),
+  );
+
 
   useEffect(() => {
     const restaurantId = staffInfo?.restaurantId;
@@ -311,224 +323,6 @@ export default function TableDetail() {
     return () => unsubs.forEach(u => u());
   }, [staffInfo?.restaurantId, sessionId, router]);
 
-  // Fetch menu when modal opens
-  useEffect(() => {
-    if (showOrderModal && menuItems.length === 0 && staffInfo?.restaurantId) {
-      setIsMenuLoading(true);
-      restaurantApi.getMenu(staffInfo.restaurantId)
-        .then(res => {
-          const categories: any[] = (res as any)?.data ?? [];
-          const items = categories.flatMap((c: any) => {
-            const catName = c.name || '';
-            const catItems = c.items ?? [];
-            return catItems.map((i: any) => ({
-              ...i,
-              category: i.category || catName,
-            }));
-          }).filter((i: any) => i.isAvailable !== false);
-          setMenuItems(items);
-          setMenuCategories(['All', ...categories.map((c: any) => c.name).filter(Boolean)]);
-        })
-        .catch(() => setMenuItems([]))
-        .finally(() => setIsMenuLoading(false));
-    }
-  }, [showOrderModal]);
-
-  const addToCart = (itemId: string, selectedMods?: { groupId: string; optionId: string }[]) => {
-    setCart(prev => ({ ...prev, [itemId]: (prev[itemId] ?? 0) + 1 }));
-    if (selectedMods) setCartModifiers(prev => ({ ...prev, [itemId]: selectedMods }));
-  };
-  const removeFromCart = (itemId: string) => setCart(prev => {
-    const qty = (prev[itemId] ?? 0) - 1;
-    if (qty <= 0) {
-      const next = { ...prev }; delete next[itemId];
-      setCartModifiers(pm => { const nm = { ...pm }; delete nm[itemId]; return nm; });
-      return next;
-    }
-    return { ...prev, [itemId]: qty };
-  });
-
-  // Open modifier sheet if item has groups, else add directly
-
-  const cartTotal = Object.entries(cart).reduce((sum, [id, qty]) => {
-    const item = menuItems.find(m => m.id === id);
-    let base = parseFloat(item?.price ?? '0') * qty;
-    const mods = cartModifiers[id] ?? [];
-    mods.forEach(({ groupId, optionId }) => {
-      const group = item?.modifierGroups?.find(g => g.id === groupId);
-      const opt = group?.options.find(o => o.id === optionId);
-      if (opt) base += parseFloat(opt.priceAdjustment ?? '0') * qty;
-    });
-    return sum + base;
-  }, 0);
-
-
-  // ── Checkout handlers ─────────────────────────────────────────────────────────
-
-  const openCheckout = () => {
-    setCoError(null);
-    // Pre-fill from existing session customer so repeat add-ons skip re-entry
-    if (sessionCustomerPhone) {
-      const digits = sessionCustomerPhone.replace(/\D/g, '').slice(-10);
-      setCoPhone(digits.length === 10 ? digits : '');
-      setCoName(sessionCustomerName ?? '');
-      setCoFound(digits.length === 10 ? true : null);
-    } else {
-      setCoPhone('');
-      setCoName('');
-      setCoFound(null);
-    }
-    setCheckoutOpen(true);
-  };
-
-  // Auto-lookup via DinerProfile — same source as the diner checkout phone prefill
-  const onCoPhoneChange = async (v: string) => {
-    const digits = v.replace(/\D/g, '').slice(0, 10);
-    setCoPhone(digits);
-    setCoFound(null);
-    setCoName('');
-    if (digits.length === 10) {
-      setCoLooking(true);
-      try {
-        const res = await crewDiners.lookup(digits);
-        if (res.data.found) {
-          setCoName(res.data.name ?? '');
-          setCoFound(true);
-        } else {
-          setCoFound(false);
-        }
-      } catch { setCoFound(false); }
-      finally { setCoLooking(false); }
-    }
-  };
-
-  const confirmIdentityAndPlace = async () => {
-    const phone = coPhone.replace(/\D/g, '');
-    // Phone is optional — walk-in guests can skip account linking
-    if (phone.length > 0 && phone.length !== 10) {
-      setCoError('Enter a valid 10-digit number, or leave blank for a walk-in guest.');
-      return;
-    }
-    const items = Object.entries(cart).map(([item_id, qty]) => {
-      const mods = cartModifiers[item_id];
-      const menuItem = menuItems.find(m => m.id === item_id);
-      const modSummary = mods?.length
-        ? mods.map(({ groupId, optionId }) => {
-            const g = menuItem?.modifierGroups?.find(g => g.id === groupId);
-            return g?.options.find(o => o.id === optionId)?.name;
-          }).filter(Boolean).join(', ')
-        : undefined;
-      return {
-        item_id, qty,
-        ...(cartNotes[item_id]?.trim() ? { note: cartNotes[item_id].trim() } : {}),
-        ...(mods?.length ? { selectedModifiers: mods, modifiers_summary: modSummary } : {}),
-      };
-    });
-    if (items.length === 0) {
-      setCoError('Cart is empty. Add at least one item before checkout.');
-      return;
-    }
-    if (!sessionId) {
-      setCoError('No active session found for this table. Start/reload session and try again.');
-      return;
-    }
-
-    // Snapshot cart total before clearing — last-resort fallback if the
-    // backend doesn't return a canonical amount.
-    const snapshotTotal = cartTotal;
-    const guestPhone = phone.length === 10 ? phone : '';
-    const guestName = coName.trim() || null;
-
-    setCoSubmitting(true);
-    setCoError(null);
-    try {
-      if (guestPhone) {
-        crewSessions.saveCustomer(sessionId, guestPhone, guestName).catch(() => {});
-        setSessionCustomerPhone(guestPhone);
-        if (guestName) setSessionCustomerName(guestName);
-      }
-
-      const orderRes = await crewOrders.placeOrder(sessionId, items);
-      const orderId = orderRes?.order_id ?? '';
-
-      // Order exists on the backend — clear cart + close modals immediately
-      // so that a retry can never create a duplicate order.
-      setCart({});
-      setCartNotes({});
-      setCartModifiers({});
-      setShowOrderModal(false);
-      setCheckoutOpen(false);
-
-      // Resolve canonical total: payment-context > placeOrder response > cart
-      let orderTotal = Number(orderRes?.totals?.total ?? 0);
-      if (orderId) {
-        try {
-          const ctx = await crewOrders.getPaymentContext(orderId);
-          orderTotal = Number(ctx?.data?.total ?? orderTotal);
-        } catch (err) {
-          console.warn('[manual-order] payment-context fetch failed, using fallback', err);
-        }
-      }
-      if (!Number.isFinite(orderTotal) || orderTotal <= 0) {
-        orderTotal = snapshotTotal;
-      }
-
-      // If we still have no usable amount, the order is placed but we
-      // can't open the payment sheet — show a dialog and let the staff
-      // settle later via "Mark as paid".
-      if (!Number.isFinite(orderTotal) || orderTotal <= 0) {
-        await loadBill();
-        showDialog(
-          'Order Placed',
-          'Items were added but we could not determine the payable amount. Use "Mark as paid" from the menu to settle.',
-          [{ label: 'OK', onPress: () => {} }],
-        );
-        return;
-      }
-
-      setCollectionMode('manual-order');
-      setCollectionBill({
-        orderId,
-        tableNumber: Number(tableId ?? 0),
-        customerPhone: guestPhone,
-        customerName: guestName,
-        amount: orderTotal,
-      });
-      setCollectionOpen(true);
-
-      await loadBill();
-    } catch (e: any) {
-      setCoError(e?.message ?? 'Failed to place order. Try again.');
-    } finally {
-      setCoSubmitting(false);
-    }
-  };
-
-  const handlePlaceOrder = () => openCheckout();
-
-  const handleCloseMenuModal = () => {
-    if (Object.keys(cart).length > 0) {
-      showDialog(
-        'Discard cart?',
-        'You have items in your cart. Close without placing the order?',
-        [
-          { label: 'Keep', onPress: () => {} },
-          {
-            label: 'Discard',
-            variant: 'danger',
-            onPress: () => {
-              setShowOrderModal(false);
-              setCart({});
-              setCartNotes({});
-              setCartModifiers({});
-            },
-          },
-        ],
-      );
-    } else {
-      setShowOrderModal(false);
-    }
-  };
 
   // Flat list of all items across all orders
   const flatItems = useMemo<FlatItem[]>(() =>
@@ -787,7 +581,17 @@ export default function TableDetail() {
               keeps ordering). Only hide once the session is fully closed. */}
           {!!sessionId && sessionStatus !== 'closed' && (
             <TouchableOpacity
-              onPress={() => setShowOrderModal(true)}
+              onPress={() => router.push({
+                pathname: '/(staff)/order-menu',
+                params: {
+                  tableId: String(tableId),
+                  tableNum,
+                  tableDbId: tableDbId ?? '',
+                  sessionId,
+                  customerPhone: sessionCustomerPhone ?? '',
+                  customerName: sessionCustomerName ?? '',
+                },
+              })}
               style={styles.iconBtn}
               activeOpacity={0.7}
             >
@@ -852,6 +656,15 @@ export default function TableDetail() {
                 >
                   <Ionicons name="swap-horizontal" size={14} color={QuinckleColors.textPrimary} />
                   <Text style={styles.actionMenuText}>Swap table</Text>
+                </TouchableOpacity>
+                <View style={styles.actionMenuDivider} />
+                <TouchableOpacity
+                  onPress={openExtendMenu}
+                  style={styles.actionMenuItem}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="time-outline" size={14} color={QuinckleColors.textPrimary} />
+                  <Text style={styles.actionMenuText}>Extend time</Text>
                 </TouchableOpacity>
               {!isPaid && (
                 <>
@@ -1095,86 +908,6 @@ export default function TableDetail() {
 
       <ThemedDialog visible={dialog.visible} title={dialog.title} message={dialog.message} actions={dialog.actions} onClose={closeDialog} />
 
-      {/* ── Checkout modal — guest identity + order placement ── */}
-      <Modal
-        visible={checkoutOpen}
-        transparent
-        animationType="slide"
-        onRequestClose={() => !coSubmitting && setCheckoutOpen(false)}
-      >
-        <View style={styles.swapBackdrop}>
-          <View style={[styles.swapCard, { maxHeight: '90%' }]}>
-
-            <Text style={styles.swapEyebrow}>Manual Order</Text>
-            <Text style={styles.swapTitle}>Guest details</Text>
-            <Text style={styles.swapSubtitle}>Optional — skip to place a walk-in order without linking an account.</Text>
-
-            {/* Phone input */}
-            <View style={[styles.dinerInputWrap, { marginTop: 16 }]}>
-              <View style={styles.dinerCountryCode}>
-                <Text style={styles.dinerCountryCodeText}>+91</Text>
-              </View>
-              <View style={styles.dinerDivider} />
-              <TextInput
-                style={styles.dinerInput}
-                value={coPhone}
-                onChangeText={onCoPhoneChange}
-                placeholder="10-digit mobile"
-                placeholderTextColor={QuinckleColors.textMuted}
-                keyboardType="phone-pad"
-                returnKeyType="next"
-                maxLength={10}
-                autoFocus
-              />
-              {coLooking && <ActivityIndicator size="small" color={QuinckleColors.primary} style={{ marginRight: 12 }} />}
-            </View>
-
-            {coFound === true && (
-              <View style={styles.dinerFoundBadge}>
-                <Text style={styles.dinerFoundText}>✓ Found on Quinckle</Text>
-              </View>
-            )}
-            {coFound === false && coPhone.length === 10 && (
-              <Text style={styles.dinerNotFoundText}>New guest — enter name below</Text>
-            )}
-            {coError && (
-              <Text style={[styles.dinerNotFoundText, { color: QuinckleColors.danger }]}>
-                {coError}
-              </Text>
-            )}
-
-            {/* Name input */}
-            <View style={[styles.dinerInputWrap, { marginTop: 10 }]}>
-              <TextInput
-                style={[styles.dinerInput, { flex: 1, paddingHorizontal: 14 }]}
-                value={coName}
-                onChangeText={setCoName}
-                placeholder="Guest name (optional)"
-                placeholderTextColor={QuinckleColors.textMuted}
-                returnKeyType="done"
-                onSubmitEditing={confirmIdentityAndPlace}
-              />
-            </View>
-
-            <View style={styles.swapFooter}>
-              <TouchableOpacity style={styles.swapCancel} onPress={() => setCheckoutOpen(false)} activeOpacity={0.8}>
-                <Text style={styles.swapCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.swapConfirm, (coLooking || coSubmitting || (coPhone.length > 0 && coPhone.length < 10)) && { opacity: 0.4 }]}
-                onPress={confirmIdentityAndPlace}
-                disabled={coLooking || coSubmitting || (coPhone.length > 0 && coPhone.length < 10)}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.swapConfirmText}>
-                  {coSubmitting ? 'Placing…' : coPhone.length === 10 ? 'Place Order & Pay' : 'Place Order'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-          </View>
-        </View>
-      </Modal>
       <CollectionSheet
         visible={collectionOpen}
         onClose={() => setCollectionOpen(false)}
@@ -1326,23 +1059,6 @@ export default function TableDetail() {
         </View>
       </Modal>
 
-      {/* ── Order menu bottom sheet ── */}
-      <OrderMenuSheet
-        visible={showOrderModal}
-        onClose={handleCloseMenuModal}
-        tableNum={tableNum}
-        menuItems={menuItems}
-        menuCategories={menuCategories}
-        isMenuLoading={isMenuLoading}
-        cart={cart}
-        cartNotes={cartNotes}
-        cartModifiers={cartModifiers}
-        cartTotal={cartTotal}
-        onAddToCart={addToCart}
-        onRemoveFromCart={removeFromCart}
-        onNoteChange={(itemId, text) => setCartNotes(prev => ({ ...prev, [itemId]: text }))}
-        onPlaceOrder={handlePlaceOrder}
-      />
     </View>
   );
 }
