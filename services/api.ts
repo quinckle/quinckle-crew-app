@@ -172,7 +172,7 @@ export interface CrewTable { table_id: string; table_number: number; capacity: n
 
 export const crewTables = {
   list: () => request<{ tables: CrewTable[] }>('GET', '/api/crew/tables', undefined, true),
-  updateStatus: (tableId: string, status: 'available' | 'reserved') =>
+  updateStatus: (tableId: string, status: 'available' | 'reserved' | 'offline') =>
     request<unknown>('PATCH', `/api/crew/tables/${tableId}/status`, { status }, true),
   /**
    * Move the active session from one table to another. Mirrors the partner
