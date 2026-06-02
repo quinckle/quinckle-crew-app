@@ -21,7 +21,7 @@ const SCREEN_WIDTH = Dimensions.get('window').width;
 
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
-import { crewTables, crewSessions, crewOrders, crewPayments, restaurantApi, crewAuth, printerApi } from '../../services/api';
+import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, restaurantApi, crewAuth, printerApi } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { printKot, getStatus as getPrinterStatus } from '../../services/printer';
 
@@ -697,6 +697,18 @@ export default function StaffDashboard() {
     }
   };
 
+  // Toggle a menu item's availability. Persists server-side (same endpoint
+  // effect as the partner dashboard) so the item leaves the diner menu.
+  const toggleMenuItemAvailability = async (itemId: string, next: boolean) => {
+    setMenuData(prev => prev.map(m => m.id === itemId ? { ...m, available: next } : m)); // optimistic
+    try {
+      await crewMenu.setAvailability(itemId, next);
+    } catch {
+      // Revert on failure so the UI never lies about the real state.
+      setMenuData(prev => prev.map(m => m.id === itemId ? { ...m, available: !next } : m));
+    }
+  };
+
   const handleTablePress = (tableNum: number, currentStatus: TableStatus) => {
     if (currentStatus === 'offline') {
       showDialog(
@@ -1067,7 +1079,7 @@ export default function StaffDashboard() {
                       </View>
                     </View>
                     <TouchableOpacity
-                      onPress={() => setMenuData(prev => prev.map(m => m.id === item.id ? { ...m, available: !m.available } : m))}
+                      onPress={() => void toggleMenuItemAvailability(item.id, !item.available)}
                       style={[styles.toggleBase, item.available ? styles.toggleOn : styles.toggleOff]}
                     >
                       <View style={[styles.toggleCircle, item.available ? styles.toggleCircleOn : styles.toggleCircleOff]} />

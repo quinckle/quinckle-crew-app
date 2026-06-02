@@ -199,6 +199,21 @@ export const crewTables = {
     ),
 };
 
+// ── Crew Menu (STEWARD/ADMIN) ─────────────────────────────────────────────────
+export const crewMenu = {
+  /**
+   * Toggle item availability ("86" an item). Persists server-side and removes it
+   * from the diner menu — same effect as the partner dashboard toggle.
+   */
+  setAvailability: (itemId: string, isAvailable: boolean) =>
+    request<{ success: true; data: { id: string; isAvailable: boolean } }>(
+      'PATCH',
+      `/api/crew/menu/items/${itemId}/availability`,
+      { isAvailable },
+      true,
+    ),
+};
+
 // ── Crew Sessions (STEWARD/ADMIN) ─────────────────────────────────────────────
 
 export interface BillOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; modifiers_summary?: string | null; }
