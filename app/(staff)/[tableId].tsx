@@ -11,6 +11,7 @@ import type { CrewTable, SessionBill } from '../../services/api';
 import { printBill, getStatus as getPrinterStatus } from '../../services/printer';
 import type { InvoiceBill } from '../../services/invoiceTemplate';
 import { useAuth } from '../../context/AuthContext';
+import { useCountdown } from '../../hooks/useCountdown';
 import { subscribeChannel } from '../../services/realtime';
 import type { BillOrderItem, BillOrder, MenuItem } from '../../services/api';
 import { CollectionSheet } from '../../components/ui/CollectionSheet';
@@ -39,6 +40,7 @@ function itemStatus(item: BillOrderItem): ItemStatus {
   return 'prep';
 }
 
+
 function formatTime(iso: string): string {
   const d = new Date(iso);
   return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
@@ -52,7 +54,7 @@ function toSessionRef(sessionId: string | null | undefined): string {
 
 export default function TableDetail() {
   const insets = useSafeAreaInsets();
-  const { tableId, sessionId: paramSessionId, tableDbId } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string }>();
+  const { tableId, sessionId: paramSessionId, tableDbId, occupiedSince, expiresAt: paramExpiresAt, customerName: paramCustomerName, customerPhone: paramCustomerPhone } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string; occupiedSince: string; expiresAt: string; customerName: string; customerPhone: string }>();
   const router = useRouter();
   const { staffInfo } = useAuth();
 
@@ -60,6 +62,36 @@ export default function TableDetail() {
 
   const [sessionId] = useState(paramSessionId ?? '');
   const [sessionRef, setSessionRef] = useState('');
+  const [expiresAt, setExpiresAt] = useState<string | null>(paramExpiresAt || null);
+  const countdown = useCountdown(expiresAt);
+  const isNearExpiry = countdown.totalMs > 0 && countdown.totalMs < 10 * 60_000;
+  const countdownStr = countdown.totalMs > 0
+    ? countdown.h > 0
+      ? `${countdown.h}h ${String(countdown.m).padStart(2, '0')}m`
+      : `${String(countdown.m).padStart(2, '0')}:${String(countdown.s).padStart(2, '0')}`
+    : countdown.expired ? 'Expired' : null;
+
+  // Elapsed counter — used when no expiresAt is available
+  const [elapsed, setElapsed] = useState(() => {
+    if (!occupiedSince) return '';
+    const ms = new Date(occupiedSince).getTime();
+    const secs = Math.floor((Date.now() - ms) / 1000);
+    const m = Math.floor(secs / 60); const s = secs % 60;
+    return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  });
+  useEffect(() => {
+    if (!occupiedSince) return;
+    const ms = new Date(occupiedSince).getTime();
+    const id = setInterval(() => {
+      const secs = Math.floor((Date.now() - ms) / 1000);
+      const h = Math.floor(secs / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      const s = secs % 60;
+      setElapsed(h > 0 ? `${h}h ${String(m).padStart(2,'0')}m` : `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [occupiedSince]);
+
   const [restaurantInvoiceMeta, setRestaurantInvoiceMeta] = useState<{
     address?: string | null;
     phone?: string | null;
@@ -75,7 +107,13 @@ export default function TableDetail() {
   const [tipTotal, setTipTotal] = useState(0);
   const [payableTotal, setPayableTotal] = useState(0);
   const [sessionStatus, setSessionStatus] = useState<'active' | 'paid' | 'closed'>('active');
-  const [since, setSince] = useState('');
+  const [since, setSince] = useState(() => {
+    if (!occupiedSince) return '';
+    const d = new Date(occupiedSince);
+    return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  });
+  const [sessionCustomerName, setSessionCustomerName] = useState<string | null>(paramCustomerName || null);
+  const [sessionCustomerPhone, setSessionCustomerPhone] = useState<string | null>(paramCustomerPhone || null);
   const [isPaid, setIsPaid] = useState(false);
   const [billTaxRate, setBillTaxRate] = useState(0);
   const [billPaymentMethod, setBillPaymentMethod] = useState<SessionBill['payment_method']>(undefined);
@@ -212,6 +250,13 @@ export default function TableDetail() {
       setIsPaid(bill.status === 'paid');
       setBillPaymentMethod(bill.payment_method);
       setBillSplits(bill.splits);
+      if (bill.expires_at !== undefined) setExpiresAt(bill.expires_at ?? null);
+      if (bill.customer_name !== undefined) setSessionCustomerName(bill.customer_name ?? null);
+      if (bill.customer_phone !== undefined) setSessionCustomerPhone(bill.customer_phone ?? null);
+      if (bill.started_at) {
+        const d = new Date(bill.started_at);
+        setSince(`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`);
+      }
     } catch {
       // keep current
     } finally {
@@ -221,6 +266,7 @@ export default function TableDetail() {
 
   // Load once on mount; Ably drives all subsequent updates
   useEffect(() => { loadBill(); }, [sessionId]);
+
 
   useEffect(() => {
     const restaurantId = staffInfo?.restaurantId;
@@ -428,6 +474,8 @@ export default function TableDetail() {
     setCoError(null);
     try {
       crewSessions.saveCustomer(sessionId, guestPhone, guestName).catch(() => {});
+      setSessionCustomerPhone(guestPhone);
+      if (guestName) setSessionCustomerName(guestName);
 
       const orderRes = await crewOrders.placeOrder(sessionId, items);
       const orderId = orderRes?.order_id ?? '';
@@ -664,6 +712,7 @@ export default function TableDetail() {
       sessionRef: sessionRef || toSessionRef(sessionId),
       items: invoiceItems,
       subtotal: sessionTotal,
+      discount: discountTotal,
       charges: serviceChargeTotal,
       tax: taxTotal,
       taxRate: billTaxRate,
@@ -736,12 +785,14 @@ export default function TableDetail() {
           <View>
             <Text style={styles.tableTitle}>T{tableNum}</Text>
             {sessionRef ? <Text style={styles.sessionRefText}>{sessionRef}</Text> : null}
-            {since ? <Text style={styles.sinceText}>since {since}</Text> : null}
           </View>
         </View>
         <View style={styles.headerRight}>
           {/* ── Add items (manual order) icon ── */}
-          {!isPaid && (
+          {/* Available for any open session — staff can add orders even after
+              prior items are paid (pay-first settles each order, but the diner
+              keeps ordering). Only hide once the session is fully closed. */}
+          {!!sessionId && sessionStatus !== 'closed' && (
             <TouchableOpacity
               onPress={() => setShowOrderModal(true)}
               style={styles.iconBtn}
@@ -849,6 +900,42 @@ export default function TableDetail() {
       </View>{/* end header */}
 
 
+      {/* Session section */}
+      <Text style={styles.sessionSectionLabel}>Session</Text>
+      <View style={styles.sessionGroup}>
+        <View style={styles.sessionInfoRow}>
+          <Text style={styles.sessionInfoLabel}>Ref</Text>
+          <Text style={[styles.sessionInfoValue, styles.sessionRefMono]}>
+            {sessionRef || toSessionRef(sessionId)}
+          </Text>
+        </View>
+        {since ? (
+          <>
+            <View style={styles.sessionInfoSep} />
+            <View style={styles.sessionInfoRow}>
+              <Text style={styles.sessionInfoLabel}>Opened</Text>
+              <Text style={styles.sessionInfoValue}>{since}</Text>
+            </View>
+          </>
+        ) : null}
+        {(countdownStr || elapsed) ? (
+          <>
+            <View style={styles.sessionInfoSep} />
+            <View style={styles.sessionInfoRow}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <Ionicons name="timer-outline" size={13} color={isNearExpiry ? QuinckleColors.danger : QuinckleColors.textSecondary} />
+                <Text style={[styles.sessionInfoLabel, isNearExpiry && { color: QuinckleColors.danger }]}>
+                  {countdownStr ? 'Time left' : 'Active for'}
+                </Text>
+              </View>
+              <Text style={[styles.sessionInfoValueStrong, { fontVariant: ['tabular-nums'] as any }, isNearExpiry && { color: QuinckleColors.danger }]}>
+                {countdownStr ?? elapsed}
+              </Text>
+            </View>
+          </>
+        ) : null}
+      </View>
+
       <View style={styles.sectionHeader}>
         <View style={styles.sectionTitleRow}>
           <Text style={styles.sectionTitle}>Active Orders</Text>
@@ -942,10 +1029,12 @@ export default function TableDetail() {
                 <Text style={[styles.summaryValue, { color: '#86efac' }]}>−₹{discountTotal.toFixed(0)}</Text>
               </View>
             )}
-            {serviceChargeTotal > 0 && (
+            {serviceChargeTotal !== 0 && (
               <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Service charge</Text>
-                <Text style={styles.summaryValue}>₹{serviceChargeTotal.toFixed(0)}</Text>
+                <Text style={styles.summaryLabel}>{serviceChargeTotal > 0 ? 'Service charge' : 'Adjustment'}</Text>
+                <Text style={[styles.summaryValue, serviceChargeTotal < 0 && { color: '#86efac' }]}>
+                  {serviceChargeTotal < 0 ? '−' : ''}₹{Math.abs(serviceChargeTotal).toFixed(0)}
+                </Text>
               </View>
             )}
             {tax > 0 && (
@@ -967,48 +1056,6 @@ export default function TableDetail() {
 
           </View>
         )}
-
-        {isPaid ? (
-          <View style={styles.paidStrip}>
-            <Ionicons name="checkmark-circle" size={16} color="#4ade80" />
-            {billPaymentMethod === 'mixed' && billSplits ? (() => {
-              const cash = billSplits.find(s => s.method === 'CASH');
-              const upi  = billSplits.find(s => s.method === 'UPI_DIRECT');
-              return (
-                <>
-                  {cash && (
-                    <View style={styles.paidMethodChip}>
-                      <Ionicons name="cash-outline" size={13} color="#86efac" />
-                      <Text style={styles.paidMethodAmt}>₹{cash.amount}</Text>
-                      <Text style={styles.paidMethodTag}>Cash</Text>
-                    </View>
-                  )}
-                  {upi && (
-                    <View style={[styles.paidMethodChip, styles.paidMethodChipUpi]}>
-                      <Ionicons name="qr-code-outline" size={13} color="#93c5fd" />
-                      <Text style={[styles.paidMethodAmt, { color: '#93c5fd' }]}>₹{upi.amount}</Text>
-                      <Text style={[styles.paidMethodTag, { color: '#93c5fd' }]}>UPI</Text>
-                    </View>
-                  )}
-                </>
-              );
-            })() : (
-              <View style={[styles.paidMethodChip, billPaymentMethod === 'upi_direct' && styles.paidMethodChipUpi]}>
-                <Ionicons
-                  name={billPaymentMethod === 'upi_direct' ? 'qr-code-outline' : 'cash-outline'}
-                  size={13}
-                  color={billPaymentMethod === 'upi_direct' ? '#93c5fd' : '#86efac'}
-                />
-                <Text style={[styles.paidMethodAmt, billPaymentMethod === 'upi_direct' && { color: '#93c5fd' }]}>
-                  ₹{grandTotal.toFixed(0)}
-                </Text>
-                <Text style={[styles.paidMethodTag, billPaymentMethod === 'upi_direct' && { color: '#93c5fd' }]}>
-                  {billPaymentMethod === 'upi_direct' ? 'UPI' : 'Cash'}
-                </Text>
-              </View>
-            )}
-          </View>
-        ) : null}
 
         <TouchableOpacity style={styles.totalRow} activeOpacity={0.85} onPress={() => setIsExpanded(!isExpanded)}>
           <View>
@@ -1764,6 +1811,52 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
   sinceText: { fontSize: 11, color: QuinckleColors.textTertiary, fontWeight: '500', marginTop: 1 },
+  sessionSectionLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: QuinckleColors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    marginBottom: Spacing.sm,
+  },
+  sessionGroup: {
+    backgroundColor: QuinckleColors.surface,
+    borderRadius: Radius.lg,
+    overflow: 'hidden',
+    marginBottom: Spacing.xl,
+  },
+  sessionInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: 12,
+  },
+  sessionInfoSep: {
+    height: 0.5,
+    backgroundColor: QuinckleColors.borderSubtle,
+    marginLeft: Spacing.lg,
+  },
+  sessionInfoLabel: {
+    fontSize: 14,
+    color: QuinckleColors.textSecondary,
+    fontWeight: '400',
+  },
+  sessionInfoValue: {
+    fontSize: 14,
+    color: QuinckleColors.textPrimary,
+    fontWeight: '400',
+  },
+  sessionInfoValueStrong: {
+    fontSize: 14,
+    color: QuinckleColors.textPrimary,
+    fontWeight: '600',
+  },
+  sessionRefMono: {
+    fontFamily: 'monospace',
+    letterSpacing: 0.5,
+    fontWeight: '600',
+  },
   sectionHeader: { marginBottom: Spacing.md },
   sectionTitleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.sm },
   sectionTitle: { color: QuinckleColors.textTertiary, fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 },

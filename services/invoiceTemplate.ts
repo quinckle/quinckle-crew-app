@@ -24,6 +24,8 @@ export interface InvoiceBill {
   sessionRef?: string | null;
   items: InvoiceItem[];
   subtotal: number;
+  /** Discount total applied before charges/tax. Printed as its own negative line. */
+  discount?: number;
   /** Service / packaging / cover charges total. Printed as its own line. */
   charges?: number;
   tax: number;
@@ -126,8 +128,14 @@ export function buildInvoiceText(bill: InvoiceBill, paperWidth: 58 | 80 = 58): s
 
   // ── Totals ────────────────────────────────────────────────────────────────
   lines.push(`[L]${leftRight('Subtotal', fmt(bill.subtotal), W)}`);
-  if ((bill.charges ?? 0) > 0) {
-    lines.push(`[L]${leftRight('Service charge', fmt(bill.charges!), W)}`);
+  if ((bill.discount ?? 0) > 0) {
+    lines.push(`[L]${leftRight('Discount', `-${fmt(bill.discount!)}`, W)}`);
+  }
+  if ((bill.charges ?? 0) !== 0) {
+    const chargeAmount = Number(bill.charges ?? 0);
+    const chargeLabel = chargeAmount > 0 ? 'Service charge' : 'Adjustment';
+    const chargeValue = chargeAmount < 0 ? `-${fmt(Math.abs(chargeAmount))}` : fmt(chargeAmount);
+    lines.push(`[L]${leftRight(chargeLabel, chargeValue, W)}`);
   }
   if (bill.tax > 0) {
     const taxLabel = bill.taxRate ? `GST (${bill.taxRate}%)` : 'GST';

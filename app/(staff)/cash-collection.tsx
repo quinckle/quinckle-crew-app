@@ -11,7 +11,7 @@ import {
   View,
   Linking,
 } from 'react-native';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -20,7 +20,6 @@ import { crewPayments, restaurantApi, type PendingCashRequest, type CollectedCas
 import { subscribeChannel } from '../../services/realtime';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { CashCollectionSkeleton } from '../../components/ui/CashCollectionSkeleton';
-import { CollectionSheet } from '../../components/ui/CollectionSheet';
 
 type Row =
   | { kind: 'sectionHeader'; title: string; subtitle: string }
@@ -59,8 +58,6 @@ export default function CashCollectionScreen() {
   const [activeTab, setActiveTab]         = useState<TabKey>('active');
   const [openMenuOrderId, setOpenMenuOrderId] = useState<string | null>(null);
   const [upiSuccessingOrderId, setUpiSuccessingOrderId] = useState<string | null>(null);
-  const [collectionOpen, setCollectionOpen] = useState(false);
-  const [collectionReq, setCollectionReq] = useState<PendingCashRequest | null>(null);
   // Restaurant's configured UPI VPA — fallback for the Collection Sheet QR when
   // a request payload doesn't carry one (e.g. older backend).
   const [partnerVpa, setPartnerVpa] = useState<{ vpa: string | null; name: string | null }>({ vpa: null, name: null });
@@ -117,7 +114,9 @@ export default function CashCollectionScreen() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  // Load on mount and whenever the screen regains focus (e.g. returning from
+  // the payment-collect screen) so a just-collected request drops off the list.
+  useFocusEffect(useCallback(() => { void load(); }, [load]));
 
   // Resolve the restaurant's configured UPI VPA once — used as a fallback for
   // the Collection Sheet QR when a pending request doesn't carry its own.
@@ -151,8 +150,21 @@ export default function CashCollectionScreen() {
     `crew-collect:${orderId}:UPI_DIRECT:${Number(amount).toFixed(2)}`;
 
   const handleCollect = (req: PendingCashRequest) => {
-    setCollectionReq(req);
-    setCollectionOpen(true);
+    router.push({
+      pathname: '/(staff)/payment-collect',
+      params: {
+        orderId: req.orderId,
+        tableNumber: String(req.tableNumber ?? ''),
+        amount: String(req.amount ?? 0),
+        customerName: req.customerName ?? '',
+        customerPhone: req.customerPhone ?? '',
+        breakdown: req.breakdown ? JSON.stringify(req.breakdown) : '',
+        intentId: req.intentId ?? '',
+        intentMethod: req.intentMethod ?? '',
+        upiVpa: req.upi?.vpa ?? partnerVpa.vpa ?? '',
+        upiName: req.upi?.displayName ?? partnerVpa.name ?? '',
+      },
+    });
   };
   const markIntentBusy = (intentId: string, busy: boolean) => {
     setIntentBusyIds((prev) => {
@@ -221,29 +233,6 @@ export default function CashCollectionScreen() {
   };
 
   const totalDue = pending.reduce((s, p) => s + p.amount, 0);
-
-  const onCollectionConfirm = async (
-    splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[],
-  ): Promise<boolean> => {
-    const req = collectionReq;
-    const staffId = staffInfo?.id;
-    if (!req) throw new Error('Payment request not found.');
-    if (!staffId) throw new Error('Staff profile missing. Please log in again.');
-    if (req.intentId) {
-      await crewPayments.confirmPaymentIntent(req.intentId);
-    } else {
-      await crewPayments.collectPayment(
-        req.orderId,
-        staffId,
-        splits,
-        `crew-collect:${req.orderId}:${splits.map(s => `${s.method}:${Number(s.amount).toFixed(2)}`).join('|')}`,
-      );
-    }
-    setCollectionOpen(false);
-    setCollectionReq(null);
-    await load();
-    return true;
-  };
 
   const renderHero = () => (
     <View style={s.heroWrap}>
@@ -376,7 +365,10 @@ export default function CashCollectionScreen() {
               const p   = item.data;
               const busy = collectingIds.has(p.orderId);
               const methodRaw = String(p.intentMethod ?? p.method ?? '').toUpperCase();
-              const isUpiDirect = methodRaw.includes('UPI') || !!p.upi?.vpa;
+              // Classify by METHOD only. Every request now carries the partner
+              // VPA (so the Collection Sheet QR works), so presence of p.upi.vpa
+              // no longer implies UPI Direct — staff-collect has it too.
+              const isUpiDirect = methodRaw.includes('UPI');
               const intentBusy = !!(p.intentId && intentBusyIds.has(p.intentId));
               const orderBusy = collectingIds.has(p.orderId);
               const menuOpen = openMenuOrderId === p.orderId;
@@ -529,26 +521,6 @@ export default function CashCollectionScreen() {
           }
         />
       )}
-      <CollectionSheet
-        visible={collectionOpen}
-        onClose={() => setCollectionOpen(false)}
-        bill={
-          collectionReq
-            ? {
-                orderId: collectionReq.orderId,
-                tableNumber: collectionReq.tableNumber,
-                customerName: collectionReq.customerName,
-                customerPhone: collectionReq.customerPhone || '',
-                amount: collectionReq.amount,
-              }
-            : null
-        }
-        partner={{
-          vpa: collectionReq?.upi?.vpa ?? partnerVpa.vpa,
-          merchantName: collectionReq?.upi?.displayName ?? partnerVpa.name,
-        }}
-        onConfirm={onCollectionConfirm}
-      />
     </View>
   );
 }

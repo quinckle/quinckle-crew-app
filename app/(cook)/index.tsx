@@ -80,6 +80,9 @@ export default function CookDashboard() {
 
   const [orders,        setOrders]        = useState<KitchenTicket[]>([]);
   const [completedOrders, setCompletedOrders] = useState<KitchenTicket[]>([]);
+  const [completedPage, setCompletedPage] = useState(1);
+  const [completedHasMore, setCompletedHasMore] = useState(false);
+  const [isLoadingMoreCompleted, setIsLoadingMoreCompleted] = useState(false);
   const [isLoading,     setIsLoading]     = useState(true);
   const [searchText,    setSearchText]    = useState('');
   const [navTab,        setNavTab]        = useState<CookTab>('active');
@@ -95,6 +98,7 @@ export default function CookDashboard() {
         await printKot({
           id: job.id,
           sessionId: job.sessionId ?? undefined,
+          orderNumber: job.orderNumber != null ? String(job.orderNumber) : undefined,
           tableNumber: String(job.tableNumber ?? '?'),
           restaurantName: staffInfo?.restaurantName ?? '',
           createdAt: job.createdAt ?? new Date().toISOString(),
@@ -130,7 +134,7 @@ export default function CookDashboard() {
     try {
       const [activeRes, completedRes] = await Promise.all([
         kitchen.getOrders() as Promise<any>,
-        kitchen.getCompleted().catch(() => ({ tickets: [] })) as Promise<any>,
+        kitchen.getCompleted(1, 30).catch(() => ({ tickets: [], page: 1, limit: 30, hasMore: false })) as Promise<any>,
       ]);
       const tickets: any[] = activeRes?.tickets ?? [];
 
@@ -143,6 +147,8 @@ export default function CookDashboard() {
 
       setOrders(tickets.map((t) => mapTicket(t)));
       const completedTickets: any[] = completedRes?.tickets ?? [];
+      setCompletedPage(1);
+      setCompletedHasMore(Boolean(completedRes?.hasMore));
       setCompletedOrders(completedTickets.map((t) => mapTicket(t, true)));
     } catch {
       // keep existing data on network error
@@ -150,6 +156,26 @@ export default function CookDashboard() {
       setIsLoading(false);
     }
   }, []);
+
+  const loadMoreCompleted = useCallback(async () => {
+    if (isLoadingMoreCompleted || !completedHasMore) return;
+    setIsLoadingMoreCompleted(true);
+    try {
+      const nextPage = completedPage + 1;
+      const res = await kitchen.getCompleted(nextPage, 30) as any;
+      const nextRows: KitchenTicket[] = (res?.tickets ?? []).map((t: any) => mapTicket(t, true));
+      setCompletedOrders((prev) => {
+        const existing = new Set(prev.map((o) => o.id));
+        const merged = [...prev];
+        for (const row of nextRows) if (!existing.has(row.id)) merged.push(row);
+        return merged;
+      });
+      setCompletedPage(nextPage);
+      setCompletedHasMore(Boolean(res?.hasMore));
+    } finally {
+      setIsLoadingMoreCompleted(false);
+    }
+  }, [completedHasMore, completedPage, isLoadingMoreCompleted]);
 
   useEffect(() => {
     loadOrders();
@@ -395,9 +421,25 @@ export default function CookDashboard() {
               <Text style={styles.emptySubtitle}>
                 {navTab === 'active'
                   ? 'New tickets will appear here as they come in.'
-                  : 'Orders served by staff today will appear here.'}
+                  : 'Orders served in the last 24 hours appear here.'}
               </Text>
             </View>
+          }
+          ListFooterComponent={
+            navTab === 'completed' && completedHasMore ? (
+              <TouchableOpacity
+                style={styles.loadMoreBtn}
+                onPress={() => void loadMoreCompleted()}
+                disabled={isLoadingMoreCompleted}
+                activeOpacity={0.8}
+              >
+                {isLoadingMoreCompleted ? (
+                  <Text style={styles.loadMoreText}>Loading…</Text>
+                ) : (
+                  <Text style={styles.loadMoreText}>Load more</Text>
+                )}
+              </TouchableOpacity>
+            ) : null
           }
         />
       )}
@@ -571,5 +613,20 @@ const styles = StyleSheet.create({
     textAlign:    'center',
     maxWidth:     260,
     lineHeight:   17,
+  },
+  loadMoreBtn: {
+    marginTop: Spacing.md,
+    alignSelf: 'center',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    borderColor: QuinckleColors.borderStrong,
+    backgroundColor: QuinckleColors.surfaceMuted,
+  },
+  loadMoreText: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 13,
+    fontWeight: '600',
   },
 });

@@ -15,7 +15,13 @@ export function BillBreakdownView({ breakdown, compact = false }: {
   const lines: { label: string; amount: number; muted?: boolean }[] = [];
   lines.push({ label: 'Subtotal', amount: breakdown.subtotal });
   if (breakdown.discount > 0) lines.push({ label: 'Discount', amount: -breakdown.discount, muted: true });
-  if (breakdown.chargesTotal > 0) lines.push({ label: 'Service charge', amount: breakdown.chargesTotal });
+  if (breakdown.chargesTotal !== 0) {
+    lines.push({
+      label: breakdown.chargesTotal > 0 ? 'Service charge' : 'Adjustment',
+      amount: breakdown.chargesTotal,
+      muted: breakdown.chargesTotal < 0,
+    });
+  }
   if (breakdown.taxAmount > 0) {
     const taxLabel = breakdown.taxRate > 0 ? `GST (${breakdown.taxRate}%)` : 'Tax';
     lines.push({ label: taxLabel, amount: breakdown.taxAmount });

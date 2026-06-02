@@ -32,6 +32,12 @@ function buildUpiUri(vpa: string, merchantName: string, amount: number): string 
   return `upi://pay?pa=${enc(vpa)}&pn=${enc(merchantName)}&am=${enc(amount.toFixed(2))}&cu=INR`;
 }
 
+function normalizeOptionalText(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 type Mode = 'normal' | 'split';
 type Step = 'choose' | 'confirm_cash';
 type SuccessInfo = {
@@ -239,17 +245,26 @@ export default function PaymentCollectScreen() {
 
   useEffect(() => {
     const restaurantId = staffInfo?.restaurantId;
+    const fallbackVpa = normalizeOptionalText(params.upiVpa);
+    const fallbackName = normalizeOptionalText(params.upiName);
     if (!restaurantId) {
-      setPartnerUpi({ vpa: params.upiVpa ?? null, merchantName: params.upiName ?? null });
+      setPartnerUpi({ vpa: fallbackVpa, merchantName: fallbackName });
       setIsLoadingUpi(false);
       return;
     }
     restaurantApi.getBranding(restaurantId)
-      .then(r => setPartnerUpi({
-        vpa: r?.data?.upiId ?? params.upiVpa ?? null,
-        merchantName: r?.data?.upiDisplayName ?? r?.data?.name ?? params.upiName ?? null,
-      }))
-      .catch(() => {})
+      .then(r => {
+        const fromBrandingVpa = normalizeOptionalText(r?.data?.upiId);
+        const fromDisplayName = normalizeOptionalText(r?.data?.upiDisplayName);
+        const fromRestaurantName = normalizeOptionalText(r?.data?.name);
+        setPartnerUpi({
+          vpa: fromBrandingVpa ?? fallbackVpa,
+          merchantName: fromDisplayName ?? fromRestaurantName ?? fallbackName,
+        });
+      })
+      .catch(() => {
+        setPartnerUpi({ vpa: fallbackVpa, merchantName: fallbackName });
+      })
       .finally(() => setIsLoadingUpi(false));
   }, [staffInfo?.restaurantId, params.upiVpa, params.upiName]);
 
@@ -401,7 +416,7 @@ export default function PaymentCollectScreen() {
             </TouchableOpacity>
           ) : null}
         </View>
-        {resolvedBreakdown && (resolvedBreakdown.chargesTotal > 0 || resolvedBreakdown.taxAmount > 0 || resolvedBreakdown.discount > 0 || resolvedBreakdown.tip > 0) && (
+        {resolvedBreakdown && (resolvedBreakdown.chargesTotal !== 0 || resolvedBreakdown.taxAmount > 0 || resolvedBreakdown.discount > 0 || resolvedBreakdown.tip > 0) && (
           <View style={s.breakdownWrap}>
             <BillBreakdownView breakdown={resolvedBreakdown} compact />
           </View>

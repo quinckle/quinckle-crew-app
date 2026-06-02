@@ -79,8 +79,12 @@ type Table = {
   seats: number;
   billAmount?: number;
   since?: string;
+  occupiedSince?: string;
+  expiresAt?: string | null;
   location?: string;
   sessionId?: string;
+  customerName?: string | null;
+  customerPhone?: string | null;
 };
 
 const MENU_DATA_INITIAL = [
@@ -150,6 +154,10 @@ export default function StaffDashboard() {
   //  - cash_payment_collected   Ably event (−1, floored at 0)
   const [pendingCashCount, setPendingCashCount] = useState(0);
   const [pickupOrders, setPickupOrders] = useState<PickupOrder[]>([]);
+  const [completedPickupOrders, setCompletedPickupOrders] = useState<PickupOrder[]>([]);
+  const [completedPage, setCompletedPage] = useState(1);
+  const [completedHasMore, setCompletedHasMore] = useState(false);
+  const [isLoadingMoreCompleted, setIsLoadingMoreCompleted] = useState(false);
   const [liveOrders, setLiveOrders] = useState<ActiveOrder[]>([]);
   const [ordersSubTab, setOrdersSubTab] = useState<'active' | 'completed'>('active');
   const [completingIds, setCompletingIds] = useState<string[]>([]);
@@ -251,34 +259,7 @@ export default function StaffDashboard() {
     setCompletingIds((prev) => prev.filter((id) => id !== orderId));
   };
 
-  const reopenOrder = (orderId: string) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    LayoutAnimation.configureNext(PICKUP_LAYOUT_PRESET);
-    setPickupOrders((prev) =>
-      prev.map((order) =>
-        order.id === orderId
-          ? {
-            ...order,
-            completedAt: undefined,
-            items: order.items.map((it, idx) => (idx === 0 ? { ...it, isServed: false } : it)),
-          }
-          : order,
-      ),
-    );
-    setOrdersSubTab('active');
-  };
-
-  const activePickupOrders = useMemo(
-    () => pickupOrders.filter((o) => !o.completedAt),
-    [pickupOrders],
-  );
-  const completedPickupOrders = useMemo(
-    () =>
-      pickupOrders
-        .filter((o) => !!o.completedAt)
-        .sort((a, b) => (b.completedAt ?? '').localeCompare(a.completedAt ?? '')),
-    [pickupOrders],
-  );
+  const activePickupOrders = useMemo(() => pickupOrders, [pickupOrders]);
   const [dialog, setDialog] = useState<{
     visible: boolean;
     title: string;
@@ -349,8 +330,12 @@ export default function StaffDashboard() {
               return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
             })()
             : undefined,
+          occupiedSince: t.occupied_since ?? undefined,
+          expiresAt: t.expires_at ?? null,
           location: undefined,
           sessionId: t.session_id ?? undefined,
+          customerName: t.customer_name ?? null,
+          customerPhone: t.customer_phone ?? null,
           billAmount,
         };
       }));
@@ -451,59 +436,56 @@ export default function StaffDashboard() {
         })),
       }));
 
-      // Backend /orders/active drops orders once they flip to SERVED, but the
-      // staff Completed tab still needs to surface "just-served" tickets so
-      // the waiter can see what they finished and undo if needed. Carry any
-      // locally-completed orders forward across refetches, and auto-prune
-      // anything completed >1h ago so the list stays calm.
-      const refreshedIds = new Set(refreshedActive.map(o => o.id));
-      const oneHourAgo = Date.now() - 60 * 60 * 1000;
-      setPickupOrders(prev => {
-        const survivingCompleted = prev.filter(o => {
-          if (!o.completedAt || refreshedIds.has(o.id)) return false;
-          const ts = Date.parse(o.completedAt);
-          // Unparseable (legacy 'now' / HH:MM) → keep for this session
-          if (isNaN(ts)) return true;
-          return ts >= oneHourAgo;
-        });
-        return [...refreshedActive, ...survivingCompleted];
-      });
+      setPickupOrders(refreshedActive);
     } catch (e) { console.error('[pickup] loadPickupOrders error:', e); }
   };
 
-  // Re-hydrate the Completed tab with today's served orders so history
-  // survives an app reload. Runs once on mount; only seeds orders that are
-  // not already in the pickupOrders list (i.e. carried from this session).
-  const loadServedToday = async () => {
+  const mapCompletedOrder = (order: any): PickupOrder => ({
+    id: order.order_id,
+    tableNo: `T${order.table_number}`,
+    completedAt: order.served_at ?? order.placed_at,
+    items: order.items.map((item: any) => ({
+      id: item.item_id,
+      name: `${item.qty}× ${item.name}`,
+      qty: item.qty,
+      orderedAt: (() => {
+        const d = new Date(order.placed_at);
+        return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      })(),
+      isServed: true,
+      isReady: true,
+    })),
+  });
+
+  // Completed tab source of truth: backend paginated list (last 24h served).
+  const loadServedToday = async (page = 1) => {
     try {
-      const res = await crewOrders.getServedToday();
+      const res = await crewOrders.getServedToday(page, 30);
       const served = res.orders ?? [];
-      if (served.length === 0) return;
-      setPickupOrders(prev => {
-        const existingIds = new Set(prev.map(o => o.id));
-        const toAdd = served
-          .filter(o => !existingIds.has(o.order_id))
-          .map(order => ({
-            id: order.order_id,
-            tableNo: `T${order.table_number}`,
-            completedAt: order.served_at ?? order.placed_at,
-            items: order.items.map(item => ({
-              id: item.item_id,
-              name: `${item.qty}× ${item.name}`,
-              qty: item.qty,
-              orderedAt: (() => {
-                const d = new Date(order.placed_at);
-                return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-              })(),
-              isServed: true,
-              isReady: true,
-            })),
-          }));
-        if (toAdd.length === 0) return prev;
-        // Put seeded completed orders behind any live active orders
-        return [...prev, ...toAdd];
-      });
+      const mapped = served.map(mapCompletedOrder);
+      if (page === 1) {
+        setCompletedPickupOrders(mapped);
+      } else {
+        setCompletedPickupOrders((prev) => {
+          const existing = new Set(prev.map((o) => o.id));
+          const merged = [...prev];
+          for (const row of mapped) if (!existing.has(row.id)) merged.push(row);
+          return merged;
+        });
+      }
+      setCompletedPage(page);
+      setCompletedHasMore(Boolean(res.hasMore));
     } catch (e) { console.error('[pickup] loadServedToday error:', e); }
+  };
+
+  const loadMoreCompletedOrders = async () => {
+    if (isLoadingMoreCompleted || !completedHasMore) return;
+    setIsLoadingMoreCompleted(true);
+    try {
+      await loadServedToday(completedPage + 1);
+    } finally {
+      setIsLoadingMoreCompleted(false);
+    }
   };
 
   // Load once on mount — Ably drives all subsequent updates
@@ -546,6 +528,7 @@ export default function StaffDashboard() {
 
     const off2 = subscribeChannel(`waiter:${restaurantId}`, 'order_served', () => {
       void loadPickupOrders();
+      void loadServedToday(1);
       void loadTables();
     });
 
@@ -653,10 +636,12 @@ export default function StaffDashboard() {
           name: i.name ?? i.menuItemName ?? '',
           quantity: i.quantity,
           notes: i.notes,
+          modifiersSummary: i.modifiersSummary ?? undefined,
         }));
         void printKot({
           id: data.order.id,
           sessionId: data.order.sessionId ?? undefined,
+          orderNumber: data.order.orderNumber != null ? String(data.order.orderNumber) : undefined,
           tableNumber: String(data.order.tableNumber ?? '?'),
           restaurantName: staffInfo?.restaurantName ?? '',
           createdAt: data.order.createdAt ?? new Date().toISOString(),
@@ -728,7 +713,15 @@ export default function StaffDashboard() {
       ]);
     } else {
       const table = tables.find(t => t.number === tableNum);
-      router.push({ pathname: '/(staff)/[tableId]', params: { tableId: String(tableNum), sessionId: table?.sessionId ?? '', tableDbId: table?.id ?? '' } });
+      router.push({ pathname: '/(staff)/[tableId]', params: {
+        tableId: String(tableNum),
+        sessionId: table?.sessionId ?? '',
+        tableDbId: table?.id ?? '',
+        occupiedSince: table?.occupiedSince ?? '',
+        expiresAt: table?.expiresAt ?? '',
+        customerName: table?.customerName ?? '',
+        customerPhone: table?.customerPhone ?? '',
+      } });
     }
   };
 
@@ -1081,23 +1074,45 @@ export default function StaffDashboard() {
                 isCompleting={completingIds.includes(item.id)}
                 onToggleItem={(itemId) => togglePickupItem(item.id, itemId)}
                 onCompletionFinished={() => handleCompletionFinished(item.id)}
-                onReopen={item.completedAt ? () => reopenOrder(item.id) : undefined}
+                onReopen={undefined}
               />
             )}
             ListEmptyComponent={
-              <View style={styles.emptyOrders}>
-                <Ionicons
-                  name={ordersSubTab === 'active' ? 'checkmark-circle-outline' : 'time-outline'}
-                  size={36}
-                  color={QuinckleColors.textTertiary}
-                  style={styles.emptyOrdersIcon}
-                />
-                <Text style={styles.emptyOrdersText}>
-                  {ordersSubTab === 'active'
-                    ? 'All caught up.\nThe kitchen has nothing pending.'
-                    : 'Served orders appear here for an hour.'}
-                </Text>
-              </View>
+              ordersSubTab === 'active' ? (
+                <View style={styles.emptyOrders}>
+                  <View style={styles.emptyMedallionActive}>
+                    <Ionicons name="checkmark-done" size={30} color={QuinckleColors.success} />
+                  </View>
+                  <Text style={styles.emptyTitle}>All caught up</Text>
+                  <Text style={styles.emptySubtitle}>
+                    No active orders right now.{'\n'}New tickets land here the moment they&apos;re placed.
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.emptyOrders}>
+                  <View style={styles.emptyMedallion}>
+                    <Ionicons name="time-outline" size={28} color={QuinckleColors.textTertiary} />
+                  </View>
+                  <Text style={styles.emptyTitle}>Nothing served yet</Text>
+                  <Text style={styles.emptySubtitle}>
+                    Served orders from the last 24 hours will appear here.
+                  </Text>
+                </View>
+              )
+            }
+            ListFooterComponent={
+              ordersSubTab === 'completed' && completedHasMore ? (
+                <TouchableOpacity
+                  style={styles.loadMoreCompletedBtn}
+                  onPress={() => void loadMoreCompletedOrders()}
+                  disabled={isLoadingMoreCompleted}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.loadMoreCompletedText}>
+                    {isLoadingMoreCompleted ? 'Loading…' : 'Load more'}
+                  </Text>
+                </TouchableOpacity>
+              ) : null
             }
           />
         </View>
@@ -1774,25 +1789,63 @@ const styles = StyleSheet.create({
   },
 
   orderListContent: {
+    flexGrow: 1,
     paddingBottom: 100,
   },
   segmentWrap: {
     marginBottom: Spacing.md,
   },
   emptyOrders: {
+    flex: 1,
     paddingVertical: Spacing.huge,
     paddingHorizontal: Spacing.lg,
     alignItems: 'center',
-    gap: Spacing.md,
+    justifyContent: 'center',
+    gap: Spacing.sm,
   },
-  emptyOrdersIcon: {
-    opacity: 0.6,
+  emptyMedallion: {
+    width: 72, height: 72, borderRadius: 36,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: QuinckleColors.surfaceElevated,
+    borderWidth: 1, borderColor: QuinckleColors.border,
+    marginBottom: Spacing.xs,
   },
-  emptyOrdersText: {
+  emptyMedallionActive: {
+    width: 72, height: 72, borderRadius: 36,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: QuinckleColors.successSoft,
+    borderWidth: 1, borderColor: QuinckleColors.successBorder,
+    marginBottom: Spacing.xs,
+    shadowColor: QuinckleColors.success,
+    shadowOpacity: 0.25, shadowRadius: 16, shadowOffset: { width: 0, height: 0 },
+  },
+  emptyTitle: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 17,
+    fontWeight: '700',
+    letterSpacing: -0.2,
+  },
+  emptySubtitle: {
     color: QuinckleColors.textTertiary,
     fontSize: 13,
     textAlign: 'center',
-    lineHeight: 20,
+    lineHeight: 19,
+    maxWidth: 280,
+  },
+  loadMoreCompletedBtn: {
+    marginTop: Spacing.md,
+    alignSelf: 'center',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    borderColor: QuinckleColors.borderStrong,
+    backgroundColor: QuinckleColors.surfaceMuted,
+  },
+  loadMoreCompletedText: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 13,
+    fontWeight: '600',
   },
 
   activityListContent: {

@@ -151,11 +151,13 @@ export const devApi = {
 
 export interface KitchenTicketItem { item_id: string; name: string; qty: number; note: string | null; modifiers_summary?: string | null; item_status: 'pending' | 'done'; }
 export interface KitchenTicket { order_id: string; table_number: number; status: 'received' | 'preparing'; placed_at: string; items: KitchenTicketItem[]; }
+export interface KitchenCompletedPage { tickets: KitchenTicket[]; page: number; limit: number; hasMore: boolean; }
 
 export const kitchen = {
   getOrders: () => request<{ tickets: KitchenTicket[] }>('GET', '/api/kitchen/orders', undefined, true),
   // Recent completed tickets (READY/SERVED) — powers the cook "Completed" tab.
-  getCompleted: () => request<{ tickets: KitchenTicket[] }>('GET', '/api/kitchen/orders/completed', undefined, true),
+  getCompleted: (page = 1, limit = 30) =>
+    request<KitchenCompletedPage>('GET', `/api/kitchen/orders/completed?page=${page}&limit=${limit}`, undefined, true),
   updateItemStatus: (orderId: string, itemId: string, status: 'done' | 'pending') =>
     request<unknown>('PATCH', `/api/kitchen/orders/${orderId}/items/${itemId}/status`, { item_status: status }, true),
   bumpOrder: (orderId: string) =>
@@ -166,7 +168,7 @@ export const kitchen = {
 
 // ── Crew Tables (STEWARD/ADMIN) ───────────────────────────────────────────────
 
-export interface CrewTable { table_id: string; table_number: number; capacity: number; status: 'available' | 'occupied' | 'reserved' | 'offline'; session_id: string | null; occupied_since: string | null; bill_subtotal?: number; bill_tax?: number; bill_total?: number; }
+export interface CrewTable { table_id: string; table_number: number; capacity: number; status: 'available' | 'occupied' | 'reserved' | 'offline'; session_id: string | null; occupied_since: string | null; expires_at?: string | null; customer_name?: string | null; customer_phone?: string | null; bill_subtotal?: number; bill_tax?: number; bill_total?: number; }
 
 export const crewTables = {
   list: () => request<{ tables: CrewTable[] }>('GET', '/api/crew/tables', undefined, true),
@@ -223,6 +225,10 @@ export interface SessionBill {
   session_ref: string;
   table_number: number;
   status: 'active' | 'paid' | 'closed';
+  started_at?: string;
+  expires_at?: string | null;
+  customer_name?: string | null;
+  customer_phone?: string | null;
   orders: BillOrder[];
   session_total: number;
   tax_rate?: number;
@@ -272,8 +278,13 @@ export interface ActiveOrder { order_id: string; table_number: number; session_i
 export const crewOrders = {
   getActive: () =>
     request<{ orders: ActiveOrder[] }>('GET', '/api/crew/orders/active', undefined, true),
-  getServedToday: () =>
-    request<{ orders: ActiveOrder[] }>('GET', '/api/crew/orders/served-today', undefined, true),
+  getServedToday: (page = 1, limit = 30) =>
+    request<{ orders: ActiveOrder[]; page: number; limit: number; hasMore: boolean }>(
+      'GET',
+      `/api/crew/orders/served-today?page=${page}&limit=${limit}`,
+      undefined,
+      true,
+    ),
   getPaymentContext: (orderId: string) =>
     request<{ success: true; data: CrewOrderPaymentContext }>('GET', `/api/crew/orders/${orderId}/payment-context`, undefined, true),
 
@@ -558,6 +569,7 @@ export const printerApi = {
   getPending: (limit = 25) =>
     request<{ success: true; data: Array<{
       id: string;
+      orderNumber?: string | number;
       sessionId: string;
       tableNumber: number;
       createdAt: string;
