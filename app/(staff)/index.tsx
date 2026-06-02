@@ -146,6 +146,12 @@ export default function StaffDashboard() {
   const [activeFilter, setActiveFilter] = useState<'all' | TableStatus | string>('all');
   const [menuFilter, setMenuFilter] = useState('All');
   const [searchText, setSearchText] = useState('');
+  const [refreshingMenu, setRefreshingMenu] = useState(false);
+
+  const handleRefreshMenu = async () => {
+    setRefreshingMenu(true);
+    try { await loadMenuFromApi(); } finally { setRefreshingMenu(false); }
+  };
   const [realtimeOk, setRealtimeOk] = useState(true);
   // Pending cash-collection requests across the whole restaurant. Drives the
   // red-dot badge on the cash icon in the header. Updated from:
@@ -199,6 +205,7 @@ export default function StaffDashboard() {
         title: "🛎 New Order Ready!",
         body: "Table T08 - 2x Paneer Tikka is ready for pickup.",
         sound: true,
+        android: { largeIcon: 'ic_notification_large' },
       },
       trigger: null,
     });
@@ -413,6 +420,7 @@ export default function StaffDashboard() {
             title: '🔔 New Order',
             body: newOrders.map(o => `T${o.table_number}`).join(', ') + ' — ready to serve',
             sound: true,
+            android: { largeIcon: 'ic_notification_large' },
           },
           trigger: null,
         }).catch(() => { });
@@ -617,6 +625,7 @@ export default function StaffDashboard() {
           title: `💵 Collect cash${tableNumber ? ` — Table ${tableNumber}` : ''}`,
           body: amount ? `₹${amount} due at the table` : 'Customer is paying by cash',
           sound: true,
+          android: { largeIcon: 'ic_notification_large' },
         },
         trigger: null,
       }).catch(() => { });
@@ -1044,16 +1053,28 @@ export default function StaffDashboard() {
                 </TouchableOpacity>
               </View>
 
-              {/* Search + Category chips */}
-              <View style={[styles.searchBoxFull, { marginBottom: 8 }]}>
-                <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
-                <TextInput
-                  style={styles.searchInput}
-                  placeholder="Search menu items…"
-                  placeholderTextColor={QuinckleColors.textTertiary}
-                  value={searchText}
-                  onChangeText={setSearchText}
-                />
+              {/* Search + Refresh + Category chips */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <View style={[styles.searchBoxFull, { flex: 1, marginBottom: 0 }]}>
+                  <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
+                  <TextInput
+                    style={styles.searchInput}
+                    placeholder="Search menu items…"
+                    placeholderTextColor={QuinckleColors.textTertiary}
+                    value={searchText}
+                    onChangeText={setSearchText}
+                  />
+                </View>
+                <TouchableOpacity
+                  onPress={() => { if (!refreshingMenu) void handleRefreshMenu(); }}
+                  style={styles.menuRefreshBtn}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Refresh menu availability"
+                >
+                  {refreshingMenu
+                    ? <ActivityIndicator size="small" color={QuinckleColors.primary} />
+                    : <Ionicons name="refresh" size={18} color={QuinckleColors.primary} />}
+                </TouchableOpacity>
               </View>
 
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipScroll} style={styles.chipRow}>
@@ -1320,6 +1341,16 @@ const styles = StyleSheet.create({
     height: 44,
     gap: Spacing.sm,
     marginBottom: Spacing.md,
+  },
+  menuRefreshBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   searchInput: {
     flex: 1,
