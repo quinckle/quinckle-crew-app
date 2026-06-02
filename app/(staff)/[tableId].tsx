@@ -234,9 +234,14 @@ export default function TableDetail() {
       const subt    = bd?.subtotal ?? bill.session_total;
       const tax     = bd?.taxAmount ?? bill.tax_total ?? (subt * (rate / 100));
       const charges = bd?.chargesTotal ?? bill.service_charge_total ?? 0;
-      const disc    = bd?.discount ?? bill.discount_total ?? 0;
       const tipV    = bd?.tip ?? bill.tip_total ?? 0;
-      const grand   = bd?.total ?? bill.total_payable ?? (subt + tax + charges + tipV - disc);
+      const explicitDisc = bd?.discount ?? bill.discount_total ?? 0;
+      const explicitGrand = bd?.total ?? bill.total_payable;
+      const inferredDisc = explicitDisc > 0 || explicitGrand == null
+        ? explicitDisc
+        : Math.max(0, Math.round((subt + tax + charges + tipV - explicitGrand) * 100) / 100);
+      const disc    = inferredDisc;
+      const grand   = explicitGrand ?? (subt + tax + charges + tipV - disc);
       setOrders(bill.orders);
       setSessionTotal(subt);
       setBillTaxRate(rate);
