@@ -678,6 +678,25 @@ export default function StaffDashboard() {
     }
   };
 
+  // Free any occupied/reserved table directly from the floor — no conditions.
+  // Routes through the session-end path (fans out via Ably + clears caches) when
+  // a session exists; falls back to a plain status flip for phantom-occupied.
+  const freeTable = async (table: { id: string; number: number; sessionId?: string }) => {
+    // Optimistic local update so the grid responds instantly.
+    setTables(prev => prev.map(t => (t.id === table.id ? { ...t, status: 'available' as TableStatus, sessionId: undefined } : t)));
+    try {
+      if (table.sessionId) {
+        await crewSessions.end(table.sessionId);
+      } else {
+        await crewTables.updateStatus(table.id, 'available');
+      }
+    } catch {
+      // ignore — resync from server below regardless
+    } finally {
+      await loadTables();
+    }
+  };
+
   const handleTablePress = (tableNum: number, currentStatus: TableStatus) => {
     if (currentStatus === 'offline') {
       showDialog(
@@ -745,6 +764,16 @@ export default function StaffDashboard() {
         [
           { label: 'Cancel', onPress: () => { } },
           { label: 'Make Available', variant: 'primary', onPress: () => { void updateTableStatus(tableNum, 'available'); } },
+        ],
+      );
+    } else {
+      // Occupied or reserved → let crew free it directly, no conditions.
+      showDialog(
+        'Free Table',
+        `Free Table T${String(tableNum).padStart(2, '0')}? This ends the current session and releases the table for new guests.`,
+        [
+          { label: 'Cancel', onPress: () => { } },
+          { label: 'Free Table', variant: 'danger', onPress: () => { void freeTable(table); } },
         ],
       );
     }
