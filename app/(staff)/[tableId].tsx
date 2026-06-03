@@ -14,7 +14,6 @@ import { useAuth } from '../../context/AuthContext';
 import { useCountdown } from '../../hooks/useCountdown';
 import { subscribeChannel } from '../../services/realtime';
 import type { BillOrderItem, BillOrder, MenuItem } from '../../services/api';
-import { CollectionSheet } from '../../components/ui/CollectionSheet';
 import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { Skeleton } from '../../components/ui/Skeleton';
@@ -131,15 +130,7 @@ export default function TableDetail() {
   const [paymentLinkAmount, setPaymentLinkAmount] = useState(0);
   const [isGeneratingLink, setIsGeneratingLink] = useState(false);
 
-  const [collectionOpen, setCollectionOpen] = useState(false);
-  const [collectionMode, setCollectionMode] = useState<'manual-order' | 'session-settlement'>('manual-order');
-  const [collectionBill, setCollectionBill] = useState<{
-    orderId: string;
-    tableNumber: number;
-    customerName: string | null;
-    customerPhone: string;
-    amount: number;
-  } | null>(null);
+  const [isRequestingCollection, setIsRequestingCollection] = useState(false);
 
   // UPI QR generator
   const [upiId, setUpiId]           = useState<string | null>(null);
@@ -385,36 +376,21 @@ export default function TableDetail() {
     if (isPaid && showQRModal) setShowQRModal(false);
   }, [isPaid]);
 
-  const buildCollectIdempotencyKey = (
-    orderId: string,
-    splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[],
-  ) => {
-    const fingerprint = splits
-      .map(s => `${s.method}:${Number(s.amount).toFixed(2)}`)
-      .join('|');
-    return `crew-collect:${orderId}:${fingerprint}`;
-  };
-
-  const onCollectionConfirm = async (
-    splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[],
-  ): Promise<boolean> => {
-    if (!collectionBill) return false;
-    if (collectionMode === 'session-settlement') {
-      await crewSessions.markPaid(sessionId, splits);
-    } else {
-      const staffId = staffInfo?.id;
-      if (!staffId) throw new Error('Staff profile missing. Please log in again.');
-      await crewPayments.collectPayment(
-        collectionBill.orderId,
-        staffId,
-        splits,
-        buildCollectIdempotencyKey(collectionBill.orderId, splits),
+  const requestCollection = async () => {
+    if (isPaid || !sessionId || isRequestingCollection || grandTotal <= 0 || orders.length === 0) return;
+    setIsRequestingCollection(true);
+    try {
+      await crewSessions.requestCollection(sessionId, sessionCustomerPhone ?? '', sessionCustomerName ?? null);
+      await loadBill();
+      router.push('/(staff)/cash-collection');
+    } catch (err: any) {
+      showDialog(
+        'Could not create collection request',
+        err?.message ?? 'Please try again from the Payment Collection screen.',
       );
+    } finally {
+      setIsRequestingCollection(false);
     }
-    setCollectionOpen(false);
-    setCollectionBill(null);
-    await loadBill();
-    return true;
   };
 
   const handleRequestOnlinePayment = async () => {
@@ -740,21 +716,16 @@ export default function TableDetail() {
                   <TouchableOpacity
                     onPress={() => {
                       setActionMenuOpen(false);
-                      setCollectionMode('session-settlement');
-                      setCollectionBill({
-                        orderId: `session:${sessionId}`,
-                        tableNumber: Number(tableId ?? 0),
-                        customerPhone: '',
-                        customerName: null,
-                        amount: grandTotal,
-                      });
-                      setCollectionOpen(true);
+                      void requestCollection();
                     }}
                     style={styles.actionMenuItem}
+                    disabled={isRequestingCollection}
                     activeOpacity={0.7}
                   >
                     <Ionicons name="checkmark-circle-outline" size={14} color={QuinckleColors.success} />
-                    <Text style={[styles.actionMenuText, { color: QuinckleColors.success }]}>Mark as paid</Text>
+                    <Text style={[styles.actionMenuText, { color: QuinckleColors.success }]}>
+                      {isRequestingCollection ? 'Requesting...' : 'Send to Payment Collection'}
+                    </Text>
                   </TouchableOpacity>
                 </>
               )}
@@ -953,36 +924,27 @@ export default function TableDetail() {
 
         {!isPaid && grandTotal > 0 && orders.length > 0 && (
           <TouchableOpacity
-            style={styles.collectBtn}
+            style={[styles.collectBtn, isRequestingCollection && { opacity: 0.65 }]}
             onPress={() => {
               setIsExpanded(false);
-              setCollectionMode('session-settlement');
-              setCollectionBill({
-                orderId: `session:${sessionId}`,
-                tableNumber: Number(tableId ?? 0),
-                customerPhone: sessionCustomerPhone ?? '',
-                customerName: sessionCustomerName,
-                amount: grandTotal,
-              });
-              setCollectionOpen(true);
+              void requestCollection();
             }}
+            disabled={isRequestingCollection}
             activeOpacity={0.85}
           >
-            <Ionicons name="cash-outline" size={16} color="#fff" />
-            <Text style={styles.collectBtnText}>Collect Payment</Text>
+            {isRequestingCollection ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Ionicons name="cash-outline" size={16} color="#fff" />
+            )}
+            <Text style={styles.collectBtnText}>
+              {isRequestingCollection ? 'Creating request...' : 'Send to Payment Collection'}
+            </Text>
           </TouchableOpacity>
         )}
       </View>
 
       <ThemedDialog visible={dialog.visible} title={dialog.title} message={dialog.message} actions={dialog.actions} onClose={closeDialog} />
-
-      <CollectionSheet
-        visible={collectionOpen}
-        onClose={() => setCollectionOpen(false)}
-        bill={collectionBill}
-        partner={{ vpa: upiId, merchantName: upiName || null }}
-        onConfirm={onCollectionConfirm}
-      />
 
       {/* ── UPI QR modal ── */}
       <Modal visible={showUpiModal} transparent animationType="fade" onRequestClose={() => setShowUpiModal(false)}>

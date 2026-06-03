@@ -283,9 +283,12 @@ export const crewSessions = {
       'PATCH', `/api/crew/sessions/${sessionId}/customer`, { phone, name: name ?? null }, true
     ),
 
-  markPaid: (sessionId: string, splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[]) =>
-    request<{ success: boolean }>(
-      'POST', `/api/crew/sessions/${sessionId}/mark-paid`, { splits }, true
+  requestCollection: (sessionId: string, customerPhone?: string | null, customerName?: string | null) =>
+    request<{ success: boolean; data: { orderIds: string[]; totalAmount: number; sessionId: string; method: 'STAFF_COLLECT' } }>(
+      'POST',
+      `/api/crew/sessions/${sessionId}/request-collection`,
+      { customerPhone: customerPhone ?? null, customerName: customerName ?? null },
+      true,
     ),
 };
 
