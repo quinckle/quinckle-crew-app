@@ -443,7 +443,22 @@ export default function CookDashboard() {
               index={index + 1}
               isCompletedTab={navTab === 'completed'}
               onReprint={getPrinterStatus() === 'connected' ? () => {
-                void printerApi.reprint(item.id, 'Manual reprint from cook screen');
+                // Print directly — printer is on this device. No Ably round-trip needed.
+                // KitchenItem.name is already prefixed "2× Paneer Tikka" from mapTicket,
+                // so parse out qty + clean name to avoid "1x 2× Paneer Tikka" on the KOT.
+                const parseItem = (rawName: string, modifiersSummary?: string | null) => {
+                  const m = rawName.match(/^(\d+)×\s*(.*?)(?:\s+—\s+(.*))?$/);
+                  if (m) return { name: m[2].trim(), quantity: parseInt(m[1], 10), notes: m[3] ?? undefined, modifiersSummary: modifiersSummary ?? undefined };
+                  return { name: rawName, quantity: 1, modifiersSummary: modifiersSummary ?? undefined };
+                };
+                void printKot({
+                  id: item.id,
+                  tableNumber: item.table,
+                  restaurantName: staffInfo?.restaurantName ?? '',
+                  createdAt: item.placedAt ?? new Date().toISOString(),
+                  items: item.items.map((i) => parseItem(i.name, i.modifiersSummary)),
+                  isAddOn: false,
+                }, false, { force: true });
               } : undefined}
             />
           )}

@@ -8,7 +8,7 @@ import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { crewSessions, crewTables, crewOrders, crewPayments, crewDiners, restaurantApi, printerApi } from '../../services/api';
 import type { CrewTable, SessionBill } from '../../services/api';
-import { printBill, getStatus as getPrinterStatus } from '../../services/printer';
+import { printBill, printKot, getStatus as getPrinterStatus } from '../../services/printer';
 import type { InvoiceBill } from '../../services/invoiceTemplate';
 import { useAuth } from '../../context/AuthContext';
 import { useCountdown } from '../../hooks/useCountdown';
@@ -414,7 +414,7 @@ export default function TableDetail() {
 
   // ── Print handlers ──────────────────────────────────────────────────────────
 
-  const handlePrintKot = () => {
+  const handlePrintKot = async () => {
     setPrintMenuOpen(false);
     const latestOrder = [...orders].sort(
       (a, b) => new Date(b.placed_at).getTime() - new Date(a.placed_at).getTime(),
@@ -423,6 +423,33 @@ export default function TableDetail() {
       showDialog('No Orders', 'There are no orders to reprint.', [{ label: 'OK', onPress: () => {} }]);
       return;
     }
+
+    // If printer is paired on THIS device, print directly — same as invoice.
+    // This avoids the Ably round-trip which can fail silently if the
+    // subscription isn't active or the event doesn't reach this device.
+    if (getPrinterStatus() === 'connected') {
+      const result = await printKot({
+        id: latestOrder.order_id,
+        sessionId: sessionId || undefined,
+        tableNumber: tableId,
+        restaurantName: staffInfo?.restaurantName ?? '',
+        createdAt: latestOrder.placed_at ?? new Date().toISOString(),
+        items: latestOrder.items.map((item) => ({
+          name: item.name,
+          quantity: item.qty,
+          modifiersSummary: item.modifiers_summary ?? undefined,
+        })),
+        isAddOn: false,
+      }, false, { force: true });
+      if (result === 'printed') {
+        showDialog('Printed', 'KOT sent to printer.', [{ label: 'OK', onPress: () => {} }]);
+      } else {
+        showDialog('Print Failed', 'Printer connected but print failed. Check paper / Bluetooth and try again.', [{ label: 'OK', onPress: () => {} }]);
+      }
+      return;
+    }
+
+    // Printer is on a different device — use the Ably round-trip.
     void printerApi
       .reprint(latestOrder.order_id, 'Manual reprint from staff screen')
       .then(() =>
