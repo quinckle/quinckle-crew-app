@@ -2,6 +2,7 @@ import React, { useMemo, useState, useEffect, useRef } from 'react';
 import {
   ActivityIndicator,
   Animated,
+  AppState,
   Dimensions,
   FlatList,
   RefreshControl,
@@ -15,6 +16,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { LinearGradient } from 'expo-linear-gradient';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
@@ -171,20 +173,53 @@ export default function StaffDashboard() {
   // Stored in both state (for UI) and a ref (so Ably callbacks always see latest value).
   const [kotAutoPrint, setKotAutoPrint] = useState(true);
   const kotAutoPrintRef = useRef(true);
-  const canAutoPrintFromThisDeviceRef = useRef(false);
   const setKotAutoPrintSync = (v: boolean) => { kotAutoPrintRef.current = v; setKotAutoPrint(v); };
 
+  // Sync the KOT auto-print toggle from the server. Auto-print itself gates on
+  // the *live* local printer connection (getPrinterStatus), never on staff
+  // identity — the Bluetooth pairing is the real single-sink guarantee, so any
+  // crew member on the paired device drives printing. Default toggle stays true
+  // so a transient status-fetch failure never silently disables printing.
   const refreshPrintSinkOwnership = async () => {
     try {
       const res = await printerApi.getStatus();
       if (typeof res?.data?.kotAutoPrint === 'boolean') {
         setKotAutoPrintSync(res.data.kotAutoPrint);
       }
-      canAutoPrintFromThisDeviceRef.current =
-        Boolean(res?.data?.pairedById) && res.data.pairedById === staffInfo?.id;
-    } catch {
-      canAutoPrintFromThisDeviceRef.current = false;
-    }
+    } catch { /* keep last known toggle value */ }
+  };
+
+  // ── KOT print backstop (server pull-queue) ──────────────────────────────────
+  // The live Ably `new_order` push is the fast path, but it only fires while the
+  // app is foregrounded and the socket is healthy. This drain is the guarantee:
+  // it pulls every order the backend still has marked kotPrintedAt=null (last 2h)
+  // and prints any that slipped through. Runs on mount, every 15s, and whenever
+  // the app returns to the foreground. printKot de-dupes so this never collides
+  // with the push path.
+  const drainPendingPrintJobs = async () => {
+    if (!kotAutoPrintRef.current) return;
+    if (getPrinterStatus() !== 'connected') return;
+    try {
+      const res = await printerApi.getPending(25);
+      const jobs = res?.data ?? [];
+      for (const job of jobs) {
+        await printKot({
+          id: job.id,
+          sessionId: job.sessionId ?? undefined,
+          orderNumber: job.orderNumber != null ? String(job.orderNumber) : undefined,
+          tableNumber: String(job.tableNumber ?? '?'),
+          restaurantName: staffInfo?.restaurantName ?? '',
+          createdAt: job.createdAt ?? new Date().toISOString(),
+          items: (job.items ?? []).map((i: any) => ({
+            name: i.name,
+            quantity: i.quantity,
+            notes: i.notes ?? undefined,
+            modifiersSummary: i.modifiersSummary ?? undefined,
+          })),
+          isAddOn: Boolean(job.isAddOn),
+        }, Boolean(job.isAddOn));
+      }
+    } catch { /* non-fatal — next tick retries */ }
   };
 
   const simulateNewOrder = async () => {
@@ -506,6 +541,49 @@ export default function StaffDashboard() {
     void refreshPrintSinkOwnership();
   }, [staffInfo?.restaurantId]);
 
+  // KOT print backstop: drain the server pull-queue on mount, every 15s, and on
+  // every return to foreground. Combined with the Ably push + de-dup guard this
+  // guarantees a KOT prints even if the live event was missed (background, socket
+  // blip, transient BT failure). Mirrors the cook screen's drain.
+  useEffect(() => {
+    if (!staffInfo?.restaurantId) return;
+    void drainPendingPrintJobs();
+    const interval = setInterval(() => { void drainPendingPrintJobs(); }, 15_000);
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        void refreshPrintSinkOwnership();
+        void drainPendingPrintJobs();
+      }
+    });
+    return () => {
+      clearInterval(interval);
+      appStateSub.remove();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [staffInfo?.restaurantId]);
+
+  // Keep the screen awake while this device holds the printer, so Android can't
+  // suspend the JS runtime and miss prints when the screen would sleep.
+  useEffect(() => {
+    let active = false;
+    const apply = () => {
+      const shouldStayAwake = getPrinterStatus() === 'connected';
+      if (shouldStayAwake && !active) {
+        active = true;
+        activateKeepAwakeAsync('kot-print-sink').catch(() => {});
+      } else if (!shouldStayAwake && active) {
+        active = false;
+        deactivateKeepAwake('kot-print-sink').catch(() => {});
+      }
+    };
+    apply();
+    const t = setInterval(apply, 10_000);
+    return () => {
+      clearInterval(t);
+      if (active) deactivateKeepAwake('kot-print-sink').catch(() => {});
+    };
+  }, []);
+
   const loadPendingCashCount = async () => {
     try {
       const data = await crewPayments.getCashRequests();
@@ -543,11 +621,12 @@ export default function StaffDashboard() {
     const off3 = subscribeChannel(`waiter:${restaurantId}`, 'new_order', (data: any) => {
       void loadPickupOrders();
       void loadTables();
-      // Auto-print KOT on whichever crew device has a printer connected,
-      // but only when the auto-print toggle is enabled.
+      // Auto-print fast path — gate on the live local printer connection + the
+      // auto-print toggle. (Live getPrinterStatus() avoids any startup race with
+      // the async refreshPrintSinkOwnership ref.) The 15s drain is the backstop;
+      // printKot de-dupes so push + drain never double-print.
       if (
         kotAutoPrintRef.current &&
-        canAutoPrintFromThisDeviceRef.current &&
         getPrinterStatus() === 'connected' &&
         data?.orderId
       ) {
@@ -638,9 +717,10 @@ export default function StaffDashboard() {
       setPendingCashCount(c => Math.max(0, c - 1));
     });
 
-    // Reprint request — fires on any device with printer connected
+    // Reprint request — manual, user-initiated. Prints on the connected device
+    // regardless of the auto-print toggle, force-bypassing de-dup.
     const offReprint = subscribeChannel(`partner:${restaurantId}`, 'reprint_request', (data: any) => {
-      if (canAutoPrintFromThisDeviceRef.current && getPrinterStatus() === 'connected' && data?.order) {
+      if (getPrinterStatus() === 'connected' && data?.order) {
         const items = (data.order.items ?? []).map((i: any) => ({
           name: i.name ?? i.menuItemName ?? '',
           quantity: i.quantity,
@@ -656,7 +736,7 @@ export default function StaffDashboard() {
           createdAt: data.order.createdAt ?? new Date().toISOString(),
           items,
           isAddOn: false,
-        }, false);
+        }, false, { force: true });
       }
     });
 

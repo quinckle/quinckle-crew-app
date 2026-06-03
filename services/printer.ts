@@ -50,6 +50,33 @@ interface QueueItem {
 let _config: PrinterConfig | null = null;
 let _status: PrinterStatus = 'unpaired';
 
+// ── Print de-duplication guard ────────────────────────────────────────────────
+// KOT auto-print is driven by TWO independent triggers that can both fire for
+// the same order: the live Ably `new_order` push (fast path) and the 15s server
+// pull-queue drain (backstop). Without a guard they race and double-print.
+//
+//  - _inFlight: orders whose printBluetooth() call is currently running. A second
+//    trigger for the same key is skipped while the first is in flight.
+//  - _recentlyPrinted: keys that printed successfully in the last RECENT_TTL_MS.
+//    Closes the window between "print succeeded" and "server stamped kotPrintedAt"
+//    — during that gap the pull-queue can still return the order; we skip it.
+//
+// A FAILED print is removed from both sets immediately so the next poll retries.
+const _inFlight = new Set<string>();
+const _recentlyPrinted = new Map<string, number>();
+const RECENT_TTL_MS = 90_000;
+
+function dedupeKey(orderId: string, isAddOn: boolean): string {
+  return `${orderId}:${isAddOn ? 'addon' : 'kot'}`;
+}
+
+function purgeExpiredRecent(): void {
+  const now = Date.now();
+  for (const [key, expiry] of _recentlyPrinted) {
+    if (expiry <= now) _recentlyPrinted.delete(key);
+  }
+}
+
 // ── Init (call on app launch) ─────────────────────────────────────────────────
 
 export async function initPrinter(): Promise<void> {
@@ -165,26 +192,43 @@ async function printRaw(text: string): Promise<void> {
 export async function printKot(
   order: KotOrder,
   isAddOn = false,
-): Promise<'printed' | 'failed'> {
+  opts: { force?: boolean } = {},
+): Promise<'printed' | 'failed' | 'skipped'> {
+  const key = dedupeKey(order.id, isAddOn);
+
+  // Manual reprints pass force:true and bypass de-dup entirely. Auto-print
+  // (Ably push + pull-queue drain) goes through the guard so the same order
+  // never prints twice.
+  if (!opts.force) {
+    if (_inFlight.has(key)) return 'skipped';        // already printing right now
+    purgeExpiredRecent();
+    if (_recentlyPrinted.has(key)) return 'skipped'; // printed seconds ago
+    _inFlight.add(key);
+  }
+
   const orderWithFlag = { ...order, isAddOn };
   const text = buildKotText(orderWithFlag, _config?.paperWidth ?? 58);
 
   try {
     await printRaw(text);
-    // Ack to backend
+    // Mark as recently printed BEFORE the (async) ack so a poll firing in the
+    // gap before the server stamps kotPrintedAt is skipped, not re-printed.
+    if (!opts.force) _recentlyPrinted.set(key, Date.now() + RECENT_TTL_MS);
     try {
       await printerApi.ack(order.id, 'printed', undefined, isAddOn);
-    } catch { /* non-fatal — will retry via backend on next pull */ }
+    } catch { /* non-fatal — backend keeps kotPrintedAt null, pull-queue retries */ }
     return 'printed';
   } catch (err: any) {
     const errorMessage = err?.message ?? 'Unknown error';
-    // Queue for retry
+    // Failed: do NOT mark recently-printed — the server pull-queue must be able
+    // to hand this order back for a retry on the next drain.
     await enqueue(order, isAddOn);
-    // Ack failure to backend
     try {
       await printerApi.ack(order.id, 'failed', errorMessage, isAddOn);
     } catch { /* non-fatal */ }
     return 'failed';
+  } finally {
+    if (!opts.force) _inFlight.delete(key);
   }
 }
 

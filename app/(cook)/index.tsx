@@ -25,6 +25,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { kitchen, printerApi } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { printKot, getStatus as getPrinterStatus } from '../../services/printer';
@@ -76,7 +77,13 @@ export default function CookDashboard() {
   const insets = useSafeAreaInsets();
   const { staffInfo } = useAuth();
   const knownOrderIdsRef = useRef<Set<string>>(new Set());
-  const canAutoPrintFromThisDeviceRef = useRef(false);
+  // Auto-print fires when this device holds the Bluetooth pairing AND the
+  // restaurant's KOT auto-print toggle is on. We gate on the *local* printer
+  // connection (getPrinterStatus), never on staff identity — the BT pairing is
+  // the real single-sink guarantee, so any crew member on the paired device
+  // can drive printing. (The old pairedById === staffInfo.id check silently
+  // killed auto-print whenever a different cook logged in.)
+  const kotAutoPrintRef = useRef(true);
 
   const [orders,        setOrders]        = useState<KitchenTicket[]>([]);
   const [completedOrders, setCompletedOrders] = useState<KitchenTicket[]>([]);
@@ -89,8 +96,8 @@ export default function CookDashboard() {
   const [realtimeOk,    setRealtimeOk]    = useState(true);
 
   const drainPendingPrintJobs = useCallback(async () => {
+    if (!kotAutoPrintRef.current) return;
     if (getPrinterStatus() !== 'connected') return;
-    if (!canAutoPrintFromThisDeviceRef.current) return;
     try {
       const res = await printerApi.getPending(25);
       const jobs = res?.data ?? [];
@@ -182,12 +189,15 @@ export default function CookDashboard() {
   }, [loadOrders]);
 
   useEffect(() => {
+    // Sync the KOT auto-print toggle from the server. Default stays true so a
+    // transient status-fetch failure never silently disables printing.
     void printerApi.getStatus()
       .then((res) => {
-        canAutoPrintFromThisDeviceRef.current =
-          Boolean(res?.data?.pairedById) && res.data.pairedById === staffInfo?.id;
+        if (typeof res?.data?.kotAutoPrint === 'boolean') {
+          kotAutoPrintRef.current = res.data.kotAutoPrint;
+        }
       })
-      .catch(() => { canAutoPrintFromThisDeviceRef.current = false; });
+      .catch(() => { /* keep last known toggle value */ });
 
     void drainPendingPrintJobs();
     const interval = setInterval(() => {
@@ -204,6 +214,30 @@ export default function CookDashboard() {
     };
   }, [drainPendingPrintJobs]);
 
+  // Keep the screen awake while this device is the print sink, so Android can't
+  // suspend the JS runtime (and miss the Ably push / skip the 15s drain) when
+  // the kitchen tablet's screen would otherwise sleep. Re-checked on a short
+  // timer since printer connection can change at runtime.
+  useEffect(() => {
+    let active = false;
+    const apply = () => {
+      const shouldStayAwake = getPrinterStatus() === 'connected';
+      if (shouldStayAwake && !active) {
+        active = true;
+        activateKeepAwakeAsync('kot-print-sink').catch(() => {});
+      } else if (!shouldStayAwake && active) {
+        active = false;
+        deactivateKeepAwake('kot-print-sink').catch(() => {});
+      }
+    };
+    apply();
+    const t = setInterval(apply, 10_000);
+    return () => {
+      clearInterval(t);
+      if (active) deactivateKeepAwake('kot-print-sink').catch(() => {});
+    };
+  }, []);
+
   // Ably: realtime push for the kitchen channel
   useEffect(() => {
     const restaurantId = staffInfo?.restaurantId;
@@ -217,12 +251,12 @@ export default function CookDashboard() {
       }
       void loadOrders();
 
-      // ── Auto-print: fires on ANY device that has a printer locally paired ──
-      // The backend NewOrderEvent doesn't carry printerPairedTo, so we rely on
-      // local printer state. A physical BT printer can only connect to one
-      // device, so only one phone will actually succeed; duplicate acks are
-      // idempotent on the backend (kotPrintedAt only stamps on first success).
-      if (canAutoPrintFromThisDeviceRef.current && getPrinterStatus() === 'connected') {
+      // ── Auto-print fast path ──────────────────────────────────────────────
+      // Fires on whichever device holds the BT pairing (getPrinterStatus), gated
+      // by the auto-print toggle. The 15s drainPendingPrintJobs poll is the
+      // backstop if this push is ever missed; printKot de-dupes so the push and
+      // the poll can't double-print the same order.
+      if (kotAutoPrintRef.current && getPrinterStatus() === 'connected') {
         // items come directly from the NewOrderEvent shape
         const items = (data?.items ?? []).map((i: any) => ({
           name: i.menuItemName ?? i.name ?? '',
@@ -252,9 +286,11 @@ export default function CookDashboard() {
     // ticket disappears from the active queue in real-time.
     const unsubServed    = subscribeChannel(`kitchen:${restaurantId}`, 'order_served',    () => void loadOrders());
 
-    // Reprint request — fires on any device with printer connected
+    // Reprint request — manual, user-initiated. Always prints on the connected
+    // device regardless of the auto-print toggle, and force-bypasses de-dup so a
+    // deliberate reprint within the de-dup window still goes through.
     const unsubReprint = subscribeChannel(`partner:${restaurantId}`, 'reprint_request', (data: any) => {
-      if (canAutoPrintFromThisDeviceRef.current && getPrinterStatus() === 'connected' && data?.order) {
+      if (getPrinterStatus() === 'connected' && data?.order) {
         const items = (data.order.items ?? []).map((i: any) => ({
           name: i.name ?? i.menuItemName ?? '',
           quantity: i.quantity,
@@ -271,8 +307,13 @@ export default function CookDashboard() {
           createdAt: data.order.createdAt ?? new Date().toISOString(),
           items,
           isAddOn: false,
-        }, false);
+        }, false, { force: true });
       }
+    });
+
+    // Keep the auto-print toggle in sync when changed from any device/dashboard.
+    const unsubAutoPrint = subscribeChannel(`partner:${restaurantId}`, 'kot_autoprint_changed', (data: any) => {
+      if (typeof data?.enabled === 'boolean') kotAutoPrintRef.current = data.enabled;
     });
 
     return () => {
@@ -281,6 +322,7 @@ export default function CookDashboard() {
       unsubCancelled();
       unsubServed();
       unsubReprint();
+      unsubAutoPrint();
     };
   }, [staffInfo?.restaurantId, staffInfo?.restaurantName, staffInfo?.id, loadOrders, drainPendingPrintJobs]);
 
