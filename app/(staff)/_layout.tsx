@@ -22,6 +22,8 @@ export default function StaffLayout() {
     >
       <Stack.Screen name="index" />
       <Stack.Screen name="[tableId]" />
+      <Stack.Screen name="order-menu" />
+      <Stack.Screen name="payment-collect" />
       <Stack.Screen name="menu" options={{ presentation: 'card' }} />
       <Stack.Screen name="profile" />
       <Stack.Screen name="cash-ledger" />

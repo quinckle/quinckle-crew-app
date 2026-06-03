@@ -358,7 +358,12 @@ export default function CashCollectionScreen() {
             }
 
             if (item.kind === 'empty') {
-              return <Text style={s.emptyText}>{item.message}</Text>;
+              return (
+                <View style={s.emptyState}>
+                  <Ionicons name="wallet-outline" size={40} color={QuinckleColors.textTertiary} style={{ opacity: 0.5 }} />
+                  <Text style={s.emptyText}>{item.message}</Text>
+                </View>
+              );
             }
 
             if (item.kind === 'pending') {
@@ -600,11 +605,16 @@ const s = StyleSheet.create({
   },
   sectionCount: { color: QuinckleColors.textTertiary, fontSize: 12 },
 
+  emptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing.xxl * 2,
+    gap: Spacing.md,
+  },
   emptyText: {
     color: QuinckleColors.textTertiary,
     fontSize: 13,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.md,
+    textAlign: 'center',
   },
 
   // Pending card

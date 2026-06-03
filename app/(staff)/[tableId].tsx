@@ -16,6 +16,9 @@ import { subscribeChannel } from '../../services/realtime';
 import type { BillOrderItem, BillOrder, MenuItem } from '../../services/api';
 import { CollectionSheet } from '../../components/ui/CollectionSheet';
 import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
+import { BottomSheet } from '../../components/ui/BottomSheet';
+import { Skeleton } from '../../components/ui/Skeleton';
+import { Typography } from '../../constants/Colors';
 
 type ItemStatus = 'prep' | 'served';
 
@@ -150,6 +153,10 @@ export default function TableDetail() {
   const [printMenuOpen, setPrintMenuOpen] = useState(false);
   const [swapOpen, setSwapOpen] = useState(false);
   const [swapSubmitting, setSwapSubmitting] = useState(false);
+
+  // Extend time bottom sheet
+  const [extendSheetOpen, setExtendSheetOpen] = useState(false);
+  const [extendingMins, setExtendingMins] = useState<number | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
   // Pull-to-refresh with a real spinner (was hardcoded refreshing={false}).
@@ -192,31 +199,28 @@ export default function TableDetail() {
     setDialog({ visible: true, title, message, actions: actions.map(a => ({ ...a, onPress: () => { closeDialog(); a.onPress(); } })) });
   };
 
-  // Extend the table's session timer (mirrors the partner dashboard table modal).
+  // Extend the table's session timer — called from the bottom sheet tiles.
   const extendTime = async (minutes: 15 | 30 | 45 | 60) => {
-    if (!tableDbId) return;
+    if (!tableDbId || extendingMins) return;
+    setExtendingMins(minutes);
     try {
       const res = await crewTables.extendSession(tableDbId, minutes);
       setExpiresAt(res.data.expiresAt);
-      showDialog('Time extended', `Added ${minutes} min to this table.`, [{ label: 'OK', onPress: () => {} }]);
+      setExtendSheetOpen(false);
     } catch (e: any) {
       const code = e?.error || e?.message || '';
       const msg = code === 'NO_ACTIVE_SESSION'
         ? 'This table has no active session to extend.'
         : 'Could not extend the timer. Please try again.';
       showDialog('Could not extend', msg, [{ label: 'OK', onPress: () => {} }]);
+    } finally {
+      setExtendingMins(null);
     }
   };
 
   const openExtendMenu = () => {
     setActionMenuOpen(false);
-    showDialog('Extend time', "Add time to this table's session.", [
-      { label: '+15 min', onPress: () => { void extendTime(15); } },
-      { label: '+30 min', onPress: () => { void extendTime(30); } },
-      { label: '+45 min', onPress: () => { void extendTime(45); } },
-      { label: '+60 min', onPress: () => { void extendTime(60); } },
-      { label: 'Cancel', onPress: () => {} },
-    ]);
+    setExtendSheetOpen(true);
   };
 
   const loadBill = async () => {
@@ -555,9 +559,73 @@ export default function TableDetail() {
 
   if (isLoading) {
     return (
-      <View style={[styles.container, { paddingTop: insets.top + Spacing.sm, justifyContent: 'center', alignItems: 'center' }]}>
-        <ActivityIndicator color={QuinckleColors.primary} size="large" />
-        <Text style={{ color: QuinckleColors.textTertiary, marginTop: Spacing.md }}>Loading table…</Text>
+      <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
+        {/* ── Header skeleton ── */}
+        <View style={styles.header}>
+          <View style={styles.headerLeft}>
+            <View style={[styles.iconBtn, { backgroundColor: QuinckleColors.surfaceMuted }]} />
+            <View style={{ gap: 6 }}>
+              <Skeleton width={56} height={22} radius={6} />
+              <Skeleton width={80} height={11} radius={4} />
+            </View>
+          </View>
+          <View style={styles.headerRight}>
+            {[1, 2, 3].map(i => (
+              <View key={i} style={[styles.iconBtn, { backgroundColor: QuinckleColors.surfaceMuted }]} />
+            ))}
+          </View>
+        </View>
+
+        {/* ── Session group skeleton ── */}
+        <Skeleton width={52} height={10} radius={4} style={{ marginBottom: Spacing.sm }} />
+        <View style={[styles.sessionGroup, { overflow: 'hidden' }]}>
+          {[90, 70, 80].map((w, i) => (
+            <View key={i}>
+              {i > 0 && <View style={styles.sessionInfoSep} />}
+              <View style={styles.sessionInfoRow}>
+                <Skeleton width={40} height={13} radius={4} />
+                <Skeleton width={w} height={13} radius={4} />
+              </View>
+            </View>
+          ))}
+        </View>
+
+        {/* ── Active Orders section header skeleton ── */}
+        <View style={[styles.sectionHeader, { marginTop: Spacing.md }]}>
+          <View style={styles.sectionTitleRow}>
+            <Skeleton width={110} height={11} radius={4} />
+            <Skeleton width={60} height={11} radius={4} />
+          </View>
+          <View style={[styles.serviceProgressTrack, { marginTop: Spacing.sm }]}>
+            <Skeleton width="30%" height={3} radius={2} style={{ opacity: 0.5 }} />
+          </View>
+        </View>
+
+        {/* ── Order item rows skeleton ── */}
+        {[1, 2, 3].map(i => (
+          <View key={i} style={styles.orderItemRow}>
+            <View style={{ flex: 1, gap: 6 }}>
+              <Skeleton width={`${55 + i * 12}%`} height={15} radius={5} />
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <Skeleton width={44} height={11} radius={4} />
+                <Skeleton width={32} height={11} radius={4} />
+              </View>
+            </View>
+            <Skeleton width={72} height={28} radius={6} />
+          </View>
+        ))}
+
+        {/* ── Bottom bar skeleton ── */}
+        <View style={[styles.bottomBar, { position: 'absolute', bottom: 0, left: 0, right: 0 }]}>
+          <View style={styles.totalRow}>
+            <View style={{ gap: 8 }}>
+              <Skeleton width={80} height={10} radius={4} />
+              <Skeleton width={48} height={18} radius={5} />
+            </View>
+            <Skeleton width={70} height={26} radius={6} />
+          </View>
+          <Skeleton width="100%" height={46} radius={Radius.md} style={{ marginTop: Spacing.md }} />
+        </View>
       </View>
     );
   }
@@ -1006,6 +1074,53 @@ export default function TableDetail() {
         onSwap={confirmSwap}
         submitting={swapSubmitting}
       />
+
+      {/* ── Extend time bottom sheet ── */}
+      <BottomSheet
+        visible={extendSheetOpen}
+        onClose={() => !extendingMins && setExtendSheetOpen(false)}
+        title="Extend session"
+      >
+        <Text style={styles.extendSub}>
+          {countdownStr
+            ? `${isNearExpiry ? '⚠️ ' : ''}${countdownStr} remaining on T${tableNum}`
+            : `Active session on T${tableNum}`}
+        </Text>
+
+        <View style={styles.extendGrid}>
+          {([15, 30, 45, 60] as const).map(mins => {
+            const busy = extendingMins === mins;
+            const newExpiry = (() => {
+              const base = expiresAt ? new Date(expiresAt) : new Date();
+              base.setMinutes(base.getMinutes() + mins);
+              return `${String(base.getHours()).padStart(2, '0')}:${String(base.getMinutes()).padStart(2, '0')}`;
+            })();
+            return (
+              <TouchableOpacity
+                key={mins}
+                style={[styles.extendTile, !!extendingMins && !busy && { opacity: 0.4 }]}
+                onPress={() => { void extendTime(mins); }}
+                disabled={!!extendingMins}
+                activeOpacity={0.8}
+              >
+                {busy ? (
+                  <ActivityIndicator color={QuinckleColors.primary} />
+                ) : (
+                  <>
+                    <Text style={styles.extendTileMins}>+{mins}</Text>
+                    <Text style={styles.extendTileUnit}>min</Text>
+                    {expiresAt && (
+                      <Text style={styles.extendTileExpiry}>until {newExpiry}</Text>
+                    )}
+                  </>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        <View style={{ height: Spacing.md }} />
+      </BottomSheet>
 
       {/* Online Payment QR Modal */}
       <Modal
@@ -1637,5 +1752,49 @@ const styles = StyleSheet.create({
     color: QuinckleColors.textSecondary,
     fontSize: 15,
     fontWeight: '600',
+  },
+
+  // Extend time sheet
+  extendSub: {
+    ...Typography.caption,
+    color: QuinckleColors.textMuted,
+    paddingHorizontal: Spacing.xl,
+    marginBottom: Spacing.lg,
+  },
+  extendGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    paddingHorizontal: Spacing.xl,
+    gap: Spacing.md,
+  },
+  extendTile: {
+    width: '46%',
+    backgroundColor: QuinckleColors.surfaceElevated,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    paddingVertical: Spacing.xl,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+    minHeight: 88,
+  },
+  extendTileMins: {
+    fontSize: 30,
+    fontWeight: '800',
+    color: QuinckleColors.primary,
+    letterSpacing: -1,
+  },
+  extendTileUnit: {
+    ...Typography.micro,
+    color: QuinckleColors.textMuted,
+    fontWeight: '600',
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.8,
+  },
+  extendTileExpiry: {
+    ...Typography.micro,
+    color: QuinckleColors.textTertiary,
+    marginTop: 4,
   },
 });

@@ -29,6 +29,7 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { kitchen, printerApi } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { printKot, getStatus as getPrinterStatus } from '../../services/printer';
+import { setSinkContext } from '../../services/printSink';
 import { useAuth } from '../../context/AuthContext';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { BottomNavbar, type BottomNavTab } from '../../components/ui/BottomNavbar';
@@ -195,6 +196,7 @@ export default function CookDashboard() {
       .then((res) => {
         if (typeof res?.data?.kotAutoPrint === 'boolean') {
           kotAutoPrintRef.current = res.data.kotAutoPrint;
+          setSinkContext({ autoPrint: res.data.kotAutoPrint });
         }
       })
       .catch(() => { /* keep last known toggle value */ });
@@ -313,7 +315,10 @@ export default function CookDashboard() {
 
     // Keep the auto-print toggle in sync when changed from any device/dashboard.
     const unsubAutoPrint = subscribeChannel(`partner:${restaurantId}`, 'kot_autoprint_changed', (data: any) => {
-      if (typeof data?.enabled === 'boolean') kotAutoPrintRef.current = data.enabled;
+      if (typeof data?.enabled === 'boolean') {
+        kotAutoPrintRef.current = data.enabled;
+        setSinkContext({ autoPrint: data.enabled });
+      }
     });
 
     return () => {

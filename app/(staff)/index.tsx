@@ -26,6 +26,7 @@ import { Audio } from 'expo-av';
 import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, restaurantApi, crewAuth, printerApi } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { printKot, getStatus as getPrinterStatus } from '../../services/printer';
+import { setSinkContext } from '../../services/printSink';
 
 async function playSound(file: any) {
   try {
@@ -173,7 +174,11 @@ export default function StaffDashboard() {
   // Stored in both state (for UI) and a ref (so Ably callbacks always see latest value).
   const [kotAutoPrint, setKotAutoPrint] = useState(true);
   const kotAutoPrintRef = useRef(true);
-  const setKotAutoPrintSync = (v: boolean) => { kotAutoPrintRef.current = v; setKotAutoPrint(v); };
+  const setKotAutoPrintSync = (v: boolean) => {
+    kotAutoPrintRef.current = v;
+    setKotAutoPrint(v);
+    setSinkContext({ autoPrint: v }); // keep the background FGS gate in sync
+  };
 
   // Sync the KOT auto-print toggle from the server. Auto-print itself gates on
   // the *live* local printer connection (getPrinterStatus), never on staff

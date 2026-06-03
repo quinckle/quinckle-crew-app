@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Dimensions,
+  Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -231,29 +232,6 @@ export default function StaffProfile() {
           </View>
         </View>
 
-        {/* ─── NAVIGATION SECTIONS ─── */}
-        <View style={styles.section}>
-          {/* Cash Collected */}
-          <TouchableOpacity
-            style={styles.sectionRow}
-            onPress={() => router.push('/(staff)/cash-ledger')}
-            activeOpacity={0.6}
-          >
-            <View style={styles.sectionRowLeft}>
-              <View style={[styles.sectionIconWrap]}>
-                <Ionicons name="wallet-outline" size={18} color='white' />
-              </View>
-              <View style={styles.sectionTextGroup}>
-                <Text style={styles.sectionTitle}>Cash Collected</Text>
-                <Text style={styles.sectionSubtitle}>
-                  ₹{(cashLedger?.shiftTotal ?? 0).toLocaleString('en-IN')} this shift
-                </Text>
-              </View>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
-          </TouchableOpacity>
-        </View>
-
         {/* ─── KOT PRINTER ─── */}
         <View style={styles.section}>
           <TouchableOpacity
@@ -289,6 +267,43 @@ export default function StaffProfile() {
               </View>
             </View>
           </View>
+        </View>
+
+        {/* ─── HELP & POLICIES ─── */}
+        <View style={styles.section}>
+          <TouchableOpacity
+            style={styles.sectionRow}
+            onPress={() => Linking.openURL('https://quinckle.com/support')}
+            activeOpacity={0.6}
+          >
+            <View style={styles.sectionRowLeft}>
+              <View style={styles.sectionIconWrap}>
+                <Ionicons name="headset-outline" size={18} color="white" />
+              </View>
+              <View style={styles.sectionTextGroup}>
+                <Text style={styles.sectionTitle}>Help & Support</Text>
+                <Text style={styles.sectionSubtitle}>Get help or contact us</Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
+          </TouchableOpacity>
+          <View style={styles.sectionDivider} />
+          <TouchableOpacity
+            style={styles.sectionRow}
+            onPress={() => Linking.openURL('https://quinckle.com/policies/terms')}
+            activeOpacity={0.6}
+          >
+            <View style={styles.sectionRowLeft}>
+              <View style={styles.sectionIconWrap}>
+                <Ionicons name="document-text-outline" size={18} color="white" />
+              </View>
+              <View style={styles.sectionTextGroup}>
+                <Text style={styles.sectionTitle}>Policies</Text>
+                <Text style={styles.sectionSubtitle}>Terms and conditions</Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
+          </TouchableOpacity>
         </View>
 
         {/* ─── LOGOUT ─── */}

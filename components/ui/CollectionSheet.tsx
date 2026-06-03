@@ -318,7 +318,7 @@ export function CollectionSheet({ visible, onClose, bill, partner, onConfirm }: 
                   <Text style={styles.headerChipText}>Table {bill.tableNumber}</Text>
                 </View>
                 <Text style={styles.title}>₹{bill.amount.toLocaleString('en-IN')}</Text>
-                <Text style={styles.sub}>{bill.customerName ?? 'Guest'} · {bill.customerPhone}</Text>
+                <Text style={styles.sub}>{bill.customerName ?? 'Walk-in'}{bill.customerPhone ? ` · ${bill.customerPhone}` : ''}</Text>
               </View>
               <TouchableOpacity onPress={onClose} style={styles.closeBtn} hitSlop={8}>
                 <Ionicons name="close" size={20} color={QuinckleColors.textSecondary} />

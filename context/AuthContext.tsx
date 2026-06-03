@@ -7,6 +7,7 @@ import { setCrewToken, setOn401Callback } from '../services/api';
 import type { StaffInfo } from '../services/api';
 import { setRealtimeAuth, disconnectRealtime } from '../services/realtime';
 import { heartbeatCrewPushToken, registerCrewPushNotifications } from '../services/pushNotifications';
+import { setSinkContext, stopPrintSink } from '../services/printSink';
 
 type Role = 'staff' | 'cook' | null;
 
@@ -106,6 +107,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         if (saved.staffInfo?.id) {
           setRealtimeAuth(saved.crewToken, `crew:${saved.staffInfo.id}`);
         }
+        // Let the background print sink know we're signed in + which restaurant,
+        // so its foreground-service drain can run + stamp KOTs with the venue.
+        setSinkContext({ authed: true, restaurantName: saved.staffInfo?.restaurantName ?? '' });
       })
       .finally(() => setIsRestoring(false));
   }, []);
@@ -143,11 +147,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       }
     }
     if (staff) setStaffInfo(staff);
+    setSinkContext({ authed: true, restaurantName: staff?.restaurantName ?? '' });
     void persist(selectedRole, token ?? null, staff ?? null);
   };
 
   const logout = () => {
     disconnectRealtime();
+    // Signal the print sink to shut down its foreground service + notification.
+    setSinkContext({ authed: false });
+    void stopPrintSink();
     setRole(null);
     setStaffInfo(null);
     setCrewTokenState(null);

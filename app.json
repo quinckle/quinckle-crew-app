@@ -5,7 +5,7 @@
     "owner": "quinckle",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/logo/quinckle crew icon.png",
+    "icon": "./assets/images/quinckle crew icon converted.png",
     "scheme": "quincklecrew",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -18,7 +18,7 @@
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#0A0A0B",
-        "foregroundImage": "./assets/images/logo/quinckle crew icon.png"
+        "foregroundImage": "./assets/images/quinckle crew icon converted.png"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
@@ -45,8 +45,8 @@
       [
         "expo-notifications",
         {
-          "icon": "./assets/images/logo/quinckle crew icon.png",
-          "color": "#004AAD",
+          "icon": "./assets/images/notification icon small.png",
+          "color": "#F35D3B",
           "sounds": [
             "./assets/audio/notifications/waiter_notification.mp3"
           ]
@@ -55,16 +55,17 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 200,
+          "image": "./assets/images/transparent.png",
+          "imageWidth": 1,
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff",
+          "backgroundColor": "#09090b",
           "dark": {
-            "backgroundColor": "#000000"
+            "backgroundColor": "#09090b"
           }
         }
       ],
       "./plugins/withAllowNativeHeapPointerTagging",
+      "./plugins/withKotForegroundService",
       "expo-secure-store"
     ],
     "experiments": {
