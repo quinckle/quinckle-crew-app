@@ -127,6 +127,16 @@ export async function startPrintSink(): Promise<void> {
   if (!isAndroid || _serviceRunning) return;
   _serviceRunning = true;
   try {
+    // Android 13+ (API 33) requires POST_NOTIFICATIONS to be granted at runtime
+    // before any notification (including the FGS ongoing chip) can be shown.
+    // Request it here so the service can start; if already granted this is a no-op.
+    const settings = await notifee.requestPermission();
+    if (!settings.authorizationStatus) {
+      // Permission denied — can't show the notification, so can't run the FGS.
+      _serviceRunning = false;
+      return;
+    }
+
     await notifee.createChannel({
       id: CHANNEL_ID,
       name: 'KOT printing',
