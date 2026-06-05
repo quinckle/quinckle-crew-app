@@ -216,7 +216,7 @@ export const crewMenu = {
 
 // ── Crew Sessions (STEWARD/ADMIN) ─────────────────────────────────────────────
 
-export interface BillOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; modifiers_summary?: string | null; }
+export interface BillOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done' | 'cancelled'; served: boolean; modifiers_summary?: string | null; }
 export interface BillOrder { order_id: string; placed_at: string; status: 'received' | 'preparing' | 'ready' | 'served'; items: BillOrderItem[]; order_total: number; }
 /**
  * Canonical bill breakdown — same shape returned by /dine/cart/preview and
@@ -299,6 +299,33 @@ export const crewDiners = {
     ),
 };
 
+// ── Crew Memberships (enrol customers into owner-created tiers) ────────────────
+export interface CrewMembershipTier {
+  id: string; name: string; discountType: 'PERCENTAGE' | 'FLAT';
+  discountValue: number; maxDiscount: number | null; minOrderValue: number | null;
+}
+export interface CrewMember {
+  id: string; phone: string; name: string | null; status: string;
+  membershipName: string | null; joinedAt: string;
+}
+export interface CrewEnrolInput {
+  phone: string; name?: string | null; membershipId: string;
+  customDiscountType?: 'PERCENTAGE' | 'FLAT' | null; customDiscountValue?: number | null;
+}
+
+export const crewMemberships = {
+  tiers: () =>
+    request<{ success: boolean; data: CrewMembershipTier[] }>('GET', '/api/crew/memberships/tiers', undefined, true),
+  lookup: (phone: string) =>
+    request<{ success: boolean; data: { exists: boolean; name: string | null; alreadyMember: boolean } }>(
+      'GET', `/api/crew/memberships/lookup?phone=${phone.replace(/\D/g, '')}`, undefined, true,
+    ),
+  members: () =>
+    request<{ success: boolean; data: CrewMember[] }>('GET', '/api/crew/memberships/members', undefined, true),
+  enrol: (body: CrewEnrolInput) =>
+    request<{ success: boolean; data: { id: string } }>('POST', '/api/crew/memberships/members', body, true),
+};
+
 // ── Crew Orders (STEWARD/ADMIN) ───────────────────────────────────────────────
 
 export interface ActiveOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; }
@@ -322,6 +349,13 @@ export const crewOrders = {
   // PATCH rejects. Pass the literal `true` here.
   serveItem: (orderId: string, itemId: string) =>
     request<unknown>('PATCH', `/api/crew/orders/${orderId}/items/${itemId}/serve`, { served: true }, true),
+
+  // Cancel a whole item line before payment is settled. Recomputes the order
+  // total server-side; returns the new total + whether the order is now empty.
+  cancelItem: (orderId: string, itemId: string) =>
+    request<{ success: boolean; order_id: string; session_id: string; item_id: string; new_order_total: number; order_cancelled: boolean }>(
+      'PATCH', `/api/crew/orders/${orderId}/items/${itemId}/cancel`, undefined, true,
+    ),
 
   placeOrder: (sessionId: string, items: { item_id: string; qty: number; note?: string; selectedModifiers?: { groupId: string; optionId: string }[]; modifiers_summary?: string }[]) =>
     request<{ success: boolean; order_id: string; totals?: { total?: number } }>(
