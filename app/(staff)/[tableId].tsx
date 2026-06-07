@@ -902,20 +902,32 @@ export default function TableDetail() {
                 </View>
               </View>
 
-              {isServed ? (
-                <View style={styles.servedBadge}>
-                  <Ionicons name="checkmark" size={11} color="#4ade80" />
-                  <Text style={styles.servedBadgeText}>Served</Text>
-                </View>
-              ) : (
-                <TouchableOpacity
-                  style={styles.markServedBtn}
-                  onPress={() => void handleServe(item)}
-                  activeOpacity={0.75}
-                >
-                  <Text style={styles.markServedText}>Mark served</Text>
-                </TouchableOpacity>
-              )}
+              <View style={styles.itemActions}>
+                {isServed ? (
+                  <View style={styles.servedBadge}>
+                    <Ionicons name="checkmark" size={11} color="#4ade80" />
+                    <Text style={styles.servedBadgeText}>Served</Text>
+                  </View>
+                ) : (
+                  <TouchableOpacity
+                    style={styles.markServedBtn}
+                    onPress={() => void handleServe(item)}
+                    activeOpacity={0.75}
+                  >
+                    <Text style={styles.markServedText}>Mark served</Text>
+                  </TouchableOpacity>
+                )}
+                {!isPaid && (
+                  <TouchableOpacity
+                    style={styles.cancelItemBtn}
+                    onPress={() => setCancelTarget(item)}
+                    activeOpacity={0.75}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Ionicons name="trash-outline" size={14} color={QuinckleColors.danger} />
+                  </TouchableOpacity>
+                )}
+              </View>
             </TouchableOpacity>
           );
         }}
@@ -1555,10 +1567,12 @@ const styles = StyleSheet.create({
   itemTime: { color: QuinckleColors.textTertiary, fontSize: 11, fontWeight: '500' },
   statusTag: { paddingHorizontal: Spacing.sm, paddingVertical: 4, borderRadius: Radius.sm },
   statusTagText: { fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
+  itemActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   markServedBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, borderWidth: 1, borderColor: QuinckleColors.primary, backgroundColor: 'rgba(243,93,59,0.08)' },
   markServedText: { color: QuinckleColors.primary, fontSize: 11, fontWeight: '700' },
   servedBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, backgroundColor: 'rgba(74,222,128,0.1)' },
   servedBadgeText: { color: '#4ade80', fontSize: 11, fontWeight: '700' },
+  cancelItemBtn: { width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(239,68,68,0.1)' },
   itemNameCancelled: { textDecorationLine: 'line-through', color: QuinckleColors.textTertiary },
   cancelledBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, backgroundColor: 'rgba(239,68,68,0.12)' },
   cancelledBadgeText: { color: QuinckleColors.danger, fontSize: 11, fontWeight: '700' },
