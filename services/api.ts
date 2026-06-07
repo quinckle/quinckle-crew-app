@@ -202,6 +202,18 @@ export const crewTables = {
 // ── Crew Menu (STEWARD/ADMIN) ─────────────────────────────────────────────────
 export const crewMenu = {
   /**
+   * Full menu for staff — INCLUDES unavailable items and unavailable modifier
+   * options (each with isAvailable), so 86'd items can be re-enabled and
+   * individual variants toggled. The public diner menu filters these out.
+   */
+  getMenu: () =>
+    request<{ success: true; data: MenuCategory[] }>(
+      'GET',
+      `/api/crew/menu`,
+      undefined,
+      true,
+    ),
+  /**
    * Toggle item availability ("86" an item). Persists server-side and removes it
    * from the diner menu — same effect as the partner dashboard toggle.
    */
@@ -209,6 +221,17 @@ export const crewMenu = {
     request<{ success: true; data: { id: string; isAvailable: boolean } }>(
       'PATCH',
       `/api/crew/menu/items/${itemId}/availability`,
+      { isAvailable },
+      true,
+    ),
+  /**
+   * Toggle a single modifier option / variant ("86" one flavor) without taking
+   * the whole item offline. Drops the option off the diner menu live.
+   */
+  setOptionAvailability: (optionId: string, isAvailable: boolean) =>
+    request<{ success: true; data: { id: string; isAvailable: boolean } }>(
+      'PATCH',
+      `/api/crew/menu/options/${optionId}/availability`,
       { isAvailable },
       true,
     ),
@@ -615,7 +638,7 @@ export const crewPayments = {
 
 // ── Restaurant / Menu (public) ────────────────────────────────────────────────
 
-export interface ModifierOption { id: string; name: string; priceAdjustment: string; }
+export interface ModifierOption { id: string; name: string; priceAdjustment: string; isAvailable?: boolean; }
 export interface ModifierGroup { id: string; name: string; minSelections: number; maxSelections: number; options: ModifierOption[]; }
 export interface MenuItem { id: string; name: string; description?: string; price: string; originalPrice?: string; category: string; isVeg: boolean; isAvailable: boolean; imageUrl?: string; modifierGroups?: ModifierGroup[]; }
 export interface Restaurant { id: string; name: string; slug: string; upiId: string; }

@@ -102,6 +102,18 @@ const MENU_DATA_INITIAL = [
   { id: '9', name: 'Special Salad', price: 150, category: 'Appetizers', available: true },
 ];
 
+type MenuRowOption = { id: string; name: string; priceAdjustment: number; available: boolean };
+type MenuRowGroup = { id: string; name: string; options: MenuRowOption[] };
+type MenuRow = {
+  id: string;
+  name: string;
+  price: number;
+  category: string;
+  available: boolean;
+  image?: string;
+  modifierGroups?: MenuRowGroup[];
+};
+
 type PickupItem = { id: string; name: string; qty: number; orderedAt: string; isServed: boolean; isReady: boolean };
 type PickupOrder = { id: string; tableNo: string; items: PickupItem[]; completedAt?: string };
 
@@ -140,7 +152,8 @@ export default function StaffDashboard() {
   const [tables, setTables] = useState<Table[]>([]);
   const [isLoadingTables, setIsLoadingTables] = useState(true);
   const [isLoadingMenu, setIsLoadingMenu] = useState(true);
-  const [menuData, setMenuData] = useState(MENU_DATA_INITIAL);
+  const [menuData, setMenuData] = useState<MenuRow[]>(MENU_DATA_INITIAL);
+  const [expandedMenuItem, setExpandedMenuItem] = useState<string | null>(null);
   const [menuCategories, setMenuCategories] = useState<string[]>(['All', 'Appetizers', 'Mains', 'Beverages', 'Desserts']);
   const [combos, setCombos] = useState<any[]>([]);
   const [highlightedSection, setHighlightedSection] = useState<{ title: string; subtitle?: string; itemIds: string[] } | null>(null);
@@ -401,7 +414,9 @@ export default function StaffDashboard() {
     const rid = staffInfo.restaurantId;
     try {
       const [menuRes, combosRes, highlightRes] = await Promise.allSettled([
-        restaurantApi.getMenu(rid),
+        // Crew endpoint (NOT the diner menu): returns unavailable items + options
+        // too, so 86'd items stay in the list and can be re-enabled.
+        crewMenu.getMenu(),
         restaurantApi.getCombos(rid),
         restaurantApi.getHighlighted(rid),
       ]);
@@ -410,10 +425,22 @@ export default function StaffDashboard() {
         const categories: any[] = (menuRes.value as any)?.data ?? [];
         const items = categories.flatMap((cat: any) => cat.items ?? []);
         if (items.length > 0) {
-          setMenuData(items.map((item: any) => ({
+          setMenuData(items.map((item: any): MenuRow => ({
             id: item.id, name: item.name,
             price: parseFloat(item.price), category: item.category,
             available: item.isAvailable, image: item.imageUrl ?? undefined,
+            modifierGroups: (item.modifierGroups ?? [])
+              .map((g: any) => ({
+                id: g.id,
+                name: g.name,
+                options: (g.options ?? []).map((o: any) => ({
+                  id: o.id,
+                  name: o.name,
+                  priceAdjustment: parseFloat(String(o.priceAdjustment ?? '0')) || 0,
+                  available: o.isAvailable !== false,
+                })),
+              }))
+              .filter((g: MenuRowGroup) => g.options.length > 0),
           })));
           setMenuCategories(['All', ...categories.map((c: any) => c.name).filter(Boolean)]);
           setMenuFilter('All');
@@ -803,6 +830,28 @@ export default function StaffDashboard() {
     }
   };
 
+  // Toggle a single modifier option / variant (86 one flavor) without taking
+  // the whole item offline.
+  const setOptionState = (itemId: string, optionId: string, available: boolean) =>
+    setMenuData(prev => prev.map(m => m.id === itemId
+      ? {
+          ...m,
+          modifierGroups: m.modifierGroups?.map(g => ({
+            ...g,
+            options: g.options.map(o => o.id === optionId ? { ...o, available } : o),
+          })),
+        }
+      : m));
+
+  const toggleOptionAvailability = async (itemId: string, optionId: string, next: boolean) => {
+    setOptionState(itemId, optionId, next); // optimistic
+    try {
+      await crewMenu.setOptionAvailability(optionId, next);
+    } catch {
+      setOptionState(itemId, optionId, !next); // revert
+    }
+  };
+
   const handleTablePress = (tableNum: number, currentStatus: TableStatus) => {
     if (currentStatus === 'offline') {
       showDialog(
@@ -1173,25 +1222,68 @@ export default function StaffDashboard() {
               {/* Menu Items */}
               {menuData
                 .filter(item => (menuFilter === 'All' || item.category === menuFilter) && item.name.toLowerCase().includes(searchText.toLowerCase()))
-                .map(item => (
-                  <View key={item.id} style={styles.menuItemRow}>
-                    <View style={styles.menuItemLeft}>
-                      {item.image
-                        ? <Image source={{ uri: item.image }} style={[styles.menuItemImage, !item.available && styles.dimmed]} />
-                        : <View style={[styles.menuItemImagePlaceholder, !item.available && styles.dimmed]}><Ionicons name="fast-food-outline" size={20} color={QuinckleColors.textTertiary} /></View>}
-                      <View style={styles.menuItemInfo}>
-                        <Text style={[styles.menuItemName, !item.available && styles.dimmedText]}>{item.name}</Text>
-                        <Text style={styles.menuItemPrice}>₹{item.price}</Text>
-                      </View>
+                .map(item => {
+                  const hasMods = !!item.modifierGroups?.length;
+                  const expanded = expandedMenuItem === item.id;
+                  const offCount = item.modifierGroups?.reduce(
+                    (n, g) => n + g.options.filter(o => !o.available).length, 0) ?? 0;
+                  return (
+                  <View key={item.id} style={styles.menuItemCard}>
+                    <View style={styles.menuItemRow}>
+                      <TouchableOpacity
+                        style={styles.menuItemLeft}
+                        activeOpacity={hasMods ? 0.6 : 1}
+                        onPress={() => { if (hasMods) setExpandedMenuItem(expanded ? null : item.id); }}
+                      >
+                        {item.image
+                          ? <Image source={{ uri: item.image }} style={[styles.menuItemImage, !item.available && styles.dimmed]} />
+                          : <View style={[styles.menuItemImagePlaceholder, !item.available && styles.dimmed]}><Ionicons name="fast-food-outline" size={20} color={QuinckleColors.textTertiary} /></View>}
+                        <View style={styles.menuItemInfo}>
+                          <Text style={[styles.menuItemName, !item.available && styles.dimmedText]}>{item.name}</Text>
+                          <Text style={styles.menuItemPrice}>₹{item.price}</Text>
+                        </View>
+                        {hasMods && (
+                          <View style={styles.modCaret}>
+                            {offCount > 0 && !expanded && (
+                              <View style={styles.modOffBadge}><Text style={styles.modOffBadgeText}>{offCount} off</Text></View>
+                            )}
+                            <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={16} color={QuinckleColors.textTertiary} />
+                          </View>
+                        )}
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => void toggleMenuItemAvailability(item.id, !item.available)}
+                        style={[styles.toggleBase, item.available ? styles.toggleOn : styles.toggleOff]}
+                      >
+                        <View style={[styles.toggleCircle, item.available ? styles.toggleCircleOn : styles.toggleCircleOff]} />
+                      </TouchableOpacity>
                     </View>
-                    <TouchableOpacity
-                      onPress={() => void toggleMenuItemAvailability(item.id, !item.available)}
-                      style={[styles.toggleBase, item.available ? styles.toggleOn : styles.toggleOff]}
-                    >
-                      <View style={[styles.toggleCircle, item.available ? styles.toggleCircleOn : styles.toggleCircleOff]} />
-                    </TouchableOpacity>
+
+                    {expanded && hasMods && (
+                      <View style={styles.modOptionsWrap}>
+                        {item.modifierGroups!.map(group => (
+                          <View key={group.id} style={styles.modGroup}>
+                            <Text style={styles.modGroupName}>{group.name}</Text>
+                            {group.options.map(opt => (
+                              <View key={opt.id} style={styles.modOptionRow}>
+                                <Text style={[styles.modOptionName, !opt.available && styles.dimmedText]} numberOfLines={1}>
+                                  {opt.name}{opt.priceAdjustment ? `  +₹${opt.priceAdjustment.toFixed(0)}` : ''}
+                                </Text>
+                                <TouchableOpacity
+                                  onPress={() => void toggleOptionAvailability(item.id, opt.id, !opt.available)}
+                                  style={[styles.toggleBaseSm, opt.available ? styles.toggleOn : styles.toggleOff]}
+                                >
+                                  <View style={[styles.toggleCircleSm, opt.available ? styles.toggleCircleOn : styles.toggleCircleOff]} />
+                                </TouchableOpacity>
+                              </View>
+                            ))}
+                          </View>
+                        ))}
+                      </View>
+                    )}
                   </View>
-                ))}
+                  );
+                })}
               <View style={{ height: 120 }} />
             </ScrollView>
           )}
@@ -1855,13 +1947,15 @@ const styles = StyleSheet.create({
   comboBadgeText: { fontSize: 9, fontWeight: '800', color: '#fff', letterSpacing: 0.4 },
   comboCardPrice: { fontSize: 15, fontWeight: '800', color: QuinckleColors.primary },
   comboCardOrig: { fontSize: 12, color: QuinckleColors.textTertiary, textDecorationLine: 'line-through' as const },
+  menuItemCard: {
+    borderBottomWidth: 1,
+    borderBottomColor: QuinckleColors.borderSubtle,
+  },
   menuItemRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: QuinckleColors.borderSubtle,
   },
   menuItemLeft: {
     flexDirection: 'row',
@@ -1927,6 +2021,65 @@ const styles = StyleSheet.create({
   },
   toggleCircleOff: {
     alignSelf: 'flex-start',
+  },
+  // ── Modifier (variant) availability sub-rows ──
+  modCaret: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginLeft: 4,
+  },
+  modOffBadge: {
+    backgroundColor: QuinckleColors.warningSoft,
+    borderRadius: Radius.sm,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  modOffBadgeText: {
+    color: QuinckleColors.warning,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  modOptionsWrap: {
+    paddingLeft: 58 + Spacing.md,
+    paddingBottom: Spacing.md,
+    gap: Spacing.sm,
+  },
+  modGroup: {
+    gap: 4,
+  },
+  modGroupName: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  modOptionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  modOptionName: {
+    flex: 1,
+    color: QuinckleColors.textPrimary,
+    fontSize: 14,
+    fontWeight: '500',
+    paddingRight: Spacing.md,
+  },
+  toggleBaseSm: {
+    width: 38,
+    height: 22,
+    borderRadius: 11,
+    padding: 3,
+    justifyContent: 'center',
+  },
+  toggleCircleSm: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#fff',
   },
 
   sectionHeading: {
