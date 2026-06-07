@@ -3,6 +3,10 @@
     "name": "QuinckleCrew",
     "slug": "QuinckleCrew",
     "owner": "quinckle",
+    "platforms": [
+      "ios",
+      "android"
+    ],
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/quinckle crew icon converted.png",
