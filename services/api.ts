@@ -283,6 +283,7 @@ export interface LedgerSessionItem {
   served?: boolean;
   itemStatus?: string | null;
   notes?: string | null;
+  modifiersSummary?: string | null;
 }
 
 export interface LedgerOrder {

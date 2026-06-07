@@ -85,6 +85,7 @@ function OrderCard({ order }: { order: LedgerOrder }) {
             <Text style={styles.itemQty}>{it.qty}×</Text>
             <View style={{ flex: 1 }}>
               <Text style={styles.itemName} numberOfLines={2}>{it.name}</Text>
+              {!!it.modifiersSummary && <Text style={styles.itemNote} numberOfLines={2}>{it.modifiersSummary}</Text>}
               {!!it.notes && <Text style={styles.itemNote} numberOfLines={2}>{it.notes}</Text>}
             </View>
           </View>
@@ -178,7 +179,7 @@ export default function OrderDetail() {
       }
 
       const items: InvoiceItem[] = (session.orders ?? []).flatMap((o) =>
-        (o.items ?? []).map((it) => ({ name: it.name, qty: it.qty, unitPrice: it.unitPrice, modifiersSummary: it.notes ?? null })),
+        (o.items ?? []).map((it) => ({ name: it.name, qty: it.qty, unitPrice: it.unitPrice, modifiersSummary: it.modifiersSummary ?? null })),
       );
       const methods = session.paymentMethodsUsed ?? [];
       const paymentMethod =
