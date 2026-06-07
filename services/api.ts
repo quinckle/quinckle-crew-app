@@ -269,6 +269,87 @@ export interface SessionBill {
   splits?: Array<{ method: 'CASH' | 'UPI_DIRECT'; amount: number }>;
 }
 
+// ── Order Ledger (session history) ────────────────────────────────────────────
+// Mirrors the partner Order Ledger. Returned by GET /api/crew/sessions/history
+// via the shared backend buildSessionLedger service — identical shape on both.
+
+export interface LedgerSessionItem {
+  id: string;
+  name: string;
+  isVeg: boolean | null;
+  qty: number;
+  unitPrice: number;
+  total: number;
+  served?: boolean;
+  itemStatus?: string | null;
+  notes?: string | null;
+}
+
+export interface LedgerOrder {
+  id: string;
+  shortId: string;
+  status: string;
+  paymentStatus?: string;
+  createdAt: string;
+  discount: number;
+  tip: number;
+  subtotal: number;
+  paymentSummary?: {
+    methods: string[];
+    collectedBy: string | null;
+    confirmedAt: string | null;
+  };
+  items: LedgerSessionItem[];
+}
+
+export type LedgerRange = 'today' | 'yesterday' | 'week' | 'month';
+
+export interface LedgerSummary {
+  totalSessions: number;
+  totalRevenue: number;
+  avgBill: number;
+  avgDurationMins: number;
+  quincklesCut: number;
+  isFreePeriod: boolean;
+  commissionRate: number;
+  pgFeeRate: number;
+}
+
+export interface LedgerSession {
+  id: string;
+  sessionRef?: string;
+  shortId: string;
+  tableNumber: number | null;
+  status: string;
+  statusView?: 'PAID' | 'OPEN' | 'CASH_PENDING' | 'CLOSED';
+  openedAt: string;
+  closedAt: string | null;
+  durationMins: number;
+  customerName: string | null;
+  customerPhone: string | null;
+  orders: LedgerOrder[];
+  foodSubtotal: number;
+  totalDiscount: number;
+  chargesGstTotal: number;
+  totalTip: number;
+  billTotal: number;
+  grandTotal: number;
+  balanceDue?: number;
+  pgGatewayAmount?: number;
+  quincklesCut: number;
+  commissionRate?: number;
+  paymentMethodsUsed?: string[];
+  payment?: { method: string; amount: number; status: string; confirmedAt?: string | null } | null;
+}
+
+export interface LedgerResponse {
+  summary: LedgerSummary;
+  sessions: LedgerSession[];
+  total: number;
+  page: number;
+  pages: number;
+}
+
 export const crewSessions = {
   start: (tableId: string) =>
     request<{ success: true; session_id: string; session_ref: string; table_id: string; table_number: number; started_at: string }>(
@@ -290,6 +371,37 @@ export const crewSessions = {
       { customerPhone: customerPhone ?? null, customerName: customerName ?? null },
       true,
     ),
+
+  /** Order Ledger — paginated session history with filters (STEWARD/ADMIN). */
+  getHistory: async (params: {
+    range?: LedgerRange;
+    from?: string;
+    to?: string;
+    sessionRef?: string;
+    status?: string;
+    method?: string;
+    page?: number;
+    limit?: number;
+  } = {}): Promise<LedgerResponse> => {
+    const parts: string[] = [];
+    if (params.range)                              parts.push(`range=${params.range}`);
+    if (params.from)                               parts.push(`from=${params.from}`);
+    if (params.to)                                 parts.push(`to=${params.to}`);
+    if (params.sessionRef)                         parts.push(`sessionRef=${encodeURIComponent(params.sessionRef)}`);
+    if (params.status && params.status !== 'all')  parts.push(`status=${params.status}`);
+    if (params.method && params.method !== 'all')  parts.push(`method=${params.method}`);
+    if (params.page  != null)                      parts.push(`page=${params.page}`);
+    if (params.limit != null)                      parts.push(`limit=${params.limit}`);
+    const qs = parts.length ? `?${parts.join('&')}` : '';
+    const res = await request<{ success: boolean; data: LedgerResponse }>('GET', `/api/crew/sessions/history${qs}`, undefined, true);
+    return res.data;
+  },
+
+  /** Convenience: today's ledger (first page). */
+  getToday: async (): Promise<LedgerResponse> => {
+    const res = await request<{ success: boolean; data: LedgerResponse }>('GET', '/api/crew/sessions/history?range=today&limit=50', undefined, true);
+    return res.data;
+  },
 };
 
 export const crewDiners = {
