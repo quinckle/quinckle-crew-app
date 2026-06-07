@@ -824,6 +824,16 @@ export default function TableDetail() {
             {sessionRef || toSessionRef(sessionId)}
           </Text>
         </View>
+        <View style={styles.sessionInfoSep} />
+        <View style={styles.sessionInfoRow}>
+          <Text style={styles.sessionInfoLabel}>Guest</Text>
+          <Text style={styles.sessionInfoValue}>{sessionCustomerName?.trim() || 'N/A'}</Text>
+        </View>
+        <View style={styles.sessionInfoSep} />
+        <View style={styles.sessionInfoRow}>
+          <Text style={styles.sessionInfoLabel}>Phone</Text>
+          <Text style={styles.sessionInfoValue}>{sessionCustomerPhone?.trim() || 'N/A'}</Text>
+        </View>
         {since ? (
           <>
             <View style={styles.sessionInfoSep} />
