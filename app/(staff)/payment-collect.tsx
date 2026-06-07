@@ -212,6 +212,8 @@ export default function PaymentCollectScreen() {
   const params  = useLocalSearchParams<{
     orderId: string; tableNumber: string; amount?: string;
     customerName: string; customerPhone: string;
+    sessionId?: string;
+    orderIds?: string;
     intentId?: string;
     intentMethod?: 'STAFF_COLLECT' | 'UPI_DIRECT';
     upiVpa?: string;
@@ -220,6 +222,17 @@ export default function PaymentCollectScreen() {
   }>();
 
   const orderId       = params.orderId ?? '';
+  const sessionId     = params.sessionId ?? '';
+  // Every pending order on the table — present ⇒ this is a whole-table collect.
+  const orderIds      = useMemo<string[]>(() => {
+    if (!params.orderIds) return [];
+    try { const v = JSON.parse(params.orderIds); return Array.isArray(v) ? v.map(String) : []; }
+    catch { return []; }
+  }, [params.orderIds]);
+  // Multi-order ⇒ settle the session; the single-order payment context (fetched
+  // per representative order) would otherwise under-report the table total.
+  const isSessionCollect = !params.intentId && !!sessionId && orderIds.length > 0;
+  const isMultiOrder      = orderIds.length > 1;
   const tableNumber   = Number(params.tableNumber ?? 0);
   const total         = Number(params.amount ?? 0);
   const customerName  = params.customerName && params.customerName.length > 0 ? params.customerName : null;
@@ -271,7 +284,9 @@ export default function PaymentCollectScreen() {
   useEffect(() => {
     let alive = true;
     const loadPaymentContext = async () => {
-      if (!orderId) return;
+      // For a multi-order (whole-table) collect the per-order context would
+      // under-report the total — rely on the summed card amount/breakdown.
+      if (!orderId || isMultiOrder) return;
       setIsLoadingPaymentContext(true);
       setPaymentContextError(null);
       try {
@@ -287,11 +302,11 @@ export default function PaymentCollectScreen() {
     };
     void loadPaymentContext();
     return () => { alive = false; };
-  }, [orderId]);
+  }, [orderId, isMultiOrder]);
 
-  const resolvedTotal = paymentContext?.total ?? total;
+  const resolvedTotal = isMultiOrder ? total : (paymentContext?.total ?? total);
   const resolvedBreakdown: BillBreakdown | null = useMemo(() => {
-    if (paymentContext) {
+    if (paymentContext && !isMultiOrder) {
       return {
         subtotal: paymentContext.subtotal,
         discount: 0,
@@ -304,7 +319,7 @@ export default function PaymentCollectScreen() {
       };
     }
     return breakdown;
-  }, [paymentContext, breakdown]);
+  }, [paymentContext, breakdown, isMultiOrder]);
 
   const cashNum    = Number(cashInput || 0);
   const upiNum     = Math.max(0, resolvedTotal - cashNum);
@@ -317,8 +332,12 @@ export default function PaymentCollectScreen() {
     return buildUpiUri(partnerUpi.vpa, partnerUpi.merchantName ?? 'Merchant', qrAmount);
   }, [partnerUpi.vpa, partnerUpi.merchantName, qrAmount]);
 
+  const splitsSig = (splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[]) =>
+    splits.map(s => `${s.method}:${Number(s.amount).toFixed(2)}`).join('|');
   const buildCollectIdempotencyKey = (splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[]) =>
-    `crew-collect:${orderId}:${splits.map(s => `${s.method}:${Number(s.amount).toFixed(2)}`).join('|')}`;
+    `crew-collect:${orderId}:${splitsSig(splits)}`;
+  const buildSessionIdempotencyKey = (splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[]) =>
+    `crew-collect-session:${sessionId}:${[...orderIds].sort().join(',')}:${splitsSig(splits)}`;
 
   const submit = async (splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[]) => {
     const staffId = staffInfo?.id;
@@ -332,13 +351,23 @@ export default function PaymentCollectScreen() {
           return;
         }
         await crewPayments.confirmPaymentIntent(intentId);
+      } else if (isSessionCollect) {
+        // Whole-table: settle every pending order the card was showing.
+        await crewPayments.collectSessionPayment(sessionId, orderIds, staffId, splits, buildSessionIdempotencyKey(splits));
       } else {
         await crewPayments.collectPayment(orderId, staffId, splits, buildCollectIdempotencyKey(splits));
       }
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setSuccessInfo({ tableNumber, total: resolvedTotal, splits });
     } catch (err: any) {
-      Alert.alert('Could not record payment', err?.message ?? 'Please try again.');
+      const code = String(err?.code ?? err?.message ?? '');
+      if (code.includes('ALREADY_COLLECTED')) {
+        Alert.alert('Already collected', 'This table has already been settled.', [{ text: 'OK', onPress: () => router.back() }]);
+      } else if (code.includes('STALE_ORDERS')) {
+        Alert.alert('Bill changed', 'A new order arrived for this table. Reopen the card to collect the updated total.', [{ text: 'OK', onPress: () => router.back() }]);
+      } else {
+        Alert.alert('Could not record payment', err?.message ?? 'Please try again.');
+      }
     } finally {
       setLoading(false);
     }

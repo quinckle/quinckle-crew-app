@@ -512,6 +512,10 @@ export interface CashLedger { shiftTotal: number; groups: CashLedgerGroup[]; }
 
 export interface PendingCashRequest {
   orderId: string;
+  /** All pending order ids on this table — the whole-table collect settles these. */
+  orderIds?: string[];
+  /** Count of pending orders folded into this one card (>1 ⇒ show "N orders"). */
+  orderCount?: number;
   intentId?: string;
   source?: 'ORDER' | 'INTENT';
   intentMethod?: 'STAFF_COLLECT' | 'UPI_DIRECT';
@@ -594,6 +598,36 @@ export const crewPayments = {
       splits,
       idempotency_key: idempotencyKey,
       upi_reference: upiReference ?? null,
+    }, true),
+
+  // v3 (whole table): settle EVERY pending order the card was showing in one
+  // atomic transaction. Same split shape as collectPayment, keyed by session +
+  // the explicit orderIds the sheet rendered.
+  collectSessionPayment: (
+    sessionId: string,
+    orderIds: string[],
+    staffId: string,
+    splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[],
+    idempotencyKey: string,
+    upiReference?: string | null,
+  ) =>
+    request<{
+      success: true;
+      session_id: string;
+      order_ids: string[];
+      status: 'paid';
+      payment_method: 'cash' | 'upi_direct' | 'mixed';
+      total: number;
+      splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number; payment_id: string }[];
+      collected_by: string;
+      paid_at: string;
+    }>('POST', '/api/crew/payments/collect-session', {
+      session_id:      sessionId,
+      order_ids:       orderIds,
+      staff_id:        staffId,
+      splits,
+      idempotency_key: idempotencyKey,
+      upi_reference:   upiReference ?? null,
     }, true),
 
   // Powers the cash-collection screen: pending requests + today's history.

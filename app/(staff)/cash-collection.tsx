@@ -154,6 +154,9 @@ export default function CashCollectionScreen() {
       pathname: '/(staff)/payment-collect',
       params: {
         orderId: req.orderId,
+        // Whole-table collect settles every pending order on the session.
+        sessionId: req.sessionId ?? '',
+        orderIds: req.orderIds ? JSON.stringify(req.orderIds) : '',
         tableNumber: String(req.tableNumber ?? ''),
         amount: String(req.amount ?? 0),
         customerName: req.customerName ?? '',
@@ -441,7 +444,9 @@ export default function CashCollectionScreen() {
                     <>
                       <View style={s.pendingBody}>
                         <View style={s.pendingAmountBlock}>
-                          <Text style={s.pendingAmountLabel}>Amount due</Text>
+                          <Text style={s.pendingAmountLabel}>
+                            {p.orderCount && p.orderCount > 1 ? `Amount due · ${p.orderCount} orders` : 'Amount due'}
+                          </Text>
                           <Text style={s.pendingAmount}>₹{p.amount.toLocaleString('en-IN')}</Text>
                         </View>
                         <View style={s.pendingMetaRow}>
