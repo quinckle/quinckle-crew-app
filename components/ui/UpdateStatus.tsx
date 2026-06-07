@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, TouchableOpacity, Animated, Easing, StyleSheet, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Updates from 'expo-updates';
-import { QuinckleColors, Radius } from '../../constants/Colors';
+import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 
 function shortId(id?: string | null): string {
   return id ? id.replace(/-/g, '').slice(0, 8) : '—';
@@ -147,11 +147,12 @@ export default function UpdateStatus() {
 const styles = StyleSheet.create({
   section: {
     backgroundColor: QuinckleColors.surfaceMuted,
-    borderRadius: Radius.lg,
+    borderRadius: Radius.xl,
     borderWidth: 1,
     borderColor: QuinckleColors.border,
     padding: 14,
-    marginTop: 12,
+    marginHorizontal: Spacing.lg,
+    marginBottom: Spacing.md,
   },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   iconWrap: {

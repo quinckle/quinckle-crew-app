@@ -1261,22 +1261,25 @@ export default function StaffDashboard() {
 
                     {expanded && hasMods && (
                       <View style={styles.modOptionsWrap}>
-                        {item.modifierGroups!.map(group => (
-                          <View key={group.id} style={styles.modGroup}>
-                            <Text style={styles.modGroupName}>{group.name}</Text>
-                            {group.options.map(opt => (
-                              <View key={opt.id} style={styles.modOptionRow}>
-                                <Text style={[styles.modOptionName, !opt.available && styles.dimmedText]} numberOfLines={1}>
-                                  {opt.name}{opt.priceAdjustment ? `  +₹${opt.priceAdjustment.toFixed(0)}` : ''}
-                                </Text>
-                                <TouchableOpacity
-                                  onPress={() => void toggleOptionAvailability(item.id, opt.id, !opt.available)}
-                                  style={[styles.toggleBaseSm, opt.available ? styles.toggleOn : styles.toggleOff]}
-                                >
-                                  <View style={[styles.toggleCircleSm, opt.available ? styles.toggleCircleOn : styles.toggleCircleOff]} />
-                                </TouchableOpacity>
-                              </View>
-                            ))}
+                        {item.modifierGroups!.map((group, gi) => (
+                          <View key={group.id}>
+                            {gi > 0 && <View style={styles.modGroupDivider} />}
+                            <View style={styles.modGroup}>
+                              <Text style={styles.modGroupName}>{group.name}</Text>
+                              {group.options.map(opt => (
+                                <View key={opt.id} style={styles.modOptionRow}>
+                                  <Text style={[styles.modOptionName, !opt.available && styles.dimmedText]} numberOfLines={1}>
+                                    {opt.name}{opt.priceAdjustment ? `  +₹${opt.priceAdjustment.toFixed(0)}` : ''}
+                                  </Text>
+                                  <TouchableOpacity
+                                    onPress={() => void toggleOptionAvailability(item.id, opt.id, !opt.available)}
+                                    style={[styles.toggleBaseSm, opt.available ? styles.toggleOn : styles.toggleOff]}
+                                  >
+                                    <View style={[styles.toggleCircleSm, opt.available ? styles.toggleCircleOn : styles.toggleCircleOff]} />
+                                  </TouchableOpacity>
+                                </View>
+                              ))}
+                            </View>
                           </View>
                         ))}
                       </View>
@@ -2041,12 +2044,15 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   modOptionsWrap: {
-    paddingLeft: 58 + Spacing.md,
-    paddingBottom: Spacing.md,
-    gap: Spacing.sm,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: QuinckleColors.borderSubtle,
+    paddingHorizontal: Spacing.md,
+    marginBottom: Spacing.md,
   },
   modGroup: {
-    gap: 4,
+    paddingVertical: Spacing.sm,
   },
   modGroupName: {
     color: QuinckleColors.textTertiary,
@@ -2054,12 +2060,17 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     textTransform: 'uppercase',
     letterSpacing: 0.4,
+    marginBottom: 2,
   },
   modOptionRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 6,
+    paddingVertical: 7,
+  },
+  modGroupDivider: {
+    height: 1,
+    backgroundColor: QuinckleColors.borderSubtle,
   },
   modOptionName: {
     flex: 1,
