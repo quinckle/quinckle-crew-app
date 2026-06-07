@@ -28,6 +28,7 @@ type FlatItem = {
   name: string;
   modifiersSummary?: string | null;
   status: ItemStatus;
+  cancelled: boolean;
   price: number;
   orderedAt: string;
   qty: number;
@@ -329,14 +330,16 @@ export default function TableDetail() {
         name: `${item.qty}× ${item.name}`,
         modifiersSummary: item.modifiers_summary,
         status: itemStatus(item),
+        cancelled: item.item_status === 'cancelled',
         price: item.price * item.qty,
         orderedAt: formatTime(order.placed_at),
         qty: item.qty,
       }))
     ), [orders]);
 
-  const servedCount = flatItems.filter(i => i.status === 'served').length;
-  const totalCount = flatItems.length;
+  const billableFlatItems = useMemo(() => flatItems.filter(item => !item.cancelled), [flatItems]);
+  const servedCount = billableFlatItems.filter(i => i.status === 'served').length;
+  const totalCount = billableFlatItems.length;
   const serviceProgress = totalCount > 0 ? servedCount / totalCount : 0;
   const progressAnim = React.useRef(new Animated.Value(serviceProgress)).current;
 
@@ -387,6 +390,7 @@ export default function TableDetail() {
       showDialog(
         'Could not create collection request',
         err?.message ?? 'Please try again from the Payment Collection screen.',
+        [{ label: 'OK', onPress: () => {} }],
       );
     } finally {
       setIsRequestingCollection(false);
@@ -472,7 +476,7 @@ export default function TableDetail() {
     }
 
     const invoiceItems: InvoiceBill['items'] = orders.flatMap(order =>
-      order.items.map(item => ({
+      order.items.filter(item => item.item_status !== 'cancelled').map(item => ({
         name: item.name,
         qty: item.qty,
         unitPrice: item.price,
@@ -882,7 +886,7 @@ export default function TableDetail() {
             </View>
 
             <View style={styles.billItemsContainer}>
-              {flatItems.map(item => (
+              {billableFlatItems.map(item => (
                 <View key={item.key} style={styles.billItemRow}>
                   <Text style={styles.billItemName}>{item.name}</Text>
                   <Text style={styles.billItemPrice}>₹{item.price.toFixed(0)}</Text>
