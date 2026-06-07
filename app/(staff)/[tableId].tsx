@@ -369,6 +369,29 @@ export default function TableDetail() {
     }
   };
 
+  const [cancelTarget, setCancelTarget] = useState<FlatItem | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+
+  const handleCancelItem = async () => {
+    if (!cancelTarget || cancelling || isPaid) return;
+    setCancelling(true);
+    try {
+      const res = await crewOrders.cancelItem(cancelTarget.order_id, cancelTarget.item_id);
+      if (!res?.success) {
+        setCancelTarget(null);
+        showDialog('Could not cancel', 'This item could not be cancelled. The order may already be paid.', [{ label: 'OK', onPress: () => {} }]);
+        return;
+      }
+      await loadBill();
+      setCancelTarget(null);
+    } catch {
+      setCancelTarget(null);
+      showDialog('Could not cancel', 'Something went wrong. Please try again.', [{ label: 'OK', onPress: () => {} }]);
+    } finally {
+      setCancelling(false);
+    }
+  };
+
   // Cash collection lives in app/(staff)/cash-collection.tsx now — accessible
   // via the cash icon in the staff dashboard header. The table screen no
   // longer offers a "Collect Cash" action because cash collection is driven
@@ -840,8 +863,31 @@ export default function TableDetail() {
         }
         renderItem={({ item }) => {
           const isServed = item.status === 'served';
+          if (item.cancelled) {
+            return (
+              <View style={[styles.orderItemRow, { opacity: 0.5 }]}>
+                <View style={styles.orderItemLeft}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.itemName, styles.itemNameCancelled]}>{item.name}</Text>
+                    <View style={styles.itemMetaRow}>
+                      <Text style={[styles.itemPrice, styles.itemNameCancelled]}>₹{item.price.toFixed(0)}</Text>
+                    </View>
+                  </View>
+                </View>
+                <View style={styles.cancelledBadge}>
+                  <Ionicons name="close" size={11} color={QuinckleColors.danger} />
+                  <Text style={styles.cancelledBadgeText}>Cancelled</Text>
+                </View>
+              </View>
+            );
+          }
           return (
-            <View style={[styles.orderItemRow, isServed && { opacity: 0.55 }]}>
+            <TouchableOpacity
+              activeOpacity={0.9}
+              onLongPress={() => { if (!isPaid) setCancelTarget(item); }}
+              delayLongPress={350}
+              style={[styles.orderItemRow, isServed && { opacity: 0.55 }]}
+            >
               <View style={styles.orderItemLeft}>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.itemName, isServed && styles.itemNameServed]}>{item.name}</Text>
@@ -870,7 +916,7 @@ export default function TableDetail() {
                   <Text style={styles.markServedText}>Mark served</Text>
                 </TouchableOpacity>
               )}
-            </View>
+            </TouchableOpacity>
           );
         }}
       />
@@ -976,6 +1022,44 @@ export default function TableDetail() {
       </View>
 
       <ThemedDialog visible={dialog.visible} title={dialog.title} message={dialog.message} actions={dialog.actions} onClose={closeDialog} />
+
+      <BottomSheet
+        visible={!!cancelTarget}
+        onClose={() => { if (!cancelling) setCancelTarget(null); }}
+      >
+        <View style={styles.cancelSheetBody}>
+          <View style={styles.cancelSheetIcon}>
+            <Ionicons name="trash-outline" size={22} color={QuinckleColors.danger} />
+          </View>
+          <Text style={styles.cancelSheetTitle}>Cancel this item?</Text>
+          <Text style={styles.cancelSheetItem}>{cancelTarget?.name}</Text>
+          <Text style={styles.cancelSheetSub}>
+            ₹{(cancelTarget?.price ?? 0).toFixed(0)} will be removed from the bill. This can&apos;t be undone.
+          </Text>
+          <View style={styles.cancelSheetActions}>
+            <TouchableOpacity
+              style={styles.cancelSheetKeep}
+              onPress={() => { if (!cancelling) setCancelTarget(null); }}
+              activeOpacity={0.8}
+              disabled={cancelling}
+            >
+              <Text style={styles.cancelSheetKeepText}>Keep item</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.cancelSheetConfirm, cancelling && { opacity: 0.6 }]}
+              onPress={() => void handleCancelItem()}
+              activeOpacity={0.85}
+              disabled={cancelling}
+            >
+              {cancelling ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.cancelSheetConfirmText}>Cancel item</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </BottomSheet>
 
       {/* ── UPI QR modal ── */}
       <Modal visible={showUpiModal} transparent animationType="fade" onRequestClose={() => setShowUpiModal(false)}>
@@ -1475,6 +1559,19 @@ const styles = StyleSheet.create({
   markServedText: { color: QuinckleColors.primary, fontSize: 11, fontWeight: '700' },
   servedBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, backgroundColor: 'rgba(74,222,128,0.1)' },
   servedBadgeText: { color: '#4ade80', fontSize: 11, fontWeight: '700' },
+  itemNameCancelled: { textDecorationLine: 'line-through', color: QuinckleColors.textTertiary },
+  cancelledBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, backgroundColor: 'rgba(239,68,68,0.12)' },
+  cancelledBadgeText: { color: QuinckleColors.danger, fontSize: 11, fontWeight: '700' },
+  cancelSheetBody: { paddingHorizontal: 22, paddingTop: 4, paddingBottom: 8, alignItems: 'center' },
+  cancelSheetIcon: { width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(239,68,68,0.12)', marginBottom: 14 },
+  cancelSheetTitle: { fontSize: 17, fontWeight: '800', color: QuinckleColors.textPrimary, marginBottom: 6 },
+  cancelSheetItem: { fontSize: 15, fontWeight: '600', color: QuinckleColors.textPrimary, textAlign: 'center', marginBottom: 4 },
+  cancelSheetSub: { fontSize: 13, color: QuinckleColors.textSecondary, textAlign: 'center', lineHeight: 19, marginBottom: 22, paddingHorizontal: 6 },
+  cancelSheetActions: { flexDirection: 'row', gap: 12, alignSelf: 'stretch' },
+  cancelSheetKeep: { flex: 1, paddingVertical: 14, borderRadius: 12, borderWidth: 1, borderColor: QuinckleColors.border, alignItems: 'center', justifyContent: 'center' },
+  cancelSheetKeepText: { fontSize: 14, fontWeight: '700', color: QuinckleColors.textSecondary },
+  cancelSheetConfirm: { flex: 1, paddingVertical: 14, borderRadius: 12, backgroundColor: QuinckleColors.danger, alignItems: 'center', justifyContent: 'center' },
+  cancelSheetConfirmText: { fontSize: 14, fontWeight: '800', color: '#fff' },
   emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: Spacing.huge, gap: Spacing.md },
   emptyText: { color: QuinckleColors.textTertiary, fontSize: 14 },
   bottomBar: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: Spacing.xl, paddingBottom: Spacing.xxl, paddingTop: Spacing.lg, backgroundColor: QuinckleColors.surface, borderTopWidth: 1, borderTopColor: QuinckleColors.border },
