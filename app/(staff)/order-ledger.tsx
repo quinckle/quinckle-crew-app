@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   StyleSheet,
   Text,
@@ -8,13 +8,13 @@ import {
   ActivityIndicator,
   RefreshControl,
   TextInput,
-  ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { crewSessions, type LedgerSession, type LedgerSummary, type LedgerRange } from '../../services/api';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
+import { BottomSheet } from '../../components/ui/BottomSheet';
 
 // ── Filter options (mirror the partner Order Ledger) ──────────────────────────
 const RANGES: { key: LedgerRange; label: string }[] = [
@@ -192,6 +192,7 @@ export default function OrderLedger() {
   const [methodFilter, setMethodFilter] = useState('all');
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch]           = useState('');
+  const [filterOpen, setFilterOpen]   = useState(false);
 
   // Debounce the search box into the applied search filter.
   useEffect(() => {
@@ -246,6 +247,17 @@ export default function OrderLedger() {
     router.push({ pathname: '/(staff)/order-detail', params: { id: s.id, ref: s.sessionRef ?? '' } });
   }, []);
 
+  // Picking a filter clears any active session-ref search so the filter applies.
+  const pickRange  = useCallback((k: LedgerRange) => { setSearchInput(''); setSearch(''); setRange(k); }, []);
+  const pickStatus = useCallback((k: string) => { setSearchInput(''); setSearch(''); setStatusFilter(k); }, []);
+  const pickMethod = useCallback((k: string) => { setSearchInput(''); setSearch(''); setMethodFilter(k); }, []);
+  const resetFilters = useCallback(() => { setRange('today'); setStatusFilter('all'); setMethodFilter('all'); }, []);
+
+  // Count of non-default filters — shown as a badge on the filter button.
+  const activeFilterCount =
+    (range !== 'today' ? 1 : 0) + (statusFilter !== 'all' ? 1 : 0) + (methodFilter !== 'all' ? 1 : 0);
+  const rangeLabel = RANGES.find((r) => r.key === range)?.label ?? 'Today';
+
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       {/* Header bar */}
@@ -257,43 +269,50 @@ export default function OrderLedger() {
         <View style={styles.btnPlaceholder} />
       </View>
 
-      {/* Search */}
-      <View style={styles.searchWrap}>
-        <Ionicons name="search" size={16} color={QuinckleColors.textTertiary} />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search by session ref (e.g. S-AB12CD)"
-          placeholderTextColor={QuinckleColors.textTertiary}
-          value={searchInput}
-          onChangeText={setSearchInput}
-          autoCapitalize="characters"
-          returnKeyType="search"
-        />
-        {searchInput.length > 0 && (
-          <TouchableOpacity onPress={() => setSearchInput('')} hitSlop={8}>
-            <Ionicons name="close-circle" size={16} color={QuinckleColors.textTertiary} />
-          </TouchableOpacity>
-        )}
+      {/* Search + Filter button */}
+      <View style={styles.searchRow}>
+        <View style={styles.searchWrap}>
+          <Ionicons name="search" size={16} color={QuinckleColors.textTertiary} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search by session ref (e.g. S-AB12CD)"
+            placeholderTextColor={QuinckleColors.textTertiary}
+            value={searchInput}
+            onChangeText={setSearchInput}
+            autoCapitalize="characters"
+            returnKeyType="search"
+          />
+          {searchInput.length > 0 && (
+            <TouchableOpacity onPress={() => setSearchInput('')} hitSlop={8}>
+              <Ionicons name="close-circle" size={16} color={QuinckleColors.textTertiary} />
+            </TouchableOpacity>
+          )}
+        </View>
+        <TouchableOpacity
+          style={[styles.filterBtn, activeFilterCount > 0 && styles.filterBtnActive]}
+          onPress={() => setFilterOpen(true)}
+          activeOpacity={0.7}
+        >
+          <Ionicons
+            name="options-outline"
+            size={20}
+            color={activeFilterCount > 0 ? QuinckleColors.primary : QuinckleColors.textSecondary}
+          />
+          {activeFilterCount > 0 && (
+            <View style={styles.filterBadge}>
+              <Text style={styles.filterBadgeText}>{activeFilterCount}</Text>
+            </View>
+          )}
+        </TouchableOpacity>
       </View>
 
-      {/* Filters — hidden while a session-ref search is active */}
+      {/* Active filter summary (hidden while searching by ref) */}
       {!search && (
-        <>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-            {RANGES.map((r) => (
-              <FilterChip key={r.key} label={r.label} active={range === r.key} onPress={() => setRange(r.key)} />
-            ))}
-          </ScrollView>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-            {STATUS_FILTERS.map((f) => (
-              <FilterChip key={f.key} label={f.label} active={statusFilter === f.key} onPress={() => setStatusFilter(f.key)} />
-            ))}
-            <View style={styles.chipSep} />
-            {METHOD_FILTERS.map((f) => (
-              <FilterChip key={f.key} label={f.label} active={methodFilter === f.key} onPress={() => setMethodFilter(f.key)} />
-            ))}
-          </ScrollView>
-        </>
+        <Text style={styles.filterSummary} numberOfLines={1}>
+          {rangeLabel}
+          {statusFilter !== 'all' ? ` · ${STATUS_FILTERS.find((f) => f.key === statusFilter)?.label}` : ''}
+          {methodFilter !== 'all' ? ` · ${METHOD_FILTERS.find((f) => f.key === methodFilter)?.label}` : ''}
+        </Text>
       )}
 
       <FlatList
@@ -337,6 +356,41 @@ export default function OrderLedger() {
           ) : null
         }
       />
+
+      {/* Filter modal */}
+      <BottomSheet visible={filterOpen} onClose={() => setFilterOpen(false)} title="Filters">
+        <View style={styles.filterModal}>
+          <Text style={styles.filterGroupLabel}>Date Range</Text>
+          <View style={styles.filterChipWrap}>
+            {RANGES.map((r) => (
+              <FilterChip key={r.key} label={r.label} active={range === r.key} onPress={() => pickRange(r.key)} />
+            ))}
+          </View>
+
+          <Text style={styles.filterGroupLabel}>Status</Text>
+          <View style={styles.filterChipWrap}>
+            {STATUS_FILTERS.map((f) => (
+              <FilterChip key={f.key} label={f.label} active={statusFilter === f.key} onPress={() => pickStatus(f.key)} />
+            ))}
+          </View>
+
+          <Text style={styles.filterGroupLabel}>Payment Method</Text>
+          <View style={styles.filterChipWrap}>
+            {METHOD_FILTERS.map((f) => (
+              <FilterChip key={f.key} label={f.label} active={methodFilter === f.key} onPress={() => pickMethod(f.key)} />
+            ))}
+          </View>
+
+          <View style={styles.filterActions}>
+            <TouchableOpacity style={styles.resetBtn} onPress={resetFilters} activeOpacity={0.7}>
+              <Text style={styles.resetBtnText}>Reset</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.applyBtn} onPress={() => setFilterOpen(false)} activeOpacity={0.85}>
+              <Text style={styles.applyBtnText}>Show results</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </BottomSheet>
     </View>
   );
 }
@@ -361,22 +415,45 @@ const styles = StyleSheet.create({
   btnPlaceholder: { width: 38, height: 38 },
   headerTitle: { color: QuinckleColors.textPrimary, fontSize: 16, fontWeight: '700', letterSpacing: -0.2 },
 
-  searchWrap: {
+  searchRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
     marginHorizontal: Spacing.lg,
     marginTop: Spacing.md,
+  },
+  searchWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
     paddingHorizontal: Spacing.md,
-    height: 42,
+    height: 44,
     borderRadius: Radius.md,
     backgroundColor: QuinckleColors.surfaceMuted,
     borderWidth: 1, borderColor: QuinckleColors.border,
   },
   searchInput: { flex: 1, color: QuinckleColors.textPrimary, fontSize: 14, paddingVertical: 0 },
+  filterBtn: {
+    width: 44, height: 44, borderRadius: Radius.md,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderWidth: 1, borderColor: QuinckleColors.border,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  filterBtnActive: { backgroundColor: QuinckleColors.primarySoft, borderColor: QuinckleColors.primarySoftBorder },
+  filterBadge: {
+    position: 'absolute', top: -5, right: -5,
+    minWidth: 17, height: 17, borderRadius: 9, paddingHorizontal: 4,
+    backgroundColor: QuinckleColors.primary,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1.5, borderColor: QuinckleColors.background,
+  },
+  filterBadgeText: { color: '#fff', fontSize: 10, fontWeight: '800' },
+  filterSummary: {
+    color: QuinckleColors.textTertiary, fontSize: 12, fontWeight: '600',
+    marginHorizontal: Spacing.lg, marginTop: Spacing.sm,
+  },
 
-  chipRow: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.md, gap: Spacing.sm },
-  chipSep: { width: 1, backgroundColor: QuinckleColors.border, marginHorizontal: Spacing.xs, alignSelf: 'stretch' },
   chip: {
     paddingHorizontal: Spacing.md,
     paddingVertical: 7,
@@ -429,4 +506,27 @@ const styles = StyleSheet.create({
   },
   retryText: { color: QuinckleColors.primary, fontSize: 13, fontWeight: '700' },
   footerLoad: { paddingVertical: Spacing.lg, alignItems: 'center' },
+
+  // Filter modal
+  filterModal: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.xs },
+  filterGroupLabel: {
+    color: QuinckleColors.textTertiary, fontSize: 11, fontWeight: '700',
+    textTransform: 'uppercase', letterSpacing: 0.6,
+    marginTop: Spacing.lg, marginBottom: Spacing.sm,
+  },
+  filterChipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
+  filterActions: { flexDirection: 'row', gap: Spacing.md, marginTop: Spacing.xl },
+  resetBtn: {
+    paddingHorizontal: Spacing.xl, height: 48, borderRadius: Radius.md,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderWidth: 1, borderColor: QuinckleColors.border,
+  },
+  resetBtnText: { color: QuinckleColors.textSecondary, fontSize: 14, fontWeight: '700' },
+  applyBtn: {
+    flex: 1, height: 48, borderRadius: Radius.md,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: QuinckleColors.primary,
+  },
+  applyBtnText: { color: '#fff', fontSize: 14, fontWeight: '800' },
 });
