@@ -398,6 +398,15 @@ export const crewSessions = {
       true,
     ),
 
+  /** Crew custom discount across the session's unpaid orders. value=0 clears it. */
+  applyDiscount: (sessionId: string, type: 'PERCENT' | 'FLAT', value: number, note?: string | null) =>
+    request<{ success: boolean; data: { sessionId: string; tableNumber: number; manualDiscountTotal: number; sessionTotal: number } }>(
+      'POST',
+      `/api/crew/sessions/${sessionId}/discount`,
+      { type, value, note: note ?? null },
+      true,
+    ),
+
   /** Order Ledger — paginated session history with filters (STEWARD/ADMIN). */
   getHistory: async (params: {
     range?: LedgerRange;

@@ -139,6 +139,12 @@ export default function TableDetail() {
   const [showUpiModal, setShowUpiModal] = useState(false);
   const [upiAmount, setUpiAmount]   = useState('');
   const [upiUri, setUpiUri]         = useState<string | null>(null);
+  // Crew custom discount
+  const [discountModalOpen, setDiscountModalOpen] = useState(false);
+  const [discountType, setDiscountType] = useState<'PERCENT' | 'FLAT'>('PERCENT');
+  const [discountValue, setDiscountValue] = useState('');
+  const [discountNote, setDiscountNote] = useState('');
+  const [applyingDiscount, setApplyingDiscount] = useState(false);
 
   // Action menu + swap-table state for the 3-dot header
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
@@ -350,6 +356,34 @@ export default function TableDetail() {
 
   const tax = taxTotal;
   const grandTotal = payableTotal;
+
+  const handleApplyDiscount = async () => {
+    const v = Number(discountValue);
+    if (!Number.isFinite(v) || v <= 0) {
+      showDialog('Invalid amount', 'Enter a discount greater than zero.', [{ label: 'OK', onPress: () => {} }]);
+      return;
+    }
+    if (discountType === 'PERCENT' && v > 100) {
+      showDialog('Invalid percentage', 'Percentage cannot exceed 100%.', [{ label: 'OK', onPress: () => {} }]);
+      return;
+    }
+    setApplyingDiscount(true);
+    try {
+      await crewSessions.applyDiscount(sessionId, discountType, v, discountNote.trim() || null);
+      setDiscountModalOpen(false);
+      setDiscountValue('');
+      setDiscountNote('');
+      await loadBill();
+    } catch (e: any) {
+      const code = e?.code as string | undefined;
+      const msg = code === 'NO_DISCOUNTABLE_ORDERS'
+        ? 'Everything on this table is already paid — nothing to discount.'
+        : (typeof e?.message === 'string' && e.message) || 'Please try again.';
+      showDialog('Could not apply discount', msg, [{ label: 'OK', onPress: () => {} }]);
+    } finally {
+      setApplyingDiscount(false);
+    }
+  };
 
   const handleServe = async (item: FlatItem) => {
     if (item.status === 'served') return; // already served, no-op
@@ -1007,6 +1041,13 @@ export default function TableDetail() {
               <Text style={styles.grandTotalValue}>₹{grandTotal.toFixed(2)}</Text>
             </View>
 
+            {!isPaid && orders.length > 0 && (
+              <TouchableOpacity style={styles.discountBtn} onPress={() => setDiscountModalOpen(true)} activeOpacity={0.85}>
+                <Ionicons name="pricetag-outline" size={15} color={QuinckleColors.primary} />
+                <Text style={styles.discountBtnText}>{discountTotal > 0 ? 'Edit discount' : 'Give discount'}</Text>
+              </TouchableOpacity>
+            )}
+
           </View>
         )}
 
@@ -1283,11 +1324,100 @@ export default function TableDetail() {
         </View>
       </Modal>
 
+      {/* Crew custom discount */}
+      <Modal visible={discountModalOpen} transparent animationType="fade" onRequestClose={() => setDiscountModalOpen(false)}>
+        <View style={styles.swapBackdrop}>
+          <View style={styles.swapCard}>
+            <Text style={styles.swapEyebrow}>Discount</Text>
+            <Text style={styles.swapTitle}>Give a discount</Text>
+            <Text style={styles.swapSubtitle}>Applies across the table&apos;s unpaid orders.</Text>
+
+            <View style={styles.segToggle}>
+              <TouchableOpacity style={[styles.segBtn, discountType === 'PERCENT' && styles.segBtnActive]} onPress={() => setDiscountType('PERCENT')} activeOpacity={0.85}>
+                <Text style={[styles.segBtnText, discountType === 'PERCENT' && styles.segBtnTextActive]}>Percentage</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.segBtn, discountType === 'FLAT' && styles.segBtnActive]} onPress={() => setDiscountType('FLAT')} activeOpacity={0.85}>
+                <Text style={[styles.segBtnText, discountType === 'FLAT' && styles.segBtnTextActive]}>Flat ₹</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={[styles.dinerInputWrap, { marginTop: 14 }]}>
+              <View style={styles.dinerCountryCode}>
+                <Text style={styles.dinerCountryCodeText}>{discountType === 'PERCENT' ? '%' : '₹'}</Text>
+              </View>
+              <View style={styles.dinerDivider} />
+              <TextInput
+                style={styles.dinerInput}
+                value={discountValue}
+                onChangeText={v => setDiscountValue(v.replace(/[^0-9.]/g, ''))}
+                placeholder={discountType === 'PERCENT' ? 'e.g. 10' : 'e.g. 50'}
+                placeholderTextColor={QuinckleColors.textMuted}
+                keyboardType="decimal-pad"
+                returnKeyType="done"
+                autoFocus
+              />
+            </View>
+
+            <View style={[styles.dinerInputWrap, { marginTop: 10 }]}>
+              <TextInput
+                style={[styles.dinerInput, { paddingLeft: 14 }]}
+                value={discountNote}
+                onChangeText={setDiscountNote}
+                placeholder="Reason (optional)"
+                placeholderTextColor={QuinckleColors.textMuted}
+                maxLength={200}
+                returnKeyType="done"
+              />
+            </View>
+
+            <View style={styles.swapFooter}>
+              <TouchableOpacity style={styles.swapCancel} onPress={() => setDiscountModalOpen(false)} activeOpacity={0.8} disabled={applyingDiscount}>
+                <Text style={styles.swapCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.swapConfirm, (!(parseFloat(discountValue) > 0) || applyingDiscount) && { opacity: 0.4 }]}
+                onPress={handleApplyDiscount}
+                disabled={!(parseFloat(discountValue) > 0) || applyingDiscount}
+                activeOpacity={0.85}
+              >
+                {applyingDiscount ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.swapConfirmText}>Apply</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  discountBtn: {
+    marginTop: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 11,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: 'rgba(243,93,59,0.4)',
+    backgroundColor: 'rgba(243,93,59,0.10)',
+  },
+  discountBtnText: { color: QuinckleColors.primary, fontSize: 13, fontWeight: '700' },
+  segToggle: {
+    flexDirection: 'row',
+    marginTop: 16,
+    borderRadius: Radius.md,
+    backgroundColor: QuinckleColors.surface,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    overflow: 'hidden',
+  },
+  segBtn: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 10 },
+  segBtnActive: { backgroundColor: 'rgba(243,93,59,0.16)' },
+  segBtnText: { color: QuinckleColors.textTertiary, fontSize: 13, fontWeight: '600' },
+  segBtnTextActive: { color: QuinckleColors.primary },
   actionMenu: {
     position: 'absolute',
     top: 44,
