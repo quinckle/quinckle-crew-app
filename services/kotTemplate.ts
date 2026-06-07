@@ -83,8 +83,7 @@ export function buildKotText(order: KotOrder, paperWidth: 58 | 80 = 58): string 
   const d = divider(W);
 
   // ── Header ────────────────────────────────────────────────────────────────
-  lines.push('[C]<b><font size="big">QUINCKLE</font></b>');
-  lines.push(`[C]<b>${order.restaurantName}</b>`);
+  lines.push(`[C]<b><font size="big">${order.restaurantName}</font></b>`);
   lines.push(`[C]${D}`);
 
   // ── Table + Order # ───────────────────────────────────────────────────────

@@ -93,8 +93,7 @@ export function buildInvoiceText(bill: InvoiceBill, paperWidth: 58 | 80 = 58): s
   const tableStr = String(bill.tableNumber).padStart(2, '0');
 
   // ── Header ────────────────────────────────────────────────────────────────
-  lines.push('[C]<b><font size="big">QUINCKLE</font></b>');
-  lines.push(`[C]<b>${bill.restaurantName}</b>`);
+  lines.push(`[C]<b><font size="big">${bill.restaurantName}</font></b>`);
   lines.push(`[C]${D}`);
   lines.push('[C]<b>TAX INVOICE</b>');
   lines.push(`[C]Table T${tableStr}`);
