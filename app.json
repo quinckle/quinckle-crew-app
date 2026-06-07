@@ -15,6 +15,7 @@
     },
     "android": {
       "package": "com.quinckle.crew",
+      "versionCode": 1,
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#0A0A0B",
