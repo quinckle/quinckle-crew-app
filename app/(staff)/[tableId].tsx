@@ -386,9 +386,20 @@ export default function TableDetail() {
       }
       await loadBill(); // refresh totals + the new collection amount
       setCancelTarget(null);
-    } catch {
+    } catch (e: any) {
       setCancelTarget(null);
-      showDialog('Could not cancel', 'Something went wrong. Please try again.', [{ label: 'OK', onPress: () => {} }]);
+      // The backend returns a 409 with a specific code/message for states
+      // where a cancel is not allowed (paid, collection in progress, etc.).
+      const code = e?.code as string | undefined;
+      const message =
+        code === 'COLLECTION_IN_PROGRESS'
+          ? 'A payment is being collected for this table. Cancel the collection first, then remove the item.'
+          : code === 'ORDER_ALREADY_PAID'
+          ? 'This order is already paid and can no longer be changed.'
+          : code === 'ITEM_ALREADY_CANCELLED' || code === 'ORDER_CANCELLED'
+          ? 'This item has already been cancelled.'
+          : (typeof e?.message === 'string' && e.message) || 'Something went wrong. Please try again.';
+      showDialog('Could not cancel', message, [{ label: 'OK', onPress: () => {} }]);
     } finally {
       setCancelling(false);
     }
