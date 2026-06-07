@@ -393,7 +393,7 @@ export default function TableDetail() {
       const code = e?.code as string | undefined;
       const message =
         code === 'COLLECTION_IN_PROGRESS'
-          ? 'A payment is being collected for this table. Cancel the collection first, then remove the item.'
+          ? 'The diner is paying for this online right now. Wait for it to finish (or have them cancel), then remove the item.'
           : code === 'ORDER_ALREADY_PAID'
           ? 'This order is already paid and can no longer be changed.'
           : code === 'ITEM_ALREADY_CANCELLED' || code === 'ORDER_CANCELLED'
