@@ -313,6 +313,8 @@ export interface LedgerSummary {
   isFreePeriod: boolean;
   commissionRate: number;
   pgFeeRate: number;
+  /** Revenue split by collected payment method (over all paid sessions in range). */
+  paymentBreakdown?: { cash: number; upiDirect: number; gateway: number };
 }
 
 export interface LedgerSession {

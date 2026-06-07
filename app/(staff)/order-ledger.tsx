@@ -153,24 +153,26 @@ function SessionCard({ session, onPress }: { session: LedgerSession; onPress: ()
 }
 
 // ── Summary strip ─────────────────────────────────────────────────────────────
-function SummaryStrip({ summary }: { summary: LedgerSummary | null }) {
-  const stats = [
-    { label: 'Sessions', value: summary ? String(summary.totalSessions) : '—' },
-    { label: 'Revenue',  value: summary ? fmtMoney(summary.totalRevenue) : '—' },
-    { label: 'Avg Bill', value: summary ? fmtMoney(summary.avgBill) : '—' },
-    { label: "Quinckle's Cut", value: summary ? fmtMoney(summary.quincklesCut) : '—' },
-  ];
+function SummaryStrip({ summary, onRevenuePress }: { summary: LedgerSummary | null; onRevenuePress: () => void }) {
   return (
     <View style={styles.summaryRow}>
-      {stats.map((s, i) => (
-        <React.Fragment key={s.label}>
-          {i > 0 && <View style={styles.summaryDivider} />}
-          <View style={styles.summaryStat}>
-            <Text style={styles.summaryValue} numberOfLines={1}>{s.value}</Text>
-            <Text style={styles.summaryLabel} numberOfLines={1}>{s.label}</Text>
-          </View>
-        </React.Fragment>
-      ))}
+      <View style={styles.summaryStat}>
+        <Text style={styles.summaryValue} numberOfLines={1}>{summary ? String(summary.totalSessions) : '—'}</Text>
+        <Text style={styles.summaryLabel} numberOfLines={1}>Sessions</Text>
+      </View>
+      <View style={styles.summaryDivider} />
+      <TouchableOpacity
+        style={styles.summaryStat}
+        onPress={onRevenuePress}
+        activeOpacity={0.7}
+        disabled={!summary?.paymentBreakdown}
+      >
+        <View style={styles.summaryValueRow}>
+          <Text style={styles.summaryValue} numberOfLines={1}>{summary ? fmtMoney(summary.totalRevenue) : '—'}</Text>
+          <Ionicons name="chevron-down" size={13} color={QuinckleColors.textTertiary} style={{ marginLeft: 3 }} />
+        </View>
+        <Text style={styles.summaryLabel} numberOfLines={1}>Revenue · tap for split</Text>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -193,6 +195,7 @@ export default function OrderLedger() {
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch]           = useState('');
   const [filterOpen, setFilterOpen]   = useState(false);
+  const [breakdownOpen, setBreakdownOpen] = useState(false);
 
   // Debounce the search box into the applied search filter.
   useEffect(() => {
@@ -325,7 +328,7 @@ export default function OrderLedger() {
         }
         onEndReached={onEndReached}
         onEndReachedThreshold={0.4}
-        ListHeaderComponent={<SummaryStrip summary={summary} />}
+        ListHeaderComponent={<SummaryStrip summary={summary} onRevenuePress={() => setBreakdownOpen(true)} />}
         ItemSeparatorComponent={() => <View style={styles.divider} />}
         renderItem={({ item }) => <SessionCard session={item} onPress={() => openDetail(item)} />}
         ListEmptyComponent={
@@ -389,6 +392,40 @@ export default function OrderLedger() {
               <Text style={styles.applyBtnText}>Show results</Text>
             </TouchableOpacity>
           </View>
+        </View>
+      </BottomSheet>
+
+      {/* Revenue breakdown modal — opened by tapping Revenue */}
+      <BottomSheet visible={breakdownOpen} onClose={() => setBreakdownOpen(false)} title="Revenue breakdown">
+        <View style={styles.breakdownModal}>
+          {summary?.paymentBreakdown ? (
+            <>
+              {([
+                { label: 'Cash', amount: summary.paymentBreakdown.cash, color: QuinckleColors.warning },
+                { label: 'UPI Direct', amount: summary.paymentBreakdown.upiDirect, color: '#A855F7' },
+                { label: 'Gateway', amount: summary.paymentBreakdown.gateway, color: QuinckleColors.info },
+              ]).map((r) => {
+                const pct = summary.totalRevenue > 0 ? Math.round((r.amount / summary.totalRevenue) * 100) : 0;
+                return (
+                  <View key={r.label} style={styles.bdRow}>
+                    <View style={styles.bdLeft}>
+                      <View style={[styles.bdDot, { backgroundColor: r.color }]} />
+                      <Text style={styles.bdLabel}>{r.label}</Text>
+                      <Text style={styles.bdPct}>{pct}%</Text>
+                    </View>
+                    <Text style={styles.bdAmount}>{fmtMoney(r.amount)}</Text>
+                  </View>
+                );
+              })}
+              <View style={styles.bdDivider} />
+              <View style={styles.bdRow}>
+                <Text style={styles.bdTotalLabel}>Total revenue</Text>
+                <Text style={styles.bdTotalAmount}>{fmtMoney(summary.totalRevenue)}</Text>
+              </View>
+            </>
+          ) : (
+            <Text style={styles.bdEmpty}>No collected payments in this range.</Text>
+          )}
         </View>
       </BottomSheet>
     </View>
@@ -477,6 +514,7 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.lg,
   },
   summaryStat: { flex: 1, alignItems: 'center', paddingHorizontal: 4 },
+  summaryValueRow: { flexDirection: 'row', alignItems: 'center' },
   summaryDivider: { width: 1, height: 28, backgroundColor: QuinckleColors.border },
   summaryValue: { color: QuinckleColors.textPrimary, fontSize: 16, fontWeight: '800', letterSpacing: -0.3 },
   summaryLabel: { color: QuinckleColors.textTertiary, fontSize: 10, fontWeight: '600', marginTop: 3, textTransform: 'uppercase', letterSpacing: 0.4 },
@@ -529,4 +567,17 @@ const styles = StyleSheet.create({
     backgroundColor: QuinckleColors.primary,
   },
   applyBtnText: { color: '#fff', fontSize: 14, fontWeight: '800' },
+
+  // Revenue breakdown modal
+  breakdownModal: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.xs, paddingBottom: Spacing.sm },
+  bdRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: Spacing.md },
+  bdLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  bdDot: { width: 9, height: 9, borderRadius: 5 },
+  bdLabel: { color: QuinckleColors.textPrimary, fontSize: 14, fontWeight: '600' },
+  bdPct: { color: QuinckleColors.textTertiary, fontSize: 12, fontWeight: '600' },
+  bdAmount: { color: QuinckleColors.textPrimary, fontSize: 14, fontWeight: '700' },
+  bdDivider: { height: 1, backgroundColor: QuinckleColors.border, marginVertical: Spacing.xs },
+  bdTotalLabel: { color: QuinckleColors.textPrimary, fontSize: 14, fontWeight: '800' },
+  bdTotalAmount: { color: QuinckleColors.primary, fontSize: 16, fontWeight: '800' },
+  bdEmpty: { color: QuinckleColors.textTertiary, fontSize: 13, textAlign: 'center', paddingVertical: Spacing.xl },
 });
