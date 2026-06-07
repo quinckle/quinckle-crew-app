@@ -21,6 +21,7 @@ import { useAuth } from '../../context/AuthContext';
 import { crewAuth, restaurantApi, crewPayments } from '../../services/api';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
+import UpdateStatus from '../../components/ui/UpdateStatus';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const HERO_HEIGHT = 340;
@@ -345,6 +346,9 @@ export default function StaffProfile() {
             <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
           </TouchableOpacity>
         </View>
+
+        {/* ─── APP UPDATES (OTA status + installer) ─── */}
+        <UpdateStatus />
 
         {/* ─── LOGOUT ─── */}
         <TouchableOpacity
