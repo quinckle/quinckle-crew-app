@@ -187,6 +187,7 @@ export default function OrderMenuScreen() {
   const [coName, setCoName] = useState('');
   const [coLooking, setCoLooking] = useState(false);
   const [coFound, setCoFound] = useState<boolean | null>(null);
+  const [coLookupFailed, setCoLookupFailed] = useState(false);
   const [coSubmitting, setCoSubmitting] = useState(false);
   const [coError, setCoError] = useState<string | null>(null);
 
@@ -315,14 +316,18 @@ export default function OrderMenuScreen() {
 
   const onCoPhoneChange = async (v: string) => {
     const digits = v.replace(/\D/g, '').slice(0, 10);
-    setCoPhone(digits); setCoFound(null); setCoName('');
+    setCoPhone(digits); setCoFound(null); setCoName(''); setCoLookupFailed(false);
     if (digits.length === 10) {
       setCoLooking(true);
       try {
         const res = await crewDiners.lookup(digits);
         if (res.data.found) { setCoName(res.data.name ?? ''); setCoFound(true); }
         else setCoFound(false);
-      } catch { setCoFound(false); }
+      } catch {
+        // A failed lookup must NOT masquerade as a new diner — leave coFound
+        // unresolved and flag the failure so the UI stays neutral.
+        setCoLookupFailed(true);
+      }
       finally { setCoLooking(false); }
     }
   };
@@ -683,8 +688,11 @@ export default function OrderMenuScreen() {
             {coFound === true && (
               <View style={styles.foundBadge}><Text style={styles.foundText}>✓ Found on Quinckle</Text></View>
             )}
-            {coFound === false && coPhone.length === 10 && (
+            {coFound === false && !coLookupFailed && coPhone.length === 10 && (
               <Text style={styles.notFoundText}>New guest — enter name below</Text>
+            )}
+            {coLookupFailed && coPhone.length === 10 && (
+              <Text style={styles.notFoundText}>Couldn’t check — enter the name to continue</Text>
             )}
             {coError ? <Text style={styles.coErrorText}>{coError}</Text> : null}
 
