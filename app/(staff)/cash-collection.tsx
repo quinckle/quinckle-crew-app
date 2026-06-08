@@ -317,9 +317,14 @@ export default function CashCollectionScreen() {
           }]}>
             Payment Collection
           </Animated.Text>
-          <TouchableOpacity onPress={handleRefresh} activeOpacity={0.6} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-            <Ionicons name="refresh-outline" size={20} color={QuinckleColors.textSecondary} />
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+            <TouchableOpacity onPress={() => router.push('/(staff)/outstanding')} activeOpacity={0.6} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <Ionicons name="alert-circle-outline" size={21} color={QuinckleColors.textSecondary} />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleRefresh} activeOpacity={0.6} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <Ionicons name="refresh-outline" size={20} color={QuinckleColors.textSecondary} />
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
 

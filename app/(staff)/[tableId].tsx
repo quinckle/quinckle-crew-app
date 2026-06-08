@@ -145,6 +145,12 @@ export default function TableDetail() {
   const [discountValue, setDiscountValue] = useState('');
   const [discountNote, setDiscountNote] = useState('');
   const [applyingDiscount, setApplyingDiscount] = useState(false);
+  // Free-table (structured close) modal
+  const [freeModalOpen, setFreeModalOpen] = useState(false);
+  const [freeStep, setFreeStep] = useState<'choose' | 'waive'>('choose');
+  const [waiveReason, setWaiveReason] = useState('');
+  const [freeing, setFreeing] = useState(false);
+  const isAdmin = staffInfo?.role === 'ADMIN';
 
   // Action menu + swap-table state for the 3-dot header
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
@@ -601,40 +607,83 @@ export default function TableDetail() {
     }
   };
 
+  const doEndSession = async () => {
+    try {
+      if (sessionId) await crewSessions.end(sessionId);
+      router.replace('/(staff)');
+    } catch (err: any) {
+      const code = err?.error || err?.message || '';
+      if (code === 'SESSION_ALREADY_CLOSED') {
+        router.replace('/(staff)');
+      } else {
+        showDialog('Could Not Free Table', 'Something went wrong while ending the session. Please try again.', [{ label: 'OK', onPress: () => {} }]);
+      }
+    }
+  };
+
   const handleEndSession = () => {
     const hasUncollected = !isPaid && grandTotal > 0;
-    showDialog(
-      hasUncollected ? 'Payment still uncollected' : 'End Session',
-      hasUncollected
-        ? `₹${grandTotal.toFixed(0)} hasn't been collected for Table T${tableNum}. If you close now, this payment can't be collected from the app. Close anyway?`
-        : `Close Table T${tableNum} and release it for new guests?`,
-      [
-        { label: hasUncollected ? 'Go back' : 'Cancel', onPress: () => {} },
-        {
-          label: hasUncollected ? 'Close anyway' : 'End Session',
-          variant: 'danger',
-          onPress: async () => {
-            try {
-              if (sessionId) await crewSessions.end(sessionId);
-              router.replace('/(staff)');
-            } catch (err: any) {
-              const code = err?.error || err?.message || '';
-              if (code === 'SESSION_ALREADY_CLOSED') {
-                // Session was already closed (e.g. by diner payment or partner) —
-                // table is already free, just go back.
-                router.replace('/(staff)');
-              } else {
-                showDialog(
-                  'Could Not Free Table',
-                  'Something went wrong while ending the session. Please try again.',
-                  [{ label: 'OK', onPress: () => {} }],
-                );
-              }
-            }
-          },
-        },
-      ],
-    );
+    if (hasUncollected) {
+      // Structured decision — never a silent "close anyway". The money is either
+      // collected, recorded as paid, written off (admin), or explicitly left
+      // outstanding (which the backend records + keeps visible).
+      setFreeStep('choose');
+      setWaiveReason('');
+      setFreeModalOpen(true);
+      return;
+    }
+    showDialog('End Session', `Close Table T${tableNum} and release it for new guests?`, [
+      { label: 'Cancel', onPress: () => {} },
+      { label: 'End Session', variant: 'danger', onPress: doEndSession },
+    ]);
+  };
+
+  // "Collect / already paid" → open the collection sheet for the whole table.
+  const handleCollectFromFree = () => {
+    setFreeModalOpen(false);
+    const orderIds = orders.map((o) => o.order_id);
+    router.push({
+      pathname: '/(staff)/payment-collect',
+      params: {
+        orderId: orderIds[0] ?? '',
+        sessionId: sessionId ?? '',
+        orderIds: JSON.stringify(orderIds),
+        tableNumber: String(tableNum ?? ''),
+        amount: String(grandTotal ?? 0),
+        customerName: '',
+        customerPhone: '',
+      },
+    });
+  };
+
+  // Admin write-off of every uncollected order, then free.
+  const handleWaiveAndFree = async () => {
+    const reason = waiveReason.trim();
+    if (!reason) { showDialog('Reason needed', 'Add a short reason for writing this off.', [{ label: 'OK', onPress: () => {} }]); return; }
+    setFreeing(true);
+    try {
+      for (const id of orders.map((o) => o.order_id)) {
+        try { await crewOrders.waive(id, reason); }
+        catch (e: any) {
+          const code = String(e?.code ?? e?.error ?? e?.message ?? '');
+          if (code.includes('ADMIN_REQUIRED')) throw e;        // hard stop
+          // ORDER_ALREADY_TERMINAL etc. — that order's already resolved, skip.
+        }
+      }
+      setFreeModalOpen(false);
+      await doEndSession();
+    } catch (e: any) {
+      const code = String(e?.code ?? e?.error ?? e?.message ?? '');
+      showDialog('Could not waive', code.includes('ADMIN_REQUIRED') ? 'Only an admin can write off a payment.' : 'Please try again.', [{ label: 'OK', onPress: () => {} }]);
+    } finally {
+      setFreeing(false);
+    }
+  };
+
+  const handleFreeWithoutCollecting = async () => {
+    setFreeing(true);
+    try { setFreeModalOpen(false); await doEndSession(); }
+    finally { setFreeing(false); }
   };
 
   if (isLoading) {
@@ -1387,6 +1436,78 @@ export default function TableDetail() {
         </View>
       </Modal>
 
+      {/* Structured free-table decision (uncollected payment) */}
+      <Modal visible={freeModalOpen} transparent animationType="fade" onRequestClose={() => setFreeModalOpen(false)}>
+        <View style={styles.swapBackdrop}>
+          <View style={styles.swapCard}>
+            {freeStep === 'choose' ? (
+              <>
+                <Text style={styles.swapEyebrow}>Table T{tableNum}</Text>
+                <Text style={styles.swapTitle}>₹{grandTotal.toFixed(0)} uncollected</Text>
+                <Text style={styles.swapSubtitle}>What happened to the payment?</Text>
+
+                <TouchableOpacity style={styles.freeOptBtn} onPress={handleCollectFromFree} activeOpacity={0.85} disabled={freeing}>
+                  <Ionicons name="cash-outline" size={18} color={QuinckleColors.primary} />
+                  <Text style={styles.freeOptBtnText}>Collect / mark as paid</Text>
+                </TouchableOpacity>
+
+                {isAdmin && (
+                  <TouchableOpacity style={styles.freeOptBtn} onPress={() => setFreeStep('waive')} activeOpacity={0.85} disabled={freeing}>
+                    <Ionicons name="remove-circle-outline" size={18} color={QuinckleColors.textSecondary} />
+                    <Text style={styles.freeOptBtnText}>Write off (waive)</Text>
+                  </TouchableOpacity>
+                )}
+
+                <TouchableOpacity style={[styles.freeOptBtn, styles.freeOptDanger]} onPress={handleFreeWithoutCollecting} activeOpacity={0.85} disabled={freeing}>
+                  {freeing ? <ActivityIndicator color="#fca5a5" size="small" /> : (
+                    <>
+                      <Ionicons name="exit-outline" size={18} color="#fca5a5" />
+                      <Text style={styles.freeOptDangerText}>Free without collecting</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+                <Text style={styles.freeHint}>Outstanding payments stay visible until collected or waived.</Text>
+
+                <TouchableOpacity style={[styles.swapCancel, { marginTop: 8 }]} onPress={() => setFreeModalOpen(false)} activeOpacity={0.8} disabled={freeing}>
+                  <Text style={styles.swapCancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <Text style={styles.swapEyebrow}>Write off · Table T{tableNum}</Text>
+                <Text style={styles.swapTitle}>Waive ₹{grandTotal.toFixed(0)}?</Text>
+                <Text style={styles.swapSubtitle}>This records a write-off (no money collected). Reason required.</Text>
+                <View style={[styles.dinerInputWrap, { marginTop: 14 }]}>
+                  <TextInput
+                    style={[styles.dinerInput, { paddingLeft: 14 }]}
+                    value={waiveReason}
+                    onChangeText={setWaiveReason}
+                    placeholder="Reason (e.g. walkout, comp)"
+                    placeholderTextColor={QuinckleColors.textMuted}
+                    maxLength={200}
+                    autoFocus
+                    returnKeyType="done"
+                  />
+                </View>
+                <View style={styles.swapFooter}>
+                  <TouchableOpacity style={styles.swapCancel} onPress={() => setFreeStep('choose')} activeOpacity={0.8} disabled={freeing}>
+                    <Text style={styles.swapCancelText}>Back</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.swapConfirm, (!waiveReason.trim() || freeing) && { opacity: 0.4 }]}
+                    onPress={handleWaiveAndFree}
+                    disabled={!waiveReason.trim() || freeing}
+                    activeOpacity={0.85}
+                  >
+                    {freeing ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.swapConfirmText}>Waive &amp; free</Text>}
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
     </View>
   );
 }
@@ -1418,6 +1539,26 @@ const styles = StyleSheet.create({
   segBtnActive: { backgroundColor: 'rgba(243,93,59,0.16)' },
   segBtnText: { color: QuinckleColors.textTertiary, fontSize: 13, fontWeight: '600' },
   segBtnTextActive: { color: QuinckleColors.primary },
+  freeOptBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 10,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surface,
+  },
+  freeOptBtnText: { color: QuinckleColors.textPrimary, fontSize: 14, fontWeight: '600' },
+  freeOptDanger: {
+    justifyContent: 'center',
+    borderColor: 'rgba(248,113,113,0.4)',
+    backgroundColor: 'rgba(248,113,113,0.08)',
+  },
+  freeOptDangerText: { color: '#fca5a5', fontSize: 14, fontWeight: '700' },
+  freeHint: { color: QuinckleColors.textTertiary, fontSize: 11, marginTop: 10, textAlign: 'center' },
   actionMenu: {
     position: 'absolute',
     top: 44,

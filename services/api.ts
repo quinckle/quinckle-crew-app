@@ -504,6 +504,12 @@ export const crewOrders = {
       'PATCH', `/api/crew/orders/${orderId}/items/${itemId}/cancel`, undefined, true,
     ),
 
+  // Write off an uncollected order (walkout / comp). ADMIN-only on the backend.
+  waive: (orderId: string, reason: string) =>
+    request<{ success: boolean; data: { orderId: string; sessionId: string; amount: number } }>(
+      'POST', `/api/crew/orders/${orderId}/waive`, { reason }, true,
+    ),
+
   placeOrder: (sessionId: string, items: { item_id: string; qty: number; note?: string; selectedModifiers?: { groupId: string; optionId: string }[]; modifiers_summary?: string }[]) =>
     request<{ success: boolean; order_id: string; totals?: { total?: number } }>(
       'POST',
@@ -558,6 +564,19 @@ export interface CollectedCashRecord {
 export interface CashRequestsResponse {
   pending: PendingCashRequest[];
   todayCollected: CollectedCashRecord[];
+}
+
+export interface OutstandingGroup {
+  sessionId: string;
+  tableNumber: number;
+  /** True when the table was already freed but money is still owed. */
+  sessionClosed: boolean;
+  orderIds: string[];
+  orderCount: number;
+  amount: number;
+  customerName: string | null;
+  customerPhone: string | null;
+  oldestAt: string;
 }
 
 export interface PendingPaymentIntent {
@@ -660,6 +679,15 @@ export const crewPayments = {
 
   getCashLedger: () =>
     request<CashLedger>('GET', '/api/crew/payments/cash-ledger', undefined, true),
+
+  // Every not-yet-resolved order across the restaurant — including freed
+  // (CLOSED) tables — so uncollected money is never invisible.
+  getOutstanding: async (): Promise<{ groups: OutstandingGroup[]; totalDue: number }> => {
+    const res = await request<{ success: boolean; data?: { groups: OutstandingGroup[]; totalDue: number } }>(
+      'GET', '/api/crew/payments/outstanding', undefined, true,
+    );
+    return { groups: res.data?.groups ?? [], totalDue: res.data?.totalDue ?? 0 };
+  },
 
   getPendingPaymentIntents: async (): Promise<PendingPaymentIntent[]> => {
     const res = await request<{ success: boolean; data?: PendingPaymentIntent[] }>(
