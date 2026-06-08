@@ -188,6 +188,10 @@ export default function OrderMenuScreen() {
   const [coLooking, setCoLooking] = useState(false);
   const [coFound, setCoFound] = useState<boolean | null>(null);
   const [coLookupFailed, setCoLookupFailed] = useState(false);
+  // Brief "order placed" confirmation shown before opening payment collection.
+  const [placed, setPlaced] = useState<{ amount: number } | null>(null);
+  const navTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (navTimerRef.current) clearTimeout(navTimerRef.current); }, []);
   const [coSubmitting, setCoSubmitting] = useState(false);
   const [coError, setCoError] = useState<string | null>(null);
 
@@ -397,17 +401,19 @@ export default function OrderMenuScreen() {
         return;
       }
 
-      // Replace order-menu in the stack so back from payment-collect → [tableId]
-      router.replace({
-        pathname: '/(staff)/payment-collect',
-        params: {
-          orderId,
-          tableNumber: String(tableId ?? 0),
-          amount: String(orderTotal),
-          customerName: guestName ?? '',
-          customerPhone: guestPhone,
-        },
-      });
+      // Show a short-lived "Order placed" confirmation, then replace order-menu
+      // in the stack so back from payment-collect → [tableId].
+      const navParams = {
+        orderId,
+        tableNumber: String(tableId ?? 0),
+        amount: String(orderTotal),
+        customerName: guestName ?? '',
+        customerPhone: guestPhone,
+      };
+      setPlaced({ amount: orderTotal });
+      navTimerRef.current = setTimeout(() => {
+        router.replace({ pathname: '/(staff)/payment-collect', params: navParams });
+      }, 1200);
     } catch (e: any) {
       setCoError(e?.message ?? 'Failed to place order. Try again.');
     } finally {
@@ -742,6 +748,20 @@ export default function OrderMenuScreen() {
         onConfirm={handleConfirmMods}
         onCancel={() => setModifierItem(null)}
       />
+
+      {/* ── Order-placed confirmation (short-lived, before payment collection) ── */}
+      {placed && (
+        <View style={styles.placedOverlay} pointerEvents="none">
+          <View style={styles.placedCard}>
+            <View style={styles.placedIcon}>
+              <Ionicons name="checkmark" size={34} color="#fff" />
+            </View>
+            <Text style={styles.placedTitle}>Order placed</Text>
+            <Text style={styles.placedSub}>Table T{tableNum} · ₹{placed.amount.toFixed(0)}</Text>
+            <Text style={styles.placedHint}>Opening payment collection…</Text>
+          </View>
+        </View>
+      )}
     </View>
   );
 }
@@ -851,4 +871,12 @@ const styles = StyleSheet.create({
   modAdj: { ...Typography.caption, color: QuinckleColors.textSecondary },
   modConfirmBtn: { marginHorizontal: Spacing.xl, marginTop: Spacing.sm, marginBottom: Spacing.md, backgroundColor: QuinckleColors.primary, borderRadius: Radius.lg, paddingVertical: Spacing.lg, alignItems: 'center' },
   modConfirmText: { ...Typography.bodyStrong, color: '#fff' },
+
+  // Order-placed confirmation overlay
+  placedOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(9,9,11,0.94)', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
+  placedCard: { alignItems: 'center', gap: 8, paddingHorizontal: Spacing.xl },
+  placedIcon: { width: 72, height: 72, borderRadius: 36, backgroundColor: QuinckleColors.success, alignItems: 'center', justifyContent: 'center', marginBottom: 6 },
+  placedTitle: { ...Typography.title, color: QuinckleColors.textPrimary, fontWeight: '800' },
+  placedSub: { ...Typography.body, color: QuinckleColors.textSecondary },
+  placedHint: { ...Typography.caption, color: QuinckleColors.textTertiary, marginTop: 6 },
 });

@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
+  Animated,
   StyleSheet,
   Text,
   View,
   Image,
-  ScrollView,
   TouchableOpacity,
   ActivityIndicator,
   Dimensions,
@@ -149,12 +149,30 @@ export default function StaffProfile() {
     return role.charAt(0) + role.slice(1).toLowerCase();
   }, [staffInfo?.role]);
 
+  const scrollY = useRef(new Animated.Value(0)).current;
+
   return (
     <View style={styles.container}>
-      <ScrollView
+      {/* Sticky header — fades in as the hero banner scrolls away */}
+      <Animated.View
+        style={[styles.stickyHeader, { paddingTop: insets.top, opacity: scrollY.interpolate({ inputRange: [HERO_HEIGHT - 150, HERO_HEIGHT - 70], outputRange: [0, 1], extrapolate: 'clamp' }) }]}
+        pointerEvents="box-none"
+      >
+        <View style={styles.stickyRow}>
+          <TouchableOpacity onPress={() => router.back()} activeOpacity={0.7} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+            <Ionicons name="chevron-back" size={24} color={QuinckleColors.textPrimary} />
+          </TouchableOpacity>
+          <Text style={styles.stickyTitle} numberOfLines={1}>{staffInfo?.restaurantName ?? 'Profile'}</Text>
+          <View style={{ width: 24 }} />
+        </View>
+      </Animated.View>
+
+      <Animated.ScrollView
         contentContainerStyle={{ paddingBottom: insets.bottom + Spacing.huge }}
         showsVerticalScrollIndicator={false}
         bounces={true}
+        onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
+        scrollEventThrottle={16}
       >
 
         {/* ─── HERO BANNER ─── */}
@@ -371,7 +389,7 @@ export default function StaffProfile() {
           </Text>
         )}
 
-      </ScrollView>
+      </Animated.ScrollView>
 
       <ThemedDialog
         visible={dialog.visible}
@@ -388,6 +406,29 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: QuinckleColors.background,
+  },
+  stickyHeader: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0,
+    zIndex: 100,
+    backgroundColor: QuinckleColors.background,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: QuinckleColors.border,
+  },
+  stickyRow: {
+    height: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.lg,
+    gap: Spacing.md,
+  },
+  stickyTitle: {
+    flex: 1,
+    textAlign: 'center',
+    color: QuinckleColors.textPrimary,
+    fontSize: 15,
+    fontWeight: '700',
   },
 
   /* ─── Banner ─── */
