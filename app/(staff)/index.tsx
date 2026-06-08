@@ -922,10 +922,11 @@ export default function StaffDashboard() {
         ],
       );
     } else {
-      // Occupied or reserved → let crew free it directly, no conditions.
+      // Occupied or reserved → free directly. Any uncollected payment is NOT
+      // lost — it moves to Outstanding (Payment Collection › Outstanding).
       showDialog(
         'Free Table',
-        `Free Table T${String(tableNum).padStart(2, '0')}? This ends the current session and releases the table for new guests.`,
+        `Free Table T${String(tableNum).padStart(2, '0')}? It’s released for new guests. Any uncollected payment moves to Outstanding so you can still collect or waive it.`,
         [
           { label: 'Cancel', onPress: () => { } },
           { label: 'Free Table', variant: 'danger', onPress: () => { void freeTable(table); } },
