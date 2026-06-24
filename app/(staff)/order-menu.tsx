@@ -291,6 +291,33 @@ export default function OrderMenuScreen() {
     return { unlocked: true, name: best.name, reward: reward(best), remaining: 0, progress: 1 };
   }, [offers, cartTotal, priorSubtotal]);
 
+  // ── Offer nudge animations ──────────────────────────────────────────────────
+  const offerProgressAnim = useRef(new Animated.Value(0)).current; // 0→1 bar fill
+  const offerUnlockAnim   = useRef(new Animated.Value(0)).current; // 0=orange, 1=green
+  const offerSectionAnim  = useRef(new Animated.Value(0)).current; // mount/expand
+  const [nudgeMounted, setNudgeMounted] = useState(false);
+  const lastNudge = useRef(offerNudge);
+  if (offerNudge) lastNudge.current = offerNudge; // keep latest for exit frames
+
+  // Animate the bar fill (smooth left/right) + colour (orange ⇄ green).
+  useEffect(() => {
+    if (!offerNudge) return;
+    Animated.spring(offerProgressAnim, { toValue: offerNudge.progress, useNativeDriver: false, damping: 18, stiffness: 140, mass: 0.7 }).start();
+    Animated.timing(offerUnlockAnim, { toValue: offerNudge.unlocked ? 1 : 0, duration: 320, useNativeDriver: false }).start();
+  }, [offerNudge?.progress, offerNudge?.unlocked]);
+
+  // Smoothly reveal / collapse the whole section as offers (dis)appear.
+  useEffect(() => {
+    if (offerNudge) {
+      setNudgeMounted(true);
+      Animated.spring(offerSectionAnim, { toValue: 1, useNativeDriver: false, damping: 20, stiffness: 200, mass: 0.8 }).start();
+    } else if (nudgeMounted) {
+      Animated.timing(offerSectionAnim, { toValue: 0, duration: 200, useNativeDriver: false })
+        .start(({ finished }) => { if (finished) setNudgeMounted(false); });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [!!offerNudge]);
+
   const cartCount = useMemo(() =>
     Object.values(cart).reduce((a, b) => a + b, 0), [cart]);
 
@@ -598,24 +625,49 @@ export default function OrderMenuScreen() {
       </View>
 
       {/* ── Offer progress nudge ── */}
-      {offerNudge && (
-        <View style={[styles.offerBar, offerNudge.unlocked && styles.offerBarUnlocked]}>
-          <View style={styles.offerBarRow}>
-            <Ionicons
-              name={offerNudge.unlocked ? 'checkmark-circle' : 'pricetag'}
-              size={14}
-              color={QuinckleColors.primary}
-            />
-            <Text style={styles.offerBarText} numberOfLines={1}>
-              {offerNudge.unlocked
-                ? `${offerNudge.reward} unlocked — ${offerNudge.name}`
-                : `Add ₹${offerNudge.remaining} more to unlock ${offerNudge.reward}`}
-            </Text>
-          </View>
-          <View style={styles.offerTrack}>
-            <View style={[styles.offerFill, { width: `${Math.round(offerNudge.progress * 100)}%` }]} />
-          </View>
-        </View>
+      {nudgeMounted && lastNudge.current && (
+        <Animated.View
+          style={{
+            overflow: 'hidden',
+            opacity: offerSectionAnim,
+            maxHeight: offerSectionAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 140] }),
+            transform: [{ translateY: offerSectionAnim.interpolate({ inputRange: [0, 1], outputRange: [-10, 0] }) }],
+          }}
+        >
+          <Animated.View
+            style={[
+              styles.offerBar,
+              {
+                backgroundColor: offerUnlockAnim.interpolate({ inputRange: [0, 1], outputRange: [QuinckleColors.primarySoft, QuinckleColors.successSoft] }),
+                borderColor: offerUnlockAnim.interpolate({ inputRange: [0, 1], outputRange: [QuinckleColors.primarySoftBorder, QuinckleColors.successBorder] }),
+              },
+            ]}
+          >
+            <View style={styles.offerBarRow}>
+              <Ionicons
+                name={lastNudge.current.unlocked ? 'checkmark-circle' : 'pricetag'}
+                size={14}
+                color={lastNudge.current.unlocked ? QuinckleColors.success : QuinckleColors.primary}
+              />
+              <Text style={styles.offerBarText} numberOfLines={1}>
+                {lastNudge.current.unlocked
+                  ? `${lastNudge.current.reward} unlocked — ${lastNudge.current.name}`
+                  : `Add ₹${lastNudge.current.remaining} more to unlock ${lastNudge.current.reward}`}
+              </Text>
+            </View>
+            <View style={styles.offerTrack}>
+              <Animated.View
+                style={[
+                  styles.offerFill,
+                  {
+                    width: offerProgressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'], extrapolate: 'clamp' }),
+                    backgroundColor: offerUnlockAnim.interpolate({ inputRange: [0, 1], outputRange: [QuinckleColors.primary, QuinckleColors.success] }),
+                  },
+                ]}
+              />
+            </View>
+          </Animated.View>
+        </Animated.View>
       )}
 
       {/* ── Search + Category dropdown ── */}
@@ -855,7 +907,6 @@ const styles = StyleSheet.create({
     backgroundColor: QuinckleColors.primarySoft,
     gap: 8,
   },
-  offerBarUnlocked: { opacity: 0.95 },
   offerBarRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   offerBarText: { ...Typography.caption, color: QuinckleColors.textPrimary, fontWeight: '600', flex: 1 },
   offerTrack: {
@@ -867,7 +918,6 @@ const styles = StyleSheet.create({
   offerFill: {
     height: '100%',
     borderRadius: 3,
-    backgroundColor: QuinckleColors.primary,
   },
 
   // Search row
