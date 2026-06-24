@@ -1,6 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
-  Image,
   ScrollView,
   StyleSheet,
   Text,
@@ -10,68 +9,145 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
+import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { useAuth } from '../../context/AuthContext';
+import { crewAuth } from '../../services/api';
+import { ThemedDialog } from '../../components/ui/themed-dialog';
+import ProfileHeader from '../../components/ui/ProfileHeader';
 
-const BANNER_HEIGHT = 340;
+const COOK_BADGE_COLORS = {
+  bg: 'rgba(139, 92, 246, 0.25)',
+  border: 'rgba(167, 139, 250, 0.55)',
+  text: '#E9D5FF',
+};
 
 export default function CookProfile() {
   const insets = useSafeAreaInsets();
-  const { staffInfo, logout } = useAuth();
+  const { staffInfo, logout, setPhotoUrl } = useAuth();
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+
+  const [dialog, setDialog] = useState<{
+    visible: boolean;
+    title: string;
+    message: string;
+    actions: Array<{ label: string; variant?: 'default' | 'danger' | 'primary'; onPress: () => void }>;
+  }>({
+    visible: false,
+    title: '',
+    message: '',
+    actions: [],
+  });
+
+  const handlePickAndUploadPhoto = async () => {
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        setDialog({
+          visible: true,
+          title: 'Permission denied',
+          message: 'Media library access is required to upload photos.',
+          actions: [{ label: 'OK', variant: 'primary', onPress: () => setDialog(prev => ({ ...prev, visible: false })) }]
+        });
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.65,
+      });
+      if (res.canceled || !res.assets?.[0]?.uri) return;
+      setIsUploadingPhoto(true);
+
+      const manipulated = await ImageManipulator.manipulateAsync(
+        res.assets[0].uri,
+        [{ resize: { width: 400, height: 400 } }],
+        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG, base64: true },
+      );
+      if (!manipulated.base64) throw new Error('Failed to encode image.');
+
+      const uploadRes = await crewAuth.uploadPhoto(manipulated.base64);
+      setPhotoUrl((uploadRes as any)?.data?.photoUrl ?? manipulated.uri);
+      setDialog({
+        visible: true,
+        title: 'Success',
+        message: 'Profile photo updated.',
+        actions: [{ label: 'OK', variant: 'primary', onPress: () => setDialog(prev => ({ ...prev, visible: false })) }]
+      });
+    } catch (err) {
+      setDialog({
+        visible: true,
+        title: 'Photo upload failed',
+        message: err instanceof Error ? err.message : 'Please try again with a smaller image.',
+        actions: [{ label: 'OK', variant: 'primary', onPress: () => setDialog(prev => ({ ...prev, visible: false })) }]
+      });
+    } finally {
+      setIsUploadingPhoto(false);
+    }
+  };
+
+  const handleRemovePhoto = async () => {
+    setDialog(prev => ({ ...prev, visible: false }));
+    setIsUploadingPhoto(true);
+    try {
+      await crewAuth.removePhoto();
+      setPhotoUrl('');
+    } catch (err) {
+      setDialog({
+        visible: true,
+        title: 'Couldn\'t remove photo',
+        message: err instanceof Error ? err.message : 'Please try again.',
+        actions: [{ label: 'OK', variant: 'primary', onPress: () => setDialog(prev => ({ ...prev, visible: false })) }]
+      });
+    } finally {
+      setIsUploadingPhoto(false);
+    }
+  };
+
+  const handlePhotoButtonPress = () => {
+    if (!staffInfo?.photoUrl) {
+      handlePickAndUploadPhoto();
+      return;
+    }
+    setDialog({
+      visible: true,
+      title: 'Profile Photo',
+      message: 'Change or remove your profile photo.',
+      actions: [
+        { label: 'Cancel', variant: 'default', onPress: () => setDialog(prev => ({ ...prev, visible: false })) },
+        { label: 'Remove', variant: 'danger', onPress: handleRemovePhoto },
+        { label: 'Change', variant: 'primary', onPress: () => { setDialog(prev => ({ ...prev, visible: false })); handlePickAndUploadPhoto(); } },
+      ]
+    });
+  };
 
   return (
     <View style={styles.container}>
+      <View style={[styles.topBar, { paddingTop: insets.top + Spacing.md }]}>
+        <TouchableOpacity onPress={() => router.back()} activeOpacity={0.7} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+          <Ionicons name="chevron-back" size={24} color={QuinckleColors.textPrimary} />
+        </TouchableOpacity>
+        <Text style={styles.topBarTitle} numberOfLines={1}>Profile</Text>
+        <View style={{ width: 24 }} />
+      </View>
+
       <ScrollView
-        contentContainerStyle={{ paddingBottom: insets.bottom + Spacing.huge }}
+        contentContainerStyle={{ paddingTop: Spacing.lg, paddingBottom: insets.bottom + Spacing.huge }}
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.banner}>
-          <Image
-            source={{ uri: 'https://images.pexels.com/photos/3298637/pexels-photo-3298637.jpeg' }}
-            style={styles.bannerImage}
-            resizeMode="cover"
-          />
-          <LinearGradient
-            colors={['rgba(0,0,0,0.15)', 'rgba(0,0,0,0.45)', 'rgba(9,9,11,0.95)', QuinckleColors.background]}
-            locations={[0, 0.45, 0.85, 1]}
-            style={StyleSheet.absoluteFillObject}
-            pointerEvents="none"
-          />
-          <TouchableOpacity
-            style={[styles.backBtn, { top: insets.top + Spacing.sm }]}
-            onPress={() => router.back()}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="arrow-back" size={20} color="#fff" />
-          </TouchableOpacity>
-          <View style={styles.bannerTextWrap}>
-            <View style={styles.roleBadge}>
-              <Text style={styles.roleBadgeText}>Kitchen</Text>
-            </View>
-            <Text style={styles.restaurantName} numberOfLines={2}>
-              {staffInfo?.restaurantName ?? 'The Grill Room'}
-            </Text>
-          </View>
-        </View>
+        <ProfileHeader
+          photoUrl={staffInfo?.photoUrl}
+          name={staffInfo?.name ?? 'Kitchen Staff'}
+          roleLabel="Kitchen"
+          badgeColors={COOK_BADGE_COLORS}
+          restaurantName={staffInfo?.restaurantName}
+          onChangePhoto={handlePhotoButtonPress}
+          isUploadingPhoto={isUploadingPhoto}
+        />
 
         <View style={styles.body}>
-          <View style={styles.card}>
-            <View style={styles.venueRow}>
-              <Image
-                source={{ uri: 'https://images.unsplash.com/photo-1544148103-0773bf10d330?q=80&w=100&h=100&auto=format&fit=crop' }}
-                style={styles.venueLogo}
-              />
-              <View style={styles.venueInfo}>
-                <Text style={styles.venueLabel}>Linked Restaurant</Text>
-                <Text style={styles.venueName}>{staffInfo?.restaurantName ?? 'The Grill Room'}</Text>
-                <Text style={styles.venueId}>
-                  {staffInfo?.restaurantId?.slice(0, 12).toUpperCase() ?? 'QNK-7782-GR'}
-                </Text>
-              </View>
-            </View>
-          </View>
-
           <Text style={styles.adminText}>
             Contact your restaurant administrator to update profile details.
           </Text>
@@ -93,6 +169,14 @@ export default function CookProfile() {
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      <ThemedDialog
+        visible={dialog.visible}
+        title={dialog.title}
+        message={dialog.message}
+        actions={dialog.actions}
+        onClose={() => setDialog(prev => ({ ...prev, visible: false }))}
+      />
     </View>
   );
 }
@@ -102,98 +186,26 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: QuinckleColors.background,
   },
-  banner: {
-    width: '100%',
-    height: BANNER_HEIGHT,
-    position: 'relative',
-    backgroundColor: '#111',
-  },
-  bannerImage: {
-    width: '100%',
-    height: '100%',
-  },
-  backBtn: {
-    position: 'absolute',
-    left: Spacing.lg,
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(0,0,0,0.45)',
+  topBar: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.md,
+    gap: Spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: QuinckleColors.border,
   },
-  bannerTextWrap: {
-    position: 'absolute',
-    left: Spacing.lg,
-    right: Spacing.lg,
-    bottom: Spacing.lg,
-    gap: 8,
-  },
-  roleBadge: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    borderRadius: 6,
-    backgroundColor: 'rgba(139, 92, 246, 0.25)',
-    borderWidth: 1,
-    borderColor: 'rgba(167, 139, 250, 0.55)',
-  },
-  roleBadgeText: {
-    color: '#E9D5FF',
-    fontSize: 11,
+  topBarTitle: {
+    flex: 1,
+    textAlign: 'center',
+    color: QuinckleColors.textPrimary,
+    fontSize: 15,
     fontWeight: '700',
-    letterSpacing: 0.6,
-    textTransform: 'uppercase',
-  },
-  restaurantName: {
-    color: '#fff',
-    fontSize: 26,
-    fontWeight: '700',
-    letterSpacing: -0.4,
   },
   body: {
     paddingHorizontal: Spacing.lg,
-    marginTop: Spacing.md,
     gap: Spacing.lg,
-  },
-  card: {
-    backgroundColor: QuinckleColors.surface,
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
-    padding: Spacing.lg,
-  },
-  venueRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-  },
-  venueLogo: {
-    width: 56,
-    height: 56,
-    borderRadius: 10,
-  },
-  venueInfo: {
-    flex: 1,
-    gap: 2,
-  },
-  venueLabel: {
-    color: QuinckleColors.textTertiary,
-    fontSize: 11,
-    fontWeight: '600',
-    letterSpacing: 0.4,
-    textTransform: 'uppercase',
-  },
-  venueName: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 16,
-    fontWeight: '700',
-    letterSpacing: -0.2,
-  },
-  venueId: {
-    color: QuinckleColors.textTertiary,
-    fontSize: 12,
-    fontWeight: '500',
   },
   adminText: {
     color: QuinckleColors.textTertiary,
@@ -210,7 +222,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: QuinckleColors.border,
     backgroundColor: QuinckleColors.surface,
-    marginTop: Spacing.md,
   },
   printerBtnText: {
     color: QuinckleColors.textPrimary,

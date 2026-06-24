@@ -35,9 +35,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
 import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
 import {
-  crewSessions, crewOrders, crewDiners, restaurantApi,
+  crewSessions, crewOrders, crewDiners, restaurantApi, crewOffers,
 } from '../../services/api';
-import type { MenuItem, ModifierGroup } from '../../services/api';
+import type { MenuItem, ModifierGroup, CrewOffer } from '../../services/api';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { Skeleton } from '../../components/ui/Skeleton';
 
@@ -159,6 +159,8 @@ export default function OrderMenuScreen() {
 
   // ── Menu data ──────────────────────────────────────────────────────────────
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [offers, setOffers] = useState<CrewOffer[]>([]);
+  const [priorSubtotal, setPriorSubtotal] = useState(0);
   const [menuCategories, setMenuCategories] = useState<string[]>(['All']);
   const [isMenuLoading, setIsMenuLoading] = useState(true);
 
@@ -216,7 +218,15 @@ export default function OrderMenuScreen() {
       })
       .catch(() => {})
       .finally(() => setIsMenuLoading(false));
-  }, [staffInfo?.restaurantId]);
+
+    crewOffers.list(sessionId)
+      .then(res => {
+        const d = (res as any)?.data;
+        setOffers(d?.offers ?? []);
+        setPriorSubtotal(Number(d?.sessionSubtotalBeforeCart ?? 0));
+      })
+      .catch(() => {});
+  }, [staffInfo?.restaurantId, sessionId]);
 
   // ── Cart helpers ───────────────────────────────────────────────────────────
   const addToCart = (itemId: string, mods?: { groupId: string; optionId: string }[]) => {
@@ -247,6 +257,39 @@ export default function OrderMenuScreen() {
     });
     return sum + base;
   }, 0), [cart, menuItems, cartModifiers]);
+
+  // Spend-threshold offer nudge: nearest unmet offer (or best already-unlocked).
+  // Item-triggered offers are skipped here (no "remaining amount" to show).
+  const offerNudge = useMemo(() => {
+    const reward = (o: CrewOffer) =>
+      o.type === 'PERCENTAGE_OFF' ? `${o.discountPct}% off`
+      : o.type === 'FLAT_OFF'     ? `₹${o.discountFlat} off`
+      : 'a free item';
+    const spendOffers = offers.filter(o => o.minOrderValue != null && o.minOrderValue > 0);
+    if (spendOffers.length === 0) return null;
+
+    // Same threshold base the discount engine uses: prior orders on the table
+    // + the current cart.
+    const base = priorSubtotal + cartTotal;
+
+    const locked = spendOffers
+      .filter(o => base < (o.minOrderValue as number))
+      .sort((a, b) => (a.minOrderValue as number) - (b.minOrderValue as number));
+    if (locked.length > 0) {
+      const o = locked[0];
+      const min = o.minOrderValue as number;
+      return {
+        unlocked: false,
+        name: o.name,
+        reward: reward(o),
+        remaining: Math.max(0, Math.round(min - base)),
+        progress: Math.max(0, Math.min(base / min, 1)),
+      };
+    }
+    // All spend offers met → celebrate the highest-threshold one.
+    const best = spendOffers.sort((a, b) => (b.minOrderValue as number) - (a.minOrderValue as number))[0];
+    return { unlocked: true, name: best.name, reward: reward(best), remaining: 0, progress: 1 };
+  }, [offers, cartTotal, priorSubtotal]);
 
   const cartCount = useMemo(() =>
     Object.values(cart).reduce((a, b) => a + b, 0), [cart]);
@@ -554,6 +597,27 @@ export default function OrderMenuScreen() {
         )}
       </View>
 
+      {/* ── Offer progress nudge ── */}
+      {offerNudge && (
+        <View style={[styles.offerBar, offerNudge.unlocked && styles.offerBarUnlocked]}>
+          <View style={styles.offerBarRow}>
+            <Ionicons
+              name={offerNudge.unlocked ? 'checkmark-circle' : 'pricetag'}
+              size={14}
+              color={QuinckleColors.primary}
+            />
+            <Text style={styles.offerBarText} numberOfLines={1}>
+              {offerNudge.unlocked
+                ? `${offerNudge.reward} unlocked — ${offerNudge.name}`
+                : `Add ₹${offerNudge.remaining} more to unlock ${offerNudge.reward}`}
+            </Text>
+          </View>
+          <View style={styles.offerTrack}>
+            <View style={[styles.offerFill, { width: `${Math.round(offerNudge.progress * 100)}%` }]} />
+          </View>
+        </View>
+      )}
+
       {/* ── Search + Category dropdown ── */}
       <View style={styles.searchRow}>
         <View style={styles.searchBar}>
@@ -778,6 +842,33 @@ const styles = StyleSheet.create({
   headerSub: { ...Typography.micro, color: QuinckleColors.textMuted, marginTop: 1 },
   cartBadge: { backgroundColor: QuinckleColors.primarySoft, borderRadius: Radius.pill, paddingHorizontal: Spacing.md, paddingVertical: 4, borderWidth: 1, borderColor: QuinckleColors.primarySoftBorder },
   cartBadgeText: { ...Typography.micro, color: QuinckleColors.primary, fontWeight: '700' },
+
+  // Offer progress nudge
+  offerBar: {
+    marginHorizontal: Spacing.xl,
+    marginBottom: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm + 2,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: QuinckleColors.primarySoftBorder,
+    backgroundColor: QuinckleColors.primarySoft,
+    gap: 8,
+  },
+  offerBarUnlocked: { opacity: 0.95 },
+  offerBarRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  offerBarText: { ...Typography.caption, color: QuinckleColors.textPrimary, fontWeight: '600', flex: 1 },
+  offerTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    overflow: 'hidden',
+  },
+  offerFill: {
+    height: '100%',
+    borderRadius: 3,
+    backgroundColor: QuinckleColors.primary,
+  },
 
   // Search row
   searchRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.xl, marginBottom: Spacing.md, gap: Spacing.sm },

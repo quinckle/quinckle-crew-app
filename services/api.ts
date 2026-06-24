@@ -122,6 +122,14 @@ export const crewAuth = {
       { photoUrl },
       true,
     ),
+
+  removePhoto: () =>
+    request<{ success: boolean; data: { photoUrl: null } }>(
+      'DELETE',
+      '/api/crew/auth/profile/photo',
+      undefined,
+      true,
+    ),
 };
 
 // ── Dev (development only) ────────────────────────────────────────────────────
@@ -168,7 +176,7 @@ export const kitchen = {
 
 // ── Crew Tables (STEWARD/ADMIN) ───────────────────────────────────────────────
 
-export interface CrewTable { table_id: string; table_number: number; capacity: number; status: 'available' | 'occupied' | 'reserved' | 'offline'; session_id: string | null; occupied_since: string | null; expires_at?: string | null; customer_name?: string | null; customer_phone?: string | null; bill_subtotal?: number; bill_tax?: number; bill_total?: number; }
+export interface CrewTable { table_id: string; table_number: number; capacity: number; status: 'available' | 'occupied' | 'reserved' | 'offline'; session_id: string | null; occupied_since: string | null; expires_at?: string | null; customer_name?: string | null; customer_phone?: string | null; bill_subtotal?: number; bill_tax?: number; bill_total?: number; items_served?: number; items_total?: number; payment_settled?: boolean; }
 
 export const crewTables = {
   list: () => request<{ tables: CrewTable[] }>('GET', '/api/crew/tables', undefined, true),
@@ -412,6 +420,8 @@ export const crewSessions = {
     range?: LedgerRange;
     from?: string;
     to?: string;
+    fromTime?: string;
+    toTime?: string;
     sessionRef?: string;
     status?: string;
     method?: string;
@@ -422,6 +432,8 @@ export const crewSessions = {
     if (params.range)                              parts.push(`range=${params.range}`);
     if (params.from)                               parts.push(`from=${params.from}`);
     if (params.to)                                 parts.push(`to=${params.to}`);
+    if (params.fromTime)                           parts.push(`fromTime=${params.fromTime}`);
+    if (params.toTime)                             parts.push(`toTime=${params.toTime}`);
     if (params.sessionRef)                         parts.push(`sessionRef=${encodeURIComponent(params.sessionRef)}`);
     if (params.status && params.status !== 'all')  parts.push(`status=${params.status}`);
     if (params.method && params.method !== 'all')  parts.push(`method=${params.method}`);
@@ -477,6 +489,31 @@ export const crewMemberships = {
 
 export interface ActiveOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; }
 export interface ActiveOrder { order_id: string; table_number: number; session_id: string; status: 'received' | 'preparing' | 'ready' | 'served'; placed_at: string; served_at?: string; items: ActiveOrderItem[]; }
+
+export interface CrewOffer {
+  id: string;
+  name: string;
+  type: 'PERCENTAGE_OFF' | 'FLAT_OFF' | 'FREE_ITEM';
+  minOrderValue: number | null;
+  triggerItemId: string | null;
+  discountPct: number | null;
+  discountFlat: number | null;
+  maxDiscount: number | null;
+  freeItemId: string | null;
+  freeItemQty: number;
+}
+
+export const crewOffers = {
+  // sessionId lets the server return the table's prior-order subtotal so the
+  // progress nudge matches the exact threshold the discount engine applies.
+  list: (sessionId?: string) =>
+    request<{ success: boolean; data: { offers: CrewOffer[]; sessionSubtotalBeforeCart: number } }>(
+      'GET',
+      `/api/crew/offers${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`,
+      undefined,
+      true,
+    ),
+};
 
 export const crewOrders = {
   getActive: () =>
@@ -904,4 +941,45 @@ export const crewNotifications = {
       byRole: Array<{ role: StaffRole; active: number }>;
       lastSeenAt: string | null;
     } }>('GET', '/api/crew/notifications/token-health', undefined, true),
+};
+
+// ── Expenses (floor petty cash / supplier payments) ─────────────────────────
+
+export type CrewExpensePaymentMethod = 'CASH' | 'UPI' | 'BANK_TRANSFER' | 'CARD' | 'OTHER';
+
+export interface CrewExpenseCategory { id: string; name: string; kind: string; color: string }
+export interface CrewVendor { id: string; name: string }
+export interface CrewExpenseItem {
+  id: string;
+  category: { id: string; name: string; kind: string; color: string } | null;
+  vendor: { id: string; name: string } | null;
+  amount: number;
+  expenseDate: string;
+  paymentMethod: CrewExpensePaymentMethod;
+  note: string | null;
+  source: string;
+}
+export interface CrewExpenseCreateInput {
+  categoryId: string;
+  vendorId?: string | null;
+  amount: number;
+  expenseDate: string; // YYYY-MM-DD
+  paymentMethod?: CrewExpensePaymentMethod;
+  note?: string | null;
+}
+
+export const crewExpenses = {
+  categories: () =>
+    request<{ success: boolean; data: CrewExpenseCategory[] }>('GET', '/api/crew/expenses/categories', undefined, true),
+
+  vendors: () =>
+    request<{ success: boolean; data: CrewVendor[] }>('GET', '/api/crew/expenses/vendors', undefined, true),
+
+  recent: () =>
+    request<{ success: boolean; data: { items: CrewExpenseItem[]; totalAmount: number; range: { label: string } } }>(
+      'GET', '/api/crew/expenses?range=7d', undefined, true,
+    ),
+
+  create: (input: CrewExpenseCreateInput) =>
+    request<{ success: boolean; data: CrewExpenseItem; error?: string }>('POST', '/api/crew/expenses', input, true),
 };

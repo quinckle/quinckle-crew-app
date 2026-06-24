@@ -200,7 +200,9 @@ export function BottomSheet({
               maxHeight: SCREEN_H * maxHeightRatio,
               // Fixed height when child owns scrolling (FlatList inside)
               ...(disableInternalScroll && { height: SCREEN_H * maxHeightRatio }),
-              paddingBottom: insets.bottom + Spacing.md,
+              // Float clear of the screen edges (safe-area aware).
+              marginBottom: insets.bottom + Spacing.sm,
+              paddingBottom: Spacing.lg,
               transform: [{ translateY }],
             },
           ]}

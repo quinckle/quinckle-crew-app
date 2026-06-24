@@ -1,18 +1,14 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Animated,
+  ScrollView,
   StyleSheet,
   Text,
   View,
-  Image,
   TouchableOpacity,
-  ActivityIndicator,
-  Dimensions,
   Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as Haptics from 'expo-haptics';
@@ -22,9 +18,13 @@ import { crewAuth, restaurantApi, crewPayments } from '../../services/api';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import UpdateStatus from '../../components/ui/UpdateStatus';
+import ProfileHeader from '../../components/ui/ProfileHeader';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const HERO_HEIGHT = 340;
+const STAFF_BADGE_COLORS = {
+  bg: 'rgba(99, 102, 241, 0.25)',
+  border: 'rgba(129, 140, 248, 0.55)',
+  text: '#C7D2FE',
+};
 
 // Format Indian phone number "+91 XXXXX XXXXX"
 function formatPhone(raw?: string | null): string {
@@ -96,7 +96,7 @@ export default function StaffProfile() {
     });
   };
 
-  const handleChangePhoto = async () => {
+  const handlePickAndUploadPhoto = async () => {
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
@@ -144,114 +144,93 @@ export default function StaffProfile() {
     }
   };
 
+  const handleRemovePhoto = async () => {
+    setDialog(prev => ({ ...prev, visible: false }));
+    setIsUploadingPhoto(true);
+    try {
+      await crewAuth.removePhoto();
+      setPhotoUrl('');
+    } catch (err) {
+      setDialog({
+        visible: true,
+        title: 'Couldn\'t remove photo',
+        message: err instanceof Error ? err.message : 'Please try again.',
+        actions: [{ label: 'OK', variant: 'primary', onPress: () => setDialog(prev => ({ ...prev, visible: false })) }]
+      });
+    } finally {
+      setIsUploadingPhoto(false);
+    }
+  };
+
+  const handlePhotoButtonPress = () => {
+    if (!staffInfo?.photoUrl) {
+      handlePickAndUploadPhoto();
+      return;
+    }
+    setDialog({
+      visible: true,
+      title: 'Profile Photo',
+      message: 'Change or remove your profile photo.',
+      actions: [
+        { label: 'Cancel', variant: 'default', onPress: () => setDialog(prev => ({ ...prev, visible: false })) },
+        { label: 'Remove', variant: 'danger', onPress: handleRemovePhoto },
+        { label: 'Change', variant: 'primary', onPress: () => { setDialog(prev => ({ ...prev, visible: false })); handlePickAndUploadPhoto(); } },
+      ]
+    });
+  };
+
   const staffRole = useMemo(() => {
     const role = staffInfo?.role ?? 'STAFF';
     return role.charAt(0) + role.slice(1).toLowerCase();
   }, [staffInfo?.role]);
 
-  const scrollY = useRef(new Animated.Value(0)).current;
-
   return (
     <View style={styles.container}>
-      {/* Sticky header — fades in as the hero banner scrolls away */}
-      <Animated.View
-        style={[styles.stickyHeader, { paddingTop: insets.top, opacity: scrollY.interpolate({ inputRange: [HERO_HEIGHT - 150, HERO_HEIGHT - 70], outputRange: [0, 1], extrapolate: 'clamp' }) }]}
-        pointerEvents="box-none"
-      >
-        <View style={styles.stickyRow}>
-          <TouchableOpacity onPress={() => router.back()} activeOpacity={0.7} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-            <Ionicons name="chevron-back" size={24} color={QuinckleColors.textPrimary} />
-          </TouchableOpacity>
-          <Text style={styles.stickyTitle} numberOfLines={1}>{staffInfo?.restaurantName ?? 'Profile'}</Text>
-          <View style={{ width: 24 }} />
-        </View>
-      </Animated.View>
+      <View style={[styles.topBar, { paddingTop: insets.top + Spacing.md }]}>
+        <TouchableOpacity onPress={() => router.back()} activeOpacity={0.7} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+          <Ionicons name="chevron-back" size={24} color={QuinckleColors.textPrimary} />
+        </TouchableOpacity>
+        <Text style={styles.topBarTitle} numberOfLines={1}>Profile</Text>
+        <View style={{ width: 24 }} />
+      </View>
 
-      <Animated.ScrollView
-        contentContainerStyle={{ paddingBottom: insets.bottom + Spacing.huge }}
+      <ScrollView
+        contentContainerStyle={{ paddingTop: Spacing.lg, paddingBottom: insets.bottom + Spacing.huge }}
         showsVerticalScrollIndicator={false}
-        bounces={true}
-        onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
-        scrollEventThrottle={16}
       >
 
-        {/* ─── HERO BANNER ─── */}
-        <View style={styles.staffBanner}>
-          <Image
-            source={{ uri: 'https://images.pexels.com/photos/262978/pexels-photo-262978.jpeg' }}
-            style={styles.staffBannerImage}
-            resizeMode="cover"
-          />
-          <LinearGradient
-            colors={['rgba(0,0,0,0.15)', 'rgba(0,0,0,0.45)', 'rgba(9,9,11,0.95)', QuinckleColors.background]}
-            locations={[0, 0.45, 0.85, 1]}
-            style={StyleSheet.absoluteFillObject}
-            pointerEvents="none"
-          />
-          <TouchableOpacity
-            style={[styles.bannerBackBtn, { top: insets.top + Spacing.sm }]}
-            onPress={() => router.back()}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="arrow-back" size={20} color="#fff" />
-          </TouchableOpacity>
-          <View style={styles.bannerTextWrap}>
-            <View style={styles.bannerRoleBadge}>
-              <Text style={styles.bannerRoleBadgeText}>Staff</Text>
-            </View>
-            <Text style={styles.bannerRestaurantName} numberOfLines={2}>
-              {staffInfo?.restaurantName ?? 'The Grill Room'}
-            </Text>
-          </View>
-        </View>
-
-        {/* ─── IDENTITY CARD ─── */}
-        <View style={styles.identityCard}>
-          <View style={styles.identityPhotoWrap}>
-            {staffInfo?.photoUrl ? (
-              <Image source={{ uri: staffInfo.photoUrl }} style={styles.identityPhoto} />
-            ) : (
-              <View style={[styles.identityPhoto, styles.identityPhotoFallback]}>
-                <Text style={styles.identityPhotoInitials}>
-                  {(staffInfo?.name ?? 'S')
-                    .split(' ')
-                    .map((w: string) => w[0])
-                    .join('')
-                    .slice(0, 2)
-                    .toUpperCase()}
-                </Text>
-              </View>
-            )}
-            <TouchableOpacity
-              style={styles.identityCameraBtn}
-              onPress={handleChangePhoto}
-              disabled={isUploadingPhoto}
-              activeOpacity={0.7}
-            >
-              {isUploadingPhoto ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Ionicons name="camera" size={14} color="#fff" />
-              )}
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.identityTextCol}>
-            <Text style={styles.identityName} numberOfLines={1}>
-              {staffInfo?.name ?? 'Staff Member'}
-            </Text>
-            <View style={styles.identityMetaRow}>
-              <Ionicons name="briefcase-outline" size={13} color={QuinckleColors.textTertiary} />
-              <Text style={styles.identityMetaText}>{staffRole}</Text>
-            </View>
-            <View style={styles.identityMetaRow}>
-              <Ionicons name="call-outline" size={13} color={QuinckleColors.textTertiary} />
-              <Text style={styles.identityMetaText}>{formatPhone(staffInfo?.phone) || '—'}</Text>
-            </View>
-          </View>
-        </View>
+        <ProfileHeader
+          photoUrl={staffInfo?.photoUrl}
+          name={staffInfo?.name ?? 'Staff Member'}
+          roleLabel={staffRole}
+          badgeColors={STAFF_BADGE_COLORS}
+          restaurantName={staffInfo?.restaurantName}
+          phone={formatPhone(staffInfo?.phone) || null}
+          onChangePhoto={handlePhotoButtonPress}
+          isUploadingPhoto={isUploadingPhoto}
+        />
 
         {/* ─── KOT PRINTER ─── */}
+        {/* ─── EXPENSES ─── */}
+        <View style={styles.section}>
+          <TouchableOpacity
+            style={styles.sectionRow}
+            onPress={() => router.push('/(staff)/expenses')}
+            activeOpacity={0.6}
+          >
+            <View style={styles.sectionRowLeft}>
+              <View style={[styles.sectionIconWrap]}>
+                <Ionicons name="wallet-outline" size={18} color='white' />
+              </View>
+              <View style={styles.sectionTextGroup}>
+                <Text style={styles.sectionTitle}>Expenses</Text>
+                <Text style={styles.sectionSubtitle}>Log petty cash & supplier payments</Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
+          </TouchableOpacity>
+        </View>
+
         {/* ─── ORDER LEDGER ─── */}
         <View style={styles.section}>
           <TouchableOpacity
@@ -309,23 +288,6 @@ export default function StaffProfile() {
             </View>
             <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
           </TouchableOpacity>
-        </View>
-
-        {/* ─── LINKED RESTAURANT ─── */}
-        <View style={styles.section}>
-          <View style={styles.sectionRow}>
-            <View style={styles.sectionRowLeft}>
-              <View style={[styles.sectionIconWrap]}>
-                <Ionicons name="storefront-outline" size={18} color='white' />
-              </View>
-              <View style={styles.sectionTextGroup}>
-                <Text style={styles.sectionTitle}>Linked Restaurant</Text>
-                <Text style={styles.sectionSubtitle}>
-                  {staffInfo?.restaurantName ?? '—'}
-                </Text>
-              </View>
-            </View>
-          </View>
         </View>
 
         {/* ─── HELP & POLICIES ─── */}
@@ -389,7 +351,7 @@ export default function StaffProfile() {
           </Text>
         )}
 
-      </Animated.ScrollView>
+      </ScrollView>
 
       <ThemedDialog
         visible={dialog.visible}
@@ -407,155 +369,22 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: QuinckleColors.background,
   },
-  stickyHeader: {
-    position: 'absolute',
-    top: 0, left: 0, right: 0,
-    zIndex: 100,
-    backgroundColor: QuinckleColors.background,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: QuinckleColors.border,
-  },
-  stickyRow: {
-    height: 52,
+  topBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.md,
     gap: Spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: QuinckleColors.border,
   },
-  stickyTitle: {
+  topBarTitle: {
     flex: 1,
     textAlign: 'center',
     color: QuinckleColors.textPrimary,
     fontSize: 15,
     fontWeight: '700',
-  },
-
-  /* ─── Banner ─── */
-  staffBanner: {
-    width: '100%',
-    height: HERO_HEIGHT,
-    position: 'relative',
-    backgroundColor: '#111',
-  },
-  staffBannerImage: {
-    width: '100%',
-    height: '100%',
-  },
-  bannerBackBtn: {
-    position: 'absolute',
-    left: Spacing.lg,
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  bannerTextWrap: {
-    position: 'absolute',
-    left: Spacing.lg,
-    right: Spacing.lg,
-    bottom: Spacing.lg,
-    gap: 8,
-  },
-  bannerRoleBadge: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    borderRadius: 6,
-    backgroundColor: 'rgba(99, 102, 241, 0.25)',
-    borderWidth: 1,
-    borderColor: 'rgba(129, 140, 248, 0.55)',
-  },
-  bannerRoleBadgeText: {
-    color: '#C7D2FE',
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.6,
-    textTransform: 'uppercase',
-  },
-  bannerRestaurantName: {
-    color: '#fff',
-    fontSize: 26,
-    fontWeight: '700',
-    letterSpacing: -0.4,
-  },
-
-  /* ─── Identity Card ─── */
-  identityCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.lg,
-    marginTop: Spacing.md,
-    marginHorizontal: Spacing.lg,
-    backgroundColor: QuinckleColors.surface,
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.lg,
-    marginBottom: Spacing.lg,
-    shadowColor: '#000',
-    shadowOpacity: 0.25,
-    shadowOffset: { width: 0, height: 6 },
-    shadowRadius: 16,
-    elevation: 8,
-  },
-  identityPhotoWrap: {
-    position: 'relative',
-    width: 72,
-    height: 72,
-  },
-  identityPhoto: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: QuinckleColors.surfaceMuted,
-  },
-  identityPhotoFallback: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  identityPhotoInitials: {
-    color: 'rgba(255,255,255,0.55)',
-    fontSize: 24,
-    fontWeight: '700',
-    letterSpacing: -0.5,
-  },
-  identityCameraBtn: {
-    position: 'absolute',
-    right: -2,
-    bottom: -2,
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: QuinckleColors.primary,
-    borderWidth: 2,
-    borderColor: QuinckleColors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  identityTextCol: {
-    flex: 1,
-    flexDirection: 'column',
-    gap: 4,
-  },
-  identityName: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 18,
-    fontWeight: '700',
-    letterSpacing: -0.3,
-  },
-  identityMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  identityMetaText: {
-    color: QuinckleColors.textSecondary,
-    fontSize: 13,
-    fontWeight: '500',
   },
 
   /* ─── Section (grouped rows) ─── */

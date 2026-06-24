@@ -8,7 +8,6 @@ import {
   RefreshControl,
   Image,
   LayoutAnimation,
-  Modal,
   ScrollView,
   StyleSheet,
   Text,
@@ -46,6 +45,8 @@ import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
+import { BottomSheet } from '../../components/ui/BottomSheet';
+import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { BottomNavbar } from '../../components/ui/BottomNavbar';
 import { PICKUP_LAYOUT_PRESET, PickupCard, PickupSegmented } from '../../components/ui/pickup';
 import { TableSkeleton } from '../../components/ui/TableSkeleton';
@@ -60,6 +61,20 @@ function formatPhone(raw?: string | null): string {
   const last10 = digits.slice(-10);
   if (last10.length !== 10) return raw;
   return `+91 ${last10.slice(0, 5)} ${last10.slice(5)}`;
+}
+
+// Compact session countdown for the table card — time only, no "left" label.
+// Returns null when there's no expiry to show. `danger` flags the last 10
+// minutes (and an already-expired session) so the card can tint it red.
+function formatTimeLeft(expiresAt: string | null | undefined, now: number): { text: string; danger: boolean } | null {
+  if (!expiresAt) return null;
+  const msLeft = new Date(expiresAt).getTime() - now;
+  if (Number.isNaN(msLeft)) return null;
+  if (msLeft <= 0) return { text: 'Expired', danger: true };
+  const h = Math.floor(msLeft / 3_600_000);
+  const m = Math.floor((msLeft % 3_600_000) / 60_000);
+  const text = h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m` : '<1m';
+  return { text, danger: msLeft < 10 * 60_000 };
 }
 
 Notifications.setNotificationHandler({
@@ -88,6 +103,9 @@ type Table = {
   sessionId?: string;
   customerName?: string | null;
   customerPhone?: string | null;
+  itemsServed?: number;
+  itemsTotal?: number;
+  paymentSettled?: boolean;
 };
 
 const MENU_DATA_INITIAL = [
@@ -149,8 +167,20 @@ export default function StaffDashboard() {
   const { staffInfo } = useAuth();
   const [activeTab, setActiveTab] = useState<NavItem>('tables');
   const [filterVisible, setFilterVisible] = useState(false);
+  // New-session bottom sheet (replaces the old confirm dialog). `starting` drives
+  // the inline spinner so the tap → navigate gap shows feedback instead of freezing.
+  const [newSessionTable, setNewSessionTable] = useState<Table | null>(null);
+  const [startingSession, setStartingSession] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+  // Manage-table action sheet (occupied long-press) + reused swap sheet.
+  const [manageTable, setManageTable] = useState<Table | null>(null);
+  const [swapTable, setSwapTable] = useState<{ id: string; number: number } | null>(null);
+  const [swapSubmitting, setSwapSubmitting] = useState(false);
   const [tables, setTables] = useState<Table[]>([]);
   const [isLoadingTables, setIsLoadingTables] = useState(true);
+  // Single shared clock for every card's session countdown. Minute precision is
+  // all the grid needs, so one 30s tick is far cheaper than a per-card 1s timer.
+  const [now, setNow] = useState(() => Date.now());
   const [isLoadingMenu, setIsLoadingMenu] = useState(true);
   const [menuData, setMenuData] = useState<MenuRow[]>(MENU_DATA_INITIAL);
   const [expandedMenuItem, setExpandedMenuItem] = useState<string | null>(null);
@@ -396,6 +426,9 @@ export default function StaffDashboard() {
           sessionId: t.session_id ?? undefined,
           customerName: t.customer_name ?? null,
           customerPhone: t.customer_phone ?? null,
+          itemsServed: typeof t.items_served === 'number' ? t.items_served : undefined,
+          itemsTotal: typeof t.items_total === 'number' ? t.items_total : undefined,
+          paymentSettled: t.payment_settled === true,
           billAmount,
         };
       }));
@@ -573,6 +606,20 @@ export default function StaffDashboard() {
     void refreshPrintSinkOwnership();
   }, [staffInfo?.restaurantId]);
 
+  // Advance the shared clock every 30s so card countdowns stay current — but
+  // only while the Tables tab is open and at least one table has an expiry, so
+  // an idle floor never wakes the JS runtime.
+  const hasExpiringTable = useMemo(
+    () => tables.some((t) => t.status === 'occupied' && !!t.expiresAt),
+    [tables],
+  );
+  useEffect(() => {
+    if (activeTab !== 'tables' || !hasExpiringTable) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, [activeTab, hasExpiringTable]);
+
   // KOT print backstop: drain the server pull-queue on mount, every 15s, and on
   // every return to foreground. Combined with the Ably push + de-dup guard this
   // guarantees a KOT prints even if the live event was missed (background, socket
@@ -644,10 +691,21 @@ export default function StaffDashboard() {
       void loadTables();
     });
 
-    const off2 = subscribeChannel(`waiter:${restaurantId}`, 'order_served', () => {
+    const off2 = subscribeChannel(`waiter:${restaurantId}`, 'order_served', (data: any) => {
       void loadPickupOrders();
       void loadServedToday(1);
-      void loadTables();
+      // Update the table card's serve-progress bar straight from the event —
+      // no /api/crew/tables refetch (serving changes nothing else on the grid:
+      // the table stays occupied and the bill is unchanged). Fall back to a
+      // refetch only if an older backend sends no counts.
+      if (data?.tableNumber != null && typeof data?.itemsTotal === 'number') {
+        setTables(prev => prev.map(t =>
+          t.number === data.tableNumber
+            ? { ...t, itemsServed: data.itemsServed ?? t.itemsServed, itemsTotal: data.itemsTotal }
+            : t));
+      } else {
+        void loadTables();
+      }
     });
 
     const off3 = subscribeChannel(`waiter:${restaurantId}`, 'new_order', (data: any) => {
@@ -744,9 +802,11 @@ export default function StaffDashboard() {
     });
 
     // When any waiter (this one or another) marks an order collected,
-    // decrement the badge so it stays accurate across multiple devices.
+    // decrement the badge so it stays accurate across multiple devices, and
+    // refresh the grid so the table card's "paid" icon lights up live.
     const off9 = subscribeChannel(`waiter:${restaurantId}`, 'cash_payment_collected', () => {
       setPendingCashCount(c => Math.max(0, c - 1));
+      void loadTables();
     });
 
     // Reprint request — manual, user-initiated. Prints on the connected device
@@ -852,6 +912,74 @@ export default function StaffDashboard() {
     }
   };
 
+  // Start a session from the new-session sheet. Shows an inline spinner during
+  // the create, then navigates — replacing the old blank tap→navigate gap. On
+  // failure the sheet stays open with an error so staff can retry.
+  const startSessionForTable = async () => {
+    const table = newSessionTable;
+    if (!table) return;
+    setStartingSession(true);
+    setStartError(null);
+    try {
+      const res = await crewSessions.start(table.id);
+      void loadTables();
+      setNewSessionTable(null);
+      router.push({ pathname: '/(staff)/[tableId]', params: { tableId: String(table.number), sessionId: res.session_id, tableDbId: table.id } });
+    } catch (e: any) {
+      setStartError(e?.message ?? 'Could not start session. Try again.');
+    } finally {
+      setStartingSession(false);
+    }
+  };
+
+  // Manage-sheet → Swap: close the action sheet, then open the shared swap sheet.
+  const onPressSwapFromManage = () => {
+    const t = manageTable;
+    setManageTable(null);
+    if (t) setTimeout(() => setSwapTable({ id: t.id, number: t.number }), 220);
+  };
+
+  // Manage-sheet → Free: close the action sheet, then show the existing confirm.
+  const onPressFreeFromManage = () => {
+    const t = manageTable;
+    setManageTable(null);
+    if (!t) return;
+    setTimeout(() => {
+      showDialog(
+        'Free Table',
+        `Free Table T${String(t.number).padStart(2, '0')}? It’s released for new guests. Any uncollected payment moves to Outstanding so you can still collect or waive it.`,
+        [
+          { label: 'Cancel', onPress: () => { } },
+          { label: 'Free Table', variant: 'danger', onPress: () => { void freeTable(t); } },
+        ],
+      );
+    }, 220);
+  };
+
+  // Swap from the grid — same API + UX as the detail screen, but refreshes the
+  // grid in place instead of navigating.
+  const confirmSwapFromGrid = async ({ targetId }: { targetId: string; targetNumber: number }) => {
+    const from = swapTable;
+    if (!from) return;
+    setSwapSubmitting(true);
+    try {
+      const res = await crewTables.transferSession(from.id, targetId);
+      setSwapTable(null);
+      void loadTables();
+      setTimeout(() => {
+        showDialog(
+          'Moved',
+          `Guest moved to T${String(res.data.toTableNumber).padStart(2, '0')} — ${res.data.ordersMoved} order${res.data.ordersMoved === 1 ? '' : 's'} relocated.`,
+          [{ label: 'OK', onPress: () => { } }],
+        );
+      }, 220);
+    } catch (e: any) {
+      showDialog('Could not move', e?.message ?? 'Please try again.', [{ label: 'OK', onPress: () => { } }]);
+    } finally {
+      setSwapSubmitting(false);
+    }
+  };
+
   const handleTablePress = (tableNum: number, currentStatus: TableStatus) => {
     if (currentStatus === 'offline') {
       showDialog(
@@ -866,25 +994,10 @@ export default function StaffDashboard() {
     }
 
     if (currentStatus === 'available') {
-      showDialog(`New Session`, `Start a new session for Table T${String(tableNum).padStart(2, '0')}?`, [
-        { label: 'Cancel', onPress: () => { } },
-        {
-          label: 'Start Session',
-          variant: 'primary',
-          onPress: async () => {
-            const table = tables.find(t => t.number === tableNum);
-            if (!table) return;
-            try {
-              const res = await crewSessions.start(table.id);
-              void loadTables();
-              router.push({ pathname: '/(staff)/[tableId]', params: { tableId: String(tableNum), sessionId: res.session_id, tableDbId: table.id } });
-            } catch {
-              // Fallback: navigate without session
-              router.push({ pathname: '/(staff)/[tableId]', params: { tableId: String(tableNum), tableDbId: table.id } });
-            }
-          },
-        },
-      ]);
+      const table = tables.find(t => t.number === tableNum);
+      if (!table) return;
+      setStartError(null);
+      setNewSessionTable(table);
     } else {
       const table = tables.find(t => t.number === tableNum);
       router.push({ pathname: '/(staff)/[tableId]', params: {
@@ -922,16 +1035,8 @@ export default function StaffDashboard() {
         ],
       );
     } else {
-      // Occupied or reserved → free directly. Any uncollected payment is NOT
-      // lost — it moves to Outstanding (Payment Collection › Outstanding).
-      showDialog(
-        'Free Table',
-        `Free Table T${String(tableNum).padStart(2, '0')}? It’s released for new guests. Any uncollected payment moves to Outstanding so you can still collect or waive it.`,
-        [
-          { label: 'Cancel', onPress: () => { } },
-          { label: 'Free Table', variant: 'danger', onPress: () => { void freeTable(table); } },
-        ],
-      );
+      // Occupied or reserved → open the manage action sheet (Swap / Free).
+      setManageTable(table);
     }
   };
 
@@ -1035,28 +1140,6 @@ export default function StaffDashboard() {
             </TouchableOpacity>
           </View>
 
-          <Modal visible={filterVisible} transparent animationType="fade" onRequestClose={() => setFilterVisible(false)}>
-            <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setFilterVisible(false)}>
-              <View style={styles.dropdownMenu}>
-                <Text style={styles.menuLabel}>Filter Tables</Text>
-                {FILTER_CHIPS.map((chip) => (
-                  <TouchableOpacity
-                    key={chip.key}
-                    style={[styles.menuItem, activeFilter === chip.key && styles.menuItemActive]}
-                    onPress={() => {
-                      setActiveFilter(chip.key as 'all' | TableStatus);
-                      setFilterVisible(false);
-                    }}
-                  >
-                    <Text style={[styles.menuItemText, activeFilter === chip.key && styles.menuItemTextActive]}>
-                      {chip.label}
-                    </Text>
-                    <Text style={styles.menuItemCount}>{chip.count}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </TouchableOpacity>
-          </Modal>
 
           {isLoadingTables && tables.length === 0 ? (
             <TableSkeleton />
@@ -1085,6 +1168,12 @@ export default function StaffDashboard() {
                       `${meta.color}55`,
                       'transparent',
                     ];
+                    // Status icons (served + paid) + session countdown for occupied cards.
+                    const total = item.itemsTotal ?? 0;
+                    const showStatusIcons = item.status === 'occupied';
+                    const allServed = showStatusIcons && total > 0 && (item.itemsServed ?? 0) >= total;
+                    const paid = showStatusIcons && item.paymentSettled === true;
+                    const timeLeft = item.status === 'occupied' ? formatTimeLeft(item.expiresAt, now) : null;
                     return (
                       <TouchableOpacity
                         key={item.id}
@@ -1105,16 +1194,48 @@ export default function StaffDashboard() {
                         <View style={styles.tableCard}>
                           <View style={styles.cardHeader}>
                             <Text style={styles.tableTitle}>T{String(item.number).padStart(2, '0')}</Text>
-                            <View style={styles.seatsRow}>
-                              <Ionicons name="people-outline" size={11} color={QuinckleColors.textTertiary} />
-                              <Text style={styles.seatsText}>{item.seats} seats</Text>
+                            <View style={styles.headerRightCol}>
+                              <View style={styles.seatsRow}>
+                                <Ionicons name="people-outline" size={11} color={QuinckleColors.textTertiary} />
+                                <Text style={styles.seatsText}>{item.seats} seats</Text>
+                              </View>
+                              {showStatusIcons && (
+                                <View style={styles.cardStatusRow}>
+                                  <Ionicons
+                                    name={allServed ? 'restaurant' : 'restaurant-outline'}
+                                    size={14}
+                                    color={allServed ? QuinckleColors.success : QuinckleColors.textTertiary}
+                                  />
+                                  <Ionicons
+                                    name={paid ? 'card' : 'card-outline'}
+                                    size={14}
+                                    color={paid ? QuinckleColors.success : QuinckleColors.textTertiary}
+                                  />
+                                </View>
+                              )}
                             </View>
                           </View>
                           <View style={styles.cardBottom}>
                             {item.status === 'occupied' ? (
-                              <View>
-                                <Text style={styles.billAmount}>₹{(item.billAmount ?? 0).toLocaleString()}</Text>
-                                <Text style={styles.billSubtitle}>{item.since ? `since ${item.since}` : 'active session'}</Text>
+                              <View style={styles.occupiedBottomRow}>
+                                <View style={styles.occupiedBottomLeft}>
+                                  <Text style={styles.billAmount}>₹{(item.billAmount ?? 0).toLocaleString()}</Text>
+                                  <Text style={styles.billSubtitle}>{item.since ? `since ${item.since}` : 'active session'}</Text>
+                                </View>
+                                {timeLeft && (
+                                  <View style={styles.cardTimer}>
+                                    <Ionicons
+                                      name="time-outline"
+                                      size={12}
+                                      color={timeLeft.danger ? QuinckleColors.danger : QuinckleColors.textSecondary}
+                                    />
+                                    <Text
+                                      style={[styles.cardTimerText, timeLeft.danger && { color: QuinckleColors.danger }]}
+                                    >
+                                      {timeLeft.text}
+                                    </Text>
+                                  </View>
+                                )}
                               </View>
                             ) : item.status === 'available' ? (
                               <View style={styles.actionPrompt}>
@@ -1363,6 +1484,93 @@ export default function StaffDashboard() {
 
       <BottomNavbar activeTab={activeTab as any} onTabChange={setActiveTab as any} />
 
+      {/* Filter tables — bottom sheet */}
+      <BottomSheet visible={filterVisible} onClose={() => setFilterVisible(false)} title="Filter tables">
+        <View style={styles.sheetBody}>
+          {FILTER_CHIPS.map((chip) => {
+            const active = activeFilter === chip.key;
+            return (
+              <TouchableOpacity
+                key={chip.key}
+                style={[styles.sheetOptionRow, active && styles.sheetOptionRowActive]}
+                onPress={() => { setActiveFilter(chip.key as 'all' | TableStatus); setFilterVisible(false); }}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.sheetOptionText, active && styles.sheetOptionTextActive]}>{chip.label}</Text>
+                <View style={styles.sheetOptionRight}>
+                  <Text style={styles.sheetOptionCount}>{chip.count}</Text>
+                  {active && <Ionicons name="checkmark" size={16} color={QuinckleColors.primary} />}
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </BottomSheet>
+
+      {/* Start session — bottom sheet with inline spinner (replaces the freeze) */}
+      <BottomSheet
+        visible={!!newSessionTable}
+        onClose={() => { if (!startingSession) { setNewSessionTable(null); setStartError(null); } }}
+        title="Start session"
+      >
+        <View style={styles.sheetBody}>
+          <Text style={styles.sheetMessage}>
+            Start a new session for Table T{String(newSessionTable?.number ?? 0).padStart(2, '0')}?
+          </Text>
+          {startError ? <Text style={styles.sheetErrorText}>{startError}</Text> : null}
+          <TouchableOpacity
+            style={[styles.sheetPrimaryBtn, startingSession && { opacity: 0.85 }]}
+            onPress={() => { void startSessionForTable(); }}
+            disabled={startingSession}
+            activeOpacity={0.85}
+          >
+            {startingSession
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Text style={styles.sheetPrimaryText}>Start session</Text>}
+          </TouchableOpacity>
+        </View>
+      </BottomSheet>
+
+      {/* Manage occupied table — bottom sheet (Swap / Free) */}
+      <BottomSheet
+        visible={!!manageTable}
+        onClose={() => setManageTable(null)}
+        title={`Manage Table T${String(manageTable?.number ?? 0).padStart(2, '0')}`}
+      >
+        <View style={styles.sheetBody}>
+          <TouchableOpacity style={styles.manageRow} onPress={onPressSwapFromManage} activeOpacity={0.7}>
+            <View style={styles.manageIcon}>
+              <Ionicons name="swap-horizontal" size={19} color={QuinckleColors.textPrimary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.manageRowTitle}>Swap table</Text>
+              <Text style={styles.manageRowSub}>Move this guest to another table</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={QuinckleColors.textTertiary} />
+          </TouchableOpacity>
+          <View style={styles.manageDivider} />
+          <TouchableOpacity style={styles.manageRow} onPress={onPressFreeFromManage} activeOpacity={0.7}>
+            <View style={[styles.manageIcon, styles.manageIconDanger]}>
+              <Ionicons name="exit-outline" size={19} color={QuinckleColors.danger} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.manageRowTitle, { color: QuinckleColors.danger }]}>Free table</Text>
+              <Text style={styles.manageRowSub}>Release for new guests · payment moves to Outstanding</Text>
+            </View>
+          </TouchableOpacity>
+        </View>
+      </BottomSheet>
+
+      {/* Swap table — reuses the detail screen's sheet + flow */}
+      <SwapTableSheet
+        visible={!!swapTable}
+        currentTableDbId={swapTable?.id ?? ''}
+        currentTableNum={String(swapTable?.number ?? 0).padStart(2, '0')}
+        onClose={() => { if (!swapSubmitting) setSwapTable(null); }}
+        onSwap={confirmSwapFromGrid}
+        submitting={swapSubmitting}
+      />
+
       <ThemedDialog
         visible={dialog.visible}
         title={dialog.title}
@@ -1380,6 +1588,58 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     backgroundColor: QuinckleColors.background,
   },
+
+  // ── Bottom-sheet content (filter / start session / manage) ──
+  sheetBody: { paddingHorizontal: Spacing.xl, paddingBottom: Spacing.md, gap: 2 },
+  sheetOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.md,
+  },
+  sheetOptionRowActive: { backgroundColor: QuinckleColors.surfaceMutedHover },
+  sheetOptionText: { color: QuinckleColors.textSecondary, fontSize: 15, fontWeight: '500' },
+  sheetOptionTextActive: { color: QuinckleColors.textPrimary, fontWeight: '700' },
+  sheetOptionRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  sheetOptionCount: { color: QuinckleColors.textTertiary, fontSize: 13, fontWeight: '600' },
+  sheetMessage: {
+    color: QuinckleColors.textSecondary,
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: Spacing.md,
+    paddingHorizontal: 2,
+  },
+  sheetErrorText: { color: QuinckleColors.danger, fontSize: 13, marginBottom: Spacing.sm, paddingHorizontal: 2 },
+  sheetPrimaryBtn: {
+    height: 50,
+    borderRadius: Radius.md,
+    backgroundColor: QuinckleColors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+  },
+  sheetPrimaryText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  manageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+  },
+  manageIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: Radius.md,
+    backgroundColor: QuinckleColors.surfaceMutedHover,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  manageIconDanger: { backgroundColor: QuinckleColors.dangerSoft },
+  manageRowTitle: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '600' },
+  manageRowSub: { color: QuinckleColors.textTertiary, fontSize: 12, marginTop: 2 },
+  manageDivider: { height: 1, backgroundColor: QuinckleColors.surfaceMuted, marginVertical: 2 },
 
   topBar: {
     flexDirection: 'row',
@@ -1653,6 +1913,10 @@ const styles = StyleSheet.create({
     color: QuinckleColors.textPrimary,
     letterSpacing: -0.4,
   },
+  headerRightCol: {
+    alignItems: 'flex-end',
+    gap: 5,
+  },
   seatsRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1663,6 +1927,33 @@ const styles = StyleSheet.create({
     color: QuinckleColors.textTertiary,
     fontSize: 11,
     fontWeight: '500',
+  },
+  // Two status icons under the seat count: all-served + payment-settled.
+  // Dim grey = pending, green = done.
+  cardStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  occupiedBottomRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+  },
+  occupiedBottomLeft: {
+    flex: 1,
+  },
+  cardTimer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginLeft: Spacing.sm,
+  },
+  cardTimerText: {
+    color: QuinckleColors.textSecondary,
+    fontSize: 11,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
   },
   statusPill: {
     flexDirection: 'row',

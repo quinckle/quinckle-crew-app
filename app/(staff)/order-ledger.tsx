@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   StyleSheet,
   Text,
@@ -8,13 +8,16 @@ import {
   ActivityIndicator,
   RefreshControl,
   TextInput,
+  Animated,
+  Easing,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { crewSessions, type LedgerSession, type LedgerSummary, type LedgerRange } from '../../services/api';
-import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
+import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
 import { BottomSheet } from '../../components/ui/BottomSheet';
+import { RangeCalendar } from '../../components/ui/RangeCalendar';
 
 // ── Filter options (mirror the partner Order Ledger) ──────────────────────────
 const RANGES: { key: LedgerRange; label: string }[] = [
@@ -23,6 +26,25 @@ const RANGES: { key: LedgerRange; label: string }[] = [
   { key: 'week',      label: 'This Week' },
   { key: 'month',     label: 'This Month' },
 ];
+type FilterCategory = 'period' | 'status' | 'payment';
+const FILTER_CATEGORIES: { key: FilterCategory; label: string }[] = [
+  { key: 'period',  label: 'Period' },
+  { key: 'status',  label: 'Status' },
+  { key: 'payment', label: 'Payment' },
+];
+
+// Local YYYY-MM-DD — matches the day-string format the ledger backend parses.
+function toDayStr(d: Date): string {
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+function fmtDayShort(d: Date): string {
+  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+}
+function customRangeLabel(from: Date, to: Date): string {
+  return from.getTime() === to.getTime() ? fmtDayShort(from) : `${fmtDayShort(from)} – ${fmtDayShort(to)}`;
+}
 const STATUS_FILTERS = [
   { key: 'all',          label: 'All' },
   { key: 'paid',         label: 'Paid' },
@@ -90,18 +112,255 @@ function sessionMethods(s: LedgerSession): string[] {
   return [...new Set(fromOrders)];
 }
 
-// ── Chip ──────────────────────────────────────────────────────────────────────
-function FilterChip({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+// ── Radio option list ─────────────────────────────────────────────────────────
+function OptionList<T extends string>({ options, value, onChange }: {
+  options: { key: T; label: string }[]; value: T; onChange(v: T): void;
+}) {
   return (
-    <TouchableOpacity
-      style={[styles.chip, active && styles.chipActive]}
-      onPress={onPress}
-      activeOpacity={0.7}
-    >
-      <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
-    </TouchableOpacity>
+    <View>
+      {options.map((opt) => {
+        const active = opt.key === value;
+        return (
+          <TouchableOpacity
+            key={opt.key}
+            style={fmStyles.optionRow}
+            onPress={() => onChange(opt.key)}
+            activeOpacity={0.6}
+          >
+            <Text style={[fmStyles.optionLabel, active && fmStyles.optionLabelActive]}>{opt.label}</Text>
+            <View style={[fmStyles.radioOuter, active && fmStyles.radioOuterActive]}>
+              {active && <View style={fmStyles.radioInner} />}
+            </View>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
   );
 }
+
+// Period options: presets + a "Custom range" row that reveals an inline calendar.
+// Fixed allowance for the calendar's tallest possible month (6 rows) — the reveal
+// animates a clip height rather than relying on LayoutAnimation, which is
+// unreliable under the New Architecture (this app has newArchEnabled).
+const CALENDAR_CLIP_HEIGHT = 336;
+
+function PeriodOptions({
+  range, customActive, customFrom, customTo, onPickRange, onActivateCustom, onCustomChange,
+}: {
+  range: LedgerRange; customActive: boolean; customFrom: Date | null; customTo: Date | null;
+  onPickRange(v: LedgerRange): void; onActivateCustom(): void; onCustomChange(f: Date | null, t: Date | null): void;
+}) {
+  const clipHeight = useRef(new Animated.Value(customActive ? CALENDAR_CLIP_HEIGHT : 0)).current;
+
+  useEffect(() => {
+    Animated.timing(clipHeight, {
+      toValue: customActive ? CALENDAR_CLIP_HEIGHT : 0,
+      duration: 320,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [customActive, clipHeight]);
+
+  return (
+    <View>
+      {RANGES.map((opt) => {
+        const active = !customActive && opt.key === range;
+        return (
+          <TouchableOpacity
+            key={opt.key}
+            style={fmStyles.optionRow}
+            onPress={() => onPickRange(opt.key)}
+            activeOpacity={0.6}
+          >
+            <Text style={[fmStyles.optionLabel, active && fmStyles.optionLabelActive]}>{opt.label}</Text>
+            <View style={[fmStyles.radioOuter, active && fmStyles.radioOuterActive]}>
+              {active && <View style={fmStyles.radioInner} />}
+            </View>
+          </TouchableOpacity>
+        );
+      })}
+
+      <TouchableOpacity style={fmStyles.optionRow} onPress={onActivateCustom} activeOpacity={0.6}>
+        <Text style={[fmStyles.optionLabel, customActive && fmStyles.optionLabelActive]}>
+          {customActive && customFrom && customTo ? customRangeLabel(customFrom, customTo) : 'Custom range'}
+        </Text>
+        <View style={[fmStyles.radioOuter, customActive && fmStyles.radioOuterActive]}>
+          {customActive && <View style={fmStyles.radioInner} />}
+        </View>
+      </TouchableOpacity>
+
+      <Animated.View style={[fmStyles.calendarClip, { height: clipHeight }]}>
+        <View style={fmStyles.calendarWrap}>
+          <RangeCalendar from={customFrom} to={customTo} onChange={onCustomChange} />
+        </View>
+      </Animated.View>
+    </View>
+  );
+}
+
+// Per-row height used to predict each panel's natural content height so the right
+// column can animate smoothly between categories (and into/out of the custom
+// calendar) without depending on LayoutAnimation/onLayout timing.
+const OPTION_ROW_HEIGHT = 46;
+
+function panelHeight(category: FilterCategory, customActive: boolean): number {
+  if (category === 'status')  return STATUS_FILTERS.length * OPTION_ROW_HEIGHT;
+  if (category === 'payment') return METHOD_FILTERS.length * OPTION_ROW_HEIGHT;
+  // period: presets + the "Custom range" row, plus the calendar when open
+  return (RANGES.length + 1) * OPTION_ROW_HEIGHT + (customActive ? CALENDAR_CLIP_HEIGHT : 0);
+}
+
+// ── Split-column filter modal (ported from the partner Order Ledger) ──────────
+function FiltersModal({
+  visible, onClose, range, statusFilter, methodFilter,
+  customActive, customFrom, customTo,
+  onPickRange, onPickStatus, onPickMethod, onActivateCustom, onCustomChange,
+  onReset, activeFilterCount, resultCount,
+}: {
+  visible: boolean; onClose(): void;
+  range: LedgerRange; statusFilter: string; methodFilter: string;
+  customActive: boolean; customFrom: Date | null; customTo: Date | null;
+  onPickRange(v: LedgerRange): void; onPickStatus(v: string): void; onPickMethod(v: string): void;
+  onActivateCustom(): void; onCustomChange(f: Date | null, t: Date | null): void;
+  onReset(): void; activeFilterCount: number; resultCount: number;
+}) {
+  const [category, setCategory] = useState<FilterCategory>('period');
+  useEffect(() => { if (visible) setCategory('period'); }, [visible]);
+
+  const isCategoryActive = (key: FilterCategory) => {
+    if (key === 'period')  return customActive || range !== 'today';
+    if (key === 'status')  return statusFilter !== 'all';
+    return methodFilter !== 'all';
+  };
+
+  // A single animated height drives the right column for every transition —
+  // switching categories, and opening/closing the custom calendar — so the
+  // whole sheet resizes with one consistent, buttery motion.
+  const rightHeight = useRef(new Animated.Value(panelHeight(category, customActive))).current;
+  useEffect(() => {
+    Animated.timing(rightHeight, {
+      toValue: panelHeight(category, customActive),
+      duration: 320,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [category, customActive, rightHeight]);
+
+  return (
+    <BottomSheet visible={visible} onClose={onClose} maxHeightRatio={0.94}>
+      <View style={fmStyles.header}>
+        <Text style={fmStyles.headerTitle}>Filters</Text>
+        <View style={fmStyles.headerRight}>
+          {activeFilterCount > 0 && (
+            <TouchableOpacity onPress={onReset} hitSlop={8} activeOpacity={0.6}>
+              <Text style={fmStyles.headerReset}>Reset</Text>
+            </TouchableOpacity>
+          )}
+          <Text style={fmStyles.headerResultCount}>{`${resultCount} result${resultCount !== 1 ? 's' : ''}`}</Text>
+        </View>
+      </View>
+
+      <View style={fmStyles.splitBody}>
+        {/* Left — filter categories */}
+        <View style={fmStyles.leftCol}>
+          {FILTER_CATEGORIES.map((c) => {
+            const active = c.key === category;
+            return (
+              <TouchableOpacity
+                key={c.key}
+                style={[fmStyles.catRow, active && fmStyles.catRowActive]}
+                onPress={() => setCategory(c.key)}
+                activeOpacity={0.7}
+              >
+                {active && <View style={fmStyles.catAccent} />}
+                <Text style={[fmStyles.catLabel, active && fmStyles.catLabelActive]} numberOfLines={1}>
+                  {c.label}
+                </Text>
+                {isCategoryActive(c.key) && <View style={fmStyles.catDot} />}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {/* Right — options for the selected category. All three panels stay
+            mounted (absolute-stacked) so switching tabs never unmounts the
+            calendar's animated state; only opacity/height transition. */}
+        <Animated.View style={[fmStyles.rightCol, { height: rightHeight }]}>
+          <View style={[fmStyles.rightLayer, category !== 'period' && fmStyles.rightLayerHidden]} pointerEvents={category === 'period' ? 'auto' : 'none'}>
+            <PeriodOptions
+              range={range} customActive={customActive} customFrom={customFrom} customTo={customTo}
+              onPickRange={onPickRange} onActivateCustom={onActivateCustom} onCustomChange={onCustomChange}
+            />
+          </View>
+          <View style={[fmStyles.rightLayer, category !== 'status' && fmStyles.rightLayerHidden]} pointerEvents={category === 'status' ? 'auto' : 'none'}>
+            <OptionList options={STATUS_FILTERS} value={statusFilter} onChange={onPickStatus} />
+          </View>
+          <View style={[fmStyles.rightLayer, category !== 'payment' && fmStyles.rightLayerHidden]} pointerEvents={category === 'payment' ? 'auto' : 'none'}>
+            <OptionList options={METHOD_FILTERS} value={methodFilter} onChange={onPickMethod} />
+          </View>
+        </Animated.View>
+      </View>
+    </BottomSheet>
+  );
+}
+
+const fmStyles = StyleSheet.create({
+  header: {
+    flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between',
+    paddingHorizontal: Spacing.xl, paddingBottom: Spacing.md,
+  },
+  headerTitle: { ...Typography.title, color: QuinckleColors.textPrimary },
+  headerRight: { alignItems: 'flex-end', gap: 4 },
+  headerReset: { ...Typography.caption, color: QuinckleColors.primary, fontWeight: '700' as const },
+  headerResultCount: { ...Typography.micro, color: QuinckleColors.textMuted },
+
+  splitBody: {
+    flexDirection: 'row',
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: QuinckleColors.border,
+  },
+
+  // Left column — vertically stacked category labels
+  leftCol: {
+    width: 112, paddingVertical: Spacing.sm,
+    borderRightWidth: StyleSheet.hairlineWidth, borderRightColor: QuinckleColors.border,
+  },
+  catRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: Spacing.md, paddingHorizontal: Spacing.lg,
+  },
+  catRowActive: { backgroundColor: QuinckleColors.surfaceElevated },
+  catAccent: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, backgroundColor: QuinckleColors.primary },
+  catLabel: { ...Typography.caption, color: QuinckleColors.textSecondary, flexShrink: 1 },
+  catLabelActive: { color: QuinckleColors.textPrimary, fontWeight: '700' as const },
+  catDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: QuinckleColors.primary, marginLeft: Spacing.xs },
+
+  // Right column — options for the selected category
+  rightCol: { flex: 1, position: 'relative', overflow: 'hidden' },
+  rightLayer: {
+    position: 'absolute', top: 0, left: 0, right: 0,
+    paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm,
+  },
+  rightLayerHidden: { opacity: 0 },
+  optionRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: Spacing.md,
+  },
+  optionLabel: { ...Typography.body, color: QuinckleColors.textSecondary },
+  optionLabelActive: { color: QuinckleColors.textPrimary, fontWeight: '600' as const },
+  radioOuter: {
+    width: 18, height: 18, borderRadius: 9,
+    borderWidth: 1.5, borderColor: QuinckleColors.border,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  radioOuterActive: { borderColor: QuinckleColors.primary },
+  radioInner: { width: 9, height: 9, borderRadius: 4.5, backgroundColor: QuinckleColors.primary },
+
+  calendarClip: { overflow: 'hidden' },
+  calendarWrap: {
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: QuinckleColors.border,
+    paddingTop: Spacing.sm,
+  },
+});
 
 function PaymentChip({ method }: { method: string }) {
   const meta = METHOD_META[method] ?? { label: method, color: QuinckleColors.textMuted, bg: QuinckleColors.surfaceElevated };
@@ -190,12 +449,16 @@ export default function OrderLedger() {
   const [error, setError]             = useState<string | null>(null);
 
   const [range, setRange]             = useState<LedgerRange>('today');
+  const [customActive, setCustomActive] = useState(false);
+  const [customFrom, setCustomFrom]   = useState<Date | null>(null);
+  const [customTo, setCustomTo]       = useState<Date | null>(null);
   const [statusFilter, setStatusFilter] = useState('all');
   const [methodFilter, setMethodFilter] = useState('all');
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch]           = useState('');
   const [filterOpen, setFilterOpen]   = useState(false);
   const [breakdownOpen, setBreakdownOpen] = useState(false);
+  const [total, setTotal]             = useState(0);
 
   // Debounce the search box into the applied search filter.
   useEffect(() => {
@@ -209,12 +472,19 @@ export default function OrderLedger() {
       if (mode === 'append') setLoadingMore(true);
       setError(null);
       try {
+        const useCustom = customActive && customFrom != null && customTo != null;
+        const filterParams = search
+          ? { sessionRef: search }
+          : useCustom
+            ? { from: toDayStr(customFrom!), to: toDayStr(customTo!), status: statusFilter, method: methodFilter }
+            : { range, status: statusFilter, method: methodFilter };
         const res = await crewSessions.getHistory({
-          ...(search ? { sessionRef: search } : { range, status: statusFilter, method: methodFilter }),
+          ...filterParams,
           page: pageToLoad,
           limit: LIMIT,
         });
         setSummary(res.summary);
+        setTotal(res.total);
         setPages(res.pages);
         setPage(res.page);
         setSessions((prev) => (mode === 'append' ? [...prev, ...res.sessions] : res.sessions));
@@ -227,7 +497,7 @@ export default function OrderLedger() {
         setRefreshing(false);
       }
     },
-    [range, statusFilter, methodFilter, search],
+    [range, statusFilter, methodFilter, search, customActive, customFrom, customTo],
   );
 
   // Reload from page 1 whenever a filter changes.
@@ -251,15 +521,30 @@ export default function OrderLedger() {
   }, []);
 
   // Picking a filter clears any active session-ref search so the filter applies.
-  const pickRange  = useCallback((k: LedgerRange) => { setSearchInput(''); setSearch(''); setRange(k); }, []);
+  const pickRange = useCallback((v: LedgerRange) => { setSearchInput(''); setSearch(''); setCustomActive(false); setRange(v); }, []);
+  const activateCustom = useCallback(() => { setSearchInput(''); setSearch(''); setCustomActive(true); }, []);
+  const onCustomChange = useCallback((f: Date | null, t: Date | null) => { setCustomFrom(f); setCustomTo(t); }, []);
   const pickStatus = useCallback((k: string) => { setSearchInput(''); setSearch(''); setStatusFilter(k); }, []);
   const pickMethod = useCallback((k: string) => { setSearchInput(''); setSearch(''); setMethodFilter(k); }, []);
-  const resetFilters = useCallback(() => { setRange('today'); setStatusFilter('all'); setMethodFilter('all'); }, []);
+  const resetFilters = useCallback(() => {
+    setRange('today'); setStatusFilter('all'); setMethodFilter('all');
+    setCustomActive(false); setCustomFrom(null); setCustomTo(null);
+  }, []);
+
+  // A custom range only counts as "active" once a day is chosen.
+  const customComplete = customActive && customFrom != null && customTo != null;
+  const isSingleDay = customComplete && customFrom!.getTime() === customTo!.getTime();
+  const dateFilterActive = customActive ? customComplete : range !== 'today';
+  const customLabel = customComplete
+    ? (isSingleDay ? fmtDayShort(customFrom!) : `${fmtDayShort(customFrom!)} – ${fmtDayShort(customTo!)}`)
+    : 'Custom';
 
   // Count of non-default filters — shown as a badge on the filter button.
   const activeFilterCount =
-    (range !== 'today' ? 1 : 0) + (statusFilter !== 'all' ? 1 : 0) + (methodFilter !== 'all' ? 1 : 0);
-  const rangeLabel = RANGES.find((r) => r.key === range)?.label ?? 'Today';
+    (dateFilterActive ? 1 : 0) + (statusFilter !== 'all' ? 1 : 0) + (methodFilter !== 'all' ? 1 : 0);
+  const rangeLabel = customActive
+    ? customLabel
+    : RANGES.find((r) => r.key === range)?.label ?? 'Today';
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -361,39 +646,17 @@ export default function OrderLedger() {
       />
 
       {/* Filter modal */}
-      <BottomSheet visible={filterOpen} onClose={() => setFilterOpen(false)} title="Filters">
-        <View style={styles.filterModal}>
-          <Text style={styles.filterGroupLabel}>Date Range</Text>
-          <View style={styles.filterChipWrap}>
-            {RANGES.map((r) => (
-              <FilterChip key={r.key} label={r.label} active={range === r.key} onPress={() => pickRange(r.key)} />
-            ))}
-          </View>
-
-          <Text style={styles.filterGroupLabel}>Status</Text>
-          <View style={styles.filterChipWrap}>
-            {STATUS_FILTERS.map((f) => (
-              <FilterChip key={f.key} label={f.label} active={statusFilter === f.key} onPress={() => pickStatus(f.key)} />
-            ))}
-          </View>
-
-          <Text style={styles.filterGroupLabel}>Payment Method</Text>
-          <View style={styles.filterChipWrap}>
-            {METHOD_FILTERS.map((f) => (
-              <FilterChip key={f.key} label={f.label} active={methodFilter === f.key} onPress={() => pickMethod(f.key)} />
-            ))}
-          </View>
-
-          <View style={styles.filterActions}>
-            <TouchableOpacity style={styles.resetBtn} onPress={resetFilters} activeOpacity={0.7}>
-              <Text style={styles.resetBtnText}>Reset</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.applyBtn} onPress={() => setFilterOpen(false)} activeOpacity={0.85}>
-              <Text style={styles.applyBtnText}>Show results</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </BottomSheet>
+      <FiltersModal
+        visible={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        range={range} statusFilter={statusFilter} methodFilter={methodFilter}
+        customActive={customActive} customFrom={customFrom} customTo={customTo}
+        onPickRange={pickRange} onPickStatus={pickStatus} onPickMethod={pickMethod}
+        onActivateCustom={activateCustom} onCustomChange={onCustomChange}
+        onReset={resetFilters}
+        activeFilterCount={activeFilterCount}
+        resultCount={total}
+      />
 
       {/* Revenue breakdown modal — opened by tapping Revenue */}
       <BottomSheet visible={breakdownOpen} onClose={() => setBreakdownOpen(false)} title="Revenue breakdown">
@@ -491,17 +754,6 @@ const styles = StyleSheet.create({
     marginHorizontal: Spacing.lg, marginTop: Spacing.sm,
   },
 
-  chip: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 7,
-    borderRadius: Radius.pill,
-    backgroundColor: QuinckleColors.surfaceMuted,
-    borderWidth: 1, borderColor: QuinckleColors.border,
-  },
-  chipActive: { backgroundColor: QuinckleColors.primarySoft, borderColor: QuinckleColors.primarySoftBorder },
-  chipText: { color: QuinckleColors.textSecondary, fontSize: 12, fontWeight: '600' },
-  chipTextActive: { color: QuinckleColors.primary },
-
   listContent: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.lg },
 
   summaryRow: {
@@ -544,29 +796,6 @@ const styles = StyleSheet.create({
   },
   retryText: { color: QuinckleColors.primary, fontSize: 13, fontWeight: '700' },
   footerLoad: { paddingVertical: Spacing.lg, alignItems: 'center' },
-
-  // Filter modal
-  filterModal: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.xs },
-  filterGroupLabel: {
-    color: QuinckleColors.textTertiary, fontSize: 11, fontWeight: '700',
-    textTransform: 'uppercase', letterSpacing: 0.6,
-    marginTop: Spacing.lg, marginBottom: Spacing.sm,
-  },
-  filterChipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
-  filterActions: { flexDirection: 'row', gap: Spacing.md, marginTop: Spacing.xl },
-  resetBtn: {
-    paddingHorizontal: Spacing.xl, height: 48, borderRadius: Radius.md,
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: QuinckleColors.surfaceMuted,
-    borderWidth: 1, borderColor: QuinckleColors.border,
-  },
-  resetBtnText: { color: QuinckleColors.textSecondary, fontSize: 14, fontWeight: '700' },
-  applyBtn: {
-    flex: 1, height: 48, borderRadius: Radius.md,
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: QuinckleColors.primary,
-  },
-  applyBtnText: { color: '#fff', fontSize: 14, fontWeight: '800' },
 
   // Revenue breakdown modal
   breakdownModal: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.xs, paddingBottom: Spacing.sm },
