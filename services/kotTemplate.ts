@@ -27,6 +27,8 @@ export interface KotOrder {
   items: KotItem[];
   isAddOn?: boolean;
   isUrgent?: boolean;
+  channel?: 'DINE_IN' | 'TAKEAWAY';
+  pickupToken?: string;
 }
 
 // ── Character widths ───────────────────────────────────────────────────────────
@@ -86,8 +88,14 @@ export function buildKotText(order: KotOrder, paperWidth: 58 | 80 = 58): string 
   lines.push(`[C]<b><font size="big">${order.restaurantName}</font></b>`);
   lines.push(`[C]${D}`);
 
-  // ── Table + Order # ───────────────────────────────────────────────────────
-  lines.push(`[C]<b><font size="big">*** TABLE ${String(order.tableNumber).padStart(2, '0')} ***</font></b>`);
+  // ── Table / Takeaway + Order # ─────────────────────────────────────────────
+  if (order.channel === 'TAKEAWAY' && order.pickupToken) {
+    lines.push(`[C]<b><font size="big">*** TAKEAWAY ***</font></b>`);
+    lines.push(`[C]<b><font size="big">${order.pickupToken}</font></b>`);
+    lines.push(`[C]<b>*** PACK ***</b>`);
+  } else {
+    lines.push(`[C]<b><font size="big">*** TABLE ${String(order.tableNumber).padStart(2, '0')} ***</font></b>`);
+  }
 
   // Use sequential day-counter when available; fall back to last-6-chars of id
   const ordNum = order.orderNumber != null

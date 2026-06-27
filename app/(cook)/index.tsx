@@ -127,8 +127,8 @@ export default function CookDashboard() {
   // ── Data mapping ─────────────────────────────────────────────────────────
   const mapTicket = (t: any, isCompleted = false): KitchenTicket => ({
     id:       t.order_id,
-    table:    `T${t.table_number}`,
-    location: '',
+    table:    t.channel === 'TAKEAWAY' ? (t.pickup_token ?? 'TK') : `T${t.table_number}`,
+    location: t.channel === 'TAKEAWAY' ? 'Takeaway' : '',
     placedAt: t.placed_at,
     status:   isCompleted ? 'completed' : 'new',
     items: t.items.map((item: any) => ({

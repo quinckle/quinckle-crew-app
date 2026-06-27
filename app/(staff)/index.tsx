@@ -37,7 +37,7 @@ async function playSound(file: any) {
     });
   } catch { /* non-fatal */ }
 }
-import type { ActiveOrder, MenuItem } from '../../services/api';
+import type { ActiveOrder, MenuItem, TakeawayOrder } from '../../services/api';
 import { router } from 'expo-router';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -87,7 +87,7 @@ Notifications.setNotificationHandler({
   },
 });
 
-type NavItem = 'tables' | 'menu' | 'orders';
+type NavItem = 'tables' | 'menu' | 'orders' | 'takeaway';
 type TableStatus = 'available' | 'occupied' | 'offline';
 
 type Table = {
@@ -213,6 +213,29 @@ export default function StaffDashboard() {
   const [liveOrders, setLiveOrders] = useState<ActiveOrder[]>([]);
   const [ordersSubTab, setOrdersSubTab] = useState<'active' | 'completed'>('active');
   const [completingIds, setCompletingIds] = useState<string[]>([]);
+  // ── Takeaway state ──
+  const [takeawayOrders, setTakeawayOrders] = useState<TakeawayOrder[]>([]);
+  const [takeawaySubTab, setTakeawaySubTab] = useState<'preparing' | 'handed'>('preparing');
+  const [handingOverIds, setHandingOverIds] = useState<string[]>([]);
+
+  const loadTakeawayOrders = async () => {
+    try {
+      const res = await crewOrders.getTakeaway();
+      setTakeawayOrders(res?.data ?? []);
+    } catch { /* non-fatal */ }
+  };
+
+  const handleHandover = async (orderId: string) => {
+    setHandingOverIds((prev) => [...prev, orderId]);
+    try {
+      await crewOrders.handoverTakeaway(orderId);
+      setTakeawayOrders((prev) =>
+        prev.map((o) => (o.orderId === orderId ? { ...o, status: 'SERVED' } : o)),
+      );
+    } catch { /* non-fatal */ }
+    setHandingOverIds((prev) => prev.filter((id) => id !== orderId));
+  };
+
   // KOT auto-print toggle — loaded from server, synced via Ably.
   // Stored in both state (for UI) and a ref (so Ably callbacks always see latest value).
   const [kotAutoPrint, setKotAutoPrint] = useState(true);
@@ -673,6 +696,7 @@ export default function StaffDashboard() {
   // Immediately refresh pickup orders when switching to Orders tab
   useEffect(() => {
     if (activeTab === 'orders') void loadPickupOrders();
+    if (activeTab === 'takeaway') void loadTakeawayOrders();
   }, [activeTab]);
 
   // Ably: waiter:{restaurantId} — pure push, no polling
@@ -1480,9 +1504,93 @@ export default function StaffDashboard() {
             }
           />
         </View>
+      ) : activeTab === 'takeaway' ? (
+        <View style={styles.tabContent}>
+          <View style={styles.segmentWrap}>
+            <PickupSegmented
+              items={[
+                { key: 'preparing', label: 'Preparing', count: takeawayOrders.filter((o) => o.status !== 'SERVED').length },
+                { key: 'handed', label: 'Handed', count: takeawayOrders.filter((o) => o.status === 'SERVED').length },
+              ]}
+              active={takeawaySubTab}
+              onChange={(key) => setTakeawaySubTab(key as 'preparing' | 'handed')}
+            />
+          </View>
+
+          <FlatList
+            data={
+              takeawaySubTab === 'preparing'
+                ? takeawayOrders.filter((o) => o.status !== 'SERVED')
+                : takeawayOrders.filter((o) => o.status === 'SERVED')
+            }
+            keyExtractor={(item) => item.orderId}
+            contentContainerStyle={styles.orderListContent}
+            renderItem={({ item }) => (
+              <View style={styles.takeawayCard}>
+                <View style={styles.takeawayCardHeader}>
+                  <Text style={styles.takeawayToken}>{item.pickupToken ?? '—'}</Text>
+                  <Text style={styles.takeawayTotal}>₹{item.total}</Text>
+                  <Text style={styles.takeawayTime}>
+                    {new Date(item.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                  </Text>
+                </View>
+                {(item.customerName || item.customerPhone) && (
+                  <Text style={styles.takeawayCustomer}>
+                    {item.customerName ?? ''}{item.customerName && item.customerPhone ? ' · ' : ''}{item.customerPhone ?? ''}
+                  </Text>
+                )}
+                {item.sessionRef && (
+                  <Text style={styles.takeawayRef}>{item.sessionRef}</Text>
+                )}
+                <View style={styles.takeawayDivider} />
+                {item.items.map((it, j) => (
+                  <Text key={j} style={styles.takeawayItemText}>
+                    {it.qty}× {it.name}{it.modifiers ? ` (${it.modifiers})` : ''}
+                  </Text>
+                ))}
+                {item.status !== 'SERVED' && (
+                  <TouchableOpacity
+                    style={[styles.handoverBtn, handingOverIds.includes(item.orderId) && styles.handoverBtnDisabled]}
+                    onPress={() => handleHandover(item.orderId)}
+                    disabled={handingOverIds.includes(item.orderId)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.handoverBtnText}>
+                      {handingOverIds.includes(item.orderId) ? 'Handing Over…' : 'Hand Over'}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
+            ListEmptyComponent={
+              <View style={styles.emptyOrders}>
+                <View style={styles.emptyMedallion}>
+                  <Ionicons name="bag-handle-outline" size={28} color={QuinckleColors.textTertiary} />
+                </View>
+                <Text style={styles.emptyTitle}>
+                  {takeawaySubTab === 'preparing' ? 'No active takeaway orders' : 'No handed orders yet'}
+                </Text>
+                <Text style={styles.emptySubtitle}>
+                  {takeawaySubTab === 'preparing'
+                    ? 'Takeaway orders will appear here when customers order.'
+                    : 'Orders you hand over move here.'}
+                </Text>
+              </View>
+            }
+          />
+        </View>
       ) : null}
 
-      <BottomNavbar activeTab={activeTab as any} onTabChange={setActiveTab as any} />
+      <BottomNavbar
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        tabs={[
+          { key: 'orders' as NavItem, label: 'Orders', icon: 'receipt-outline', iconActive: 'receipt' },
+          { key: 'tables' as NavItem, label: 'Tables', icon: 'grid-outline', iconActive: 'grid' },
+          { key: 'takeaway' as NavItem, label: 'Takeaway', icon: 'bag-handle-outline', iconActive: 'bag-handle' },
+          { key: 'menu' as NavItem, label: 'Menu', icon: 'restaurant-outline', iconActive: 'restaurant' },
+        ]}
+      />
 
       {/* Filter tables — bottom sheet */}
       <BottomSheet visible={filterVisible} onClose={() => setFilterVisible(false)} title="Filter tables">
@@ -2573,4 +2681,69 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
+  // ── Takeaway ──
+  takeawayCard: {
+    backgroundColor: QuinckleColors.surface,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
+  },
+  takeawayCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  takeawayToken: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: QuinckleColors.primary,
+  },
+  takeawayTotal: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: QuinckleColors.textPrimary,
+    marginLeft: 'auto',
+  },
+  takeawayTime: {
+    fontSize: 12,
+    color: QuinckleColors.textTertiary,
+  },
+  takeawayCustomer: {
+    fontSize: 13,
+    color: QuinckleColors.textSecondary,
+    marginTop: 4,
+  },
+  takeawayRef: {
+    fontSize: 11,
+    color: QuinckleColors.textTertiary,
+    marginTop: 2,
+    fontFamily: 'monospace',
+  },
+  takeawayDivider: {
+    height: 1,
+    backgroundColor: QuinckleColors.border,
+    marginVertical: Spacing.sm,
+  },
+  takeawayItemText: {
+    fontSize: 13,
+    color: QuinckleColors.textPrimary,
+    lineHeight: 20,
+  },
+  handoverBtn: {
+    marginTop: Spacing.md,
+    backgroundColor: QuinckleColors.primary,
+    borderRadius: Radius.sm,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  handoverBtnDisabled: {
+    opacity: 0.5,
+  },
+  handoverBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
 });

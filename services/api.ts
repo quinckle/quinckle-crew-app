@@ -490,6 +490,19 @@ export const crewMemberships = {
 export interface ActiveOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; }
 export interface ActiveOrder { order_id: string; table_number: number; session_id: string; status: 'received' | 'preparing' | 'ready' | 'served'; placed_at: string; served_at?: string; items: ActiveOrderItem[]; }
 
+export interface TakeawayOrder {
+  orderId: string;
+  pickupToken: string | null;
+  sessionRef: string | null;
+  customerName: string | null;
+  customerPhone: string | null;
+  items: { name: string; qty: number; modifiers: string | null; itemStatus: string }[];
+  status: string;
+  total: number;
+  paymentStatus: string;
+  createdAt: string;
+}
+
 export interface CrewOffer {
   id: string;
   name: string;
@@ -552,6 +565,22 @@ export const crewOrders = {
       'POST',
       '/api/crew/orders',
       { session_id: sessionId, items },
+      true,
+    ),
+
+  getTakeaway: (status?: string) =>
+    request<{ data: TakeawayOrder[] }>(
+      'GET',
+      `/api/crew/orders/takeaway${status ? `?status=${status}` : ''}`,
+      undefined,
+      true,
+    ),
+
+  handoverTakeaway: (orderId: string) =>
+    request<{ success: boolean }>(
+      'PATCH',
+      `/api/crew/orders/${orderId}/handover`,
+      undefined,
       true,
     ),
 };
