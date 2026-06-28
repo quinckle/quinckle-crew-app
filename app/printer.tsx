@@ -28,6 +28,8 @@ import {
   printTest,
   getStatus,
   getConfig,
+  isUpiQrEnabled,
+  setUpiQrEnabled,
   type BluetoothDevice,
   type PrinterStatus,
 } from '../services/printer';
@@ -59,6 +61,13 @@ export default function PrinterScreen() {
   const [isUnpairing, setIsUnpairing] = useState(false);
   const [showScanView, setShowScanView] = useState(false);
   const [toast, setToast] = useState<{ message: string; ok: boolean } | null>(null);
+  const [upiQr, setUpiQr] = useState(isUpiQrEnabled());
+
+  const handleUpiQrToggle = useCallback((next: boolean) => {
+    setUpiQr(next);
+    Haptics.selectionAsync();
+    void setUpiQrEnabled(next);
+  }, []);
 
   const [dialog, setDialog] = useState<{
     visible: boolean; title: string; message: string;
@@ -275,6 +284,21 @@ export default function PrinterScreen() {
               style={[styles.toggleTrack, kotAutoPrint && styles.toggleTrackOn]}
             >
               <View style={[styles.toggleThumb, kotAutoPrint && styles.toggleThumbOn]} />
+            </TouchableOpacity>
+          </View>
+
+          {/* UPI scan-to-pay QR on bills */}
+          <View style={styles.autoPrintRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.autoPrintLabel}>Print UPI QR on bills</Text>
+              <Text style={styles.autoPrintSub}>Scan-to-pay QR with the exact amount on unpaid bills</Text>
+            </View>
+            <TouchableOpacity
+              onPress={() => handleUpiQrToggle(!upiQr)}
+              activeOpacity={0.8}
+              style={[styles.toggleTrack, upiQr && styles.toggleTrackOn]}
+            >
+              <View style={[styles.toggleThumb, upiQr && styles.toggleThumbOn]} />
             </TouchableOpacity>
           </View>
         </View>

@@ -598,6 +598,8 @@ export default function TableDetail() {
       grandTotal,
       isPaid,
       paymentMethod: billPaymentMethod,
+      upiVpa: upiId,
+      upiName: upiName || null,
       splits: billSplits?.map(s => ({ method: s.method ?? '', amount: Number(s.amount ?? 0) })),
       orderDateTime: orders[0]?.placed_at ?? undefined,
       generatedAt: new Date().toISOString(),

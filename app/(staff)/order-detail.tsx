@@ -146,7 +146,7 @@ export default function OrderDetail() {
   // ── Reprint invoice ─────────────────────────────────────────────────────────
   const { staffInfo } = useAuth();
   const [printing, setPrinting] = useState(false);
-  const [meta, setMeta] = useState<{ address?: string | null; phone?: string | null; email?: string | null; fssaiLicenseNumber?: string | null } | null>(null);
+  const [meta, setMeta] = useState<{ address?: string | null; phone?: string | null; email?: string | null; fssaiLicenseNumber?: string | null; upiId?: string | null; upiName?: string | null } | null>(null);
   const [dialog, setDialog] = useState<{
     visible: boolean; title: string; message: string;
     actions: { label: string; onPress: () => void; variant?: 'default' | 'danger' | 'primary' }[];
@@ -172,7 +172,7 @@ export default function OrderDetail() {
         try {
           const res = await restaurantApi.getBranding(staffInfo.restaurantId);
           if (res?.success) {
-            m = { address: res.data.address ?? null, phone: res.data.phone ?? null, email: res.data.email ?? null, fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null };
+            m = { address: res.data.address ?? null, phone: res.data.phone ?? null, email: res.data.email ?? null, fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null, upiId: res.data.upiId ?? null, upiName: res.data.upiDisplayName ?? res.data.name ?? null };
             setMeta(m);
           }
         } catch { /* meta is optional */ }
@@ -207,6 +207,8 @@ export default function OrderDetail() {
         grandTotal: session.billTotal,
         isPaid: session.statusView === 'PAID',
         paymentMethod,
+        upiVpa: m?.upiId ?? null,
+        upiName: m?.upiName ?? null,
         orderDateTime: session.openedAt,
         generatedAt: new Date().toISOString(),
       };

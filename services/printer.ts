@@ -22,6 +22,7 @@ import { printerApi } from './api';
 
 const KEY_CONFIG = 'printerConfig';
 const KEY_QUEUE  = 'pendingPrintQueue';
+const KEY_UPI_QR = 'printUpiQrOnBill';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -49,6 +50,9 @@ interface QueueItem {
 
 let _config: PrinterConfig | null = null;
 let _status: PrinterStatus = 'unpaired';
+// On-device preference: print the scan-to-pay UPI QR on unpaid bills. Defaults
+// ON; a partner whose printer can't render QR can disable it from Printer Settings.
+let _printUpiQr = true;
 
 // ── Print de-duplication guard ────────────────────────────────────────────────
 // KOT auto-print is driven by TWO independent triggers that can both fire for
@@ -92,6 +96,23 @@ export async function initPrinter(): Promise<void> {
   } catch {
     _status = 'error';
   }
+  try {
+    const raw = await AsyncStorage.getItem(KEY_UPI_QR);
+    if (raw !== null) _printUpiQr = raw === 'true';
+  } catch { /* keep default ON */ }
+}
+
+// ── UPI QR-on-bill preference ─────────────────────────────────────────────────
+
+export function isUpiQrEnabled(): boolean {
+  return _printUpiQr;
+}
+
+export async function setUpiQrEnabled(enabled: boolean): Promise<void> {
+  _printUpiQr = enabled;
+  try {
+    await AsyncStorage.setItem(KEY_UPI_QR, enabled ? 'true' : 'false');
+  } catch { /* non-fatal — in-memory value still applies this session */ }
 }
 
 // ── Runtime Bluetooth permissions ────────────────────────────────────────────
@@ -240,7 +261,9 @@ export async function printKot(
  * directly from whatever device calls it — intended for the staff/waiter device.
  */
 export async function printBill(bill: InvoiceBill): Promise<'printed' | 'failed'> {
-  const text = buildInvoiceText(bill, _config?.paperWidth ?? 58);
+  // Honour the on-device QR toggle by dropping the VPA the template gates on.
+  const billToPrint = _printUpiQr ? bill : { ...bill, upiVpa: null };
+  const text = buildInvoiceText(billToPrint, _config?.paperWidth ?? 58);
   try {
     await printRaw(text);
     return 'printed';

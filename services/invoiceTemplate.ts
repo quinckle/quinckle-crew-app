@@ -35,8 +35,29 @@ export interface InvoiceBill {
   isPaid: boolean;
   paymentMethod?: 'cash' | 'upi_direct' | 'mixed' | string | null;
   splits?: Array<{ method: string; amount: number }>;
+  /** Partner VPA. When present and the bill is unpaid, a scan-to-pay UPI QR is printed. */
+  upiVpa?: string | null;
+  /** Display name shown in the diner's UPI app. Falls back to restaurantName. */
+  upiName?: string | null;
   generatedAt?: string; // ISO string — defaults to now
   orderDateTime?: string; // ISO string of order/session time
+}
+
+/**
+ * Builds an NPCI-spec UPI intent string with the exact amount baked in.
+ * Mirrors the backend buildUpiDeepLink (upi-direct-checkout.service.ts): only
+ * the four widely-accepted fields (pa, pn, am, cu) — no tn/mc/tr, which raise
+ * decline risk on personal/P2P VPAs.
+ */
+function buildUpiPayString(opts: { pa: string; pn: string; am: number }): string {
+  const enc = (v: string | number) => encodeURIComponent(String(v));
+  const parts = [
+    `pa=${enc(opts.pa)}`,
+    `pn=${enc(opts.pn)}`,
+    `am=${enc(opts.am.toFixed(2))}`,
+    `cu=INR`,
+  ];
+  return `upi://pay?${parts.join('&')}`;
 }
 
 // ── Character widths ───────────────────────────────────────────────────────────
@@ -143,6 +164,19 @@ export function buildInvoiceText(bill: InvoiceBill, paperWidth: 58 | 80 = 58): s
   lines.push(`[L]${D}`);
   lines.push(`[L]<b>${leftRight('TOTAL', fmt(bill.grandTotal), W)}</b>`);
   lines.push(`[L]${D}`);
+
+  // ── Scan-to-pay UPI QR (unpaid bills with a configured VPA only) ──────────
+  if (!bill.isPaid && bill.upiVpa) {
+    const upiString = buildUpiPayString({
+      pa: bill.upiVpa,
+      pn: bill.upiName || bill.restaurantName,
+      am: bill.grandTotal,
+    });
+    lines.push(`[L]${d}`);
+    lines.push(`[C]<b>Scan to pay ${fmt(bill.grandTotal)}</b>`);
+    lines.push('[C]GPay / PhonePe / Paytm / any UPI app');
+    lines.push(`[C]<qrcode size='${paperWidth === 80 ? 28 : 20}'>${upiString}</qrcode>`);
+  }
 
   // ── Footer ────────────────────────────────────────────────────────────────
   lines.push(`[L]${d}`);
