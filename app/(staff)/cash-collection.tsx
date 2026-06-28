@@ -23,6 +23,7 @@ import { CashCollectionSkeleton } from '../../components/ui/CashCollectionSkelet
 
 type Row =
   | { kind: 'sectionHeader'; title: string; subtitle: string }
+  | { kind: 'groupHeader'; title: string; subtitle: string }
   | { kind: 'pending'; data: PendingCashRequest }
   | { kind: 'collected'; data: CollectedCashRecord }
   | { kind: 'empty'; message: string };
@@ -41,6 +42,44 @@ function timeOfDay(iso: string): string {
   return new Date(iso).toLocaleTimeString('en-IN', {
     hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata',
   });
+}
+
+const inr = (n: number) => `₹${n.toLocaleString('en-IN')}`;
+
+// Confirmed Paid tab: group today's collections under their table (takeaway
+// gets its own group), each with a subtotal, so a table's payments sit
+// together instead of scattered chronologically. Groups and rows are ordered
+// most-recent-first.
+function buildConfirmedRows(collected: CollectedCashRecord[]): Row[] {
+  const grand = collected.reduce((s, c) => s + c.amount, 0);
+  const head: Row = {
+    kind: 'sectionHeader',
+    title: 'Confirmed Paid',
+    subtitle: `${collected.length} payment${collected.length === 1 ? '' : 's'} · ${inr(grand)}`,
+  };
+  if (collected.length === 0) return [head, { kind: 'empty', message: 'Nothing confirmed yet.' }];
+
+  const groups = new Map<string, CollectedCashRecord[]>();
+  for (const c of collected) {
+    const key = c.channel === 'TAKEAWAY' ? '__takeaway__' : `t${c.tableNumber || 0}`;
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(c); else groups.set(key, [c]);
+  }
+
+  const ts = (iso: string) => new Date(iso).getTime();
+  const ordered = [...groups.values()]
+    .map(recs => recs.slice().sort((a, b) => ts(b.collectedAt) - ts(a.collectedAt)))
+    .sort((a, b) => ts(b[0].collectedAt) - ts(a[0].collectedAt));
+
+  const rows: Row[] = [head];
+  for (const recs of ordered) {
+    const first = recs[0];
+    const title = first.channel === 'TAKEAWAY' ? 'Takeaway' : `Table ${first.tableNumber || '—'}`;
+    const subtotal = recs.reduce((s, c) => s + c.amount, 0);
+    rows.push({ kind: 'groupHeader', title, subtitle: `${recs.length} · ${inr(subtotal)}` });
+    for (const c of recs) rows.push({ kind: 'collected', data: c });
+  }
+  return rows;
 }
 
 
@@ -158,6 +197,8 @@ export default function CashCollectionScreen() {
         sessionId: req.sessionId ?? '',
         orderIds: req.orderIds ? JSON.stringify(req.orderIds) : '',
         tableNumber: String(req.tableNumber ?? ''),
+        channel: req.channel ?? 'DINE_IN',
+        pickupToken: req.pickupToken ?? '',
         amount: String(req.amount ?? 0),
         customerName: req.customerName ?? '',
         customerPhone: req.customerPhone ?? '',
@@ -292,12 +333,7 @@ export default function CashCollectionScreen() {
           ? [{ kind: 'empty' as const, message: 'No active requests.' }]
           : pending.map(p => ({ kind: 'pending' as const, data: p }))),
       ]
-    : [
-        { kind: 'sectionHeader', title: 'Confirmed Paid', subtitle: `${todayCollected.length} payment${todayCollected.length === 1 ? '' : 's'}` },
-        ...(todayCollected.length === 0
-          ? [{ kind: 'empty' as const, message: 'Nothing confirmed yet.' }]
-          : todayCollected.map(c => ({ kind: 'collected' as const, data: c }))),
-      ];
+    : buildConfirmedRows(todayCollected);
 
   return (
     <View style={s.root}>
@@ -345,6 +381,7 @@ export default function CashCollectionScreen() {
             if (row.kind === 'pending')      return `p-${row.data.orderId}`;
             if (row.kind === 'collected')    return `c-${row.data.orderId}-${row.data.method}`;
             if (row.kind === 'sectionHeader') return `h-${row.title}`;
+            if (row.kind === 'groupHeader')  return `g-${row.title}`;
             return `e-${i}`;
           }}
           ListHeaderComponent={() => (
@@ -361,6 +398,15 @@ export default function CashCollectionScreen() {
                 <View style={[s.sectionHeader, index === 0 && { marginTop: Spacing.sm }]}>
                   <Text style={s.sectionTitle}>{item.title.toUpperCase()}</Text>
                   <Text style={s.sectionCount}>{item.subtitle}</Text>
+                </View>
+              );
+            }
+
+            if (item.kind === 'groupHeader') {
+              return (
+                <View style={s.groupHeader}>
+                  <Text style={s.groupTitle}>{item.title}</Text>
+                  <Text style={s.groupSubtotal}>{item.subtitle}</Text>
                 </View>
               );
             }
@@ -382,6 +428,7 @@ export default function CashCollectionScreen() {
               // VPA (so the Collection Sheet QR works), so presence of p.upi.vpa
               // no longer implies UPI Direct — staff-collect has it too.
               const isUpiDirect = methodRaw.includes('UPI');
+              const isTakeaway = p.channel === 'TAKEAWAY';
               const intentBusy = !!(p.intentId && intentBusyIds.has(p.intentId));
               const orderBusy = collectingIds.has(p.orderId);
               const menuOpen = openMenuOrderId === p.orderId;
@@ -391,6 +438,9 @@ export default function CashCollectionScreen() {
                 inputRange: [0, 1],
                 outputRange: [-screenWidth, 0],
               });
+              const locationLabel = isTakeaway
+                ? (p.pickupToken ?? 'Takeaway')
+                : `T${p.tableNumber || '—'}`;
               return (
                 <View style={[s.pendingCard, isUpiDirect ? s.pendingCardUpi : s.pendingCardStaff]}>
                   {isSuccessing && (
@@ -407,12 +457,19 @@ export default function CashCollectionScreen() {
                   )}
                   <View style={s.pendingTop}>
                     <View style={s.pendingTitleRow}>
-                      <Text style={s.pendingTableTitle}>{`T${p.tableNumber || '—'}`}</Text>
-                      <View style={[s.methodBadge, isUpiDirect ? s.methodBadgeUpi : s.methodBadgeStaff, s.methodBadgeInline]}>
-                        <Text style={[s.methodBadgeText, isUpiDirect ? s.methodBadgeTextUpi : s.methodBadgeTextStaff]}>
-                          {isUpiDirect ? 'UPI DIRECT' : 'PAY VIA STAFF'}
-                        </Text>
-                      </View>
+                      <Text style={s.pendingTableTitle}>{locationLabel}</Text>
+                      {isTakeaway && (
+                        <View style={[s.methodBadge, s.methodBadgeTakeaway, s.methodBadgeInline]}>
+                          <Text style={[s.methodBadgeText, s.methodBadgeTextTakeaway]}>TAKEAWAY</Text>
+                        </View>
+                      )}
+                      {!isTakeaway && (
+                        <View style={[s.methodBadge, isUpiDirect ? s.methodBadgeUpi : s.methodBadgeStaff, s.methodBadgeInline]}>
+                          <Text style={[s.methodBadgeText, isUpiDirect ? s.methodBadgeTextUpi : s.methodBadgeTextStaff]}>
+                            {isUpiDirect ? 'UPI DIRECT' : 'PAY VIA STAFF'}
+                          </Text>
+                        </View>
+                      )}
                     </View>
                     <View style={s.pendingTopRight}>
                       <Text style={s.pendingTime}>{timeAgo(p.requestedAt)}</Text>
@@ -498,19 +555,20 @@ export default function CashCollectionScreen() {
               );
             }
 
-            // collected row
+            // collected row — grouped under its table/takeaway header, so the
+            // row leads with the payment method (the table is in the header).
             const c = item.data;
+            const cIsTakeaway = c.channel === 'TAKEAWAY';
+            const cMethodLabel = String(c.method).toLowerCase() === 'upi_direct' ? 'UPI Direct' : 'Cash';
+            const cLabel = cIsTakeaway
+              ? `${c.pickupToken ?? 'Takeaway'} · ${cMethodLabel}`
+              : cMethodLabel;
             return (
               <View style={s.collectedRow}>
                 <View style={s.collectedLeft}>
                   <View style={s.collectedTableRow}>
                     <Ionicons name="checkmark-circle" size={14} color={QuinckleColors.success} />
-                    <Text style={s.collectedTable}>Table {c.tableNumber || '—'}</Text>
-                    {String(c.method).toLowerCase() === 'upi_direct' && (
-                      <View style={s.confirmedUpiBadge}>
-                        <Text style={s.confirmedUpiBadgeText}>UPI DIRECT</Text>
-                      </View>
-                    )}
+                    <Text style={s.collectedTable}>{cLabel}</Text>
                   </View>
                   <Text style={s.collectedPhone}>{c.customerPhone}</Text>
                   {c.collectedByName && <Text style={s.collectedBy}>{c.collectedByName}</Text>}
@@ -614,6 +672,17 @@ const s = StyleSheet.create({
     letterSpacing: 0.8,
   },
   sectionCount: { color: QuinckleColors.textTertiary, fontSize: 12 },
+
+  groupHeader: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.lg,
+    paddingBottom: Spacing.xs,
+  },
+  groupTitle: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '700' },
+  groupSubtotal: { color: QuinckleColors.textSecondary, fontSize: 13, fontWeight: '600' },
 
   emptyState: {
     alignItems: 'center',
@@ -727,6 +796,11 @@ const s = StyleSheet.create({
   methodBadgeText: { fontSize: 9, fontWeight: '700', letterSpacing: 0.8 },
   methodBadgeTextStaff: { color: QuinckleColors.textSecondary },
   methodBadgeTextUpi: { color: '#fff' },
+  methodBadgeTakeaway: {
+    backgroundColor: 'rgba(242,93,59,0.15)',
+    borderColor: 'rgba(242,93,59,0.35)',
+  },
+  methodBadgeTextTakeaway: { color: '#f25d3b' },
   pendingBody: {
     marginTop: 2,
     marginBottom: 14,
@@ -835,6 +909,21 @@ const s = StyleSheet.create({
   },
   confirmedUpiBadgeText: {
     color: '#9ec0ff',
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+  },
+  confirmedTakeawayBadge: {
+    marginLeft: 6,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: 'rgba(242,93,59,0.32)',
+    backgroundColor: 'rgba(242,93,59,0.12)',
+  },
+  confirmedTakeawayBadgeText: {
+    color: '#f25d3b',
     fontSize: 9,
     fontWeight: '700',
     letterSpacing: 0.6,

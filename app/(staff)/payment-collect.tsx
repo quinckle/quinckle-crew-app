@@ -42,6 +42,7 @@ type Mode = 'normal' | 'split';
 type Step = 'choose' | 'confirm_cash';
 type SuccessInfo = {
   tableNumber: number;
+  locationLabel: string;
   total: number;
   splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[];
 };
@@ -127,7 +128,7 @@ function SuccessScreen({ info, onDone }: { info: SuccessInfo; onDone: () => void
         </View>
 
         <Text style={sc.title}>Collected</Text>
-        <Text style={sc.table}>Table {info.tableNumber}</Text>
+        <Text style={sc.table}>{info.locationLabel}</Text>
         <Text style={sc.amount}>₹{info.total.toLocaleString('en-IN')}</Text>
 
         <View style={sc.divider} />
@@ -219,6 +220,8 @@ export default function PaymentCollectScreen() {
     upiVpa?: string;
     upiName?: string;
     breakdown?: string;
+    channel?: string;
+    pickupToken?: string;
   }>();
 
   const orderId       = params.orderId ?? '';
@@ -234,6 +237,11 @@ export default function PaymentCollectScreen() {
   const isSessionCollect = !params.intentId && !!sessionId && orderIds.length > 0;
   const isMultiOrder      = orderIds.length > 1;
   const tableNumber   = Number(params.tableNumber ?? 0);
+  const channel       = params.channel ?? 'DINE_IN';
+  const pickupToken   = params.pickupToken ?? null;
+  const locationLabel = channel === 'TAKEAWAY'
+    ? (pickupToken ?? 'Takeaway')
+    : `Table ${tableNumber}`;
   const total         = Number(params.amount ?? 0);
   const customerName  = params.customerName && params.customerName.length > 0 ? params.customerName : null;
   const customerPhone = params.customerPhone ?? '';
@@ -358,7 +366,7 @@ export default function PaymentCollectScreen() {
         await crewPayments.collectPayment(orderId, staffId, splits, buildCollectIdempotencyKey(splits));
       }
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setSuccessInfo({ tableNumber, total: resolvedTotal, splits });
+      setSuccessInfo({ tableNumber, locationLabel, total: resolvedTotal, splits });
     } catch (err: any) {
       const code = String(err?.code ?? err?.message ?? '');
       if (code.includes('ALREADY_COLLECTED')) {
@@ -435,7 +443,7 @@ export default function PaymentCollectScreen() {
 
       {/* Order summary */}
       <View style={[s.summary, { paddingHorizontal: Spacing.xl }]}>
-        <Text style={s.tableLabel}>Table {tableNumber}</Text>
+        <Text style={s.tableLabel}>{locationLabel}</Text>
         <Text style={s.totalAmount}>₹{resolvedTotal.toLocaleString('en-IN')}</Text>
         <View style={s.customerRow}>
           <Text style={s.customerText}>{customerName ?? 'Guest'}</Text>

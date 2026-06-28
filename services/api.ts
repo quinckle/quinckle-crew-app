@@ -602,6 +602,8 @@ export interface PendingCashRequest {
   intentMethod?: 'STAFF_COLLECT' | 'UPI_DIRECT';
   sessionId: string;
   tableNumber: number;
+  channel?: 'DINE_IN' | 'TAKEAWAY';
+  pickupToken?: string | null;
   amount: number;
   upi?: { vpa: string; displayName: string | null } | null;
   /** Itemised total breakdown — render this on the payment-collect screen. */
@@ -619,6 +621,8 @@ export interface CollectedCashRecord {
   orderId: string;
   sessionId: string;
   tableNumber: number;
+  channel?: 'DINE_IN' | 'TAKEAWAY';
+  pickupToken?: string | null;
   amount: number;
   method: 'CASH' | 'UPI_DIRECT';
   customerName: string | null;
