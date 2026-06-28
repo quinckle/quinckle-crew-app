@@ -53,6 +53,7 @@ import { TableSkeleton } from '../../components/ui/TableSkeleton';
 import { MenuSkeleton } from '../../components/ui/MenuSkeleton';
 import { CombosSkeleton } from '../../components/ui/CombosSkeleton';
 import { FeaturedSkeleton } from '../../components/ui/FeaturedSkeleton';
+import { SideDrawer } from '../../components/ui/SideDrawer';
 
 // Format an Indian phone like "9051138485" → "+91 90511 38485" for display
 function formatPhone(raw?: string | null): string {
@@ -199,6 +200,7 @@ export default function StaffDashboard() {
     try { await loadMenuFromApi(); } finally { setRefreshingMenu(false); }
   };
   const [realtimeOk, setRealtimeOk] = useState(true);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   // Pending cash-collection requests across the whole restaurant. Drives the
   // red-dot badge on the cash icon in the header. Updated from:
   //  - initial fetch on mount
@@ -1124,20 +1126,14 @@ export default function StaffDashboard() {
   return (
     <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
       <View style={styles.topBar}>
-        <View style={styles.brandGroup}>
-          <Text style={styles.brandTitle}>{staffInfo?.restaurantName ?? 'The Grill Room'}</Text>
-          <View style={styles.badgeRow}>
-            <View style={styles.roleBadge}>
-              <Text style={styles.roleBadgeText}>Staff</Text>
-            </View>
-            {!realtimeOk && (
-              <View style={styles.statusRow}>
-                <View style={[styles.statusDot, { backgroundColor: QuinckleColors.warning }]} />
-                <Text style={[styles.statusText, { color: QuinckleColors.warning }]}>No live updates</Text>
-              </View>
-            )}
-          </View>
-        </View>
+        <TouchableOpacity
+          style={styles.burgerBtn}
+          onPress={() => setDrawerOpen(true)}
+          activeOpacity={0.7}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Ionicons name="menu" size={26} color={QuinckleColors.textPrimary} />
+        </TouchableOpacity>
 
         <View style={styles.headerActions}>
           {/* Cash-collection icon: tap to see pending requests + today's history.
@@ -1780,6 +1776,13 @@ export default function StaffDashboard() {
         actions={dialog.actions}
         onClose={closeDialog}
       />
+
+      <SideDrawer
+        visible={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        venueName={staffInfo?.restaurantName}
+        realtimeOk={realtimeOk}
+      />
     </View>
   );
 }
@@ -1849,6 +1852,12 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: Spacing.lg,
     paddingVertical: Spacing.sm,
+  },
+  burgerBtn: {
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   brandGroup: {
     gap: 4,
