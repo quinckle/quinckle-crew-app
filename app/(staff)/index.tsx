@@ -217,12 +217,44 @@ export default function StaffDashboard() {
   const [takeawayOrders, setTakeawayOrders] = useState<TakeawayOrder[]>([]);
   const [takeawaySubTab, setTakeawaySubTab] = useState<'preparing' | 'handed'>('preparing');
   const [handingOverIds, setHandingOverIds] = useState<string[]>([]);
+  const [refreshingTakeaway, setRefreshingTakeaway] = useState(false);
 
   const loadTakeawayOrders = async () => {
     try {
       const res = await crewOrders.getTakeaway();
       setTakeawayOrders(res?.data ?? []);
     } catch { /* non-fatal */ }
+    finally {
+      setRefreshingTakeaway(false);
+    }
+  };
+
+  const handleRefreshTakeaway = () => {
+    setRefreshingTakeaway(true);
+    void loadTakeawayOrders();
+  };
+
+  const isTakeawayPaid = (order: TakeawayOrder) =>
+    ['PAID_CASH', 'PAID_UPI_DIRECT', 'PAID_ONLINE', 'PAID_MIXED', 'WAIVED'].includes(String(order.paymentStatus ?? '').toUpperCase());
+
+  const isTakeawayPendingCollection = (order: TakeawayOrder) =>
+    ['PENDING_STAFF_COLLECTION', 'PENDING_CASH', 'PENDING_UPI_DIRECT', 'UNPAID'].includes(String(order.paymentStatus ?? '').toUpperCase());
+
+  const handleCollectTakeaway = (order: TakeawayOrder) => {
+    router.push({
+      pathname: '/(staff)/payment-collect',
+      params: {
+        orderId: order.orderId,
+        sessionId: '',
+        orderIds: '',
+        tableNumber: '',
+        channel: 'TAKEAWAY',
+        pickupToken: order.pickupToken ?? '',
+        amount: String(order.total ?? 0),
+        customerName: order.customerName ?? '',
+        customerPhone: order.customerPhone ?? '',
+      },
+    });
   };
 
   const handleHandover = async (orderId: string) => {
@@ -232,7 +264,17 @@ export default function StaffDashboard() {
       setTakeawayOrders((prev) =>
         prev.map((o) => (o.orderId === orderId ? { ...o, status: 'SERVED' } : o)),
       );
-    } catch { /* non-fatal */ }
+    } catch (err: any) {
+      const code = String(err?.code ?? err?.message ?? '');
+      showDialog(
+        'Payment still pending',
+        code.includes('PAYMENT_NOT_COLLECTED')
+          ? 'Collect the takeaway payment before handing over the order.'
+          : 'Could not hand over this takeaway order. Please refresh and try again.',
+        [{ label: 'OK', onPress: () => {} }],
+      );
+      void loadTakeawayOrders();
+    }
     setHandingOverIds((prev) => prev.filter((id) => id !== orderId));
   };
 
@@ -699,6 +741,12 @@ export default function StaffDashboard() {
     if (activeTab === 'takeaway') void loadTakeawayOrders();
   }, [activeTab]);
 
+  useEffect(() => {
+    if (activeTab !== 'takeaway') return;
+    const id = setInterval(() => { void loadTakeawayOrders(); }, 10_000);
+    return () => clearInterval(id);
+  }, [activeTab]);
+
   // Ably: waiter:{restaurantId} — pure push, no polling
   useEffect(() => {
     const restaurantId = staffInfo?.restaurantId;
@@ -734,6 +782,7 @@ export default function StaffDashboard() {
 
     const off3 = subscribeChannel(`waiter:${restaurantId}`, 'new_order', (data: any) => {
       void loadPickupOrders();
+      if (data?.channel === 'TAKEAWAY') void loadTakeawayOrders();
       void loadTables();
       // Auto-print fast path — gate on the live local printer connection + the
       // auto-print toggle. (Live getPrinterStatus() avoids any startup race with
@@ -811,6 +860,7 @@ export default function StaffDashboard() {
       const tableNumber = data?.tableNumber as number | undefined;
       const amount = data?.amount as number | undefined;
       setPendingCashCount(c => c + 1);
+      if (data?.channel === 'TAKEAWAY') void loadTakeawayOrders();
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
       void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
       Notifications.scheduleNotificationAsync({
@@ -830,6 +880,7 @@ export default function StaffDashboard() {
     // refresh the grid so the table card's "paid" icon lights up live.
     const off9 = subscribeChannel(`waiter:${restaurantId}`, 'cash_payment_collected', () => {
       setPendingCashCount(c => Math.max(0, c - 1));
+      void loadTakeawayOrders();
       void loadTables();
     });
 
@@ -1515,6 +1566,16 @@ export default function StaffDashboard() {
               active={takeawaySubTab}
               onChange={(key) => setTakeawaySubTab(key as 'preparing' | 'handed')}
             />
+            <TouchableOpacity
+              style={styles.takeawayRefreshBtn}
+              onPress={handleRefreshTakeaway}
+              disabled={refreshingTakeaway}
+              activeOpacity={0.75}
+            >
+              {refreshingTakeaway
+                ? <ActivityIndicator size="small" color={QuinckleColors.primary} />
+                : <Ionicons name="refresh" size={18} color={QuinckleColors.primary} />}
+            </TouchableOpacity>
           </View>
 
           <FlatList
@@ -1525,6 +1586,9 @@ export default function StaffDashboard() {
             }
             keyExtractor={(item) => item.orderId}
             contentContainerStyle={styles.orderListContent}
+            refreshControl={
+              <RefreshControl refreshing={refreshingTakeaway} onRefresh={handleRefreshTakeaway} tintColor={QuinckleColors.primary} />
+            }
             renderItem={({ item }) => (
               <View style={styles.takeawayCard}>
                 <View style={styles.takeawayCardHeader}>
@@ -1542,6 +1606,22 @@ export default function StaffDashboard() {
                 {item.sessionRef && (
                   <Text style={styles.takeawayRef}>{item.sessionRef}</Text>
                 )}
+                <View style={[
+                  styles.takeawayPaymentPill,
+                  isTakeawayPaid(item) ? styles.takeawayPaymentPaid : styles.takeawayPaymentPending,
+                ]}>
+                  <Ionicons
+                    name={isTakeawayPaid(item) ? 'checkmark-circle' : 'wallet-outline'}
+                    size={13}
+                    color={isTakeawayPaid(item) ? QuinckleColors.success : QuinckleColors.warning}
+                  />
+                  <Text style={[
+                    styles.takeawayPaymentText,
+                    { color: isTakeawayPaid(item) ? QuinckleColors.success : QuinckleColors.warning },
+                  ]}>
+                    {isTakeawayPaid(item) ? 'Payment collected' : 'Pending collection'}
+                  </Text>
+                </View>
                 <View style={styles.takeawayDivider} />
                 {item.items.map((it, j) => (
                   <Text key={j} style={styles.takeawayItemText}>
@@ -1549,16 +1629,30 @@ export default function StaffDashboard() {
                   </Text>
                 ))}
                 {item.status !== 'SERVED' && (
-                  <TouchableOpacity
-                    style={[styles.handoverBtn, handingOverIds.includes(item.orderId) && styles.handoverBtnDisabled]}
-                    onPress={() => handleHandover(item.orderId)}
-                    disabled={handingOverIds.includes(item.orderId)}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.handoverBtnText}>
-                      {handingOverIds.includes(item.orderId) ? 'Handing Over…' : 'Hand Over'}
-                    </Text>
-                  </TouchableOpacity>
+                  <View style={styles.takeawayActionRow}>
+                    {isTakeawayPendingCollection(item) && (
+                      <TouchableOpacity
+                        style={styles.collectTakeawayBtn}
+                        onPress={() => handleCollectTakeaway(item)}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={styles.collectTakeawayBtnText}>Collect Payment</Text>
+                      </TouchableOpacity>
+                    )}
+                    <TouchableOpacity
+                      style={[
+                        styles.handoverBtn,
+                        (!isTakeawayPaid(item) || handingOverIds.includes(item.orderId)) && styles.handoverBtnDisabled,
+                      ]}
+                      onPress={() => handleHandover(item.orderId)}
+                      disabled={!isTakeawayPaid(item) || handingOverIds.includes(item.orderId)}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.handoverBtnText}>
+                        {handingOverIds.includes(item.orderId) ? 'Handing Over…' : 'Hand Over'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
                 )}
               </View>
             )}
@@ -2721,6 +2815,36 @@ const styles = StyleSheet.create({
     marginTop: 2,
     fontFamily: 'monospace',
   },
+  takeawayRefreshBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: QuinckleColors.surface,
+  },
+  takeawayPaymentPill: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    borderRadius: Radius.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    marginTop: Spacing.sm,
+  },
+  takeawayPaymentPaid: {
+    backgroundColor: `${QuinckleColors.success}18`,
+  },
+  takeawayPaymentPending: {
+    backgroundColor: `${QuinckleColors.warning}18`,
+  },
+  takeawayPaymentText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
   takeawayDivider: {
     height: 1,
     backgroundColor: QuinckleColors.border,
@@ -2732,11 +2856,29 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   handoverBtn: {
-    marginTop: Spacing.md,
+    flex: 1,
     backgroundColor: QuinckleColors.primary,
     borderRadius: Radius.sm,
     paddingVertical: 10,
     alignItems: 'center',
+  },
+  takeawayActionRow: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginTop: Spacing.md,
+  },
+  collectTakeawayBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: QuinckleColors.primary,
+    borderRadius: Radius.sm,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  collectTakeawayBtnText: {
+    color: QuinckleColors.primary,
+    fontSize: 14,
+    fontWeight: '700',
   },
   handoverBtnDisabled: {
     opacity: 0.5,
