@@ -132,6 +132,7 @@ export default function TableDetail() {
   const [isGeneratingLink, setIsGeneratingLink] = useState(false);
 
   const [isRequestingCollection, setIsRequestingCollection] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
 
   // UPI QR generator
   const [upiId, setUpiId]           = useState<string | null>(null);
@@ -459,8 +460,12 @@ export default function TableDetail() {
     if (isPaid || !sessionId || isRequestingCollection || grandTotal <= 0 || orders.length === 0) return;
     setIsRequestingCollection(true);
     try {
-      await crewSessions.requestCollection(sessionId, sessionCustomerPhone ?? '', sessionCustomerName ?? null);
+      const res = await crewSessions.requestCollection(sessionId, sessionCustomerPhone ?? '', sessionCustomerName ?? null);
       await loadBill();
+      if (res?.data?.alreadyInCollection) {
+        setToast('Already in Payment Collection');
+        setTimeout(() => setToast(null), 2200);
+      }
       router.push('/(staff)/cash-collection');
     } catch (err: any) {
       showDialog(
@@ -1508,11 +1513,19 @@ export default function TableDetail() {
         </View>
       </Modal>
 
+      {toast && (
+        <View style={[styles.toast, { bottom: insets.bottom + 24 }]}>
+          <Text style={styles.toastText}>{toast}</Text>
+        </View>
+      )}
+
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  toast: { position: 'absolute', alignSelf: 'center', backgroundColor: QuinckleColors.surfaceElevated, borderWidth: 1, borderColor: QuinckleColors.borderStrong, borderRadius: 12, paddingHorizontal: 18, paddingVertical: 12 },
+  toastText: { color: QuinckleColors.textPrimary, fontSize: 13.5, fontWeight: '700' },
   discountBtn: {
     marginTop: 14,
     flexDirection: 'row',

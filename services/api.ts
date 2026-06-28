@@ -399,7 +399,7 @@ export const crewSessions = {
     ),
 
   requestCollection: (sessionId: string, customerPhone?: string | null, customerName?: string | null) =>
-    request<{ success: boolean; data: { orderIds: string[]; totalAmount: number; sessionId: string; method: 'STAFF_COLLECT' } }>(
+    request<{ success: boolean; data: { orderIds: string[]; totalAmount: number; sessionId: string; method: 'STAFF_COLLECT'; alreadyInCollection?: boolean } }>(
       'POST',
       `/api/crew/sessions/${sessionId}/request-collection`,
       { customerPhone: customerPhone ?? null, customerName: customerName ?? null },
