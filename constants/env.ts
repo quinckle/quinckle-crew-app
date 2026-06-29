@@ -11,7 +11,8 @@ const LOCAL_HOST = PHYSICAL_DEVICE_IP
   : Platform.OS === 'android' ? '10.0.2.2' : 'localhost';
 const LOCAL_PORT = 3000;
 
-const PROD_HOST = 'https://quinckle-user-app-backend.onrender.com';
+// Cloudflare-proxied (origin: quinckle-user-app-backend.onrender.com)
+const PROD_HOST = 'https://api.quinckle.com';
 
 // Set to true when testing against the production backend from Expo Go.
 // Set to false only when running the backend locally on your machine.
