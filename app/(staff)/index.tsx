@@ -54,6 +54,7 @@ import { MenuSkeleton } from '../../components/ui/MenuSkeleton';
 import { CombosSkeleton } from '../../components/ui/CombosSkeleton';
 import { FeaturedSkeleton } from '../../components/ui/FeaturedSkeleton';
 import { SideDrawer } from '../../components/ui/SideDrawer';
+import { BatteryOptimizationCard } from '../../components/ui/BatteryOptimizationCard';
 
 // Format an Indian phone like "9051138485" → "+91 90511 38485" for display
 function formatPhone(raw?: string | null): string {
@@ -284,6 +285,9 @@ export default function StaffDashboard() {
   // Stored in both state (for UI) and a ref (so Ably callbacks always see latest value).
   const [kotAutoPrint, setKotAutoPrint] = useState(true);
   const kotAutoPrintRef = useRef(true);
+  // Mirrors realtimeOk for the poll loop's stale-closure-free read. Drives the
+  // backstop drain: poll only while the live Ably channel is DOWN.
+  const realtimeOkRef = useRef(true);
   const setKotAutoPrintSync = (v: boolean) => {
     kotAutoPrintRef.current = v;
     setKotAutoPrint(v);
@@ -694,7 +698,16 @@ export default function StaffDashboard() {
   useEffect(() => {
     if (!staffInfo?.restaurantId) return;
     void drainPendingPrintJobs();
-    const interval = setInterval(() => { void drainPendingPrintJobs(); }, 15_000);
+    // Backstop poll, gated on the live channel (mirrors the cook screen). Ably
+    // push (+ server wake-push) is primary; poll every 15s only while Ably is
+    // DOWN, else a 60s heartbeat. Keeps steady-state DB load near zero.
+    let tick = 0;
+    const interval = setInterval(() => {
+      tick += 1;
+      if (!realtimeOkRef.current || tick % 4 === 0) {
+        void drainPendingPrintJobs();
+      }
+    }, 15_000);
     const appStateSub = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
         void refreshPrintSinkOwnership();
@@ -916,7 +929,10 @@ export default function StaffDashboard() {
   useEffect(() => {
     const restaurantId = staffInfo?.restaurantId;
     if (!restaurantId) return;
-    return watchConnection(`waiter:${restaurantId}`, (connected) => setRealtimeOk(connected));
+    return watchConnection(`waiter:${restaurantId}`, (connected) => {
+      setRealtimeOk(connected);
+      realtimeOkRef.current = connected;
+    });
   }, [staffInfo?.restaurantId]);
 
   const updateTableStatus = async (tableNum: number, nextStatus: TableStatus) => {
@@ -1170,6 +1186,10 @@ export default function StaffDashboard() {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* One-time nudge: exempt the app from battery optimization so KOTs/bills
+          keep printing when the app is closed. Renders nothing once handled. */}
+      <BatteryOptimizationCard />
 
       {activeTab === 'tables' ? (
         <>

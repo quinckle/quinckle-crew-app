@@ -26,13 +26,21 @@
  */
 
 import { Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import notifee, { AndroidImportance, AndroidForegroundServiceType } from '@notifee/react-native';
 import { printerApi } from './api';
 import { printKot, getStatus as getPrinterStatus } from './printer';
 
 const CHANNEL_ID = 'kot-print-sink';
 const NOTIFICATION_ID = 'kot-print-sink';
-const DRAIN_INTERVAL_MS = 15_000;
+// Background backstop cadence. The event-driven FCM wake-push (see
+// printBackgroundTask.ts) is now the primary trigger while backgrounded, so this
+// loop only needs to be a slower safety net (retry failed prints / cover a
+// missed wake) — 30s instead of 15s halves idle background DB load.
+const DRAIN_INTERVAL_MS = 30_000;
+// Persisted so the wake-on-push background task (cold start, no React layer) can
+// honour the partner's auto-print preference. Keep in sync with printBackgroundTask.ts.
+const AUTOPRINT_KEY = 'kotAutoPrintEnabled';
 
 // Module state — the FGS task and the watcher read these; setters keep them
 // fresh from the React layer without the service ever touching React state.
@@ -53,7 +61,12 @@ export function setSinkContext(opts: {
 }): void {
   if (opts.restaurantName !== undefined) _restaurantName = opts.restaurantName;
   if (opts.authed !== undefined) _authed = opts.authed;
-  if (opts.autoPrint !== undefined) _autoPrintEnabled = opts.autoPrint;
+  if (opts.autoPrint !== undefined) {
+    _autoPrintEnabled = opts.autoPrint;
+    // Persist so a cold-start background wake (printBackgroundTask.ts) respects
+    // the toggle even though the React layer never ran. Fire-and-forget.
+    void AsyncStorage.setItem(AUTOPRINT_KEY, opts.autoPrint ? 'true' : 'false').catch(() => {});
+  }
 }
 
 /**

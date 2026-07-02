@@ -7,6 +7,7 @@ import { useEffect } from 'react';
 import { QuinckleColors } from '@/constants/Colors';
 import { initPrinter } from '@/services/printer';
 import { registerPrintSinkRunner, watchPrintSinkLifecycle } from '@/services/printSink';
+import { registerPrintWakeTask } from '@/services/printBackgroundTask';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -20,6 +21,11 @@ Notifications.setNotificationHandler({
 // the app finishes booting) so Android can re-attach it if it restarts the
 // service. No-op on iOS.
 registerPrintSinkRunner();
+
+// Register the wake-on-push background task so a fully-closed / OEM-killed app
+// is woken by the backend's silent `print_wake` push to drain + print pending
+// KOTs. Must be at module scope so the OS can invoke it after an app kill.
+registerPrintWakeTask();
 
 export default function RootLayout() {
   // Restore the saved Bluetooth printer config so printing survives restarts.

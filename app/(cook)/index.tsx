@@ -38,6 +38,7 @@ import {
   type KitchenTicket,
 } from '../../components/ui/KitchenTicketCard';
 import { KitchenSkeleton } from '../../components/ui/KitchenSkeleton';
+import { BatteryOptimizationCard } from '../../components/ui/BatteryOptimizationCard';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -85,6 +86,9 @@ export default function CookDashboard() {
   // can drive printing. (The old pairedById === staffInfo.id check silently
   // killed auto-print whenever a different cook logged in.)
   const kotAutoPrintRef = useRef(true);
+  // Mirrors realtimeOk for the poll loop's stale-closure-free read. Drives the
+  // backstop drain: poll only while the live Ably channel is DOWN.
+  const realtimeOkRef = useRef(true);
 
   const [orders,        setOrders]        = useState<KitchenTicket[]>([]);
   const [completedOrders, setCompletedOrders] = useState<KitchenTicket[]>([]);
@@ -202,8 +206,16 @@ export default function CookDashboard() {
       .catch(() => { /* keep last known toggle value */ });
 
     void drainPendingPrintJobs();
+    // Backstop poll, gated on the live channel. The Ably push (+ server wake-push)
+    // is the primary print path, so while Ably is connected we only drain once a
+    // minute as a safety heartbeat; when it's DOWN we fall back to a 15s poll
+    // until it recovers. Keeps steady-state DB load near zero during service.
+    let tick = 0;
     const interval = setInterval(() => {
-      void drainPendingPrintJobs();
+      tick += 1;
+      if (!realtimeOkRef.current || tick % 4 === 0) {
+        void drainPendingPrintJobs();
+      }
     }, 15_000);
     const appStateSub = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
@@ -335,7 +347,10 @@ export default function CookDashboard() {
   useEffect(() => {
     const restaurantId = staffInfo?.restaurantId;
     if (!restaurantId) return;
-    return watchConnection(`kitchen:${restaurantId}`, (connected) => setRealtimeOk(connected));
+    return watchConnection(`kitchen:${restaurantId}`, (connected) => {
+      setRealtimeOk(connected);
+      realtimeOkRef.current = connected;
+    });
   }, [staffInfo?.restaurantId]);
 
   const counts = useMemo(
@@ -397,6 +412,10 @@ export default function CookDashboard() {
           )}
         </TouchableOpacity>
       </View>
+
+      {/* One-time nudge: exempt the app from battery optimization so KOTs keep
+          printing when the app is closed. Renders nothing once handled. */}
+      <BatteryOptimizationCard />
 
       {/* ── Section header line ────────────────────────────────────────── */}
       <View style={styles.sectionHeader}>
