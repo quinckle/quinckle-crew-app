@@ -826,8 +826,11 @@ export const restaurantApi = {
   get: (restaurantId: string) =>
     request<{ success: true; data: Restaurant }>('GET', `/api/v1/restaurants/${restaurantId}`),
 
-  getMenu: (restaurantId: string) =>
-    request<{ success: true; data: MenuCategory[] }>('GET', `/api/v1/dine/menu/${restaurantId}`),
+  // `channel` scopes the menu. Pass 'CREW' from the order screen to include
+  // crew-only special charges (birthday fees etc.) alongside the dine-in menu.
+  // Omit for the default DINE_IN diner view.
+  getMenu: (restaurantId: string, channel?: 'DINE_IN' | 'TAKEAWAY' | 'CREW') =>
+    request<{ success: true; data: MenuCategory[] }>('GET', `/api/v1/dine/menu/${restaurantId}${channel ? `?channel=${channel}` : ''}`),
 
   // Branding includes everything the Collection Sheet needs to render the
   // partner's UPI QR + display name when the staff picks "UPI" for a split.

@@ -207,7 +207,9 @@ export default function OrderMenuScreen() {
     if (!rid) return;
     setIsMenuLoading(true);
 
-    const menuP = restaurantApi.getMenu(rid)
+    // 'CREW' → dine-in menu + crew-only special charges (e.g. birthday fees)
+    // that diners never see but staff can add to a bill.
+    const menuP = restaurantApi.getMenu(rid, 'CREW')
       .then(res => {
         const cats: any[] = (res as any)?.data ?? [];
         const items = cats.flatMap((c: any) =>
