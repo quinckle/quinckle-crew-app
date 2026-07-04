@@ -224,7 +224,11 @@ async function printRaw(text: string): Promise<void> {
   await ThermalPrinter.printBluetooth({
     macAddress: _config.address,
     payload: text,
-    printerWidthMM: _config.paperWidth,
+    // DantSu centers images/QR by the PRINTABLE dot-width (widthMM × dpi), while
+    // text centers by character count. A 58mm roll prints ~48mm wide (384 dots @
+    // 203dpi) and an 80mm roll ~72mm; passing the raw 58/80 makes it center the
+    // QR inside a phantom-wide page and shifts it left. Pass the printable width.
+    printerWidthMM: _config.paperWidth === 80 ? 72 : 48,
     printerNbrCharactersPerLine: _config.paperWidth === 58 ? 32 : 48,
     autoCut: true,
   });
