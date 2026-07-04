@@ -23,6 +23,7 @@ import { printerApi } from './api';
 const KEY_CONFIG = 'printerConfig';
 const KEY_QUEUE  = 'pendingPrintQueue';
 const KEY_UPI_QR = 'printUpiQrOnBill';
+const KEY_UPI_QR_MODE = 'printUpiQrMode';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,11 @@ let _status: PrinterStatus = 'unpaired';
 // On-device preference: print the scan-to-pay UPI QR on unpaid bills. Defaults
 // ON; a partner whose printer can't render QR can disable it from Printer Settings.
 let _printUpiQr = true;
+// On-device preference: which QR to print — 'amount' bakes the bill total into
+// the intent, 'static' prints the payee-only QR (diner types the amount). This
+// is the remembered DEFAULT the per-print picker starts on; defaults to amount.
+export type UpiQrMode = 'amount' | 'static';
+let _upiQrMode: UpiQrMode = 'amount';
 
 // ── Print de-duplication guard ────────────────────────────────────────────────
 // KOT auto-print is driven by TWO independent triggers that can both fire for
@@ -100,6 +106,10 @@ export async function initPrinter(): Promise<void> {
     const raw = await AsyncStorage.getItem(KEY_UPI_QR);
     if (raw !== null) _printUpiQr = raw === 'true';
   } catch { /* keep default ON */ }
+  try {
+    const raw = await AsyncStorage.getItem(KEY_UPI_QR_MODE);
+    if (raw === 'static' || raw === 'amount') _upiQrMode = raw;
+  } catch { /* keep default 'amount' */ }
 }
 
 // ── UPI QR-on-bill preference ─────────────────────────────────────────────────
@@ -112,6 +122,18 @@ export async function setUpiQrEnabled(enabled: boolean): Promise<void> {
   _printUpiQr = enabled;
   try {
     await AsyncStorage.setItem(KEY_UPI_QR, enabled ? 'true' : 'false');
+  } catch { /* non-fatal — in-memory value still applies this session */ }
+}
+
+/** Remembered default for the per-print QR picker ('amount' | 'static'). */
+export function getUpiQrMode(): UpiQrMode {
+  return _upiQrMode;
+}
+
+export async function setUpiQrMode(mode: UpiQrMode): Promise<void> {
+  _upiQrMode = mode;
+  try {
+    await AsyncStorage.setItem(KEY_UPI_QR_MODE, mode);
   } catch { /* non-fatal — in-memory value still applies this session */ }
 }
 

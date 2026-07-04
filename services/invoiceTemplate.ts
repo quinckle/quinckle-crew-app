@@ -39,24 +39,29 @@ export interface InvoiceBill {
   upiVpa?: string | null;
   /** Display name shown in the diner's UPI app. Falls back to restaurantName. */
   upiName?: string | null;
+  /** Print the static restaurant QR (payee only, no amount) instead of the
+   *  exact-amount QR. Diner types the amount in their UPI app. */
+  upiOmitAmount?: boolean;
   generatedAt?: string; // ISO string — defaults to now
   orderDateTime?: string; // ISO string of order/session time
 }
 
 /**
- * Builds an NPCI-spec UPI intent string with the exact amount baked in.
+ * Builds an NPCI-spec UPI intent string. When `am` is provided the exact amount
+ * is baked in (dynamic QR); when omitted the intent carries only the payee, so
+ * the diner types the amount themselves (the restaurant's "static" QR).
  * Mirrors the backend buildUpiDeepLink (upi-direct-checkout.service.ts): only
- * the four widely-accepted fields (pa, pn, am, cu) — no tn/mc/tr, which raise
+ * the widely-accepted fields (pa, pn, am, cu) — no tn/mc/tr, which raise
  * decline risk on personal/P2P VPAs.
  */
-function buildUpiPayString(opts: { pa: string; pn: string; am: number }): string {
+function buildUpiPayString(opts: { pa: string; pn: string; am?: number | null }): string {
   const enc = (v: string | number) => encodeURIComponent(String(v));
   const parts = [
     `pa=${enc(opts.pa)}`,
     `pn=${enc(opts.pn)}`,
-    `am=${enc(opts.am.toFixed(2))}`,
-    `cu=INR`,
   ];
+  if (opts.am != null) parts.push(`am=${enc(opts.am.toFixed(2))}`);
+  parts.push(`cu=INR`);
   return `upi://pay?${parts.join('&')}`;
 }
 
@@ -166,16 +171,21 @@ export function buildInvoiceText(bill: InvoiceBill, paperWidth: 58 | 80 = 58): s
   lines.push(`[L]${D}`);
 
   // ── Scan-to-pay UPI QR (unpaid bills with a configured VPA only) ──────────
+  // `upiOmitAmount` prints the restaurant's static QR (payee only, diner enters
+  // the amount); otherwise the exact bill amount is baked into the intent.
   if (!bill.isPaid && bill.upiVpa) {
+    const staticQr = bill.upiOmitAmount === true;
     const upiString = buildUpiPayString({
       pa: bill.upiVpa,
       pn: bill.upiName || bill.restaurantName,
-      am: bill.grandTotal,
+      am: staticQr ? null : bill.grandTotal,
     });
     lines.push(`[L]${d}`);
-    lines.push(`[C]<b>Scan to pay ${fmt(bill.grandTotal)}</b>`);
-    lines.push('[C]GPay / PhonePe / Paytm / any UPI app');
+    lines.push(staticQr
+      ? `[C]<b>Scan to pay</b>`
+      : `[C]<b>Scan to pay ${fmt(bill.grandTotal)}</b>`);
     lines.push(`[C]<qrcode size='${paperWidth === 80 ? 28 : 20}'>${upiString}</qrcode>`);
+    if (staticQr) lines.push('[C]Enter amount in your UPI app');
   }
 
   // ── Footer ────────────────────────────────────────────────────────────────

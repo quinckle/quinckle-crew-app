@@ -8,7 +8,7 @@ import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { crewSessions, crewTables, crewOrders, crewPayments, crewDiners, restaurantApi, printerApi } from '../../services/api';
 import type { CrewTable, SessionBill } from '../../services/api';
-import { printBill, printKot, getStatus as getPrinterStatus } from '../../services/printer';
+import { printBill, printKot, getStatus as getPrinterStatus, isUpiQrEnabled, getUpiQrMode, setUpiQrMode } from '../../services/printer';
 import type { InvoiceBill } from '../../services/invoiceTemplate';
 import { useAuth } from '../../context/AuthContext';
 import { useCountdown } from '../../hooks/useCountdown';
@@ -583,37 +583,72 @@ export default function TableDetail() {
       } catch {}
     }
 
-    const result = await printBill({
-      restaurantName: staffInfo?.restaurantName ?? '',
-      restaurantAddress: invoiceMeta?.address ?? null,
-      restaurantPhone: invoiceMeta?.phone ?? null,
-      restaurantEmail: invoiceMeta?.email ?? null,
-      fssaiLicenseNumber: invoiceMeta?.fssaiLicenseNumber ?? null,
-      tableNumber: tableNum,
-      sessionRef: sessionRef || toSessionRef(sessionId),
-      items: invoiceItems,
-      subtotal: sessionTotal,
-      discount: discountTotal,
-      charges: serviceChargeTotal,
-      tax: taxTotal,
-      taxRate: billTaxRate,
-      grandTotal,
-      isPaid,
-      paymentMethod: billPaymentMethod,
-      upiVpa: upiId,
-      upiName: upiName || null,
-      splits: billSplits?.map(s => ({ method: s.method ?? '', amount: Number(s.amount ?? 0) })),
-      orderDateTime: orders[0]?.placed_at ?? undefined,
-      generatedAt: new Date().toISOString(),
-    });
+    // upiOmitAmount = true → static restaurant QR (diner types amount);
+    // false → exact-amount QR. Ignored when no QR prints (paid / no VPA / toggle off).
+    const runPrint = async (upiOmitAmount: boolean) => {
+      const result = await printBill({
+        restaurantName: staffInfo?.restaurantName ?? '',
+        restaurantAddress: invoiceMeta?.address ?? null,
+        restaurantPhone: invoiceMeta?.phone ?? null,
+        restaurantEmail: invoiceMeta?.email ?? null,
+        fssaiLicenseNumber: invoiceMeta?.fssaiLicenseNumber ?? null,
+        tableNumber: tableNum,
+        sessionRef: sessionRef || toSessionRef(sessionId),
+        items: invoiceItems,
+        subtotal: sessionTotal,
+        discount: discountTotal,
+        charges: serviceChargeTotal,
+        tax: taxTotal,
+        taxRate: billTaxRate,
+        grandTotal,
+        isPaid,
+        paymentMethod: billPaymentMethod,
+        upiVpa: upiId,
+        upiName: upiName || null,
+        upiOmitAmount,
+        splits: billSplits?.map(s => ({ method: s.method ?? '', amount: Number(s.amount ?? 0) })),
+        orderDateTime: orders[0]?.placed_at ?? undefined,
+        generatedAt: new Date().toISOString(),
+      });
 
-    if (result === 'failed') {
-      showDialog(
-        'Print Failed',
-        'Could not print the invoice. Check that the printer is nearby and powered on.',
-        [{ label: 'OK', onPress: () => {} }],
-      );
+      if (result === 'failed') {
+        showDialog(
+          'Print Failed',
+          'Could not print the invoice. Check that the printer is nearby and powered on.',
+          [{ label: 'OK', onPress: () => {} }],
+        );
+      }
+    };
+
+    // Only ask which QR to print when a QR would actually be printed
+    // (unpaid + a VPA configured + the on-device QR toggle is on).
+    const qrWillPrint = !isPaid && !!upiId && isUpiQrEnabled();
+    if (!qrWillPrint) {
+      await runPrint(false);
+      return;
     }
+
+    const chooseAndPrint = (mode: 'amount' | 'static') => {
+      void setUpiQrMode(mode); // remember as the default next time
+      void runPrint(mode === 'static');
+    };
+    // Put the remembered default first so it reads as the primary action.
+    const amountAction = {
+      label: `With amount (₹${Math.round(grandTotal)})`,
+      variant: 'primary' as const,
+      onPress: () => chooseAndPrint('amount'),
+    };
+    const staticAction = {
+      label: 'Static QR (no amount)',
+      onPress: () => chooseAndPrint('static'),
+    };
+    showDialog(
+      'Payment QR',
+      'Which UPI QR should the bill show?',
+      getUpiQrMode() === 'static'
+        ? [staticAction, amountAction, { label: 'Cancel', onPress: () => {} }]
+        : [amountAction, staticAction, { label: 'Cancel', onPress: () => {} }],
+    );
   };
 
   const doEndSession = async () => {
