@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, FlatList, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator, Share } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import { Ionicons } from '@expo/vector-icons';
@@ -15,6 +15,7 @@ import { useCountdown } from '../../hooks/useCountdown';
 import { subscribeChannel } from '../../services/realtime';
 import type { BillOrderItem, BillOrder, MenuItem } from '../../services/api';
 import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
+import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { Typography } from '../../constants/Colors';
@@ -67,6 +68,10 @@ export default function TableDetail() {
   const [sessionId] = useState(paramSessionId ?? '');
   const [sessionRef, setSessionRef] = useState('');
   const [mergedFrom, setMergedFrom] = useState<Array<{ session_ref: string; table_number: number | null }>>([]);
+  // Payment-QR picker: `qrSheet` holds the bill total for the sheet label;
+  // `qrRunRef` holds the print runner the chosen option invokes.
+  const [qrSheet, setQrSheet] = useState<{ grandTotal: number } | null>(null);
+  const qrRunRef = useRef<((omitAmount: boolean) => void) | null>(null);
   const [expiresAt, setExpiresAt] = useState<string | null>(paramExpiresAt || null);
   const countdown = useCountdown(expiresAt);
   const isNearExpiry = countdown.totalMs > 0 && countdown.totalMs < 10 * 60_000;
@@ -628,27 +633,10 @@ export default function TableDetail() {
       return;
     }
 
-    const chooseAndPrint = (mode: 'amount' | 'static') => {
-      void setUpiQrMode(mode); // remember as the default next time
-      void runPrint(mode === 'static');
-    };
-    // Put the remembered default first so it reads as the primary action.
-    const amountAction = {
-      label: `With amount (₹${Math.round(grandTotal)})`,
-      variant: 'primary' as const,
-      onPress: () => chooseAndPrint('amount'),
-    };
-    const staticAction = {
-      label: 'Static QR (no amount)',
-      onPress: () => chooseAndPrint('static'),
-    };
-    showDialog(
-      'Payment QR',
-      'Which UPI QR should the bill show?',
-      getUpiQrMode() === 'static'
-        ? [staticAction, amountAction, { label: 'Cancel', onPress: () => {} }]
-        : [amountAction, staticAction, { label: 'Cancel', onPress: () => {} }],
-    );
+    // Ask which QR to print via the bottom sheet; the chosen option runs the
+    // print. Dismissing the sheet (backdrop / drag) simply cancels.
+    qrRunRef.current = (omitAmount: boolean) => { void runPrint(omitAmount); };
+    setQrSheet({ grandTotal });
   };
 
   const doEndSession = async () => {
@@ -1200,6 +1188,19 @@ export default function TableDetail() {
       </View>
 
       <ThemedDialog visible={dialog.visible} title={dialog.title} message={dialog.message} actions={dialog.actions} onClose={closeDialog} />
+
+      <QrChoiceSheet
+        visible={!!qrSheet}
+        amount={qrSheet?.grandTotal ?? 0}
+        defaultMode={getUpiQrMode()}
+        onPick={(mode) => {
+          void setUpiQrMode(mode);        // remember as the default next time
+          const run = qrRunRef.current;
+          setQrSheet(null);
+          run?.(mode === 'static');
+        }}
+        onClose={() => setQrSheet(null)}
+      />
 
       {/* ── Item cancel bottom sheet ── */}
       <BottomSheet
