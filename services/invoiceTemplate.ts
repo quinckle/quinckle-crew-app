@@ -21,6 +21,9 @@ export interface InvoiceBill {
   restaurantEmail?: string | null;
   fssaiLicenseNumber?: string | null;
   tableNumber: number | string;
+  /** DINE_IN (default) prints "Table TNN"; TAKEAWAY prints the takeaway header + pickup token. */
+  channel?: 'DINE_IN' | 'TAKEAWAY';
+  pickupToken?: string | null;
   sessionRef?: string | null;
   items: InvoiceItem[];
   subtotal: number;
@@ -145,7 +148,14 @@ export function buildInvoiceText(bill: InvoiceBill, paperWidth: 58 | 80 = 58): s
   lines.push(`[C]<b><font size="big">${bill.restaurantName}</font></b>`);
   lines.push(`[C]${D}`);
   lines.push('[C]<b>TAX INVOICE</b>');
-  lines.push(`[C]Table T${tableStr}`);
+  if (bill.channel === 'TAKEAWAY') {
+    lines.push('[C]<b>*** TAKEAWAY ***</b>');
+    if (bill.pickupToken) {
+      lines.push(`[C]<b><font size="big">${bill.pickupToken}</font></b>`);
+    }
+  } else {
+    lines.push(`[C]Table T${tableStr}`);
+  }
   if (bill.sessionRef) {
     lines.push(`[C]Session ${bill.sessionRef}`);
   }
@@ -215,7 +225,9 @@ export function buildInvoiceText(bill: InvoiceBill, paperWidth: 58 | 80 = 58): s
 
   // ── Footer ────────────────────────────────────────────────────────────────
   lines.push(`[L]${d}`);
-  lines.push('[C]Thank you for dining with us.');
+  lines.push(bill.channel === 'TAKEAWAY'
+    ? '[C]Thank you for your order.'
+    : '[C]Thank you for dining with us.');
   lines.push('[C]Support & feedback:');
   lines.push('[C]quinckle.com/support');
   lines.push('[C]support@quinckle.com');

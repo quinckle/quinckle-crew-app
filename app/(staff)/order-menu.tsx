@@ -146,6 +146,8 @@ export default function OrderMenuScreen() {
     sessionId,
     customerPhone: paramPhone,
     customerName: paramName,
+    channel: paramChannel,
+    pickupToken: paramPickupToken,
   } = useLocalSearchParams<{
     tableId: string;
     tableNum: string;
@@ -153,8 +155,12 @@ export default function OrderMenuScreen() {
     sessionId: string;
     customerPhone: string;
     customerName: string;
+    channel: string;
+    pickupToken: string;
   }>();
 
+  const isTakeaway = paramChannel === 'TAKEAWAY';
+  const pickupToken = paramPickupToken || null;
   const tableNum = paramTableNum ?? String(tableId ?? '').padStart(2, '0');
 
   // ── Menu data ──────────────────────────────────────────────────────────────
@@ -209,7 +215,9 @@ export default function OrderMenuScreen() {
 
     // 'CREW' → dine-in menu + crew-only special charges (e.g. birthday fees)
     // that diners never see but staff can add to a bill.
-    const menuP = restaurantApi.getMenu(rid, 'CREW')
+    // Takeaway sessions get the TAKEAWAY menu so per-channel availability is
+    // respected (CREW-only special charges stay dine-in).
+    const menuP = restaurantApi.getMenu(rid, isTakeaway ? 'TAKEAWAY' : 'CREW')
       .then(res => {
         const cats: any[] = (res as any)?.data ?? [];
         const items = cats.flatMap((c: any) =>
@@ -478,6 +486,7 @@ export default function OrderMenuScreen() {
       const navParams = {
         orderId,
         tableNumber: String(tableId ?? 0),
+        ...(isTakeaway ? { channel: 'TAKEAWAY', pickupToken: pickupToken ?? '' } : {}),
         amount: String(orderTotal),
         customerName: guestName ?? '',
         customerPhone: guestPhone,
@@ -616,8 +625,10 @@ export default function OrderMenuScreen() {
           <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>Add Items</Text>
-          <Text style={styles.headerSub}>Table T{tableNum}</Text>
+          <Text style={styles.headerTitle}>{isTakeaway ? 'New Takeaway Order' : 'Add Items'}</Text>
+          <Text style={[styles.headerSub, isTakeaway && { color: QuinckleColors.primary, fontWeight: '700' }]}>
+            {isTakeaway ? `TAKEAWAY${pickupToken ? ` · ${pickupToken}` : ''}` : `Table T${tableNum}`}
+          </Text>
         </View>
         {cartCount > 0 && (
           <View style={styles.cartBadge}>
@@ -875,7 +886,9 @@ export default function OrderMenuScreen() {
               <Ionicons name="checkmark" size={34} color="#fff" />
             </View>
             <Text style={styles.placedTitle}>Order placed</Text>
-            <Text style={styles.placedSub}>Table T{tableNum} · ₹{placed.amount.toFixed(0)}</Text>
+            <Text style={styles.placedSub}>
+              {isTakeaway ? (pickupToken ?? 'Takeaway') : `Table T${tableNum}`} · ₹{placed.amount.toFixed(0)}
+            </Text>
             <Text style={styles.placedHint}>Opening payment collection…</Text>
           </View>
         </View>

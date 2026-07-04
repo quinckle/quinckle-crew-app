@@ -75,6 +75,8 @@ export async function drainPendingPrintJobs(): Promise<void> {
           sessionId: job.sessionId ?? undefined,
           orderNumber: job.orderNumber != null ? String(job.orderNumber) : undefined,
           tableNumber: String(job.tableNumber ?? '?'),
+          channel: job.channel,
+          pickupToken: job.pickupToken ?? undefined,
           restaurantName: _restaurantName,
           createdAt: job.createdAt ?? new Date().toISOString(),
           items: (job.items ?? []).map((i) => ({

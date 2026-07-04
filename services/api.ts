@@ -370,6 +370,8 @@ export interface LedgerSession {
   sessionRef?: string;
   shortId: string;
   tableNumber: number | null;
+  channel?: 'DINE_IN' | 'TAKEAWAY';
+  pickupToken?: string | null;
   status: string;
   statusView?: 'PAID' | 'OPEN' | 'CASH_PENDING' | 'CLOSED';
   openedAt: string;
@@ -441,6 +443,7 @@ export const crewSessions = {
     sessionRef?: string;
     status?: string;
     method?: string;
+    channel?: 'DINE_IN' | 'TAKEAWAY' | 'all';
     page?: number;
     limit?: number;
   } = {}): Promise<LedgerResponse> => {
@@ -453,6 +456,7 @@ export const crewSessions = {
     if (params.sessionRef)                         parts.push(`sessionRef=${encodeURIComponent(params.sessionRef)}`);
     if (params.status && params.status !== 'all')  parts.push(`status=${params.status}`);
     if (params.method && params.method !== 'all')  parts.push(`method=${params.method}`);
+    if (params.channel && params.channel !== 'all') parts.push(`channel=${params.channel}`);
     if (params.page  != null)                      parts.push(`page=${params.page}`);
     if (params.limit != null)                      parts.push(`limit=${params.limit}`);
     const qs = parts.length ? `?${parts.join('&')}` : '';
@@ -504,7 +508,7 @@ export const crewMemberships = {
 // ── Crew Orders (STEWARD/ADMIN) ───────────────────────────────────────────────
 
 export interface ActiveOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; }
-export interface ActiveOrder { order_id: string; table_number: number; session_id: string; status: 'received' | 'preparing' | 'ready' | 'served'; placed_at: string; served_at?: string; items: ActiveOrderItem[]; }
+export interface ActiveOrder { order_id: string; table_number: number; channel?: 'DINE_IN' | 'TAKEAWAY'; pickup_token?: string | null; session_id: string; status: 'received' | 'preparing' | 'ready' | 'served'; placed_at: string; served_at?: string; items: ActiveOrderItem[]; }
 
 export interface TakeawayOrder {
   orderId: string;
@@ -597,6 +601,25 @@ export const crewOrders = {
       'PATCH',
       `/api/crew/orders/${orderId}/handover`,
       undefined,
+      true,
+    ),
+};
+
+// ── Crew Takeaway (STEWARD/ADMIN) ─────────────────────────────────────────────
+
+export const crewTakeaway = {
+  /**
+   * Create a tableless TAKEAWAY session for a counter/phone order.
+   * Guest name/phone are optional; when given, the order feeds CRM.
+   */
+  createSession: (customerName?: string, customerPhone?: string) =>
+    request<{ success: true; data: { session_id: string; session_ref: string; pickup_token: string | null; expires_at: string } }>(
+      'POST',
+      '/api/crew/takeaway/session',
+      {
+        ...(customerName ? { customerName } : {}),
+        ...(customerPhone ? { customerPhone } : {}),
+      },
       true,
     ),
 };
@@ -933,6 +956,8 @@ export const printerApi = {
       orderNumber?: string | number;
       sessionId: string;
       tableNumber: number;
+      channel?: 'DINE_IN' | 'TAKEAWAY';
+      pickupToken?: string | null;
       createdAt: string;
       isAddOn: boolean;
       items: Array<{

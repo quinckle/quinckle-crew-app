@@ -32,6 +32,8 @@ export type KitchenTicket = {
   location:  string;
   placedAt?: string;
   status:    'new' | 'completed';
+  channel?:  'DINE_IN' | 'TAKEAWAY';
+  pickupToken?: string | null;
   items:     KitchenItem[];
 };
 

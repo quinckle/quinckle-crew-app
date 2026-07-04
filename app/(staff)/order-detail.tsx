@@ -198,6 +198,8 @@ export default function OrderDetail() {
         restaurantEmail: m?.email ?? null,
         fssaiLicenseNumber: m?.fssaiLicenseNumber ?? null,
         tableNumber: session.tableNumber ?? 'Walk-in',
+        channel: session.channel ?? 'DINE_IN',
+        pickupToken: session.pickupToken ?? null,
         sessionRef: session.sessionRef ?? null,
         items,
         subtotal: session.foodSubtotal,

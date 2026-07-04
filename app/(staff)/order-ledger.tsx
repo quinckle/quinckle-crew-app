@@ -26,11 +26,12 @@ const RANGES: { key: LedgerRange; label: string }[] = [
   { key: 'week',      label: 'This Week' },
   { key: 'month',     label: 'This Month' },
 ];
-type FilterCategory = 'period' | 'status' | 'payment';
+type FilterCategory = 'period' | 'status' | 'payment' | 'channel';
 const FILTER_CATEGORIES: { key: FilterCategory; label: string }[] = [
   { key: 'period',  label: 'Period' },
   { key: 'status',  label: 'Status' },
   { key: 'payment', label: 'Payment' },
+  { key: 'channel', label: 'Channel' },
 ];
 
 // Local YYYY-MM-DD — matches the day-string format the ledger backend parses.
@@ -57,6 +58,12 @@ const METHOD_FILTERS = [
   { key: 'upi_direct',      label: 'UPI Direct' },
   { key: 'payment_gateway', label: 'Gateway' },
   { key: 'cash',            label: 'Cash' },
+];
+
+const CHANNEL_FILTERS = [
+  { key: 'all',      label: 'All Channels' },
+  { key: 'DINE_IN',  label: 'Dine-in' },
+  { key: 'TAKEAWAY', label: 'Takeaway' },
 ];
 
 const LIMIT = 20;
@@ -206,21 +213,23 @@ const OPTION_ROW_HEIGHT = 46;
 function panelHeight(category: FilterCategory, customActive: boolean): number {
   if (category === 'status')  return STATUS_FILTERS.length * OPTION_ROW_HEIGHT;
   if (category === 'payment') return METHOD_FILTERS.length * OPTION_ROW_HEIGHT;
+  if (category === 'channel') return CHANNEL_FILTERS.length * OPTION_ROW_HEIGHT;
   // period: presets + the "Custom range" row, plus the calendar when open
   return (RANGES.length + 1) * OPTION_ROW_HEIGHT + (customActive ? CALENDAR_CLIP_HEIGHT : 0);
 }
 
 // ── Split-column filter modal (ported from the partner Order Ledger) ──────────
 function FiltersModal({
-  visible, onClose, range, statusFilter, methodFilter,
+  visible, onClose, range, statusFilter, methodFilter, channelFilter,
   customActive, customFrom, customTo,
-  onPickRange, onPickStatus, onPickMethod, onActivateCustom, onCustomChange,
+  onPickRange, onPickStatus, onPickMethod, onPickChannel, onActivateCustom, onCustomChange,
   onReset, activeFilterCount, resultCount,
 }: {
   visible: boolean; onClose(): void;
-  range: LedgerRange; statusFilter: string; methodFilter: string;
+  range: LedgerRange; statusFilter: string; methodFilter: string; channelFilter: string;
   customActive: boolean; customFrom: Date | null; customTo: Date | null;
   onPickRange(v: LedgerRange): void; onPickStatus(v: string): void; onPickMethod(v: string): void;
+  onPickChannel(v: string): void;
   onActivateCustom(): void; onCustomChange(f: Date | null, t: Date | null): void;
   onReset(): void; activeFilterCount: number; resultCount: number;
 }) {
@@ -230,6 +239,7 @@ function FiltersModal({
   const isCategoryActive = (key: FilterCategory) => {
     if (key === 'period')  return customActive || range !== 'today';
     if (key === 'status')  return statusFilter !== 'all';
+    if (key === 'channel') return channelFilter !== 'all';
     return methodFilter !== 'all';
   };
 
@@ -297,6 +307,9 @@ function FiltersModal({
           </View>
           <View style={[fmStyles.rightLayer, category !== 'payment' && fmStyles.rightLayerHidden]} pointerEvents={category === 'payment' ? 'auto' : 'none'}>
             <OptionList options={METHOD_FILTERS} value={methodFilter} onChange={onPickMethod} />
+          </View>
+          <View style={[fmStyles.rightLayer, category !== 'channel' && fmStyles.rightLayerHidden]} pointerEvents={category === 'channel' ? 'auto' : 'none'}>
+            <OptionList options={CHANNEL_FILTERS} value={channelFilter} onChange={onPickChannel} />
           </View>
         </Animated.View>
       </View>
@@ -388,7 +401,9 @@ function SessionCard({ session, onPress }: { session: LedgerSession; onPress: ()
       <View style={{ flex: 1 }}>
         <View style={styles.sessionTopRow}>
           <Text style={styles.sessionRef}>
-            {session.tableNumber != null ? `Table ${session.tableNumber}` : 'Walk-in'}
+            {session.channel === 'TAKEAWAY'
+              ? <Text style={{ color: QuinckleColors.primary }}>{`${session.pickupToken ?? 'Takeaway'}  TAKEAWAY`}</Text>
+              : session.tableNumber != null ? `Table ${session.tableNumber}` : 'Walk-in'}
             <Text style={styles.sessionShort}>{session.sessionRef ? `  ${session.sessionRef}` : ''}</Text>
           </Text>
           <Text style={styles.sessionAmount}>{displayTotal > 0 ? fmtMoney(displayTotal) : '—'}</Text>
@@ -454,6 +469,7 @@ export default function OrderLedger() {
   const [customTo, setCustomTo]       = useState<Date | null>(null);
   const [statusFilter, setStatusFilter] = useState('all');
   const [methodFilter, setMethodFilter] = useState('all');
+  const [channelFilter, setChannelFilter] = useState('all');
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch]           = useState('');
   const [filterOpen, setFilterOpen]   = useState(false);
@@ -476,8 +492,8 @@ export default function OrderLedger() {
         const filterParams = search
           ? { sessionRef: search }
           : useCustom
-            ? { from: toDayStr(customFrom!), to: toDayStr(customTo!), status: statusFilter, method: methodFilter }
-            : { range, status: statusFilter, method: methodFilter };
+            ? { from: toDayStr(customFrom!), to: toDayStr(customTo!), status: statusFilter, method: methodFilter, channel: channelFilter as 'DINE_IN' | 'TAKEAWAY' | 'all' }
+            : { range, status: statusFilter, method: methodFilter, channel: channelFilter as 'DINE_IN' | 'TAKEAWAY' | 'all' };
         const res = await crewSessions.getHistory({
           ...filterParams,
           page: pageToLoad,
@@ -497,7 +513,7 @@ export default function OrderLedger() {
         setRefreshing(false);
       }
     },
-    [range, statusFilter, methodFilter, search, customActive, customFrom, customTo],
+    [range, statusFilter, methodFilter, channelFilter, search, customActive, customFrom, customTo],
   );
 
   // Reload from page 1 whenever a filter changes.
@@ -526,8 +542,9 @@ export default function OrderLedger() {
   const onCustomChange = useCallback((f: Date | null, t: Date | null) => { setCustomFrom(f); setCustomTo(t); }, []);
   const pickStatus = useCallback((k: string) => { setSearchInput(''); setSearch(''); setStatusFilter(k); }, []);
   const pickMethod = useCallback((k: string) => { setSearchInput(''); setSearch(''); setMethodFilter(k); }, []);
+  const pickChannel = useCallback((k: string) => { setSearchInput(''); setSearch(''); setChannelFilter(k); }, []);
   const resetFilters = useCallback(() => {
-    setRange('today'); setStatusFilter('all'); setMethodFilter('all');
+    setRange('today'); setStatusFilter('all'); setMethodFilter('all'); setChannelFilter('all');
     setCustomActive(false); setCustomFrom(null); setCustomTo(null);
   }, []);
 
@@ -541,7 +558,7 @@ export default function OrderLedger() {
 
   // Count of non-default filters — shown as a badge on the filter button.
   const activeFilterCount =
-    (dateFilterActive ? 1 : 0) + (statusFilter !== 'all' ? 1 : 0) + (methodFilter !== 'all' ? 1 : 0);
+    (dateFilterActive ? 1 : 0) + (statusFilter !== 'all' ? 1 : 0) + (methodFilter !== 'all' ? 1 : 0) + (channelFilter !== 'all' ? 1 : 0);
   const rangeLabel = customActive
     ? customLabel
     : RANGES.find((r) => r.key === range)?.label ?? 'Today';
@@ -600,6 +617,7 @@ export default function OrderLedger() {
           {rangeLabel}
           {statusFilter !== 'all' ? ` · ${STATUS_FILTERS.find((f) => f.key === statusFilter)?.label}` : ''}
           {methodFilter !== 'all' ? ` · ${METHOD_FILTERS.find((f) => f.key === methodFilter)?.label}` : ''}
+          {channelFilter !== 'all' ? ` · ${CHANNEL_FILTERS.find((f) => f.key === channelFilter)?.label}` : ''}
         </Text>
       )}
 
@@ -649,9 +667,9 @@ export default function OrderLedger() {
       <FiltersModal
         visible={filterOpen}
         onClose={() => setFilterOpen(false)}
-        range={range} statusFilter={statusFilter} methodFilter={methodFilter}
+        range={range} statusFilter={statusFilter} methodFilter={methodFilter} channelFilter={channelFilter}
         customActive={customActive} customFrom={customFrom} customTo={customTo}
-        onPickRange={pickRange} onPickStatus={pickStatus} onPickMethod={pickMethod}
+        onPickRange={pickRange} onPickStatus={pickStatus} onPickMethod={pickMethod} onPickChannel={pickChannel}
         onActivateCustom={activateCustom} onCustomChange={onCustomChange}
         onReset={resetFilters}
         activeFilterCount={activeFilterCount}

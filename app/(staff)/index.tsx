@@ -22,7 +22,7 @@ const SCREEN_WIDTH = Dimensions.get('window').width;
 
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
-import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, restaurantApi, crewAuth, printerApi } from '../../services/api';
+import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewTakeaway, restaurantApi, crewAuth, printerApi } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { printKot, getStatus as getPrinterStatus } from '../../services/printer';
 import { setSinkContext } from '../../services/printSink';
@@ -172,6 +172,13 @@ export default function StaffDashboard() {
   // New-session bottom sheet (replaces the old confirm dialog). `starting` drives
   // the inline spinner so the tap → navigate gap shows feedback instead of freezing.
   const [newSessionTable, setNewSessionTable] = useState<Table | null>(null);
+
+  // ── Manual takeaway entry (counter / phone orders) ─────────────────────────
+  const [newTakeawayOpen, setNewTakeawayOpen] = useState(false);
+  const [takeawayGuestName, setTakeawayGuestName] = useState('');
+  const [takeawayGuestPhone, setTakeawayGuestPhone] = useState('');
+  const [startingTakeaway, setStartingTakeaway] = useState(false);
+  const [takeawayStartError, setTakeawayStartError] = useState<string | null>(null);
   const [startingSession, setStartingSession] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   // Manage-table action sheet (occupied long-press) + reused swap sheet.
@@ -326,6 +333,8 @@ export default function StaffDashboard() {
           sessionId: job.sessionId ?? undefined,
           orderNumber: job.orderNumber != null ? String(job.orderNumber) : undefined,
           tableNumber: String(job.tableNumber ?? '?'),
+          channel: job.channel,
+          pickupToken: job.pickupToken ?? undefined,
           restaurantName: staffInfo?.restaurantName ?? '',
           createdAt: job.createdAt ?? new Date().toISOString(),
           items: (job.items ?? []).map((i: any) => ({
@@ -810,6 +819,8 @@ export default function StaffDashboard() {
           sessionId: data.sessionId ?? undefined,
           orderNumber: data.orderNumber,
           tableNumber: data.tableNumber,
+          channel: data.channel,
+          pickupToken: data.pickupToken ?? undefined,
           restaurantName: staffInfo?.restaurantName ?? '',
           createdAt: data.createdAt ?? new Date().toISOString(),
           items: kotItems,
@@ -875,8 +886,12 @@ export default function StaffDashboard() {
       void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
       Notifications.scheduleNotificationAsync({
         content: {
-          title: `💵 Collect cash${tableNumber ? ` — Table ${tableNumber}` : ''}`,
-          body: amount ? `₹${amount} due at the table` : 'Customer is paying by cash',
+          title: data?.channel === 'TAKEAWAY'
+            ? `💵 Collect payment — ${data?.pickupToken ?? 'Takeaway'}`
+            : `💵 Collect cash${tableNumber ? ` — Table ${tableNumber}` : ''}`,
+          body: amount
+            ? `₹${amount} due ${data?.channel === 'TAKEAWAY' ? 'at the counter' : 'at the table'}`
+            : 'Customer is paying by cash',
           sound: true,
           android: { largeIcon: 'ic_notification_large' },
         },
@@ -909,6 +924,8 @@ export default function StaffDashboard() {
           sessionId: data.order.sessionId ?? undefined,
           orderNumber: data.order.orderNumber != null ? String(data.order.orderNumber) : undefined,
           tableNumber: String(data.order.tableNumber ?? '?'),
+          channel: data.order.channel,
+          pickupToken: data.order.pickupToken ?? undefined,
           restaurantName: staffInfo?.restaurantName ?? '',
           createdAt: data.order.createdAt ?? new Date().toISOString(),
           items,
@@ -1014,6 +1031,42 @@ export default function StaffDashboard() {
       setStartError(e?.message ?? 'Could not start session. Try again.');
     } finally {
       setStartingSession(false);
+    }
+  };
+
+  // Create a crew takeaway session (tableless) from the new-takeaway sheet,
+  // then reuse the manual order builder with the TAKEAWAY channel.
+  const startTakeawayOrder = async () => {
+    const phone = takeawayGuestPhone.replace(/\D/g, '');
+    if (phone && !/^[6-9]\d{9}$/.test(phone)) {
+      setTakeawayStartError('Enter a valid 10-digit phone, or leave it empty.');
+      return;
+    }
+    setStartingTakeaway(true);
+    setTakeawayStartError(null);
+    try {
+      const res = await crewTakeaway.createSession(
+        takeawayGuestName.trim() || undefined,
+        phone || undefined,
+      );
+      const d = res.data;
+      setNewTakeawayOpen(false);
+      setTakeawayGuestName('');
+      setTakeawayGuestPhone('');
+      router.push({
+        pathname: '/(staff)/order-menu',
+        params: {
+          sessionId: d.session_id,
+          channel: 'TAKEAWAY',
+          pickupToken: d.pickup_token ?? '',
+          customerName: takeawayGuestName.trim(),
+          customerPhone: phone,
+        },
+      });
+    } catch (e: any) {
+      setTakeawayStartError(e?.message ?? 'Could not start takeaway order. Try again.');
+    } finally {
+      setStartingTakeaway(false);
     }
   };
 
@@ -1592,6 +1645,14 @@ export default function StaffDashboard() {
         </View>
       ) : activeTab === 'takeaway' ? (
         <View style={styles.tabContent}>
+          <TouchableOpacity
+            style={styles.newTakeawayBtn}
+            onPress={() => { setTakeawayStartError(null); setNewTakeawayOpen(true); }}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="add-circle" size={18} color="#fff" />
+            <Text style={styles.newTakeawayBtnText}>New Takeaway Order</Text>
+          </TouchableOpacity>
           <View style={styles.segmentWrap}>
             <PickupSegmented
               items={[
@@ -1764,6 +1825,49 @@ export default function StaffDashboard() {
             {startingSession
               ? <ActivityIndicator size="small" color="#fff" />
               : <Text style={styles.sheetPrimaryText}>Start session</Text>}
+          </TouchableOpacity>
+        </View>
+      </BottomSheet>
+
+      {/* New takeaway order — optional guest details, then the order builder */}
+      <BottomSheet
+        visible={newTakeawayOpen}
+        onClose={() => { if (!startingTakeaway) { setNewTakeawayOpen(false); setTakeawayStartError(null); } }}
+        title="New takeaway order"
+      >
+        <View style={styles.sheetBody}>
+          <Text style={styles.sheetMessage}>
+            Guest details are optional — add a phone to track this customer in your CRM.
+          </Text>
+          <TextInput
+            style={styles.takeawayGuestInput}
+            placeholder="Guest name (optional)"
+            placeholderTextColor={QuinckleColors.textTertiary}
+            value={takeawayGuestName}
+            onChangeText={setTakeawayGuestName}
+            autoCapitalize="words"
+            editable={!startingTakeaway}
+          />
+          <TextInput
+            style={styles.takeawayGuestInput}
+            placeholder="Phone (optional)"
+            placeholderTextColor={QuinckleColors.textTertiary}
+            value={takeawayGuestPhone}
+            onChangeText={(v) => setTakeawayGuestPhone(v.replace(/[^\d]/g, '').slice(0, 10))}
+            keyboardType="phone-pad"
+            maxLength={10}
+            editable={!startingTakeaway}
+          />
+          {takeawayStartError ? <Text style={styles.sheetErrorText}>{takeawayStartError}</Text> : null}
+          <TouchableOpacity
+            style={[styles.sheetPrimaryBtn, startingTakeaway && { opacity: 0.85 }]}
+            onPress={() => { void startTakeawayOrder(); }}
+            disabled={startingTakeaway}
+            activeOpacity={0.85}
+          >
+            {startingTakeaway
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Text style={styles.sheetPrimaryText}>Start order</Text>}
           </TouchableOpacity>
         </View>
       </BottomSheet>
@@ -2883,6 +2987,29 @@ const styles = StyleSheet.create({
     color: QuinckleColors.textTertiary,
     marginTop: 2,
     fontFamily: 'monospace',
+  },
+  newTakeawayBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    height: 46,
+    borderRadius: Radius.md,
+    backgroundColor: QuinckleColors.primary,
+    marginHorizontal: Spacing.lg,
+    marginTop: Spacing.md,
+  },
+  newTakeawayBtnText: { color: '#fff', fontSize: 14.5, fontWeight: '700' },
+  takeawayGuestInput: {
+    height: 48,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surface,
+    color: QuinckleColors.textPrimary,
+    paddingHorizontal: Spacing.md,
+    fontSize: 14.5,
+    marginBottom: Spacing.sm,
   },
   takeawayRefreshBtn: {
     width: 40,
