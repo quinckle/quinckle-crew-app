@@ -982,7 +982,7 @@ export const printerApi = {
     pairedTo: string | null;
     name?: string;
     address?: string;
-    paperWidth?: 58 | 80;
+    paperWidth?: number;
   }) =>
     request<{ success: true; data: any }>(
       'PATCH',

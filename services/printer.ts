@@ -16,6 +16,7 @@ import { PermissionsAndroid, Platform } from 'react-native';
 import ThermalPrinter from 'react-native-thermal-printer';
 import { buildKotText, type KotOrder } from './kotTemplate';
 import { buildInvoiceText, type InvoiceBill } from './invoiceTemplate';
+import { profileFromWidth, DEFAULT_PAPER_WIDTH, type PaperProfile } from './paperProfile';
 import { printerApi } from './api';
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -34,11 +35,29 @@ export interface BluetoothDevice {
 
 export type PrinterStatus = 'connected' | 'disconnected' | 'unpaired' | 'error';
 
+/** How this device reaches the printer. */
+export type TransportKind = 'bluetooth' | 'network';
+
 export interface PrinterConfig {
+  /** Reach method. Defaults to 'bluetooth' for pre-existing (pre-network) pairings. */
+  transport: TransportKind;
+  /** Bluetooth MAC address (transport === 'bluetooth'). Empty for network. */
   address: string;
+  /** Network printer host (transport === 'network'). */
+  ip?: string;
+  /** Network printer port. Defaults to 9100 (raw ESC/POS). */
+  port?: number;
   name: string;
-  paperWidth: 58 | 80;
+  /** Nominal roll width in mm — 58/72/80/112 or a custom value. */
+  paperWidth: number;
+  /** Print-head density. Optional; defaults to 203. */
+  dpi?: number;
   pairedAt: string;
+}
+
+/** The active paper profile derived from the stored config (or the default). */
+function currentProfile(): PaperProfile {
+  return profileFromWidth(_config?.paperWidth ?? DEFAULT_PAPER_WIDTH, _config?.dpi);
 }
 
 interface QueueItem {
@@ -94,6 +113,8 @@ export async function initPrinter(): Promise<void> {
     const raw = await AsyncStorage.getItem(KEY_CONFIG);
     if (raw) {
       _config = JSON.parse(raw) as PrinterConfig;
+      // Back-compat: pairings saved before transport existed are Bluetooth.
+      if (!_config.transport) _config.transport = 'bluetooth';
       // react-native-thermal-printer has no persistent connection —
       // it connects per-job via printBluetooth(). Mark as 'connected'
       // optimistically; actual errors will surface on first print attempt.
@@ -185,15 +206,44 @@ export async function scan(): Promise<BluetoothDevice[]> {
 
 // ── pair ──────────────────────────────────────────────────────────────────────
 
-export async function pair(device: BluetoothDevice, paperWidth: 58 | 80 = 58): Promise<void> {
+export async function pair(
+  device: BluetoothDevice,
+  paperWidth: number = DEFAULT_PAPER_WIDTH,
+  opts: { dpi?: number } = {},
+): Promise<void> {
   _config = {
+    transport: 'bluetooth',
     address: device.address,
     name: device.name,
     paperWidth,
+    dpi: opts.dpi,
     pairedAt: new Date().toISOString(),
   };
   await AsyncStorage.setItem(KEY_CONFIG, JSON.stringify(_config));
   // No BT connection step — react-native-thermal-printer connects per print job.
+  _status = 'connected';
+}
+
+// ── pairNetwork ─────────────────────────────────────────────────────────────
+// Pair a LAN/WiFi ESC/POS printer reachable over raw TCP (port 9100). No BT scan
+// — the partner enters the printer's IP. Same per-job connect model as Bluetooth.
+
+export async function pairNetwork(
+  conn: { ip: string; port?: number; name?: string },
+  paperWidth: number = 80,
+  opts: { dpi?: number } = {},
+): Promise<void> {
+  _config = {
+    transport: 'network',
+    address: '',
+    ip: conn.ip,
+    port: conn.port ?? 9100,
+    name: conn.name || `Network printer (${conn.ip})`,
+    paperWidth,
+    dpi: opts.dpi,
+    pairedAt: new Date().toISOString(),
+  };
+  await AsyncStorage.setItem(KEY_CONFIG, JSON.stringify(_config));
   _status = 'connected';
 }
 
@@ -221,17 +271,25 @@ export function getConfig(): PrinterConfig | null {
 
 async function printRaw(text: string): Promise<void> {
   if (!_config) throw new Error('PRINTER_NOT_PAIRED');
-  await ThermalPrinter.printBluetooth({
-    macAddress: _config.address,
+  const profile = currentProfile();
+  // DantSu centers images/QR by the PRINTABLE dot-width (printableWidthMM × dpi),
+  // while text centers by character count — so both must come from the resolved
+  // profile, not the raw roll width. The profile guarantees 58→48mm/32ch and
+  // 80→72mm/48ch (byte-identical to the old hard-coded values) and derives any
+  // other width the same way.
+  const common = {
     payload: text,
-    // DantSu centers images/QR by the PRINTABLE dot-width (widthMM × dpi), while
-    // text centers by character count. A 58mm roll prints ~48mm wide (384 dots @
-    // 203dpi) and an 80mm roll ~72mm; passing the raw 58/80 makes it center the
-    // QR inside a phantom-wide page and shifts it left. Pass the printable width.
-    printerWidthMM: _config.paperWidth === 80 ? 72 : 48,
-    printerNbrCharactersPerLine: _config.paperWidth === 58 ? 32 : 48,
+    printerDpi: profile.dpi,
+    printerWidthMM: profile.printableWidthMM,
+    printerNbrCharactersPerLine: profile.charsPerLine,
     autoCut: true,
-  });
+  };
+  if (_config.transport === 'network') {
+    if (!_config.ip) throw new Error('PRINTER_NO_IP');
+    await ThermalPrinter.printTcp({ ip: _config.ip, port: _config.port ?? 9100, ...common });
+  } else {
+    await ThermalPrinter.printBluetooth({ macAddress: _config.address, ...common });
+  }
 }
 
 // ── printKot ─────────────────────────────────────────────────────────────────
@@ -254,7 +312,7 @@ export async function printKot(
   }
 
   const orderWithFlag = { ...order, isAddOn };
-  const text = buildKotText(orderWithFlag, _config?.paperWidth ?? 58);
+  const text = buildKotText(orderWithFlag, currentProfile());
 
   try {
     await printRaw(text);
@@ -289,7 +347,7 @@ export async function printKot(
 export async function printBill(bill: InvoiceBill): Promise<'printed' | 'failed'> {
   // Honour the on-device QR toggle by dropping the VPA the template gates on.
   const billToPrint = _printUpiQr ? bill : { ...bill, upiVpa: null };
-  const text = buildInvoiceText(billToPrint, _config?.paperWidth ?? 58);
+  const text = buildInvoiceText(billToPrint, currentProfile());
   try {
     await printRaw(text);
     return 'printed';
@@ -342,7 +400,7 @@ async function flushQueue(): Promise<void> {
     const remaining: QueueItem[] = [];
     for (const item of queue) {
       try {
-        const text = buildKotText({ ...item.order, isAddOn: item.isAddOn }, _config?.paperWidth ?? 58);
+        const text = buildKotText({ ...item.order, isAddOn: item.isAddOn }, currentProfile());
         await printRaw(text);
         try { await printerApi.ack(item.order.id, 'printed', undefined, item.isAddOn); } catch { /* non-fatal */ }
       } catch {

@@ -14,6 +14,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   FlatList,
+  TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -24,6 +25,7 @@ import { ThemedDialog } from '../components/ui/themed-dialog';
 import {
   scan,
   pair,
+  pairNetwork,
   unpair,
   printTest,
   getStatus,
@@ -33,6 +35,7 @@ import {
   type BluetoothDevice,
   type PrinterStatus,
 } from '../services/printer';
+import { PAPER_PRESETS } from '../services/paperProfile';
 import { printerApi } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -62,6 +65,11 @@ export default function PrinterScreen() {
   const [showScanView, setShowScanView] = useState(false);
   const [toast, setToast] = useState<{ message: string; ok: boolean } | null>(null);
   const [upiQr, setUpiQr] = useState(isUpiQrEnabled());
+
+  // Network (LAN/WiFi) printer entry
+  const [showNetworkForm, setShowNetworkForm] = useState(false);
+  const [networkIp, setNetworkIp] = useState('');
+  const [networkPort, setNetworkPort] = useState('9100');
 
   const handleUpiQrToggle = useCallback((next: boolean) => {
     setUpiQr(next);
@@ -137,27 +145,54 @@ export default function PrinterScreen() {
     }
   }
 
-  // ── Pair ───────────────────────────────────────────────────────────────────
+  // ── Paper width picker ───────────────────────────────────────────────────────
+  // Opens the themed dialog with the standard roll widths; invokes `onPick` with
+  // the chosen width in mm. Used by both the Bluetooth and network pairing flows.
 
-  async function handlePair(device: BluetoothDevice) {
+  function chooseWidth(onPick: (widthMM: number) => void) {
+    setDialog({
+      visible: true,
+      title: 'Paper width',
+      message: "Select the printer's paper roll width.",
+      actions: [
+        ...PAPER_PRESETS.map((p) => ({
+          label: p.label,
+          onPress: () => {
+            setDialog((d) => ({ ...d, visible: false }));
+            onPick(p.widthMM);
+          },
+        })),
+        { label: 'Cancel', onPress: () => setDialog((d) => ({ ...d, visible: false })) },
+      ],
+    });
+  }
+
+  // ── Pair (Bluetooth) ─────────────────────────────────────────────────────────
+
+  function handlePair(device: BluetoothDevice) {
+    // Ask for the paper width first, then pair — fixes the old always-58mm bug.
+    chooseWidth((width) => void doPairBluetooth(device, width));
+  }
+
+  async function doPairBluetooth(device: BluetoothDevice, width: number) {
     if (!staffInfo?.id) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setSelectedDevice(device);
     setIsPairing(true);
     try {
-      await pair(device, 58);
+      await pair(device, width);
       // Also register on backend
       await printerApi.setPairing({
         pairedTo: staffInfo.id,
         name: device.name,
         address: device.address,
-        paperWidth: 58,
+        paperWidth: width,
       });
       setLocalStatus(getStatus());
       setConfig(getConfig());
       await loadServerStatus();
       setShowScanView(false);
-      showToast(`Paired with ${device.name}`, true);
+      showToast(`Paired with ${device.name} · ${width}mm`, true);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch {
       showToast(`Failed to pair with ${device.name}`, false);
@@ -165,6 +200,46 @@ export default function PrinterScreen() {
     } finally {
       setIsPairing(false);
       setSelectedDevice(null);
+    }
+  }
+
+  // ── Pair (Network / LAN) ──────────────────────────────────────────────────────
+
+  function handlePairNetwork() {
+    const ip = networkIp.trim();
+    if (!ip) {
+      showToast('Enter the printer IP address', false);
+      return;
+    }
+    chooseWidth((width) => void doPairNetwork(ip, width));
+  }
+
+  async function doPairNetwork(ip: string, width: number) {
+    if (!staffInfo?.id) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const port = parseInt(networkPort, 10) || 9100;
+    const name = `Network printer (${ip})`;
+    setIsPairing(true);
+    try {
+      await pairNetwork({ ip, port, name }, width);
+      await printerApi.setPairing({
+        pairedTo: staffInfo.id,
+        name,
+        address: `tcp://${ip}:${port}`,
+        paperWidth: width,
+      });
+      setLocalStatus(getStatus());
+      setConfig(getConfig());
+      await loadServerStatus();
+      setShowScanView(false);
+      setShowNetworkForm(false);
+      showToast(`Paired with ${name} · ${width}mm`, true);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch {
+      showToast('Failed to reach the network printer. Check the IP and that it is on the same WiFi.', false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    } finally {
+      setIsPairing(false);
     }
   }
 
@@ -255,7 +330,9 @@ export default function PrinterScreen() {
                 <>
                   <Text style={styles.statusName}>{config.name}</Text>
                   <Text style={styles.statusSub}>
-                    {localStatus === 'connected' ? 'Connected · 58mm' : 'Disconnected — tap re-pair to reconnect'}
+                    {localStatus === 'connected'
+                      ? `Connected · ${config.paperWidth}mm${config.transport === 'network' ? ' · Network' : ''}`
+                      : 'Disconnected — tap re-pair to reconnect'}
                   </Text>
                 </>
               ) : serverStatus?.paired ? (
@@ -398,6 +475,48 @@ export default function PrinterScreen() {
                 <Ionicons name="refresh-outline" size={15} color={QuinckleColors.primary} />
                 <Text style={styles.rescanText}>Scan again</Text>
               </TouchableOpacity>
+            )}
+
+            {/* Network / WiFi printer entry */}
+            <View style={styles.netDivider} />
+            {!showNetworkForm ? (
+              <TouchableOpacity style={styles.rescanBtn} onPress={() => setShowNetworkForm(true)} activeOpacity={0.7}>
+                <Ionicons name="wifi-outline" size={15} color={QuinckleColors.primary} />
+                <Text style={styles.rescanText}>Add a network / WiFi printer</Text>
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.netForm}>
+                <Text style={styles.netLabel}>NETWORK PRINTER (LAN / WiFi)</Text>
+                <TextInput
+                  style={styles.netInput}
+                  placeholder="Printer IP (e.g. 192.168.1.50)"
+                  placeholderTextColor={QuinckleColors.textTertiary}
+                  value={networkIp}
+                  onChangeText={setNetworkIp}
+                  keyboardType="numbers-and-punctuation"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <TextInput
+                  style={styles.netInput}
+                  placeholder="Port (default 9100)"
+                  placeholderTextColor={QuinckleColors.textTertiary}
+                  value={networkPort}
+                  onChangeText={setNetworkPort}
+                  keyboardType="number-pad"
+                />
+                <TouchableOpacity
+                  style={[styles.netConnectBtn, isPairing && styles.actionBtnDisabled]}
+                  onPress={handlePairNetwork}
+                  disabled={isPairing}
+                  activeOpacity={0.85}
+                >
+                  {isPairing
+                    ? <ActivityIndicator size="small" color="#fff" />
+                    : <Ionicons name="print-outline" size={16} color="#fff" />}
+                  <Text style={styles.netConnectText}>Connect network printer</Text>
+                </TouchableOpacity>
+              </View>
             )}
           </View>
         )}
@@ -581,6 +700,36 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.sm,
   },
   rescanText: { fontSize: 13, color: QuinckleColors.primary },
+
+  netDivider: { height: 1, backgroundColor: QuinckleColors.border, marginTop: Spacing.sm },
+  netForm: { paddingTop: Spacing.md, gap: Spacing.sm },
+  netLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    color: QuinckleColors.textTertiary,
+  },
+  netInput: {
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: QuinckleColors.textPrimary,
+  },
+  netConnectBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    backgroundColor: QuinckleColors.primary,
+    borderRadius: Radius.pill,
+    paddingVertical: 12,
+    marginTop: 4,
+  },
+  netConnectText: { fontSize: 14, fontWeight: '600', color: '#fff' },
 
   toast: {
     position: 'absolute',

@@ -1,11 +1,15 @@
 /**
  * KOT Template builder (KOT_PRINTER_PLAN.md Phase 5)
  *
- * Converts an order into ESC/POS text commands for 58mm or 80mm thermal printers.
+ * Converts an order into ESC/POS text commands for any thermal printer width
+ * (58 / 72 / 80 / 112 mm). Layout is driven entirely by the PaperProfile's
+ * computed charsPerLine, so a new width needs no template changes.
  * Uses react-native-thermal-printer's text command format.
  *
  * Output: array of text-format strings passed to ThermalPrinter.printText().
  */
+
+import { profileFromWidth, type PaperProfile } from './paperProfile';
 
 export interface KotItem {
   name: string;
@@ -31,14 +35,7 @@ export interface KotOrder {
   pickupToken?: string;
 }
 
-// ── Character widths ───────────────────────────────────────────────────────────
-
-const WIDTH_58 = 32; // ~32 chars on 58mm at 12pt
-const WIDTH_80 = 48; // ~48 chars on 80mm at 12pt
-
-function lineWidth(paperWidth: 58 | 80): number {
-  return paperWidth === 80 ? WIDTH_80 : WIDTH_58;
-}
+// ── Layout helpers ─────────────────────────────────────────────────────────────
 
 function center(text: string, width: number): string {
   const pad = Math.max(0, Math.floor((width - text.length) / 2));
@@ -77,9 +74,13 @@ function toSessionRef(sessionId: string | null | undefined): string {
 /**
  * Returns the full KOT as a single ESC/POS text string
  * (react-native-thermal-printer `text` format — uses [C] center, [L] left, etc.)
+ *
+ * `paper` accepts a full PaperProfile, or a bare width in mm (back-compat) which
+ * is resolved to a profile via profileFromWidth().
  */
-export function buildKotText(order: KotOrder, paperWidth: 58 | 80 = 58): string {
-  const W = lineWidth(paperWidth);
+export function buildKotText(order: KotOrder, paper: PaperProfile | number = 58): string {
+  const profile = typeof paper === 'number' ? profileFromWidth(paper) : paper;
+  const W = profile.charsPerLine;
   const lines: string[] = [];
   const D = divider(W, '=');
   const d = divider(W);

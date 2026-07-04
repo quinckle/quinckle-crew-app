@@ -1,11 +1,14 @@
 /**
  * Diner Invoice / Bill Template builder
  *
- * Converts a session bill into ESC/POS text commands for 58mm or 80mm thermal printers.
+ * Converts a session bill into ESC/POS text commands for any thermal printer
+ * width (58 / 72 / 80 / 112 mm). Layout + QR size are driven by the PaperProfile.
  * Uses react-native-thermal-printer's text command format.
  *
  * Output: a single ESC/POS text string passed to ThermalPrinter.printText().
  */
+
+import { profileFromWidth, type PaperProfile } from './paperProfile';
 
 export interface InvoiceItem {
   name: string;
@@ -68,14 +71,7 @@ function buildUpiPayString(opts: { pa: string; pn: string; am?: number | null })
   return `upi://pay?${parts.join('&')}`;
 }
 
-// ── Character widths ───────────────────────────────────────────────────────────
-
-const WIDTH_58 = 32;
-const WIDTH_80 = 48;
-
-function lineWidth(paperWidth: 58 | 80): number {
-  return paperWidth === 80 ? WIDTH_80 : WIDTH_58;
-}
+// ── Layout helpers ─────────────────────────────────────────────────────────────
 
 function divider(width: number, char = '─'): string {
   return char.repeat(width);
@@ -133,9 +129,13 @@ function formatDateTime(iso: string): string {
 
 /**
  * Returns the full diner invoice as a single ESC/POS text string.
+ *
+ * `paper` accepts a full PaperProfile, or a bare width in mm (back-compat) which
+ * is resolved to a profile via profileFromWidth().
  */
-export function buildInvoiceText(bill: InvoiceBill, paperWidth: 58 | 80 = 58): string {
-  const W = lineWidth(paperWidth);
+export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number = 58): string {
+  const profile = typeof paper === 'number' ? profileFromWidth(paper) : paper;
+  const W = profile.charsPerLine;
   const lines: string[] = [];
   const D = divider(W, '=');
   const d = divider(W, '-');
@@ -220,7 +220,7 @@ export function buildInvoiceText(bill: InvoiceBill, paperWidth: 58 | 80 = 58): s
       ? `[C]<b>Scan to pay</b>`
       : `[C]<b>Scan to pay ${fmt(bill.grandTotal)}</b>`);
     lines.push('[C] '); // breathing room between the heading and the QR
-    lines.push(`[C]<qrcode size='${paperWidth === 80 ? 28 : 20}'>${upiString}</qrcode>`);
+    lines.push(`[C]<qrcode size='${profile.qrSize}'>${upiString}</qrcode>`);
   }
 
   // ── Footer ────────────────────────────────────────────────────────────────
