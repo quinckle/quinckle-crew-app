@@ -92,6 +92,29 @@ function fmt(amount: number): string {
   return `Rs.${amount.toFixed(0)}`;
 }
 
+/**
+ * Greedy word-wrap so long centered lines (e.g. the address) break at spaces
+ * instead of hard-wrapping mid-word at the paper edge. A single word longer
+ * than the line is hard-split as a last resort.
+ */
+function wrapText(text: string, width: number): string[] {
+  const out: string[] = [];
+  let cur = '';
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    let w = word;
+    while (w.length > width) {
+      if (cur) { out.push(cur); cur = ''; }
+      out.push(w.slice(0, width));
+      w = w.slice(width);
+    }
+    if (!cur) cur = w;
+    else if ((cur + ' ' + w).length <= width) cur += ' ' + w;
+    else { out.push(cur); cur = w; }
+  }
+  if (cur) out.push(cur);
+  return out.length ? out : [text];
+}
+
 function formatDateTime(iso: string): string {
   try {
     const d = new Date(iso);
@@ -127,7 +150,9 @@ export function buildInvoiceText(bill: InvoiceBill, paperWidth: 58 | 80 = 58): s
     lines.push(`[C]Session ${bill.sessionRef}`);
   }
   lines.push(`[C]Order: ${formatDateTime(orderTime)}`);
-  if (bill.restaurantAddress) lines.push(`[C]${bill.restaurantAddress}`);
+  if (bill.restaurantAddress) {
+    for (const ln of wrapText(bill.restaurantAddress, W)) lines.push(`[C]${ln}`);
+  }
   if (bill.restaurantPhone) lines.push(`[C]Phone: ${bill.restaurantPhone}`);
   if (bill.restaurantEmail) lines.push(`[C]Email: ${bill.restaurantEmail}`);
   if (bill.fssaiLicenseNumber) lines.push(`[C]FSSAI: ${bill.fssaiLicenseNumber}`);
@@ -184,8 +209,8 @@ export function buildInvoiceText(bill: InvoiceBill, paperWidth: 58 | 80 = 58): s
     lines.push(staticQr
       ? `[C]<b>Scan to pay</b>`
       : `[C]<b>Scan to pay ${fmt(bill.grandTotal)}</b>`);
+    lines.push('[C] '); // breathing room between the heading and the QR
     lines.push(`[C]<qrcode size='${paperWidth === 80 ? 28 : 20}'>${upiString}</qrcode>`);
-    if (staticQr) lines.push('[C]Enter amount in your UPI app');
   }
 
   // ── Footer ────────────────────────────────────────────────────────────────
