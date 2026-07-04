@@ -66,6 +66,7 @@ export default function TableDetail() {
 
   const [sessionId] = useState(paramSessionId ?? '');
   const [sessionRef, setSessionRef] = useState('');
+  const [mergedFrom, setMergedFrom] = useState<Array<{ session_ref: string; table_number: number | null }>>([]);
   const [expiresAt, setExpiresAt] = useState<string | null>(paramExpiresAt || null);
   const countdown = useCountdown(expiresAt);
   const isNearExpiry = countdown.totalMs > 0 && countdown.totalMs < 10 * 60_000;
@@ -257,6 +258,7 @@ export default function TableDetail() {
       setPayableTotal(grand);
       setSessionStatus(bill.status);
       setSessionRef(bill.session_ref ?? '');
+      setMergedFrom(bill.merged_from ?? []);
       setIsPaid(bill.status === 'paid');
       setBillPaymentMethod(bill.payment_method);
       setBillSplits(bill.splits);
@@ -914,6 +916,19 @@ export default function TableDetail() {
             {sessionRef || toSessionRef(sessionId)}
           </Text>
         </View>
+        {mergedFrom.length > 0 ? (
+          <>
+            <View style={styles.sessionInfoSep} />
+            <View style={styles.sessionInfoRow}>
+              <Text style={styles.sessionInfoLabel}>Merged</Text>
+              <Text style={[styles.sessionInfoValue, styles.sessionRefMono, { flexShrink: 1, textAlign: 'right' }]}>
+                {mergedFrom
+                  .map(m => `${m.session_ref}${m.table_number != null ? ` (T${String(m.table_number).padStart(2, '0')})` : ''}`)
+                  .join(', ')}
+              </Text>
+            </View>
+          </>
+        ) : null}
         <View style={styles.sessionInfoSep} />
         <View style={styles.sessionInfoRow}>
           <Text style={styles.sessionInfoLabel}>Guest</Text>

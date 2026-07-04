@@ -195,6 +195,19 @@ export const crewTables = {
       true,
     ),
   /**
+   * Merge another occupied table's session INTO this one, so both bill as a
+   * single unified check. `primaryTableId` survives + keeps its ref; the
+   * secondary session is closed and its table freed. Backend re-parents orders,
+   * payments and carts atomically and fires session_merged realtime.
+   */
+  mergeSession: (primaryTableId: string, secondaryTableId: string) =>
+    request<{ success: true; data: { sessionId: string; primaryTableNumber: number; secondaryTableNumber: number; ordersMoved: number; mergedSessionRef: string } }>(
+      'POST',
+      `/api/crew/tables/${primaryTableId}/merge-session`,
+      { secondary_table_id: secondaryTableId },
+      true,
+    ),
+  /**
    * Extend the active session's timer (15/30/45/60 min). Mirrors the partner
    * dashboard table modal. Returns the new expiresAt.
    */
@@ -298,6 +311,9 @@ export interface SessionBill {
   breakdown?: BillBreakdown;
   payment_method?: 'cash' | 'upi_direct' | 'mixed';
   splits?: Array<{ method: 'CASH' | 'UPI_DIRECT'; amount: number }>;
+  /** Sessions merged INTO this one — shown beside the ref so staff/kitchen see
+   *  a unified bill spans more than one original scan. Absent when none. */
+  merged_from?: Array<{ session_ref: string; table_number: number | null }>;
 }
 
 // ── Order Ledger (session history) ────────────────────────────────────────────

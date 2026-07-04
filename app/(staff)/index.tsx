@@ -47,6 +47,7 @@ import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
+import { MergeTableSheet } from '../../components/ui/MergeTableSheet';
 import { BottomNavbar } from '../../components/ui/BottomNavbar';
 import { PICKUP_LAYOUT_PRESET, PickupCard, PickupSegmented } from '../../components/ui/pickup';
 import { TableSkeleton } from '../../components/ui/TableSkeleton';
@@ -177,6 +178,8 @@ export default function StaffDashboard() {
   const [manageTable, setManageTable] = useState<Table | null>(null);
   const [swapTable, setSwapTable] = useState<{ id: string; number: number } | null>(null);
   const [swapSubmitting, setSwapSubmitting] = useState(false);
+  const [mergeTable, setMergeTable] = useState<{ id: string; number: number } | null>(null);
+  const [mergeSubmitting, setMergeSubmitting] = useState(false);
   const [tables, setTables] = useState<Table[]>([]);
   const [isLoadingTables, setIsLoadingTables] = useState(true);
   // Single shared clock for every card's session countdown. Minute precision is
@@ -845,6 +848,11 @@ export default function StaffDashboard() {
     const off6c = subscribeChannel(`waiter:${restaurantId}`, 'session_moved', () => {
       void loadTables();
     });
+    // Two tables merged into one bill from another device — the absorbed table
+    // is now free and the survivor's bill grew, so re-render the grid.
+    const off6d = subscribeChannel(`waiter:${restaurantId}`, 'session_merged', () => {
+      void loadTables();
+    });
 
     const off7 = subscribeChannel(`waiter:${restaurantId}`, 'item_bumped', () => {
       void loadPickupOrders();
@@ -909,7 +917,7 @@ export default function StaffDashboard() {
       }
     });
 
-    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off7(); off7b(); off8(); off9(); offReprint(); offAutoPrint(); };
+    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off6d(); off7(); off7b(); off8(); off9(); offReprint(); offAutoPrint(); };
   }, [staffInfo?.restaurantId]);
 
   // C1: Track Ably connection health — show a warning when the waiter channel drops.
@@ -1016,6 +1024,13 @@ export default function StaffDashboard() {
     if (t) setTimeout(() => setSwapTable({ id: t.id, number: t.number }), 220);
   };
 
+  // Manage-sheet → Merge: close the action sheet, then open the merge sheet.
+  const onPressMergeFromManage = () => {
+    const t = manageTable;
+    setManageTable(null);
+    if (t) setTimeout(() => setMergeTable({ id: t.id, number: t.number }), 220);
+  };
+
   // Manage-sheet → Free: close the action sheet, then show the existing confirm.
   const onPressFreeFromManage = () => {
     const t = manageTable;
@@ -1054,6 +1069,30 @@ export default function StaffDashboard() {
       showDialog('Could not move', e?.message ?? 'Please try again.', [{ label: 'OK', onPress: () => { } }]);
     } finally {
       setSwapSubmitting(false);
+    }
+  };
+
+  // Merge from the grid — `mergeTable` is the table being absorbed, `targetId`
+  // the surviving primary that keeps the unified bill.
+  const confirmMergeFromGrid = async ({ targetId, targetNumber }: { targetId: string; targetNumber: number }) => {
+    const secondary = mergeTable;
+    if (!secondary) return;
+    setMergeSubmitting(true);
+    try {
+      const res = await crewTables.mergeSession(targetId, secondary.id);
+      setMergeTable(null);
+      void loadTables();
+      setTimeout(() => {
+        showDialog(
+          'Merged',
+          `T${String(secondary.number).padStart(2, '0')} merged into T${String(targetNumber).padStart(2, '0')} — ${res.data.ordersMoved} order${res.data.ordersMoved === 1 ? '' : 's'} now bill together on T${String(targetNumber).padStart(2, '0')}.`,
+          [{ label: 'OK', onPress: () => { } }],
+        );
+      }, 220);
+    } catch (e: any) {
+      showDialog('Could not merge', e?.message ?? 'Please try again.', [{ label: 'OK', onPress: () => { } }]);
+    } finally {
+      setMergeSubmitting(false);
     }
   };
 
@@ -1747,6 +1786,17 @@ export default function StaffDashboard() {
             <Ionicons name="chevron-forward" size={16} color={QuinckleColors.textTertiary} />
           </TouchableOpacity>
           <View style={styles.manageDivider} />
+          <TouchableOpacity style={styles.manageRow} onPress={onPressMergeFromManage} activeOpacity={0.7}>
+            <View style={styles.manageIcon}>
+              <Ionicons name="git-merge-outline" size={19} color={QuinckleColors.textPrimary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.manageRowTitle}>Merge bill</Text>
+              <Text style={styles.manageRowSub}>Combine with another table into one bill</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={QuinckleColors.textTertiary} />
+          </TouchableOpacity>
+          <View style={styles.manageDivider} />
           <TouchableOpacity style={styles.manageRow} onPress={onPressFreeFromManage} activeOpacity={0.7}>
             <View style={[styles.manageIcon, styles.manageIconDanger]}>
               <Ionicons name="exit-outline" size={19} color={QuinckleColors.danger} />
@@ -1767,6 +1817,16 @@ export default function StaffDashboard() {
         onClose={() => { if (!swapSubmitting) setSwapTable(null); }}
         onSwap={confirmSwapFromGrid}
         submitting={swapSubmitting}
+      />
+
+      {/* Merge bill — absorb this table's session into another occupied table */}
+      <MergeTableSheet
+        visible={!!mergeTable}
+        currentTableDbId={mergeTable?.id ?? ''}
+        currentTableNum={String(mergeTable?.number ?? 0).padStart(2, '0')}
+        onClose={() => { if (!mergeSubmitting) setMergeTable(null); }}
+        onMerge={confirmMergeFromGrid}
+        submitting={mergeSubmitting}
       />
 
       <ThemedDialog
