@@ -34,6 +34,7 @@ export type KitchenTicket = {
   status:    'new' | 'completed';
   channel?:  'DINE_IN' | 'TAKEAWAY';
   pickupToken?: string | null;
+  sessionRef?: string | null;
   items:     KitchenItem[];
 };
 

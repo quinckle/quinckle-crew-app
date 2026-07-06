@@ -20,6 +20,7 @@ import {
   FlatList,
   Image,
   KeyboardAvoidingView,
+  LayoutAnimation,
   Modal,
   Platform,
   ScrollView,
@@ -27,6 +28,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  UIManager,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -35,11 +37,24 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
 import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
 import {
-  crewSessions, crewOrders, crewDiners, restaurantApi, crewOffers,
+  crewSessions, crewOrders, crewDiners, crewMemberships, restaurantApi, crewOffers,
 } from '../../services/api';
 import type { MenuItem, ModifierGroup, CrewOffer } from '../../services/api';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { Skeleton } from '../../components/ui/Skeleton';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+// Smooth reflow when the CRM card (visits/membership) appears below the guest
+// name field, pushing the Place Order button down instead of it snapping.
+const GUEST_CRM_LAYOUT_PRESET = {
+  duration: 320,
+  create: { type: LayoutAnimation.Types.easeOut, property: LayoutAnimation.Properties.opacity },
+  update: { type: LayoutAnimation.Types.spring, springDamping: 0.8 },
+  delete: { duration: 200, type: LayoutAnimation.Types.easeIn, property: LayoutAnimation.Properties.opacity },
+};
 
 // ── Veg / Non-veg icon (Indian standard) ─────────────────────────────────────
 
@@ -196,10 +211,27 @@ export default function OrderMenuScreen() {
   const [coLooking, setCoLooking] = useState(false);
   const [coFound, setCoFound] = useState<boolean | null>(null);
   const [coLookupFailed, setCoLookupFailed] = useState(false);
+  const [coVisits, setCoVisits] = useState<number | null>(null);
+  const [coMember, setCoMember] = useState<boolean | null>(null);
   // Brief "order placed" confirmation shown before opening payment collection.
   const [placed, setPlaced] = useState<{ amount: number } | null>(null);
   const navTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (navTimerRef.current) clearTimeout(navTimerRef.current); }, []);
+  // Card scale/fade-in, then the checkmark pops in a beat later — makes the
+  // wait before payment-collect feel shorter than a static "Order placed" card.
+  const placedCardAnim = useRef(new Animated.Value(0)).current;
+  const placedTickAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!placed) return;
+    placedCardAnim.setValue(0);
+    placedTickAnim.setValue(0);
+    Animated.spring(placedCardAnim, {
+      toValue: 1, damping: 16, stiffness: 220, mass: 0.7, useNativeDriver: true,
+    }).start();
+    Animated.spring(placedTickAnim, {
+      toValue: 1, damping: 9, stiffness: 200, mass: 0.6, delay: 100, useNativeDriver: true,
+    }).start();
+  }, [placed]);
   const [coSubmitting, setCoSubmitting] = useState(false);
   const [coError, setCoError] = useState<string | null>(null);
 
@@ -387,33 +419,59 @@ export default function OrderMenuScreen() {
   // ── Checkout (identity) ────────────────────────────────────────────────────
   const openCheckout = () => {
     setCoError(null);
+    setCoVisits(null); setCoMember(null);
     if (sessionCustomerPhone) {
       const digits = sessionCustomerPhone.replace(/\D/g, '').slice(-10);
       setCoPhone(digits.length === 10 ? digits : '');
       setCoName(sessionCustomerName ?? '');
       setCoFound(digits.length === 10 ? true : null);
+      if (digits.length === 10) void lookupGuest(digits, { keepName: true });
     } else {
       setCoPhone(''); setCoName(''); setCoFound(null);
     }
     setCheckoutOpen(true);
   };
 
+  // Looks up diner history (visit count) and membership status in parallel.
+  // `keepName` is used when re-opening for an already-known session customer,
+  // so a slower membership lookup can't blank out the name field meanwhile.
+  const lookupGuest = async (digits: string, opts?: { keepName?: boolean }) => {
+    setCoLooking(true);
+    const [dinerRes, memberRes] = await Promise.allSettled([
+      crewDiners.lookup(digits),
+      crewMemberships.lookup(digits),
+    ]);
+    if (dinerRes.status === 'fulfilled') {
+      const { found, name, totalSessions } = dinerRes.value.data;
+      if (found) {
+        if (!opts?.keepName) setCoName(name ?? '');
+        setCoFound(true);
+      } else {
+        setCoFound(false);
+      }
+      setCoVisits(totalSessions ?? 0);
+    } else {
+      // A failed lookup must NOT masquerade as a new diner — leave coFound
+      // unresolved and flag the failure so the UI stays neutral.
+      setCoLookupFailed(true);
+    }
+    if (memberRes.status === 'fulfilled') {
+      setCoMember(memberRes.value.data.alreadyMember);
+    }
+    // The CRM card is about to appear (or the "new guest" hint change) below
+    // the name field — glide the Place Order button down instead of a snap.
+    LayoutAnimation.configureNext(GUEST_CRM_LAYOUT_PRESET);
+    setCoLooking(false);
+  };
+
   const onCoPhoneChange = async (v: string) => {
     const digits = v.replace(/\D/g, '').slice(0, 10);
+    // Phone cleared/edited — the CRM card (if showing) is about to disappear,
+    // so the button glides back up instead of snapping.
+    LayoutAnimation.configureNext(GUEST_CRM_LAYOUT_PRESET);
     setCoPhone(digits); setCoFound(null); setCoName(''); setCoLookupFailed(false);
-    if (digits.length === 10) {
-      setCoLooking(true);
-      try {
-        const res = await crewDiners.lookup(digits);
-        if (res.data.found) { setCoName(res.data.name ?? ''); setCoFound(true); }
-        else setCoFound(false);
-      } catch {
-        // A failed lookup must NOT masquerade as a new diner — leave coFound
-        // unresolved and flag the failure so the UI stays neutral.
-        setCoLookupFailed(true);
-      }
-      finally { setCoLooking(false); }
-    }
+    setCoVisits(null); setCoMember(null);
+    if (digits.length === 10) void lookupGuest(digits);
   };
 
   const buildIdempotencyKey = (
@@ -465,7 +523,6 @@ export default function OrderMenuScreen() {
       setCartNotes({});
       setCartModifiers({});
       setNoteExpanded({});
-      setCheckoutOpen(false);
 
       let orderTotal = Number(orderRes?.totals?.total ?? 0);
       if (orderId) {
@@ -614,6 +671,170 @@ export default function OrderMenuScreen() {
       </View>
     );
   };
+
+  // ── Guest details — its own screen (not a modal), pushed in place of the ──
+  // menu when "Place Order" is tapped. Same fields/CRM lookup as before.
+  if (checkoutOpen) {
+    // Once the order is placed, this same screen morphs into the success tick
+    // (card + checkmark spring in) instead of bouncing back to the menu to
+    // show a separate confirmation — one continuous transition, not a jump.
+    if (placed) {
+      return (
+        <View style={[styles.screen, { paddingTop: insets.top }]}>
+          <View style={styles.placedScreenWrap}>
+            <Animated.View
+              style={[
+                styles.placedCard,
+                {
+                  opacity: placedCardAnim,
+                  transform: [{
+                    scale: placedCardAnim.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1] }),
+                  }],
+                },
+              ]}
+            >
+              <Animated.View
+                style={[
+                  styles.placedIcon,
+                  {
+                    transform: [{
+                      scale: placedTickAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] }),
+                    }],
+                  },
+                ]}
+              >
+                <Ionicons name="checkmark" size={34} color="#fff" />
+              </Animated.View>
+              <Text style={styles.placedTitle}>Order placed</Text>
+              <Text style={styles.placedSub}>
+                {isTakeaway ? (pickupToken ?? 'Takeaway') : `Table T${tableNum}`} · ₹{placed.amount.toFixed(0)}
+              </Text>
+              <Text style={styles.placedHint}>Opening payment collection…</Text>
+            </Animated.View>
+          </View>
+        </View>
+      );
+    }
+
+    return (
+      <View style={[styles.screen, { paddingTop: insets.top }]}>
+        <View style={styles.header}>
+          <TouchableOpacity
+            onPress={() => !coSubmitting && setCheckoutOpen(false)}
+            style={styles.backBtn}
+            activeOpacity={0.7}
+            disabled={coSubmitting}
+          >
+            <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
+          </TouchableOpacity>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.headerTitle}>Guest details</Text>
+            <Text style={styles.headerSub}>Optional — skip to place a walk-in order</Text>
+          </View>
+        </View>
+
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <ScrollView
+            contentContainerStyle={styles.coScreenBody}
+            keyboardShouldPersistTaps="handled"
+          >
+            {/* Phone */}
+            <View style={styles.coInputWrap}>
+              <View style={styles.coCode}><Text style={styles.coCodeText}>+91</Text></View>
+              <View style={styles.coDivider} />
+              <TextInput
+                style={styles.coInput}
+                value={coPhone}
+                onChangeText={onCoPhoneChange}
+                placeholder="10-digit mobile"
+                placeholderTextColor={QuinckleColors.textMuted}
+                keyboardType="phone-pad"
+                maxLength={10}
+                autoFocus
+              />
+              {coLooking && <ActivityIndicator size="small" color={QuinckleColors.primary} style={{ marginRight: 12 }} />}
+            </View>
+
+            {coFound === false && !coLookupFailed && coPhone.length === 10 && (
+              <Text style={styles.notFoundText}>New guest — enter name below</Text>
+            )}
+            {coLookupFailed && coPhone.length === 10 && (
+              <Text style={styles.notFoundText}>Couldn’t check — enter the name to continue</Text>
+            )}
+            {coError ? <Text style={styles.coErrorText}>{coError}</Text> : null}
+
+            {/* Name */}
+            <View style={[styles.coInputWrap, { marginTop: 10 }]}>
+              <TextInput
+                style={[styles.coInput, { flex: 1, paddingHorizontal: 14 }]}
+                value={coName}
+                onChangeText={setCoName}
+                placeholder="Guest name (optional)"
+                placeholderTextColor={QuinckleColors.textMuted}
+                returnKeyType="done"
+                onSubmitEditing={confirmAndPlace}
+              />
+              {coFound === true && (
+                <Ionicons name="checkmark-circle" size={18} color={QuinckleColors.success} style={{ marginRight: 12 }} />
+              )}
+            </View>
+
+            {/* CRM — visit history + membership status */}
+            {coPhone.length === 10 && !coLooking && (coFound !== null || coMember !== null) && (
+              <View style={styles.crmCard}>
+                <View style={styles.crmRow}>
+                  <View style={styles.crmCol}>
+                    <Text style={styles.crmLabel}>VISITS HERE</Text>
+                    <View style={styles.crmValueRow}>
+                      <Text style={styles.crmValueNum}>{coVisits ?? 0}</Text>
+                      <Text style={styles.crmValueUnit}>{coVisits === 1 ? 'time' : 'times'}</Text>
+                    </View>
+                  </View>
+                  <View style={styles.crmDivider} />
+                  <View style={styles.crmCol}>
+                    <Text style={styles.crmLabel}>MEMBERSHIP</Text>
+                    {coMember ? (
+                      <View style={styles.crmMemberRow}>
+                        <Ionicons name="ribbon" size={14} color={QuinckleColors.warning} />
+                        <Text style={styles.crmMemberText}>Member</Text>
+                      </View>
+                    ) : (
+                      <Text style={styles.crmNotMemberText}>Not a member</Text>
+                    )}
+                  </View>
+                </View>
+                {coMember && (
+                  <View style={styles.crmDiscountStrip}>
+                    <Ionicons name="pricetag" size={13} color={QuinckleColors.warning} />
+                    <Text style={styles.crmDiscountText}>Membership discount applied at billing</Text>
+                  </View>
+                )}
+              </View>
+            )}
+
+            {/* Sits right below the name section normally; when the CRM card
+                above appears/disappears, LayoutAnimation glides it down/up
+                instead of it snapping to its new spot. */}
+            <TouchableOpacity
+              style={[styles.coConfirm,
+                { marginTop: Spacing.lg },
+                (coLooking || coSubmitting || (coPhone.length > 0 && coPhone.length < 10)) && { opacity: 0.4 }]}
+              onPress={confirmAndPlace}
+              disabled={coLooking || coSubmitting || (coPhone.length > 0 && coPhone.length < 10)}
+              activeOpacity={0.8}
+            >
+              {coSubmitting
+                ? <ActivityIndicator size="small" color="#fff" />
+                : <Text style={styles.coConfirmText}>Place Order</Text>}
+            </TouchableOpacity>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </View>
+    );
+  }
 
   // ── UI ─────────────────────────────────────────────────────────────────────
   return (
@@ -790,85 +1011,6 @@ export default function OrderMenuScreen() {
         )}
       </KeyboardAvoidingView>
 
-      {/* ── Identity / Checkout modal ── */}
-      <Modal
-        visible={checkoutOpen}
-        transparent
-        animationType="slide"
-        onRequestClose={() => !coSubmitting && setCheckoutOpen(false)}
-      >
-        <View style={styles.coBackdrop}>
-          <View style={styles.coCard}>
-            <Text style={styles.coEyebrow}>Manual Order</Text>
-            <Text style={styles.coTitle}>Guest details</Text>
-            <Text style={styles.coSub}>Optional — skip to place a walk-in order without linking an account.</Text>
-
-            {/* Phone */}
-            <View style={styles.coInputWrap}>
-              <View style={styles.coCode}><Text style={styles.coCodeText}>+91</Text></View>
-              <View style={styles.coDivider} />
-              <TextInput
-                style={styles.coInput}
-                value={coPhone}
-                onChangeText={onCoPhoneChange}
-                placeholder="10-digit mobile"
-                placeholderTextColor={QuinckleColors.textMuted}
-                keyboardType="phone-pad"
-                maxLength={10}
-                autoFocus
-              />
-              {coLooking && <ActivityIndicator size="small" color={QuinckleColors.primary} style={{ marginRight: 12 }} />}
-            </View>
-
-            {coFound === true && (
-              <View style={styles.foundBadge}><Text style={styles.foundText}>✓ Found on Quinckle</Text></View>
-            )}
-            {coFound === false && !coLookupFailed && coPhone.length === 10 && (
-              <Text style={styles.notFoundText}>New guest — enter name below</Text>
-            )}
-            {coLookupFailed && coPhone.length === 10 && (
-              <Text style={styles.notFoundText}>Couldn’t check — enter the name to continue</Text>
-            )}
-            {coError ? <Text style={styles.coErrorText}>{coError}</Text> : null}
-
-            {/* Name */}
-            <View style={[styles.coInputWrap, { marginTop: 10 }]}>
-              <TextInput
-                style={[styles.coInput, { flex: 1, paddingHorizontal: 14 }]}
-                value={coName}
-                onChangeText={setCoName}
-                placeholder="Guest name (optional)"
-                placeholderTextColor={QuinckleColors.textMuted}
-                returnKeyType="done"
-                onSubmitEditing={confirmAndPlace}
-              />
-            </View>
-
-            <View style={styles.coFooter}>
-              <TouchableOpacity
-                style={styles.coCancel}
-                onPress={() => setCheckoutOpen(false)}
-                disabled={coSubmitting}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.coCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.coConfirm,
-                  (coLooking || coSubmitting || (coPhone.length > 0 && coPhone.length < 10)) && { opacity: 0.4 }]}
-                onPress={confirmAndPlace}
-                disabled={coLooking || coSubmitting || (coPhone.length > 0 && coPhone.length < 10)}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.coConfirmText}>
-                  {coSubmitting ? 'Placing…' : coPhone.length === 10 ? 'Place Order & Pay' : 'Place Order'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
       {/* ── Modifier sheet ── */}
       <ModifierSheet
         item={modifierItem}
@@ -878,21 +1020,6 @@ export default function OrderMenuScreen() {
         onCancel={() => setModifierItem(null)}
       />
 
-      {/* ── Order-placed confirmation (short-lived, before payment collection) ── */}
-      {placed && (
-        <View style={styles.placedOverlay} pointerEvents="none">
-          <View style={styles.placedCard}>
-            <View style={styles.placedIcon}>
-              <Ionicons name="checkmark" size={34} color="#fff" />
-            </View>
-            <Text style={styles.placedTitle}>Order placed</Text>
-            <Text style={styles.placedSub}>
-              {isTakeaway ? (pickupToken ?? 'Takeaway') : `Table T${tableNum}`} · ₹{placed.amount.toFixed(0)}
-            </Text>
-            <Text style={styles.placedHint}>Opening payment collection…</Text>
-          </View>
-        </View>
-      )}
     </View>
   );
 }
@@ -993,26 +1120,30 @@ const styles = StyleSheet.create({
   placeBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: QuinckleColors.primary, paddingHorizontal: Spacing.xl, paddingVertical: 13, borderRadius: Radius.md },
   placeBtnText: { ...Typography.bodyStrong, color: '#fff' },
 
-  // Checkout modal
-  coBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: Spacing.xl },
-  coCard: { width: '100%', maxWidth: 420, backgroundColor: QuinckleColors.surface, borderRadius: Radius.xl, padding: Spacing.lg, borderWidth: 1, borderColor: QuinckleColors.border },
-  coEyebrow: { ...Typography.label, color: QuinckleColors.textMuted },
-  coTitle: { ...Typography.subtitle, color: QuinckleColors.textPrimary, marginTop: 4 },
-  coSub: { ...Typography.micro, color: QuinckleColors.textSecondary, marginTop: 4, marginBottom: 4, lineHeight: 17 },
-  coInputWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: QuinckleColors.surfaceElevated, borderRadius: Radius.md, borderWidth: 1, borderColor: QuinckleColors.border, height: 48, overflow: 'hidden', marginTop: 16 },
+  // Guest details screen
+  coScreenBody: { padding: Spacing.lg, paddingBottom: Spacing.xxl },
+  coInputWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: QuinckleColors.surfaceElevated, borderRadius: Radius.md, borderWidth: 1, borderColor: QuinckleColors.border, height: 48, overflow: 'hidden' },
   coCode: { paddingHorizontal: 12, height: '100%', justifyContent: 'center' },
   coCodeText: { ...Typography.body, color: QuinckleColors.textSecondary, fontWeight: '600' },
   coDivider: { width: 1, height: '60%', backgroundColor: QuinckleColors.border },
   coInput: { flex: 1, color: QuinckleColors.textPrimary, fontSize: 15, paddingHorizontal: 12, height: '100%' },
-  foundBadge: { marginTop: 8, paddingHorizontal: 10, paddingVertical: 5, backgroundColor: 'rgba(34,197,94,0.12)', borderRadius: Radius.sm, borderWidth: 1, borderColor: 'rgba(34,197,94,0.3)', alignSelf: 'flex-start' },
-  foundText: { fontSize: 12, fontWeight: '600', color: QuinckleColors.success },
   notFoundText: { fontSize: 12, color: QuinckleColors.textMuted, marginTop: 6, fontStyle: 'italic' },
   coErrorText: { fontSize: 12, color: QuinckleColors.danger, marginTop: 6 },
-  coFooter: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: Spacing.sm, marginTop: Spacing.lg },
-  coCancel: { paddingHorizontal: Spacing.md, paddingVertical: 10 },
-  coCancelText: { ...Typography.caption, color: QuinckleColors.textSecondary, fontWeight: '600' },
-  coConfirm: { backgroundColor: QuinckleColors.success, borderRadius: Radius.md, paddingHorizontal: Spacing.lg, paddingVertical: 10 },
-  coConfirmText: { ...Typography.caption, color: '#fff', fontWeight: '700' },
+  crmCard: { marginTop: 14, backgroundColor: QuinckleColors.surface, borderRadius: Radius.lg, borderWidth: 1, borderColor: QuinckleColors.border, overflow: 'hidden' },
+  crmRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 16 },
+  crmCol: { flex: 1 },
+  crmDivider: { width: 1, height: 34, backgroundColor: QuinckleColors.border, marginHorizontal: 14 },
+  crmLabel: { fontSize: 11, color: QuinckleColors.textSecondary, marginBottom: 3 },
+  crmValueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 5 },
+  crmValueNum: { fontSize: 20, fontWeight: '700', color: QuinckleColors.textPrimary },
+  crmValueUnit: { fontSize: 12, color: QuinckleColors.textSecondary },
+  crmMemberRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  crmMemberText: { fontSize: 14, fontWeight: '700', color: QuinckleColors.warning },
+  crmNotMemberText: { fontSize: 13, color: QuinckleColors.textSecondary },
+  crmDiscountStrip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: QuinckleColors.warningSoft, borderTopWidth: 1, borderTopColor: QuinckleColors.warningBorder, paddingVertical: 8, paddingHorizontal: 16 },
+  crmDiscountText: { fontSize: 12, fontWeight: '600', color: QuinckleColors.warning },
+  coConfirm: { backgroundColor: QuinckleColors.success, borderRadius: Radius.md, paddingVertical: 14, alignItems: 'center' },
+  coConfirmText: { ...Typography.bodyStrong, color: '#fff' },
 
   // Modifier sheet
   modGroup: { paddingHorizontal: Spacing.xl, marginBottom: Spacing.lg },
@@ -1028,8 +1159,8 @@ const styles = StyleSheet.create({
   modConfirmBtn: { marginHorizontal: Spacing.xl, marginTop: Spacing.sm, marginBottom: Spacing.md, backgroundColor: QuinckleColors.primary, borderRadius: Radius.lg, paddingVertical: Spacing.lg, alignItems: 'center' },
   modConfirmText: { ...Typography.bodyStrong, color: '#fff' },
 
-  // Order-placed confirmation overlay
-  placedOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(9,9,11,0.94)', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
+  // Order-placed confirmation — takes over the guest-details screen in place
+  placedScreenWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   placedCard: { alignItems: 'center', gap: 8, paddingHorizontal: Spacing.xl },
   placedIcon: { width: 72, height: 72, borderRadius: 36, backgroundColor: QuinckleColors.success, alignItems: 'center', justifyContent: 'center', marginBottom: 6 },
   placedTitle: { ...Typography.title, color: QuinckleColors.textPrimary, fontWeight: '800' },

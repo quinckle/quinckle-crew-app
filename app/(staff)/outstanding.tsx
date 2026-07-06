@@ -55,6 +55,7 @@ export default function OutstandingScreen() {
         sessionId: g.sessionId,
         orderIds: JSON.stringify(g.orderIds),
         tableNumber: String(g.tableNumber ?? ''),
+        ...(g.channel === 'TAKEAWAY' ? { channel: 'TAKEAWAY', pickupToken: g.pickupToken ?? '' } : {}),
         amount: String(g.amount ?? 0),
         customerName: g.customerName ?? '',
         customerPhone: g.customerPhone ?? '',
@@ -88,7 +89,9 @@ export default function OutstandingScreen() {
     <View style={s.card}>
       <View style={s.cardTop}>
         <View style={s.titleRow}>
-          <Text style={s.table}>T{g.tableNumber || '—'}</Text>
+          <Text style={s.table}>
+            {g.channel === 'TAKEAWAY' ? (g.pickupToken ?? 'TK') : `T${g.tableNumber || '—'}`}
+          </Text>
           {g.sessionClosed && (
             <View style={s.freedBadge}><Text style={s.freedBadgeText}>FREED</Text></View>
           )}
@@ -153,7 +156,11 @@ export default function OutstandingScreen() {
       <Modal visible={!!waiveTarget} transparent animationType="fade" onRequestClose={() => setWaiveTarget(null)}>
         <View style={s.backdrop}>
           <View style={s.modalCard}>
-            <Text style={s.modalEyebrow}>Write off · Table T{waiveTarget?.tableNumber}</Text>
+            <Text style={s.modalEyebrow}>
+              Write off · {waiveTarget?.channel === 'TAKEAWAY'
+                ? (waiveTarget?.pickupToken ?? 'Takeaway')
+                : `Table T${waiveTarget?.tableNumber}`}
+            </Text>
             <Text style={s.modalTitle}>Waive ₹{waiveTarget?.amount.toLocaleString('en-IN')}?</Text>
             <Text style={s.modalSub}>Records a write-off (no money collected). Reason required.</Text>
             <View style={s.inputWrap}>

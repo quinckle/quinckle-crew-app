@@ -110,6 +110,7 @@ export default function CookDashboard() {
           tableNumber: String(job.tableNumber ?? '?'),
           channel: job.channel,
           pickupToken: job.pickupToken ?? undefined,
+          sessionRef: job.sessionRef ?? undefined,
           restaurantName: staffInfo?.restaurantName ?? '',
           createdAt: job.createdAt ?? new Date().toISOString(),
           items: (job.items ?? []).map((i) => ({
@@ -133,6 +134,7 @@ export default function CookDashboard() {
     location: t.channel === 'TAKEAWAY' ? 'Takeaway' : '',
     channel:  t.channel === 'TAKEAWAY' ? 'TAKEAWAY' : 'DINE_IN',
     pickupToken: t.pickup_token ?? null,
+    sessionRef: t.session_ref ?? null,
     placedAt: t.placed_at,
     status:   isCompleted ? 'completed' : 'new',
     items: t.items.map((item: any) => ({
@@ -205,25 +207,32 @@ export default function CookDashboard() {
       })
       .catch(() => { /* keep last known toggle value */ });
 
+    // Event-driven KOT reconciliation (no polling): drain on mount, on return
+    // to foreground, and whenever the kitchen realtime socket (re)connects —
+    // exactly when a live push could have been missed. printKot de-dupes so
+    // these overlap harmlessly with the live push.
     void drainPendingPrintJobs();
-    const interval = setInterval(() => {
-      void drainPendingPrintJobs();
-    }, 15_000);
     const appStateSub = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
         void drainPendingPrintJobs();
       }
     });
+    const restaurantId = staffInfo?.restaurantId;
+    const unwatchConn = restaurantId
+      ? watchConnection(`kitchen:${restaurantId}`, (connected) => {
+          if (connected) void drainPendingPrintJobs();
+        })
+      : undefined;
     return () => {
-      clearInterval(interval);
       appStateSub.remove();
+      unwatchConn?.();
     };
-  }, [drainPendingPrintJobs]);
+  }, [drainPendingPrintJobs, staffInfo?.restaurantId]);
 
   // Keep the screen awake while this device is the print sink, so Android can't
-  // suspend the JS runtime (and miss the Ably push / skip the 15s drain) when
-  // the kitchen tablet's screen would otherwise sleep. Re-checked on a short
-  // timer since printer connection can change at runtime.
+  // suspend the JS runtime (and miss the live Ably push) when the kitchen
+  // tablet's screen would otherwise sleep. Re-checked on a short timer since
+  // printer connection can change at runtime.
   useEffect(() => {
     let active = false;
     const apply = () => {
@@ -259,9 +268,9 @@ export default function CookDashboard() {
 
       // ── Auto-print fast path ──────────────────────────────────────────────
       // Fires on whichever device holds the BT pairing (getPrinterStatus), gated
-      // by the auto-print toggle. The 15s drainPendingPrintJobs poll is the
-      // backstop if this push is ever missed; printKot de-dupes so the push and
-      // the poll can't double-print the same order.
+      // by the auto-print toggle. The event-driven reconciliation drain (mount /
+      // foreground / socket reconnect) is the backstop if this push is ever
+      // missed; printKot de-dupes so the push and the drain can't double-print.
       if (kotAutoPrintRef.current && getPrinterStatus() === 'connected') {
         // items come directly from the NewOrderEvent shape
         const items = (data?.items ?? []).map((i: any) => ({
@@ -279,6 +288,7 @@ export default function CookDashboard() {
             tableNumber: String(data.tableNumber ?? '?'),
             channel: data.channel,
             pickupToken: data.pickupToken ?? undefined,
+            sessionRef: data.sessionRef ?? undefined,
             restaurantName: staffInfo?.restaurantName ?? '',
             createdAt: data.createdAt ?? new Date().toISOString(),
             items,
@@ -313,6 +323,7 @@ export default function CookDashboard() {
           tableNumber: String(data.order.tableNumber ?? '?'),
           channel: data.order.channel,
           pickupToken: data.order.pickupToken ?? undefined,
+          sessionRef: data.order.sessionRef ?? undefined,
           restaurantName: staffInfo?.restaurantName ?? '',
           createdAt: data.order.createdAt ?? new Date().toISOString(),
           items,
@@ -464,6 +475,7 @@ export default function CookDashboard() {
                   tableNumber: item.table,
                   channel: item.channel,
                   pickupToken: item.pickupToken ?? undefined,
+                  sessionRef: item.sessionRef ?? undefined,
                   restaurantName: staffInfo?.restaurantName ?? '',
                   createdAt: item.placedAt ?? new Date().toISOString(),
                   items: item.items.map((i) => parseItem(i.name, i.modifiersSummary)),

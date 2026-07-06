@@ -158,7 +158,7 @@ export const devApi = {
 // ── Kitchen (CHEF) ────────────────────────────────────────────────────────────
 
 export interface KitchenTicketItem { item_id: string; name: string; qty: number; note: string | null; modifiers_summary?: string | null; item_status: 'pending' | 'done'; }
-export interface KitchenTicket { order_id: string; table_number: number; status: 'received' | 'preparing'; placed_at: string; items: KitchenTicketItem[]; }
+export interface KitchenTicket { order_id: string; table_number: number; status: 'received' | 'preparing'; channel?: 'DINE_IN' | 'TAKEAWAY'; pickup_token?: string | null; session_ref?: string | null; placed_at: string; items: KitchenTicketItem[]; }
 export interface KitchenCompletedPage { tickets: KitchenTicket[]; page: number; limit: number; hasMore: boolean; }
 
 export const kitchen = {
@@ -516,10 +516,15 @@ export interface TakeawayOrder {
   sessionRef: string | null;
   customerName: string | null;
   customerPhone: string | null;
-  items: { name: string; qty: number; modifiers: string | null; itemStatus: string }[];
+  items: { itemId: string; name: string; qty: number; unitPrice: number; modifiers: string | null; itemStatus: string }[];
   status: string;
+  subtotal: number;
+  discount: number;
+  tax: number;
+  serviceCharge: number;
   total: number;
   paymentStatus: string;
+  paymentMethod: string | null;
   createdAt: string;
 }
 
@@ -572,6 +577,13 @@ export const crewOrders = {
   cancelItem: (orderId: string, itemId: string) =>
     request<{ success: boolean; order_id: string; session_id: string; item_id: string; new_order_total: number; order_cancelled: boolean }>(
       'PATCH', `/api/crew/orders/${orderId}/items/${itemId}/cancel`, undefined, true,
+    ),
+
+  // Delete a whole order (all lines) before payment is settled — takeaway
+  // "delete order". Marks the order CANCELLED server-side; it drops off the list.
+  cancelOrder: (orderId: string) =>
+    request<{ success: boolean; order_id: string; session_id: string; intent_voided: boolean; reverted_order_ids: string[] }>(
+      'PATCH', `/api/crew/orders/${orderId}/cancel`, undefined, true,
     ),
 
   // Write off an uncollected order (walkout / comp). ADMIN-only on the backend.
@@ -678,6 +690,8 @@ export interface CashRequestsResponse {
 export interface OutstandingGroup {
   sessionId: string;
   tableNumber: number;
+  channel?: 'DINE_IN' | 'TAKEAWAY';
+  pickupToken?: string | null;
   /** True when the table was already freed but money is still owed. */
   sessionClosed: boolean;
   orderIds: string[];
@@ -889,6 +903,7 @@ export const restaurantApi = {
         acceptCash?: boolean;
         acceptUpiDirect?: boolean;
         acceptStaffCollect?: boolean;
+        taxConfig?: { gstRegistered: boolean; gstin: string | null; taxRate: number | null; displayMode: string };
       };
     }>('GET', `/api/v1/dine/restaurant/${restaurantId}`),
 
@@ -958,6 +973,7 @@ export const printerApi = {
       tableNumber: number;
       channel?: 'DINE_IN' | 'TAKEAWAY';
       pickupToken?: string | null;
+      sessionRef?: string | null;
       createdAt: string;
       isAddOn: boolean;
       items: Array<{

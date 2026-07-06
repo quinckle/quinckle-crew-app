@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { LinearGradient } from 'expo-linear-gradient';
+import QRCode from 'react-native-qrcode-svg';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
@@ -24,7 +25,8 @@ import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
 import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewTakeaway, restaurantApi, crewAuth, printerApi } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
-import { printKot, getStatus as getPrinterStatus } from '../../services/printer';
+import { printKot, printBill, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
+import type { InvoiceBill } from '../../services/invoiceTemplate';
 import { setSinkContext } from '../../services/printSink';
 
 async function playSound(file: any) {
@@ -50,6 +52,8 @@ import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { MergeTableSheet } from '../../components/ui/MergeTableSheet';
 import { BottomNavbar } from '../../components/ui/BottomNavbar';
 import { PICKUP_LAYOUT_PRESET, PickupCard, PickupSegmented } from '../../components/ui/pickup';
+import { PrintOptionsSheet } from '../../components/ui/PrintOptionsSheet';
+import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
 import { TableSkeleton } from '../../components/ui/TableSkeleton';
 import { MenuSkeleton } from '../../components/ui/MenuSkeleton';
 import { CombosSkeleton } from '../../components/ui/CombosSkeleton';
@@ -174,11 +178,9 @@ export default function StaffDashboard() {
   const [newSessionTable, setNewSessionTable] = useState<Table | null>(null);
 
   // ── Manual takeaway entry (counter / phone orders) ─────────────────────────
-  const [newTakeawayOpen, setNewTakeawayOpen] = useState(false);
-  const [takeawayGuestName, setTakeawayGuestName] = useState('');
-  const [takeawayGuestPhone, setTakeawayGuestPhone] = useState('');
+  // Guest name/phone are collected later on order-menu's guest CRM row (before
+  // placing), not here — asking twice was redundant.
   const [startingTakeaway, setStartingTakeaway] = useState(false);
-  const [takeawayStartError, setTakeawayStartError] = useState<string | null>(null);
   const [startingSession, setStartingSession] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   // Manage-table action sheet (occupied long-press) + reused swap sheet.
@@ -229,7 +231,25 @@ export default function StaffDashboard() {
   const [takeawayOrders, setTakeawayOrders] = useState<TakeawayOrder[]>([]);
   const [takeawaySubTab, setTakeawaySubTab] = useState<'preparing' | 'handed'>('preparing');
   const [handingOverIds, setHandingOverIds] = useState<string[]>([]);
+  // Orders currently being deleted (whole-order) — disables the card's actions.
+  const [cancellingOrderIds, setCancellingOrderIds] = useState<string[]>([]);
   const [refreshingTakeaway, setRefreshingTakeaway] = useState(false);
+  const [takeawaySearchText, setTakeawaySearchText] = useState('');
+  const [takeawayQrOpen, setTakeawayQrOpen] = useState(false);
+  const takeawayOrderUrl = staffInfo?.restaurantId
+    ? `https://quinckle.com/takeaway/${staffInfo.restaurantId}`
+    : '';
+
+  // Matches on pickup token, session ref, or customer phone — whichever the
+  // staff typed. Case-insensitive substring match, no backend round-trip.
+  const matchesTakeawaySearch = (order: TakeawayOrder) => {
+    const q = takeawaySearchText.trim().toLowerCase();
+    if (!q) return true;
+    const token = (order.pickupToken ?? '').toLowerCase();
+    const ref = (order.sessionRef ?? '').toLowerCase();
+    const phone = (order.customerPhone ?? '').toLowerCase();
+    return token.includes(q) || ref.includes(q) || phone.includes(q);
+  };
 
   const loadTakeawayOrders = async () => {
     try {
@@ -251,6 +271,151 @@ export default function StaffDashboard() {
 
   const isTakeawayPendingCollection = (order: TakeawayOrder) =>
     ['PENDING_STAFF_COLLECTION', 'PENDING_CASH', 'PENDING_UPI_DIRECT', 'UNPAID'].includes(String(order.paymentStatus ?? '').toUpperCase());
+
+  // Deletable only before money is settled — mirrors the backend guard so we
+  // never show a delete that would just 409 (paid, or a diner UPI-direct
+  // collection mid-flight).
+  const canDeleteTakeaway = (order: TakeawayOrder) =>
+    order.status !== 'SERVED' &&
+    !isTakeawayPaid(order) &&
+    String(order.paymentStatus ?? '').toUpperCase() !== 'PENDING_UPI_DIRECT';
+
+  // ── Takeaway manual print (KOT / invoice) ──
+  // Mirrors [tableId].tsx's print flow: same PrintOptionsSheet + printKot/printBill,
+  // scoped to whichever takeaway order the print icon was tapped on.
+  const [restaurantInvoiceMeta, setRestaurantInvoiceMeta] = useState<{
+    address?: string | null;
+    phone?: string | null;
+    email?: string | null;
+    fssaiLicenseNumber?: string | null;
+    gstRegistered?: boolean;
+    gstin?: string | null;
+  } | null>(null);
+  const [upiId, setUpiId] = useState<string | null>(null);
+  const [upiName, setUpiName] = useState('');
+  const [printTakeawayOrder, setPrintTakeawayOrder] = useState<TakeawayOrder | null>(null);
+  const [qrSheet, setQrSheet] = useState<{ grandTotal: number } | null>(null);
+  const qrRunRef = useRef<((omitAmount: boolean) => void) | null>(null);
+
+  useEffect(() => {
+    const restaurantId = staffInfo?.restaurantId;
+    if (!restaurantId) return;
+    let cancelled = false;
+    restaurantApi.getBranding(restaurantId)
+      .then((res) => {
+        if (cancelled || !res?.success) return;
+        setRestaurantInvoiceMeta({
+          address: res.data.address ?? null,
+          phone: res.data.phone ?? null,
+          email: res.data.email ?? null,
+          fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null,
+          gstRegistered: res.data.taxConfig?.gstRegistered ?? false,
+          gstin: res.data.taxConfig?.gstin ?? null,
+        });
+        if (res.data.upiId) {
+          setUpiId(res.data.upiId);
+          setUpiName(res.data.upiDisplayName ?? res.data.name ?? '');
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [staffInfo?.restaurantId]);
+
+  const handlePrintTakeawayKot = async (order: TakeawayOrder) => {
+    setPrintTakeawayOrder(null);
+    if (getPrinterStatus() !== 'connected') {
+      showDialog(
+        'No Printer Paired',
+        'No Bluetooth printer is connected to this device. Go to Profile → Printer Settings to pair one.',
+        [{ label: 'OK', onPress: () => {} }],
+      );
+      return;
+    }
+    const result = await printKot({
+      id: order.orderId,
+      tableNumber: 0,
+      channel: 'TAKEAWAY',
+      pickupToken: order.pickupToken ?? undefined,
+      sessionRef: order.sessionRef ?? undefined,
+      restaurantName: staffInfo?.restaurantName ?? '',
+      createdAt: order.createdAt,
+      items: order.items.map((item) => ({
+        name: item.name,
+        quantity: item.qty,
+        modifiersSummary: item.modifiers ?? undefined,
+      })),
+      isAddOn: false,
+    }, false, { force: true });
+    if (result === 'printed') {
+      showDialog('Printed', 'KOT sent to printer.', [{ label: 'OK', onPress: () => {} }]);
+    } else {
+      showDialog('Print Failed', 'Printer connected but print failed. Check paper / Bluetooth and try again.', [{ label: 'OK', onPress: () => {} }]);
+    }
+  };
+
+  const handlePrintTakeawayInvoice = async (order: TakeawayOrder) => {
+    setPrintTakeawayOrder(null);
+    if (getPrinterStatus() !== 'connected') {
+      showDialog(
+        'No Printer Paired',
+        'No Bluetooth printer is connected to this device. Go to Profile → Printer Settings to pair one.',
+        [{ label: 'OK', onPress: () => {} }],
+      );
+      return;
+    }
+
+    const isPaid = isTakeawayPaid(order);
+    const invoiceItems: InvoiceBill['items'] = order.items.map((item) => ({
+      name: item.name,
+      qty: item.qty,
+      unitPrice: item.unitPrice,
+      modifiersSummary: item.modifiers,
+    }));
+
+    const runPrint = async (upiOmitAmount: boolean) => {
+      const result = await printBill({
+        restaurantName: staffInfo?.restaurantName ?? '',
+        restaurantAddress: restaurantInvoiceMeta?.address ?? null,
+        restaurantPhone: restaurantInvoiceMeta?.phone ?? null,
+        restaurantEmail: restaurantInvoiceMeta?.email ?? null,
+        fssaiLicenseNumber: restaurantInvoiceMeta?.fssaiLicenseNumber ?? null,
+        gstRegistered: restaurantInvoiceMeta?.gstRegistered ?? false,
+        gstin: restaurantInvoiceMeta?.gstin ?? null,
+        tableNumber: 0,
+        channel: 'TAKEAWAY',
+        pickupToken: order.pickupToken ?? null,
+        sessionRef: order.sessionRef ?? undefined,
+        items: invoiceItems,
+        subtotal: order.subtotal,
+        discount: order.discount,
+        charges: order.serviceCharge,
+        tax: order.tax,
+        grandTotal: order.total,
+        isPaid,
+        paymentMethod: order.paymentMethod ?? undefined,
+        upiVpa: upiId,
+        upiName: upiName || null,
+        upiOmitAmount,
+        orderDateTime: order.createdAt,
+        generatedAt: new Date().toISOString(),
+      });
+      if (result === 'failed') {
+        showDialog(
+          'Print Failed',
+          'Could not print the invoice. Check that the printer is nearby and powered on.',
+          [{ label: 'OK', onPress: () => {} }],
+        );
+      }
+    };
+
+    const qrWillPrint = !isPaid && !!upiId && isUpiQrEnabled();
+    if (!qrWillPrint) {
+      await runPrint(false);
+      return;
+    }
+    qrRunRef.current = (omitAmount: boolean) => { void runPrint(omitAmount); };
+    setQrSheet({ grandTotal: order.total });
+  };
 
   const handleCollectTakeaway = (order: TakeawayOrder) => {
     router.push({
@@ -288,6 +453,75 @@ export default function StaffDashboard() {
       void loadTakeawayOrders();
     }
     setHandingOverIds((prev) => prev.filter((id) => id !== orderId));
+  };
+
+  // Map the backend's cancel error codes to a plain crew-facing message. Shared
+  // by item-line and whole-order delete (mirrors the table screen's mapping).
+  const takeawayCancelMessage = (err: any): string => {
+    const code = String(err?.code ?? '');
+    if (code === 'COLLECTION_IN_PROGRESS')
+      return 'The customer is paying for this online right now. Wait for it to finish, then delete.';
+    if (code === 'ORDER_ALREADY_PAID')
+      return 'This order is already paid and can no longer be changed.';
+    if (code === 'ITEM_ALREADY_CANCELLED' || code === 'ORDER_CANCELLED')
+      return 'This has already been removed.';
+    return (typeof err?.message === 'string' && err.message) || 'Something went wrong. Please try again.';
+  };
+
+  // Delete a single item line from a takeaway order (before payment). Confirms
+  // first, then reuses the shared item-cancel endpoint and reloads the board.
+  const handleDeleteTakeawayItem = (order: TakeawayOrder, item: TakeawayOrder['items'][number]) => {
+    showDialog(
+      'Remove item?',
+      `Remove ${item.qty}× ${item.name} from this order? The total will be recalculated.`,
+      [
+        { label: 'Cancel', onPress: () => {} },
+        {
+          label: 'Remove',
+          variant: 'danger',
+          onPress: () => {
+            void (async () => {
+              try {
+                await crewOrders.cancelItem(order.orderId, item.itemId);
+                await loadTakeawayOrders();
+              } catch (err: any) {
+                showDialog('Could not remove', takeawayCancelMessage(err), [{ label: 'OK', onPress: () => {} }]);
+                void loadTakeawayOrders();
+              }
+            })();
+          },
+        },
+      ],
+    );
+  };
+
+  // Delete an entire takeaway order (all lines) before payment. Confirms first.
+  const handleDeleteTakeawayOrder = (order: TakeawayOrder) => {
+    showDialog(
+      'Delete order?',
+      `Delete this entire takeaway order${order.pickupToken ? ` (${order.pickupToken})` : ''}? This cannot be undone.`,
+      [
+        { label: 'Cancel', onPress: () => {} },
+        {
+          label: 'Delete',
+          variant: 'danger',
+          onPress: () => {
+            void (async () => {
+              setCancellingOrderIds((prev) => [...prev, order.orderId]);
+              try {
+                await crewOrders.cancelOrder(order.orderId);
+                setTakeawayOrders((prev) => prev.filter((o) => o.orderId !== order.orderId));
+              } catch (err: any) {
+                showDialog('Could not delete', takeawayCancelMessage(err), [{ label: 'OK', onPress: () => {} }]);
+                void loadTakeawayOrders();
+              } finally {
+                setCancellingOrderIds((prev) => prev.filter((id) => id !== order.orderId));
+              }
+            })();
+          },
+        },
+      ],
+    );
   };
 
   // KOT auto-print toggle — loaded from server, synced via Ably.
@@ -335,6 +569,7 @@ export default function StaffDashboard() {
           tableNumber: String(job.tableNumber ?? '?'),
           channel: job.channel,
           pickupToken: job.pickupToken ?? undefined,
+          sessionRef: job.sessionRef ?? undefined,
           restaurantName: staffInfo?.restaurantName ?? '',
           createdAt: job.createdAt ?? new Date().toISOString(),
           items: (job.items ?? []).map((i: any) => ({
@@ -584,8 +819,9 @@ export default function StaffDashboard() {
 
       // Simplified flow: show any order that has unserved items, regardless of
       // order status. Serving is always open — no kitchen pipeline gate.
+      // Takeaway has its own dedicated tab — keep this list dine-in only.
       const serveableOrders = allOrders.filter(o =>
-        o.items.some(i => !i.served)
+        o.channel !== 'TAKEAWAY' && o.items.some(i => !i.served)
       );
 
       // Notify staff the moment a brand-new order lands on the floor — they
@@ -597,7 +833,7 @@ export default function StaffDashboard() {
         Notifications.scheduleNotificationAsync({
           content: {
             title: '🔔 New Order',
-            body: newOrders.map(o => `T${o.table_number}`).join(', ') + ' — ready to serve',
+            body: newOrders.map(o => o.channel === 'TAKEAWAY' ? (o.pickup_token ?? 'TK') : `T${o.table_number}`).join(', ') + ' — ready to serve',
             sound: true,
             android: { largeIcon: 'ic_notification_large' },
           },
@@ -607,7 +843,7 @@ export default function StaffDashboard() {
 
       const refreshedActive = serveableOrders.map(order => ({
         id: order.order_id,
-        tableNo: `T${order.table_number}`,
+        tableNo: order.channel === 'TAKEAWAY' ? (order.pickup_token ?? 'TK') : `T${order.table_number}`,
         items: order.items.map(item => ({
           id: item.item_id,
           name: `${item.qty}× ${item.name}`,
@@ -629,7 +865,7 @@ export default function StaffDashboard() {
 
   const mapCompletedOrder = (order: any): PickupOrder => ({
     id: order.order_id,
-    tableNo: `T${order.table_number}`,
+    tableNo: order.channel === 'TAKEAWAY' ? (order.pickup_token ?? 'TK') : `T${order.table_number}`,
     completedAt: order.served_at ?? order.placed_at,
     items: order.items.map((item: any) => ({
       id: item.item_id,
@@ -648,7 +884,8 @@ export default function StaffDashboard() {
   const loadServedToday = async (page = 1) => {
     try {
       const res = await crewOrders.getServedToday(page, 30);
-      const served = res.orders ?? [];
+      // Takeaway has its own dedicated tab — keep this list dine-in only.
+      const served = (res.orders ?? []).filter((o: any) => o.channel !== 'TAKEAWAY');
       const mapped = served.map(mapCompletedOrder);
       if (page === 1) {
         setCompletedPickupOrders(mapped);
@@ -699,23 +936,28 @@ export default function StaffDashboard() {
     return () => clearInterval(id);
   }, [activeTab, hasExpiringTable]);
 
-  // KOT print backstop: drain the server pull-queue on mount, every 15s, and on
-  // every return to foreground. Combined with the Ably push + de-dup guard this
-  // guarantees a KOT prints even if the live event was missed (background, socket
-  // blip, transient BT failure). Mirrors the cook screen's drain.
+  // KOT reconciliation — event-driven, no polling. Drain the server's unprinted
+  // queue on mount, on every return to foreground, and whenever the waiter
+  // realtime socket (re)connects — that reconnect is precisely when a live push
+  // could have been missed (background, socket blip). Combined with the Ably
+  // push + de-dup guard this guarantees a KOT prints without pinning the DB
+  // awake on a 15s timer. Mirrors the cook screen.
   useEffect(() => {
-    if (!staffInfo?.restaurantId) return;
+    const restaurantId = staffInfo?.restaurantId;
+    if (!restaurantId) return;
     void drainPendingPrintJobs();
-    const interval = setInterval(() => { void drainPendingPrintJobs(); }, 15_000);
     const appStateSub = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
         void refreshPrintSinkOwnership();
         void drainPendingPrintJobs();
       }
     });
+    const unwatchConn = watchConnection(`waiter:${restaurantId}`, (connected) => {
+      if (connected) void drainPendingPrintJobs();
+    });
     return () => {
-      clearInterval(interval);
       appStateSub.remove();
+      unwatchConn();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [staffInfo?.restaurantId]);
@@ -755,11 +997,9 @@ export default function StaffDashboard() {
     if (activeTab === 'takeaway') void loadTakeawayOrders();
   }, [activeTab]);
 
-  useEffect(() => {
-    if (activeTab !== 'takeaway') return;
-    const id = setInterval(() => { void loadTakeawayOrders(); }, 10_000);
-    return () => clearInterval(id);
-  }, [activeTab]);
+  // Takeaway list stays fresh via the waiter:{restaurantId} Ably push below
+  // (new_order / cash events call loadTakeawayOrders) plus the tab-switch load
+  // above — no polling needed.
 
   // Ably: waiter:{restaurantId} — pure push, no polling
   useEffect(() => {
@@ -800,8 +1040,9 @@ export default function StaffDashboard() {
       void loadTables();
       // Auto-print fast path — gate on the live local printer connection + the
       // auto-print toggle. (Live getPrinterStatus() avoids any startup race with
-      // the async refreshPrintSinkOwnership ref.) The 15s drain is the backstop;
-      // printKot de-dupes so push + drain never double-print.
+      // the async refreshPrintSinkOwnership ref.) The event-driven reconnect/
+      // foreground drain is the backstop; printKot de-dupes so push + drain
+      // never double-print.
       if (
         kotAutoPrintRef.current &&
         getPrinterStatus() === 'connected' &&
@@ -821,6 +1062,7 @@ export default function StaffDashboard() {
           tableNumber: data.tableNumber,
           channel: data.channel,
           pickupToken: data.pickupToken ?? undefined,
+          sessionRef: data.sessionRef ?? undefined,
           restaurantName: staffInfo?.restaurantName ?? '',
           createdAt: data.createdAt ?? new Date().toISOString(),
           items: kotItems,
@@ -867,6 +1109,7 @@ export default function StaffDashboard() {
 
     const off7 = subscribeChannel(`waiter:${restaurantId}`, 'item_bumped', () => {
       void loadPickupOrders();
+      void loadTakeawayOrders(); // takeaway tab: keep status live now that the 10s poll is gone
     });
 
     // Per-item ready: drives a refetch the moment the cook flips a single item.
@@ -875,6 +1118,7 @@ export default function StaffDashboard() {
     // surfaces a newly-ready item.
     const off7b = subscribeChannel(`waiter:${restaurantId}`, 'item_ready', () => {
       void loadPickupOrders();
+      void loadTakeawayOrders(); // takeaway tab: keep status live now that the 10s poll is gone
     });
 
     const off8 = subscribeChannel(`waiter:${restaurantId}`, 'cash_collection_requested', (data: any) => {
@@ -926,6 +1170,7 @@ export default function StaffDashboard() {
           tableNumber: String(data.order.tableNumber ?? '?'),
           channel: data.order.channel,
           pickupToken: data.order.pickupToken ?? undefined,
+          sessionRef: data.order.sessionRef ?? undefined,
           restaurantName: staffInfo?.restaurantName ?? '',
           createdAt: data.order.createdAt ?? new Date().toISOString(),
           items,
@@ -948,14 +1193,17 @@ export default function StaffDashboard() {
     // Optimistic local update
     setTables(prev => prev.map(t => (t.number === tableNum ? { ...t, status: nextStatus } : t)));
 
-    if (nextStatus === 'available') {
+    // Persist to the backend. 'occupied' is never set from here (it comes from a
+    // diner session), so we only push the states the crew endpoint accepts —
+    // both 'available' AND 'offline' (marking a table unavailable/back online).
+    if (nextStatus === 'available' || nextStatus === 'offline') {
       const table = tables.find(t => t.number === tableNum);
       if (table) {
         try {
           await crewTables.updateStatus(table.id, nextStatus);
           await loadTables();
         } catch {
-          // Keep optimistic update on error
+          // Keep optimistic update on error; a later refresh resyncs from server.
         }
       }
     }
@@ -1034,37 +1282,29 @@ export default function StaffDashboard() {
     }
   };
 
-  // Create a crew takeaway session (tableless) from the new-takeaway sheet,
-  // then reuse the manual order builder with the TAKEAWAY channel.
+  // Create a crew takeaway session (tableless) straight from the '+' button —
+  // no name/phone prompt here; the order-menu guest CRM row collects that
+  // right before placing, so asking twice was redundant.
   const startTakeawayOrder = async () => {
-    const phone = takeawayGuestPhone.replace(/\D/g, '');
-    if (phone && !/^[6-9]\d{9}$/.test(phone)) {
-      setTakeawayStartError('Enter a valid 10-digit phone, or leave it empty.');
-      return;
-    }
+    if (startingTakeaway) return;
     setStartingTakeaway(true);
-    setTakeawayStartError(null);
     try {
-      const res = await crewTakeaway.createSession(
-        takeawayGuestName.trim() || undefined,
-        phone || undefined,
-      );
+      const res = await crewTakeaway.createSession();
       const d = res.data;
-      setNewTakeawayOpen(false);
-      setTakeawayGuestName('');
-      setTakeawayGuestPhone('');
       router.push({
         pathname: '/(staff)/order-menu',
         params: {
           sessionId: d.session_id,
           channel: 'TAKEAWAY',
           pickupToken: d.pickup_token ?? '',
-          customerName: takeawayGuestName.trim(),
-          customerPhone: phone,
         },
       });
     } catch (e: any) {
-      setTakeawayStartError(e?.message ?? 'Could not start takeaway order. Try again.');
+      showDialog(
+        'Could Not Start Order',
+        e?.message ?? 'Could not start a new takeaway order. Please try again.',
+        [{ label: 'OK', onPress: () => {} }],
+      );
     } finally {
       setStartingTakeaway(false);
     }
@@ -1645,14 +1885,6 @@ export default function StaffDashboard() {
         </View>
       ) : activeTab === 'takeaway' ? (
         <View style={styles.tabContent}>
-          <TouchableOpacity
-            style={styles.newTakeawayBtn}
-            onPress={() => { setTakeawayStartError(null); setNewTakeawayOpen(true); }}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="add-circle" size={18} color="#fff" />
-            <Text style={styles.newTakeawayBtnText}>New Takeaway Order</Text>
-          </TouchableOpacity>
           <View style={styles.segmentWrap}>
             <PickupSegmented
               items={[
@@ -1662,6 +1894,19 @@ export default function StaffDashboard() {
               active={takeawaySubTab}
               onChange={(key) => setTakeawaySubTab(key as 'preparing' | 'handed')}
             />
+          </View>
+
+          <View style={styles.controlsRow}>
+            <View style={styles.searchBox}>
+              <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
+              <TextInput
+                value={takeawaySearchText}
+                onChangeText={setTakeawaySearchText}
+                placeholder="Token, session ref, or phone…"
+                placeholderTextColor={QuinckleColors.textTertiary}
+                style={styles.searchInput}
+              />
+            </View>
             <TouchableOpacity
               style={styles.takeawayRefreshBtn}
               onPress={handleRefreshTakeaway}
@@ -1672,13 +1917,31 @@ export default function StaffDashboard() {
                 ? <ActivityIndicator size="small" color={QuinckleColors.primary} />
                 : <Ionicons name="refresh" size={18} color={QuinckleColors.primary} />}
             </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.takeawayRefreshBtn}
+              onPress={() => setTakeawayQrOpen(true)}
+              activeOpacity={0.75}
+            >
+              <Ionicons name="qr-code-outline" size={18} color={QuinckleColors.primary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.takeawayNewIconBtn}
+              onPress={() => { void startTakeawayOrder(); }}
+              disabled={startingTakeaway}
+              activeOpacity={0.85}
+            >
+              {startingTakeaway
+                ? <ActivityIndicator size="small" color="#fff" />
+                : <Ionicons name="add" size={22} color="#fff" />}
+            </TouchableOpacity>
           </View>
 
           <FlatList
             data={
-              takeawaySubTab === 'preparing'
+              (takeawaySubTab === 'preparing'
                 ? takeawayOrders.filter((o) => o.status !== 'SERVED')
                 : takeawayOrders.filter((o) => o.status === 'SERVED')
+              ).filter(matchesTakeawaySearch)
             }
             keyExtractor={(item) => item.orderId}
             contentContainerStyle={styles.orderListContent}
@@ -1687,45 +1950,78 @@ export default function StaffDashboard() {
             }
             renderItem={({ item }) => (
               <View style={styles.takeawayCard}>
-                <View style={styles.takeawayCardHeader}>
-                  <Text style={styles.takeawayToken}>{item.pickupToken ?? '—'}</Text>
-                  <Text style={styles.takeawayTotal}>₹{item.total}</Text>
-                  <Text style={styles.takeawayTime}>
-                    {new Date(item.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
-                  </Text>
-                </View>
-                {(item.customerName || item.customerPhone) && (
-                  <Text style={styles.takeawayCustomer}>
-                    {item.customerName ?? ''}{item.customerName && item.customerPhone ? ' · ' : ''}{item.customerPhone ?? ''}
-                  </Text>
-                )}
-                {item.sessionRef && (
-                  <Text style={styles.takeawayRef}>{item.sessionRef}</Text>
-                )}
-                <View style={[
-                  styles.takeawayPaymentPill,
-                  isTakeawayPaid(item) ? styles.takeawayPaymentPaid : styles.takeawayPaymentPending,
-                ]}>
-                  <Ionicons
-                    name={isTakeawayPaid(item) ? 'checkmark-circle' : 'wallet-outline'}
-                    size={13}
-                    color={isTakeawayPaid(item) ? QuinckleColors.success : QuinckleColors.warning}
-                  />
-                  <Text style={[
-                    styles.takeawayPaymentText,
-                    { color: isTakeawayPaid(item) ? QuinckleColors.success : QuinckleColors.warning },
-                  ]}>
-                    {isTakeawayPaid(item) ? 'Payment collected' : 'Pending collection'}
-                  </Text>
+                <View style={styles.takeawayCardTop}>
+                  <View style={styles.takeawayCardLeft}>
+                    <Text style={styles.takeawayToken}>
+                      {item.pickupToken ?? '—'}
+                      <Text style={styles.takeawayTime}>
+                        {'  ·  '}{new Date(item.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
+                    </Text>
+                    {(item.customerName || item.customerPhone) && (
+                      <Text style={styles.takeawayCustomer}>
+                        {item.customerName ?? ''}{item.customerName && item.customerPhone ? ' · ' : ''}{item.customerPhone ?? ''}
+                      </Text>
+                    )}
+                    {item.sessionRef && (
+                      <Text style={styles.takeawayRef}>{item.sessionRef}</Text>
+                    )}
+                  </View>
+                  <View style={styles.takeawayCardRight}>
+                    <View style={styles.takeawayAmountRow}>
+                      <Text style={[
+                        styles.takeawayStatusText,
+                        { color: isTakeawayPaid(item) ? QuinckleColors.success : QuinckleColors.warning },
+                      ]}>
+                        {isTakeawayPaid(item) ? 'Paid' : 'Pending'}
+                      </Text>
+                      <Text style={styles.takeawayTotal}>₹{item.total}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.printIconBtn}
+                      onPress={() => setPrintTakeawayOrder(item)}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="print-outline" size={18} color={QuinckleColors.textSecondary} />
+                    </TouchableOpacity>
+                  </View>
                 </View>
                 <View style={styles.takeawayDivider} />
                 {item.items.map((it, j) => (
-                  <Text key={j} style={styles.takeawayItemText}>
-                    {it.qty}× {it.name}{it.modifiers ? ` (${it.modifiers})` : ''}
-                  </Text>
+                  <View key={j} style={styles.takeawayItemRow}>
+                    <Text style={styles.takeawayItemText}>
+                      {it.qty}× {it.name}{it.modifiers ? ` (${it.modifiers})` : ''}
+                    </Text>
+                    {canDeleteTakeaway(item) && item.items.length > 1 && (
+                      <TouchableOpacity
+                        style={styles.takeawayItemDeleteBtn}
+                        onPress={() => handleDeleteTakeawayItem(item, it)}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="close-circle-outline" size={18} color={QuinckleColors.textTertiary} />
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 ))}
                 {item.status !== 'SERVED' && (
                   <View style={styles.takeawayActionRow}>
+                    {canDeleteTakeaway(item) && (
+                      <TouchableOpacity
+                        style={[
+                          styles.takeawayDeleteBtn,
+                          cancellingOrderIds.includes(item.orderId) && styles.handoverBtnDisabled,
+                        ]}
+                        onPress={() => handleDeleteTakeawayOrder(item)}
+                        disabled={cancellingOrderIds.includes(item.orderId)}
+                        activeOpacity={0.8}
+                      >
+                        <Ionicons name="trash-outline" size={16} color={QuinckleColors.danger} />
+                        <Text style={styles.takeawayDeleteBtnText}>
+                          {cancellingOrderIds.includes(item.orderId) ? 'Deleting…' : 'Delete'}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
                     {isTakeawayPendingCollection(item) && (
                       <TouchableOpacity
                         style={styles.collectTakeawayBtn}
@@ -1829,49 +2125,6 @@ export default function StaffDashboard() {
         </View>
       </BottomSheet>
 
-      {/* New takeaway order — optional guest details, then the order builder */}
-      <BottomSheet
-        visible={newTakeawayOpen}
-        onClose={() => { if (!startingTakeaway) { setNewTakeawayOpen(false); setTakeawayStartError(null); } }}
-        title="New takeaway order"
-      >
-        <View style={styles.sheetBody}>
-          <Text style={styles.sheetMessage}>
-            Guest details are optional — add a phone to track this customer in your CRM.
-          </Text>
-          <TextInput
-            style={styles.takeawayGuestInput}
-            placeholder="Guest name (optional)"
-            placeholderTextColor={QuinckleColors.textTertiary}
-            value={takeawayGuestName}
-            onChangeText={setTakeawayGuestName}
-            autoCapitalize="words"
-            editable={!startingTakeaway}
-          />
-          <TextInput
-            style={styles.takeawayGuestInput}
-            placeholder="Phone (optional)"
-            placeholderTextColor={QuinckleColors.textTertiary}
-            value={takeawayGuestPhone}
-            onChangeText={(v) => setTakeawayGuestPhone(v.replace(/[^\d]/g, '').slice(0, 10))}
-            keyboardType="phone-pad"
-            maxLength={10}
-            editable={!startingTakeaway}
-          />
-          {takeawayStartError ? <Text style={styles.sheetErrorText}>{takeawayStartError}</Text> : null}
-          <TouchableOpacity
-            style={[styles.sheetPrimaryBtn, startingTakeaway && { opacity: 0.85 }]}
-            onPress={() => { void startTakeawayOrder(); }}
-            disabled={startingTakeaway}
-            activeOpacity={0.85}
-          >
-            {startingTakeaway
-              ? <ActivityIndicator size="small" color="#fff" />
-              : <Text style={styles.sheetPrimaryText}>Start order</Text>}
-          </TouchableOpacity>
-        </View>
-      </BottomSheet>
-
       {/* Manage occupied table — bottom sheet (Swap / Free) */}
       <BottomSheet
         visible={!!manageTable}
@@ -1941,12 +2194,42 @@ export default function StaffDashboard() {
         onClose={closeDialog}
       />
 
+      {/* Takeaway manual print — same sheet/flow as the table-detail screen */}
+      <PrintOptionsSheet
+        visible={!!printTakeawayOrder}
+        onPrintKot={() => { if (printTakeawayOrder) void handlePrintTakeawayKot(printTakeawayOrder); }}
+        onPrintInvoice={() => { if (printTakeawayOrder) void handlePrintTakeawayInvoice(printTakeawayOrder); }}
+        onClose={() => setPrintTakeawayOrder(null)}
+      />
+
+      <QrChoiceSheet
+        visible={!!qrSheet}
+        amount={qrSheet?.grandTotal ?? 0}
+        onPick={(mode) => {
+          void setUpiQrMode(mode);
+          const run = qrRunRef.current;
+          setQrSheet(null);
+          if (run) run(mode === 'static');
+        }}
+        onClose={() => setQrSheet(null)}
+      />
+
       <SideDrawer
         visible={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         venueName={staffInfo?.restaurantName}
         realtimeOk={realtimeOk}
       />
+
+      {/* Takeaway self-order QR — show to a customer who wants to order themselves */}
+      <BottomSheet visible={takeawayQrOpen} onClose={() => setTakeawayQrOpen(false)} title="Takeaway QR">
+        <View style={styles.takeawayQrBody}>
+          <View style={styles.takeawayQrBox}>
+            {takeawayOrderUrl ? <QRCode value={takeawayOrderUrl} size={200} /> : null}
+          </View>
+          <Text style={styles.takeawayQrHint}>Ask the customer to scan this to order takeaway themselves</Text>
+        </View>
+      </BottomSheet>
     </View>
   );
 }
@@ -2957,10 +3240,28 @@ const styles = StyleSheet.create({
     padding: Spacing.md,
     marginBottom: Spacing.sm,
   },
-  takeawayCardHeader: {
+  takeawayCardTop: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: Spacing.sm,
+  },
+  takeawayCardLeft: {
+    flex: 1,
+  },
+  takeawayCardRight: {
+    alignItems: 'stretch',
+    minWidth: 68,
+    gap: Spacing.xs,
+  },
+  takeawayAmountRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'flex-end',
     gap: Spacing.sm,
+  },
+  takeawayStatusText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
   takeawayToken: {
     fontSize: 18,
@@ -2971,11 +3272,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: QuinckleColors.textPrimary,
-    marginLeft: 'auto',
   },
   takeawayTime: {
     fontSize: 12,
     color: QuinckleColors.textTertiary,
+    fontWeight: '400',
   },
   takeawayCustomer: {
     fontSize: 13,
@@ -2988,28 +3289,29 @@ const styles = StyleSheet.create({
     marginTop: 2,
     fontFamily: 'monospace',
   },
-  newTakeawayBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    height: 46,
+  takeawayNewIconBtn: {
+    width: 40,
+    height: 40,
     borderRadius: Radius.md,
     backgroundColor: QuinckleColors.primary,
-    marginHorizontal: Spacing.lg,
-    marginTop: Spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  newTakeawayBtnText: { color: '#fff', fontSize: 14.5, fontWeight: '700' },
-  takeawayGuestInput: {
-    height: 48,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
-    backgroundColor: QuinckleColors.surface,
-    color: QuinckleColors.textPrimary,
-    paddingHorizontal: Spacing.md,
-    fontSize: 14.5,
-    marginBottom: Spacing.sm,
+  takeawayQrBody: {
+    alignItems: 'center',
+    paddingHorizontal: Spacing.xl,
+    paddingBottom: Spacing.xl,
+    gap: Spacing.md,
+  },
+  takeawayQrBox: {
+    padding: 16,
+    backgroundColor: '#fff',
+    borderRadius: Radius.lg,
+  },
+  takeawayQrHint: {
+    color: QuinckleColors.textMuted,
+    fontSize: 12,
+    textAlign: 'center',
   },
   takeawayRefreshBtn: {
     width: 40,
@@ -3020,26 +3322,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: QuinckleColors.surface,
-  },
-  takeawayPaymentPill: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    borderRadius: Radius.pill,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    marginTop: Spacing.sm,
-  },
-  takeawayPaymentPaid: {
-    backgroundColor: `${QuinckleColors.success}18`,
-  },
-  takeawayPaymentPending: {
-    backgroundColor: `${QuinckleColors.warning}18`,
-  },
-  takeawayPaymentText: {
-    fontSize: 11,
-    fontWeight: '700',
   },
   takeawayDivider: {
     height: 1,
@@ -3057,6 +3339,16 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
     paddingVertical: 10,
     alignItems: 'center',
+  },
+  printIconBtn: {
+    flex: 1,
+    minHeight: 32,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    borderRadius: Radius.sm,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   takeawayActionRow: {
     flexDirection: 'row',
@@ -3081,6 +3373,32 @@ const styles = StyleSheet.create({
   },
   handoverBtnText: {
     color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  takeawayItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.sm,
+  },
+  takeawayItemDeleteBtn: {
+    padding: 2,
+  },
+  takeawayDeleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderColor: QuinckleColors.dangerBorder,
+    backgroundColor: QuinckleColors.dangerSoft,
+    borderRadius: Radius.sm,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+  },
+  takeawayDeleteBtnText: {
+    color: QuinckleColors.danger,
     fontSize: 14,
     fontWeight: '700',
   },

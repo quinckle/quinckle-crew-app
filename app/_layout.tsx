@@ -7,6 +7,7 @@ import { useEffect } from 'react';
 import { QuinckleColors } from '@/constants/Colors';
 import { initPrinter } from '@/services/printer';
 import { registerPrintSinkRunner, watchPrintSinkLifecycle } from '@/services/printSink';
+import { watchForOtaUpdates } from '@/services/otaUpdate';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -35,6 +36,14 @@ export default function RootLayout() {
   // backgrounded. Self-contained — no coupling to the dashboards.
   useEffect(() => {
     const stop = watchPrintSinkLifecycle();
+    return stop;
+  }, []);
+
+  // Auto-apply OTA updates in-session so a device that stays running (the print
+  // FGS keeps it alive) doesn't lag a published update until its next cold start.
+  // Reloads only while foregrounded — never mid background print. See otaUpdate.ts.
+  useEffect(() => {
+    const stop = watchForOtaUpdates();
     return stop;
   }, []);
 

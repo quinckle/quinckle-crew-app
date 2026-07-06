@@ -8,7 +8,7 @@ import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { crewSessions, crewTables, crewOrders, crewPayments, crewDiners, restaurantApi, printerApi } from '../../services/api';
 import type { CrewTable, SessionBill } from '../../services/api';
-import { printBill, printKot, getStatus as getPrinterStatus, isUpiQrEnabled, getUpiQrMode, setUpiQrMode } from '../../services/printer';
+import { printBill, printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
 import type { InvoiceBill } from '../../services/invoiceTemplate';
 import { useAuth } from '../../context/AuthContext';
 import { useCountdown } from '../../hooks/useCountdown';
@@ -16,6 +16,8 @@ import { subscribeChannel } from '../../services/realtime';
 import type { BillOrderItem, BillOrder, MenuItem } from '../../services/api';
 import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
+import { PrintOptionsSheet } from '../../components/ui/PrintOptionsSheet';
+import { BillDetailsSheet } from '../../components/ui/BillDetailsSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { Typography } from '../../constants/Colors';
@@ -107,6 +109,8 @@ export default function TableDetail() {
     phone?: string | null;
     email?: string | null;
     fssaiLicenseNumber?: string | null;
+    gstRegistered?: boolean;
+    gstin?: string | null;
   } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [orders, setOrders] = useState<BillOrder[]>([]);
@@ -305,6 +309,8 @@ export default function TableDetail() {
           phone: res.data.phone ?? null,
           email: res.data.email ?? null,
           fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null,
+          gstRegistered: res.data.taxConfig?.gstRegistered ?? false,
+          gstin: res.data.taxConfig?.gstin ?? null,
         });
         if (res.data.upiId) {
           setUpiId(res.data.upiId);
@@ -523,6 +529,7 @@ export default function TableDetail() {
       const result = await printKot({
         id: latestOrder.order_id,
         sessionId: sessionId || undefined,
+        sessionRef: sessionRef || undefined,
         tableNumber: tableId,
         restaurantName: staffInfo?.restaurantName ?? '',
         createdAt: latestOrder.placed_at ?? new Date().toISOString(),
@@ -582,6 +589,8 @@ export default function TableDetail() {
             phone: res.data.phone ?? null,
             email: res.data.email ?? null,
             fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null,
+            gstRegistered: res.data.taxConfig?.gstRegistered ?? false,
+            gstin: res.data.taxConfig?.gstin ?? null,
           };
           setRestaurantInvoiceMeta(invoiceMeta);
         }
@@ -597,6 +606,8 @@ export default function TableDetail() {
         restaurantPhone: invoiceMeta?.phone ?? null,
         restaurantEmail: invoiceMeta?.email ?? null,
         fssaiLicenseNumber: invoiceMeta?.fssaiLicenseNumber ?? null,
+        gstRegistered: invoiceMeta?.gstRegistered ?? false,
+        gstin: invoiceMeta?.gstin ?? null,
         tableNumber: tableNum,
         sessionRef: sessionRef || toSessionRef(sessionId),
         items: invoiceItems,
@@ -839,37 +850,14 @@ export default function TableDetail() {
             </TouchableOpacity>
           )}
 
-          {/* ── Print icon + popover ── */}
-          <View style={{ position: 'relative' }}>
-            <TouchableOpacity
-              onPress={() => { setActionMenuOpen(false); setPrintMenuOpen(o => !o); }}
-              style={styles.iconBtn}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="print-outline" size={18} color={QuinckleColors.textPrimary} />
-            </TouchableOpacity>
-            {printMenuOpen && (
-              <View style={styles.actionMenu}>
-                <TouchableOpacity
-                  onPress={handlePrintKot}
-                  style={styles.actionMenuItem}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="restaurant-outline" size={14} color={QuinckleColors.textPrimary} />
-                  <Text style={styles.actionMenuText}>Print KOT</Text>
-                </TouchableOpacity>
-                <View style={styles.actionMenuDivider} />
-                <TouchableOpacity
-                  onPress={() => { void handlePrintInvoice(); }}
-                  style={styles.actionMenuItem}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="receipt-outline" size={14} color={QuinckleColors.textPrimary} />
-                  <Text style={styles.actionMenuText}>Print Invoice</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
+          {/* ── Print icon → bottom sheet ── */}
+          <TouchableOpacity
+            onPress={() => { setActionMenuOpen(false); setPrintMenuOpen(true); }}
+            style={styles.iconBtn}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="print-outline" size={18} color={QuinckleColors.textPrimary} />
+          </TouchableOpacity>
 
           {/* ── Three-dot menu ── */}
           <View style={{ position: 'relative' }}>
@@ -1075,77 +1063,8 @@ export default function TableDetail() {
         }}
       />
 
-      <View style={[styles.bottomBar, isExpanded && styles.bottomBarExpanded]}>
-        {isExpanded && (
-          <View style={styles.accordionContent}>
-            <View style={styles.billHeader}>
-              <Text style={styles.billTitle}>Bill Details</Text>
-              <TouchableOpacity onPress={() => setIsExpanded(false)}>
-                <Ionicons name="chevron-down" size={20} color={QuinckleColors.textTertiary} />
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.billItemsContainer}>
-              {billableFlatItems.map(item => (
-                <View key={item.key} style={styles.billItemRow}>
-                  <View style={{ flex: 1, paddingRight: 10 }}>
-                    <Text style={styles.billItemName}>{item.name}</Text>
-                    {item.modifiersSummary ? (
-                      <Text style={styles.itemModifiers} numberOfLines={1}>{item.modifiersSummary}</Text>
-                    ) : null}
-                  </View>
-                  <Text style={styles.billItemPrice}>₹{item.price.toFixed(0)}</Text>
-                </View>
-              ))}
-            </View>
-
-            <View style={styles.billDivider} />
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Subtotal</Text>
-              <Text style={styles.summaryValue}>₹{sessionTotal.toFixed(0)}</Text>
-            </View>
-            {discountTotal > 0 && (
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Discount</Text>
-                <Text style={[styles.summaryValue, { color: '#86efac' }]}>−₹{discountTotal.toFixed(0)}</Text>
-              </View>
-            )}
-            {serviceChargeTotal !== 0 && (
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>{serviceChargeTotal > 0 ? 'Service charge' : 'Adjustment'}</Text>
-                <Text style={[styles.summaryValue, serviceChargeTotal < 0 && { color: '#86efac' }]}>
-                  {serviceChargeTotal < 0 ? '−' : ''}₹{Math.abs(serviceChargeTotal).toFixed(0)}
-                </Text>
-              </View>
-            )}
-            {tax > 0 && (
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>{billTaxRate > 0 ? `GST (${billTaxRate}%)` : 'Tax'}</Text>
-                <Text style={styles.summaryValue}>₹{tax.toFixed(2)}</Text>
-              </View>
-            )}
-            {tipTotal > 0 && (
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Tip</Text>
-                <Text style={styles.summaryValue}>₹{tipTotal.toFixed(0)}</Text>
-              </View>
-            )}
-            <View style={styles.grandTotalRow}>
-              <Text style={styles.grandTotalLabel}>Grand Total</Text>
-              <Text style={styles.grandTotalValue}>₹{grandTotal.toFixed(2)}</Text>
-            </View>
-
-            {!isPaid && orders.length > 0 && (
-              <TouchableOpacity style={styles.discountBtn} onPress={() => setDiscountModalOpen(true)} activeOpacity={0.85}>
-                <Ionicons name="pricetag-outline" size={15} color={QuinckleColors.primary} />
-                <Text style={styles.discountBtnText}>{discountTotal > 0 ? 'Edit discount' : 'Give discount'}</Text>
-              </TouchableOpacity>
-            )}
-
-          </View>
-        )}
-
-        <TouchableOpacity style={styles.totalRow} activeOpacity={0.85} onPress={() => setIsExpanded(!isExpanded)}>
+      <View style={styles.bottomBar}>
+        <TouchableOpacity style={styles.totalRow} activeOpacity={0.85} onPress={() => setIsExpanded(true)}>
           <View>
             <Text style={styles.totalLabel}>Total Payable</Text>
             <View style={[styles.paidBadge, isPaid ? styles.paidBadgeActive : styles.paidBadgeInactive]}>
@@ -1161,7 +1080,7 @@ export default function TableDetail() {
           </View>
           <View style={styles.totalValueContainer}>
             <Text style={styles.totalValue}>₹{grandTotal.toFixed(0)}</Text>
-            <Ionicons name={isExpanded ? 'chevron-down' : 'chevron-up'} size={18} color={QuinckleColors.textTertiary} style={{ marginLeft: Spacing.sm }} />
+            <Ionicons name="chevron-up" size={18} color={QuinckleColors.textTertiary} style={{ marginLeft: Spacing.sm }} />
           </View>
         </TouchableOpacity>
 
@@ -1189,10 +1108,24 @@ export default function TableDetail() {
 
       <ThemedDialog visible={dialog.visible} title={dialog.title} message={dialog.message} actions={dialog.actions} onClose={closeDialog} />
 
+      <BillDetailsSheet
+        visible={isExpanded}
+        items={billableFlatItems}
+        subtotal={sessionTotal}
+        discountTotal={discountTotal}
+        serviceChargeTotal={serviceChargeTotal}
+        tax={tax}
+        taxRate={billTaxRate}
+        tipTotal={tipTotal}
+        grandTotal={grandTotal}
+        canGiveDiscount={!isPaid && orders.length > 0}
+        onGiveDiscount={() => { setIsExpanded(false); setDiscountModalOpen(true); }}
+        onClose={() => setIsExpanded(false)}
+      />
+
       <QrChoiceSheet
         visible={!!qrSheet}
         amount={qrSheet?.grandTotal ?? 0}
-        defaultMode={getUpiQrMode()}
         onPick={(mode) => {
           void setUpiQrMode(mode);        // remember as the default next time
           const run = qrRunRef.current;
@@ -1321,6 +1254,14 @@ export default function TableDetail() {
           </View>
         </View>
       </Modal>
+
+      {/* Print options bottom sheet */}
+      <PrintOptionsSheet
+        visible={printMenuOpen}
+        onPrintKot={handlePrintKot}
+        onPrintInvoice={() => { void handlePrintInvoice(); }}
+        onClose={() => setPrintMenuOpen(false)}
+      />
 
       {/* Swap-table bottom sheet */}
       <SwapTableSheet
@@ -1579,19 +1520,6 @@ export default function TableDetail() {
 const styles = StyleSheet.create({
   toast: { position: 'absolute', alignSelf: 'center', backgroundColor: QuinckleColors.surfaceElevated, borderWidth: 1, borderColor: QuinckleColors.borderStrong, borderRadius: 12, paddingHorizontal: 18, paddingVertical: 12 },
   toastText: { color: QuinckleColors.textPrimary, fontSize: 13.5, fontWeight: '700' },
-  discountBtn: {
-    marginTop: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 11,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: 'rgba(243,93,59,0.4)',
-    backgroundColor: 'rgba(243,93,59,0.10)',
-  },
-  discountBtnText: { color: QuinckleColors.primary, fontSize: 13, fontWeight: '700' },
   segToggle: {
     flexDirection: 'row',
     marginTop: 16,
@@ -1945,7 +1873,6 @@ const styles = StyleSheet.create({
   emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: Spacing.huge, gap: Spacing.md },
   emptyText: { color: QuinckleColors.textTertiary, fontSize: 14 },
   bottomBar: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: Spacing.xl, paddingBottom: Spacing.xxl, paddingTop: Spacing.lg, backgroundColor: QuinckleColors.surface, borderTopWidth: 1, borderTopColor: QuinckleColors.border },
-  bottomBarExpanded: { borderTopLeftRadius: Radius.xxl, borderTopRightRadius: Radius.xxl, backgroundColor: QuinckleColors.surface },
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   totalLabel: { color: QuinckleColors.textTertiary, fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 },
   totalValueContainer: { flexDirection: 'row', alignItems: 'center' },
@@ -1956,20 +1883,6 @@ const styles = StyleSheet.create({
   paidBadgeText: { fontSize: 9, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6 },
   paidBadgeTextActive: { color: QuinckleColors.success },
   paidBadgeTextInactive: { color: QuinckleColors.warning },
-  accordionContent: { marginBottom: Spacing.xl },
-  billHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.lg },
-  billTitle: { color: QuinckleColors.textTertiary, fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 },
-  billItemsContainer: { maxHeight: 180 },
-  billItemRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: Spacing.md },
-  billItemName: { color: QuinckleColors.textPrimary, fontSize: 14, fontWeight: '500' },
-  billItemPrice: { color: QuinckleColors.textSecondary, fontSize: 14, fontWeight: '500' },
-  billDivider: { height: 1, backgroundColor: QuinckleColors.borderSubtle, marginVertical: Spacing.md },
-  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: Spacing.sm },
-  summaryLabel: { color: QuinckleColors.textSecondary, fontSize: 13, fontWeight: '500' },
-  summaryValue: { color: QuinckleColors.textPrimary, fontSize: 13, fontWeight: '600' },
-  grandTotalRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: Spacing.md, marginBottom: Spacing.lg, paddingTop: Spacing.md, borderTopWidth: 1, borderTopColor: QuinckleColors.border },
-  grandTotalLabel: { color: QuinckleColors.textPrimary, fontSize: 16, fontWeight: '700' },
-  grandTotalValue: { color: QuinckleColors.primary, fontSize: 18, fontWeight: '700' },
   payBtn: { backgroundColor: QuinckleColors.primary, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, paddingVertical: 14, borderRadius: Radius.md },
   payBtnPaid: { backgroundColor: QuinckleColors.success },
   payBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },

@@ -1,5 +1,5 @@
 // app/index.tsx
-import { Redirect, useRootNavigationState, router } from 'expo-router';
+import { useRootNavigationState, router } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import { 
   StyleSheet, 
@@ -51,11 +51,20 @@ export default function Index() {
   // Handle redirect only after splash is done AND navigation is ready
   const isReady = rootNavigationState?.key && isSplashReady && !isRestoring;
 
-  if (isReady) {
-    if (role === null) return <Redirect href="/login" />;
-    if (role === 'staff') return <Redirect href="/(staff)" />;
-    return <Redirect href="/(cook)" />;
-  }
+  // Route imperatively exactly once. This screen subscribes to
+  // useRootNavigationState(), so it re-renders on every navigation. A
+  // declarative <Redirect href="/login"> here re-fired each time the user
+  // pushed forward to /credential while logged out — popping them straight
+  // back to /login (the "auth page keeps redirecting back" bug). A one-shot
+  // guarded replace decides the entry route and then never fights forward nav.
+  const hasRedirected = useRef(false);
+  useEffect(() => {
+    if (!isReady || hasRedirected.current) return;
+    hasRedirected.current = true;
+    if (role === null) router.replace('/login');
+    else if (role === 'staff') router.replace('/(staff)');
+    else router.replace('/(cook)');
+  }, [isReady, role]);
 
   return (
     <View style={styles.container}>

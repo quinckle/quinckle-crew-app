@@ -5,7 +5,7 @@
  * Handles: scan BT devices, pair, unpair, test print, status display.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -22,6 +22,7 @@ import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { QuinckleColors, Radius, Spacing } from '../constants/Colors';
 import { ThemedDialog } from '../components/ui/themed-dialog';
+import { WidthPickerSheet } from '../components/ui/WidthPickerSheet';
 import {
   scan,
   pair,
@@ -35,7 +36,6 @@ import {
   type BluetoothDevice,
   type PrinterStatus,
 } from '../services/printer';
-import { PAPER_PRESETS } from '../services/paperProfile';
 import { printerApi } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -146,25 +146,22 @@ export default function PrinterScreen() {
   }
 
   // ── Paper width picker ───────────────────────────────────────────────────────
-  // Opens the themed dialog with the standard roll widths; invokes `onPick` with
+  // Opens a bottom sheet with the standard roll widths; invokes `onPick` with
   // the chosen width in mm. Used by both the Bluetooth and network pairing flows.
 
+  const [widthPickerVisible, setWidthPickerVisible] = useState(false);
+  const widthPickerCallback = useRef<((widthMM: number) => void) | null>(null);
+
   function chooseWidth(onPick: (widthMM: number) => void) {
-    setDialog({
-      visible: true,
-      title: 'Paper width',
-      message: "Select the printer's paper roll width.",
-      actions: [
-        ...PAPER_PRESETS.map((p) => ({
-          label: p.label,
-          onPress: () => {
-            setDialog((d) => ({ ...d, visible: false }));
-            onPick(p.widthMM);
-          },
-        })),
-        { label: 'Cancel', onPress: () => setDialog((d) => ({ ...d, visible: false })) },
-      ],
-    });
+    widthPickerCallback.current = onPick;
+    setWidthPickerVisible(true);
+  }
+
+  function handleWidthPick(widthMM: number) {
+    setWidthPickerVisible(false);
+    const cb = widthPickerCallback.current;
+    widthPickerCallback.current = null;
+    cb?.(widthMM);
   }
 
   // ── Pair (Bluetooth) ─────────────────────────────────────────────────────────
@@ -262,7 +259,7 @@ export default function PrinterScreen() {
               setLocalStatus('unpaired');
               setConfig(null);
               await loadServerStatus();
-              showToast('Printer unpaired', true);
+              showToast('Printer has been unpaired', false);
             } catch {
               showToast('Failed to unpair', false);
             } finally {
@@ -536,6 +533,12 @@ export default function PrinterScreen() {
         message={dialog.message}
         actions={dialog.actions}
         onClose={() => setDialog((d) => ({ ...d, visible: false }))}
+      />
+
+      <WidthPickerSheet
+        visible={widthPickerVisible}
+        onPick={handleWidthPick}
+        onClose={() => setWidthPickerVisible(false)}
       />
     </View>
   );

@@ -390,7 +390,15 @@ function SessionCard({ session, onPress }: { session: LedgerSession; onPress: ()
   const methods = sessionMethods(session);
   const totalItems = (session.orders ?? []).reduce((sum, o) => sum + (o.items ?? []).reduce((s2, i) => s2 + (i.qty ?? 0), 0), 0);
   const displayTotal = session.grandTotal || session.billTotal || session.foodSubtotal || 0;
+  const isTakeaway = session.channel === 'TAKEAWAY';
+  // Same shape for both channels: a generic label up top, the specific
+  // identifier (pickup token / table id) down next to the duration — makes
+  // takeaway and dine-in cards read as one uniform layout.
+  const identifier = isTakeaway
+    ? (session.pickupToken ?? 'TK')
+    : session.tableNumber != null ? `T-${String(session.tableNumber).padStart(2, '0')}` : 'Walk-in';
   const timeStr =
+    identifier + '  ·  ' +
     fmtTime(session.openedAt) +
     (session.closedAt ? ` – ${fmtTime(session.closedAt)}` : '') +
     (session.durationMins > 0 ? ` · ${session.durationMins}m` : '');
@@ -401,9 +409,7 @@ function SessionCard({ session, onPress }: { session: LedgerSession; onPress: ()
       <View style={{ flex: 1 }}>
         <View style={styles.sessionTopRow}>
           <Text style={styles.sessionRef}>
-            {session.channel === 'TAKEAWAY'
-              ? <Text style={{ color: QuinckleColors.primary }}>{`${session.pickupToken ?? 'Takeaway'}  TAKEAWAY`}</Text>
-              : session.tableNumber != null ? `Table ${session.tableNumber}` : 'Walk-in'}
+            {isTakeaway ? 'Takeaway' : 'Dine in'}
             <Text style={styles.sessionShort}>{session.sessionRef ? `  ${session.sessionRef}` : ''}</Text>
           </Text>
           <Text style={styles.sessionAmount}>{displayTotal > 0 ? fmtMoney(displayTotal) : '—'}</Text>

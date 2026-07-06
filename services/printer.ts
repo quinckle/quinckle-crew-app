@@ -26,6 +26,12 @@ const KEY_QUEUE  = 'pendingPrintQueue';
 const KEY_UPI_QR = 'printUpiQrOnBill';
 const KEY_UPI_QR_MODE = 'printUpiQrMode';
 
+// End-of-ticket paper feed (mm). Drives DantSu's pre-disconnect flush wait so
+// long tickets don't lose their tail — see the note in printRaw(). 40mm is a
+// safe margin over the 20mm default; lower it if paper waste is a concern and a
+// real-hardware test confirms full tickets still print.
+const KOT_END_FEED_MM = 40;
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface BluetoothDevice {
@@ -283,6 +289,14 @@ async function printRaw(text: string): Promise<void> {
     printerWidthMM: profile.printableWidthMM,
     printerNbrCharactersPerLine: profile.charsPerLine,
     autoCut: true,
+    // Extra end-of-ticket paper feed. DantSu (the native ESC/POS layer) ties its
+    // post-send wait — the pause BEFORE it closes the Bluetooth socket — to this
+    // feed length. Omitting it defaults to 20mm, whose wait is too short for a
+    // long ticket: the socket closes while the printer is still draining its
+    // buffer, so the TAIL (last items + footer) never renders. This is why a big
+    // (~6-item) KOT printed only its first few lines. A larger feed buys the
+    // flush time so the whole ticket prints. Tune KOT_END_FEED_MM if needed.
+    mmFeedPaper: KOT_END_FEED_MM,
   };
   if (_config.transport === 'network') {
     if (!_config.ip) throw new Error('PRINTER_NO_IP');

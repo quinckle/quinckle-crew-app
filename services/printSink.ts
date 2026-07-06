@@ -2,17 +2,21 @@
  * Background KOT print sink — Android foreground service.
  *
  * Problem this solves: React Native suspends the JS runtime when the app is
- * backgrounded or the screen is off, so the live Ably push and the in-screen
- * 15s drain stop running — and a KOT placed during that window only prints when
- * someone wakes the device. A foreground service keeps the process (and the JS
- * runtime) alive with an ongoing notification, so the drain loop below keeps
- * pulling the server's unprinted-order queue and printing even with the screen
- * off.
+ * backgrounded or the screen is off, so the live Ably push stops arriving — and
+ * a KOT placed during that window only prints when someone wakes the device. A
+ * foreground service keeps the process (and the JS runtime) alive with an
+ * ongoing notification, so the Ably realtime socket stays connected and the live
+ * KOT push keeps printing even with the screen off.
+ *
+ * There is NO periodic DB polling. Reconciliation for anything the live push
+ * missed is event-driven: drainPendingPrintJobs() runs on screen mount, on
+ * return to foreground, and whenever the realtime socket reconnects (exactly
+ * when a push could have been missed). This lets the database autosuspend while
+ * the restaurant is idle instead of being pinned awake by a 15s poll.
  *
  * Design:
  *   - registerPrintSinkRunner()  — registers the Notifee FGS task ONCE at app
- *     start. The task runs the drain loop on its own timer (NOT a React
- *     setInterval, which Android throttles in the background).
+ *     start. The task only keeps the runtime (and socket) alive; it no longer polls.
  *   - startPrintSink() / stopPrintSink() — show / tear down the ongoing
  *     notification, which starts / stops the service.
  *   - The whole thing is driven by a self-contained watcher (see
@@ -20,8 +24,8 @@
  *     when a printer is locally paired AND a crew member is signed in, and stops
  *     otherwise.
  *
- * Safety: printKot() de-dupes, so the FGS drain, the screen drains, and the
- * live Ably push can all run together without ever double-printing an order.
+ * Safety: printKot() de-dupes, so the event-driven drains and the live Ably
+ * push can all run together without ever double-printing an order.
  * Android-only; on iOS every export is a no-op.
  */
 
@@ -32,7 +36,6 @@ import { printKot, getStatus as getPrinterStatus } from './printer';
 
 const CHANNEL_ID = 'kot-print-sink';
 const NOTIFICATION_ID = 'kot-print-sink';
-const DRAIN_INTERVAL_MS = 15_000;
 
 // Module state — the FGS task and the watcher read these; setters keep them
 // fresh from the React layer without the service ever touching React state.
@@ -43,7 +46,6 @@ let _runnerRegistered = false;
 let _serviceRunning = false;
 
 const isAndroid = Platform.OS === 'android';
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** Keep the sink's context fresh (called from the screens / AuthContext). */
 export function setSinkContext(opts: {
@@ -58,9 +60,10 @@ export function setSinkContext(opts: {
 
 /**
  * Pull every order the backend still has marked kotPrintedAt=null (last 2h) and
- * print any that slipped past the live push. Shared by the FGS task AND the
- * on-screen drains — printKot de-dupes so overlap is harmless. No-ops unless the
- * auto-print toggle is on and this device holds the Bluetooth pairing.
+ * print any that slipped past the live push. Called on events only (screen
+ * mount, foreground resume, socket reconnect) — never on a timer. printKot
+ * de-dupes so overlapping triggers are harmless. No-ops unless the auto-print
+ * toggle is on and this device holds the Bluetooth pairing.
  */
 export async function drainPendingPrintJobs(): Promise<void> {
   if (!_autoPrintEnabled) return;
@@ -108,19 +111,13 @@ export function registerPrintSinkRunner(): void {
   if (_runnerRegistered || !isAndroid) return;
   _runnerRegistered = true;
   notifee.registerForegroundService(() => {
-    return new Promise<void>(() => {
-      // Intentionally never resolves. Drain immediately, then every 15s for as
-      // long as the service lives. `stopForegroundService()` tears this down.
-      (async () => {
-        // small initial delay so a cold start settles (token restore, etc.)
-        await sleep(1_000);
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          await drainPendingPrintJobs();
-          await sleep(DRAIN_INTERVAL_MS);
-        }
-      })();
-    });
+    // The service exists ONLY to keep the JS runtime — and therefore the Ably
+    // realtime socket — alive while the app is backgrounded, so the live KOT
+    // push keeps printing with the screen off. It does NO periodic DB polling;
+    // reconciliation is event-driven (drainPendingPrintJobs runs on mount, on
+    // return to foreground, and on socket reconnect — see the crew screens).
+    // The promise never resolves; stopForegroundService() tears it down.
+    return new Promise<void>(() => {});
   });
 }
 

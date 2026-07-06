@@ -23,6 +23,8 @@ export interface KotItem {
 export interface KotOrder {
   id: string;
   sessionId?: string;
+  /** Human-readable session ref (e.g. "TK-070726-ABC-001"), same value the bill prints. Preferred over the id-derived fallback. */
+  sessionRef?: string | null;
   tableNumber: number | string;
   /** Sequential day-counter (e.g. 1, 2, 42). Takes priority over id-derived suffix. */
   orderNumber?: string | number;
@@ -55,14 +57,6 @@ function formatTime(iso: string): string {
   }
 }
 
-function minutesAgo(iso: string): number {
-  try {
-    return Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
-  } catch {
-    return 0;
-  }
-}
-
 function toSessionRef(sessionId: string | null | undefined): string {
   const v = String(sessionId ?? '');
   const tail = v.slice(-8).toUpperCase();
@@ -91,11 +85,11 @@ export function buildKotText(order: KotOrder, paper: PaperProfile | number = 58)
 
   // ── Table / Takeaway + Order # ─────────────────────────────────────────────
   if (order.channel === 'TAKEAWAY' && order.pickupToken) {
-    lines.push(`[C]<b><font size="big">*** TAKEAWAY ***</font></b>`);
     lines.push(`[C]<b><font size="big">${order.pickupToken}</font></b>`);
-    lines.push(`[C]<b>*** PACK ***</b>`);
+    lines.push('[C]Takeaway');
   } else {
-    lines.push(`[C]<b><font size="big">*** TABLE ${String(order.tableNumber).padStart(2, '0')} ***</font></b>`);
+    lines.push(`[C]<b><font size="big">T${String(order.tableNumber).padStart(2, '0')}</font></b>`);
+    lines.push('[C]Dine In');
   }
 
   // Use sequential day-counter when available; fall back to last-6-chars of id
@@ -103,12 +97,13 @@ export function buildKotText(order: KotOrder, paper: PaperProfile | number = 58)
     ? `#${order.orderNumber}`
     : `#${order.id.slice(-6).toUpperCase()}`;
   const timeStr = formatTime(order.createdAt);
-  const ago = minutesAgo(order.createdAt);
   lines.push(`[C]Order ${ordNum}`);
-  if (order.sessionId) {
+  if (order.sessionRef) {
+    lines.push(`[C]Session ${order.sessionRef}`);
+  } else if (order.sessionId) {
     lines.push(`[C]Session ${toSessionRef(order.sessionId)}`);
   }
-  lines.push(`[C]${timeStr}  ·  ${ago} min ago`);
+  lines.push(`[C]${timeStr}`);
 
   lines.push(`[L]${d}`);
 
@@ -159,18 +154,6 @@ export function buildKotText(order: KotOrder, paper: PaperProfile | number = 58)
   if (order.isUrgent) {
     lines.push('[C]<b> *** URGENT *** </b>');
   }
-
-  // ── Footer ────────────────────────────────────────────────────────────────
-  const now = new Date().toLocaleTimeString('en-IN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
-  lines.push('[C]*** END ***');
-  lines.push(`[C]${now}`);
-  lines.push('[C]Support: quinckle.com/support');
-  lines.push(`[C]${D}`);
 
   // Blank lines + cut
   lines.push('[L] ');

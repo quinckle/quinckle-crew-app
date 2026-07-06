@@ -23,6 +23,9 @@ export interface InvoiceBill {
   restaurantPhone?: string | null;
   restaurantEmail?: string | null;
   fssaiLicenseNumber?: string | null;
+  /** Only a GST-registered restaurant may legally print "TAX INVOICE" + GSTIN. Unregistered restaurants print a plain "BILL". */
+  gstRegistered?: boolean;
+  gstin?: string | null;
   tableNumber: number | string;
   /** DINE_IN (default) prints "Table TNN"; TAKEAWAY prints the takeaway header + pickup token. */
   channel?: 'DINE_IN' | 'TAKEAWAY';
@@ -147,7 +150,7 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   // ── Header ────────────────────────────────────────────────────────────────
   lines.push(`[C]<b><font size="big">${bill.restaurantName}</font></b>`);
   lines.push(`[C]${D}`);
-  lines.push('[C]<b>TAX INVOICE</b>');
+  lines.push(bill.gstRegistered ? '[C]<b>TAX INVOICE</b>' : '[C]<b>BILL</b>');
   if (bill.channel === 'TAKEAWAY') {
     lines.push('[C]<b>*** TAKEAWAY ***</b>');
     if (bill.pickupToken) {
@@ -166,6 +169,7 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   if (bill.restaurantPhone) lines.push(`[C]Phone: ${bill.restaurantPhone}`);
   if (bill.restaurantEmail) lines.push(`[C]Email: ${bill.restaurantEmail}`);
   if (bill.fssaiLicenseNumber) lines.push(`[C]FSSAI: ${bill.fssaiLicenseNumber}`);
+  if (bill.gstRegistered && bill.gstin) lines.push(`[C]GSTIN: ${bill.gstin}`);
   lines.push(`[C]Printed: ${formatDateTime(now)}`);
   lines.push(`[L]${d}`);
 
@@ -198,7 +202,9 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
     lines.push(`[L]${leftRight(chargeLabel, chargeValue, W)}`);
   }
   if (bill.tax > 0) {
-    const taxLabel = bill.taxRate ? `GST (${bill.taxRate}%)` : 'GST';
+    const taxLabel = bill.gstRegistered
+      ? (bill.taxRate ? `GST (${bill.taxRate}%)` : 'GST')
+      : 'Tax';
     lines.push(`[L]${leftRight(taxLabel, fmt(bill.tax), W)}`);
   }
   lines.push(`[L]${D}`);
