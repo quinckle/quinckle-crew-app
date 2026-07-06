@@ -41,6 +41,7 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
   PAID:         { label: 'Paid',         color: QuinckleColors.success },
   OPEN:         { label: 'Open',         color: QuinckleColors.warning },
   CASH_PENDING: { label: 'Cash Pending', color: QuinckleColors.warning },
+  CANCELLED:    { label: 'Cancelled',    color: QuinckleColors.danger },
   CLOSED:       { label: 'Closed',       color: QuinckleColors.textTertiary },
 };
 
@@ -90,6 +91,24 @@ function OrderCard({ order }: { order: LedgerOrder }) {
             </View>
           </View>
           <Text style={styles.itemTotal}>{fmtMoney(it.total)}</Text>
+        </View>
+      ))}
+
+      {/* Voided lines — shown struck-through so the bill reconciles with what
+          was actually rung up. These don't count toward the order total. */}
+      {(order.cancelledItems ?? []).map((it) => (
+        <View key={it.id} style={styles.itemRow}>
+          <View style={styles.itemLeft}>
+            <Ionicons name="close" size={14} color={QuinckleColors.danger} style={{ marginTop: 2 }} />
+            <Text style={[styles.itemQty, styles.itemStruck]}>{it.qty}×</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.itemName, styles.itemStruck]} numberOfLines={2}>{it.name}</Text>
+              {!!it.modifiersSummary && <Text style={styles.itemNote} numberOfLines={2}>{it.modifiersSummary}</Text>}
+            </View>
+          </View>
+          <View style={styles.removedTag}>
+            <Text style={styles.removedTagText}>Removed</Text>
+          </View>
         </View>
       ))}
 
@@ -384,6 +403,9 @@ const styles = StyleSheet.create({
   itemName: { color: QuinckleColors.textPrimary, fontSize: 13.5 },
   itemNote: { color: QuinckleColors.textTertiary, fontSize: 11.5, marginTop: 2, fontStyle: 'italic' },
   itemTotal: { color: QuinckleColors.textPrimary, fontSize: 13.5, fontWeight: '600' },
+  itemStruck: { color: QuinckleColors.textTertiary, textDecorationLine: 'line-through' },
+  removedTag: { backgroundColor: QuinckleColors.dangerSoft, borderRadius: Radius.sm, paddingHorizontal: 7, paddingVertical: 2 },
+  removedTagText: { color: QuinckleColors.danger, fontSize: 10, fontWeight: '700' },
   orderFooter: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     marginTop: Spacing.sm, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: QuinckleColors.borderSubtle,

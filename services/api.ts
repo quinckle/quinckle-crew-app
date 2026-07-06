@@ -348,6 +348,8 @@ export interface LedgerOrder {
     confirmedAt: string | null;
   };
   items: LedgerSessionItem[];
+  /** Voided lines (itemStatus CANCELLED) — shown struck-through in the detail. */
+  cancelledItems?: LedgerSessionItem[];
 }
 
 export type LedgerRange = 'today' | 'yesterday' | 'week' | 'month';
@@ -373,7 +375,7 @@ export interface LedgerSession {
   channel?: 'DINE_IN' | 'TAKEAWAY';
   pickupToken?: string | null;
   status: string;
-  statusView?: 'PAID' | 'OPEN' | 'CASH_PENDING' | 'CLOSED';
+  statusView?: 'PAID' | 'OPEN' | 'CASH_PENDING' | 'CLOSED' | 'CANCELLED';
   openedAt: string;
   closedAt: string | null;
   durationMins: number;
@@ -381,6 +383,8 @@ export interface LedgerSession {
   customerPhone: string | null;
   orders: LedgerOrder[];
   foodSubtotal: number;
+  /** Gross value of everything voided in this session (struck original amount). */
+  cancelledValue?: number;
   totalDiscount: number;
   chargesGstTotal: number;
   totalTip: number;

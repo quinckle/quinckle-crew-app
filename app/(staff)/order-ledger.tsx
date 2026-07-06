@@ -51,6 +51,7 @@ const STATUS_FILTERS = [
   { key: 'paid',         label: 'Paid' },
   { key: 'open',         label: 'Open' },
   { key: 'cash_pending', label: 'Cash Pending' },
+  { key: 'cancelled',    label: 'Cancelled' },
   { key: 'closed',       label: 'Closed' },
 ];
 const METHOD_FILTERS = [
@@ -99,6 +100,7 @@ function sessionStatusMeta(s: LedgerSession): { label: string; color: string } {
     case 'PAID':         return { label: 'Paid',         color: QuinckleColors.success };
     case 'OPEN':         return { label: 'Open',         color: QuinckleColors.warning };
     case 'CASH_PENDING': return { label: 'Cash Pending', color: QuinckleColors.warning };
+    case 'CANCELLED':    return { label: 'Cancelled',    color: QuinckleColors.danger };
     default:             return { label: 'Closed',       color: QuinckleColors.textTertiary };
   }
 }
@@ -390,6 +392,9 @@ function SessionCard({ session, onPress }: { session: LedgerSession; onPress: ()
   const methods = sessionMethods(session);
   const totalItems = (session.orders ?? []).reduce((sum, o) => sum + (o.items ?? []).reduce((s2, i) => s2 + (i.qty ?? 0), 0), 0);
   const displayTotal = session.grandTotal || session.billTotal || session.foodSubtotal || 0;
+  const isCancelled = (session.statusView ?? session.status) === 'CANCELLED';
+  // A fully-voided session has ₹0 payable — show the struck original instead of "—".
+  const struckTotal = isCancelled ? (session.cancelledValue ?? 0) : 0;
   const isTakeaway = session.channel === 'TAKEAWAY';
   // Same shape for both channels: a generic label up top, the specific
   // identifier (pickup token / table id) down next to the duration — makes
@@ -412,7 +417,11 @@ function SessionCard({ session, onPress }: { session: LedgerSession; onPress: ()
             {isTakeaway ? 'Takeaway' : 'Dine in'}
             <Text style={styles.sessionShort}>{session.sessionRef ? `  ${session.sessionRef}` : ''}</Text>
           </Text>
-          <Text style={styles.sessionAmount}>{displayTotal > 0 ? fmtMoney(displayTotal) : '—'}</Text>
+          {isCancelled && struckTotal > 0 ? (
+            <Text style={styles.sessionAmountStruck}>{fmtMoney(struckTotal)}</Text>
+          ) : (
+            <Text style={styles.sessionAmount}>{displayTotal > 0 ? fmtMoney(displayTotal) : '—'}</Text>
+          )}
         </View>
         <View style={styles.sessionBottomRow}>
           <Text style={styles.sessionMeta} numberOfLines={1}>{timeStr}</Text>
@@ -803,6 +812,7 @@ const styles = StyleSheet.create({
   sessionRef: { color: QuinckleColors.textPrimary, fontSize: 14, fontWeight: '700' },
   sessionShort: { color: QuinckleColors.textTertiary, fontSize: 11, fontWeight: '500' },
   sessionAmount: { color: QuinckleColors.textPrimary, fontSize: 14, fontWeight: '700' },
+  sessionAmountStruck: { color: QuinckleColors.textTertiary, fontSize: 14, fontWeight: '700', textDecorationLine: 'line-through' },
   sessionBottomRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 5 },
   sessionMeta: { color: QuinckleColors.textTertiary, fontSize: 11.5, flexShrink: 1 },
   sessionRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
