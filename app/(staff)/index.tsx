@@ -486,9 +486,36 @@ export default function StaffDashboard() {
     void loadTakeawayOrders();
   };
 
-  const deleteTakeawayWholeOrder = async (orderId: string) => {
-    await crewOrders.cancelOrder(orderId);
-    setTakeawayOrders((prev) => prev.filter((o) => o.orderId !== orderId));
+  // Whole-order delete mirrors the table sheet's "Free table": close the sheet,
+  // then confirm via the standard ThemedDialog before hitting the API.
+  const requestDeleteWholeTakeaway = () => {
+    const o = manageOrder;
+    setManageOrder(null);
+    if (!o) return;
+    setTimeout(() => {
+      showDialog(
+        'Delete order?',
+        `Delete this entire takeaway order${o.pickupToken ? ` (${o.pickupToken})` : ''}? This cannot be undone.`,
+        [
+          { label: 'Cancel', onPress: () => {} },
+          {
+            label: 'Delete',
+            variant: 'danger',
+            onPress: () => {
+              void (async () => {
+                try {
+                  await crewOrders.cancelOrder(o.orderId);
+                  setTakeawayOrders((prev) => prev.filter((x) => x.orderId !== o.orderId));
+                } catch (err: any) {
+                  showDialog('Could not delete', takeawayCancelMessage(err), [{ label: 'OK', onPress: () => {} }]);
+                  void loadTakeawayOrders();
+                }
+              })();
+            },
+          },
+        ],
+      );
+    }, 220);
   };
 
   // KOT auto-print toggle — loaded from server, synced via Ably.
@@ -2152,7 +2179,7 @@ export default function StaffDashboard() {
         order={manageOrder}
         onClose={() => setManageOrder(null)}
         onDeleteItem={(itemId) => deleteTakeawayItem(manageOrder!.orderId, itemId)}
-        onDeleteWholeOrder={() => deleteTakeawayWholeOrder(manageOrder!.orderId)}
+        onDeleteWholeOrder={requestDeleteWholeTakeaway}
         errorMessageFor={takeawayCancelMessage}
       />
 

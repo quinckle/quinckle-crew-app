@@ -1,8 +1,11 @@
 /**
  * TakeawayManageSheet — long-press action sheet for a takeaway order.
+ * Visually mirrors the table "Manage Table" sheet (flat rows, icon chips,
+ * subtle dividers).
  *
  * Two modes:
- *   • choose — pick "Remove an item" or "Delete whole order" (inline confirm).
+ *   • choose — "Remove an item" (→ items mode) or "Delete whole order"
+ *              (closes + confirms via the parent's ThemedDialog, like "Free table").
  *   • items  — each line has a trash icon at the right; tapping it plays a
  *              strike-through animation, then the row collapses away (siblings
  *              glide up) before the delete is persisted.
@@ -13,7 +16,6 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Animated,
   Easing,
   LayoutAnimation,
@@ -27,7 +29,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { BottomSheet } from './BottomSheet';
-import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
+import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import type { TakeawayOrder } from '../../services/api';
 
 // LayoutAnimation needs this opt-in on old-arch Android; harmless no-op on Fabric.
@@ -49,8 +51,8 @@ interface Props {
   onClose: () => void;
   /** Persist a single-line delete. Resolve on success, reject with {code,message} on failure. */
   onDeleteItem: (itemId: string) => Promise<void>;
-  /** Persist a whole-order delete. Resolve on success, reject on failure. */
-  onDeleteWholeOrder: () => Promise<void>;
+  /** Ask the parent to close + confirm the whole-order delete (ThemedDialog flow). */
+  onDeleteWholeOrder: () => void;
   /** Map a thrown API error to a crew-facing message. */
   errorMessageFor: (err: any) => string;
 }
@@ -65,7 +67,7 @@ function DeletableRow({
   onStruck: (item: Item) => void;
   disabled: boolean;
 }) {
-  const [textW, setTextW] = useState(0);
+  const [titleW, setTitleW] = useState(0);
   const strikeW = useRef(new Animated.Value(0)).current;
   const textOpacity = useRef(new Animated.Value(1)).current;
   const iconScale = useRef(new Animated.Value(1)).current;
@@ -81,7 +83,7 @@ function DeletableRow({
     ]).start();
     Animated.parallel([
       Animated.timing(strikeW, {
-        toValue: textW,
+        toValue: titleW,
         duration: 230,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: false,
@@ -95,19 +97,17 @@ function DeletableRow({
   };
 
   return (
-    <View style={styles.itemRow}>
-      <View style={styles.itemTextWrap}>
-        <Animated.Text
-          style={[styles.itemText, { opacity: textOpacity }]}
-          onLayout={(e) => setTextW(e.nativeEvent.layout.width)}
-          numberOfLines={2}
-        >
-          <Text style={styles.itemQty}>{item.qty}× </Text>
-          {item.name}
-          {item.modifiers ? <Text style={styles.itemMods}>  {item.modifiers}</Text> : null}
-        </Animated.Text>
-        <Animated.View style={[styles.strike, { width: strikeW }]} pointerEvents="none" />
-      </View>
+    <View style={styles.row}>
+      <Animated.View style={[styles.rowTextWrap, { opacity: textOpacity }]}>
+        <View style={styles.titleWrap}>
+          <Text style={styles.rowTitle} numberOfLines={1} onLayout={(e) => setTitleW(e.nativeEvent.layout.width)}>
+            <Text style={styles.qty}>{item.qty}× </Text>
+            {item.name}
+          </Text>
+          <Animated.View style={[styles.strike, { width: strikeW }]} pointerEvents="none" />
+        </View>
+        {item.modifiers ? <Text style={styles.rowSub} numberOfLines={1}>{item.modifiers}</Text> : null}
+      </Animated.View>
       <TouchableOpacity
         onPress={runDelete}
         disabled={busy || disabled}
@@ -116,7 +116,7 @@ function DeletableRow({
         style={styles.trashBtn}
       >
         <Animated.View style={{ transform: [{ scale: iconScale }] }}>
-          <Ionicons name="trash-outline" size={20} color={QuinckleColors.danger} />
+          <Ionicons name="trash-outline" size={19} color={QuinckleColors.danger} />
         </Animated.View>
       </TouchableOpacity>
     </View>
@@ -126,16 +126,12 @@ function DeletableRow({
 export function TakeawayManageSheet({ order, onClose, onDeleteItem, onDeleteWholeOrder, errorMessageFor }: Props) {
   const [mode, setMode] = useState<'choose' | 'items'>('choose');
   const [items, setItems] = useState<Item[]>([]);
-  const [confirmWhole, setConfirmWhole] = useState(false);
-  const [wholeBusy, setWholeBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Reset the sheet's local state whenever a different order is opened.
   useEffect(() => {
     setMode('choose');
     setItems(order?.items ?? []);
-    setConfirmWhole(false);
-    setWholeBusy(false);
     setError(null);
   }, [order?.orderId]);
 
@@ -171,94 +167,48 @@ export function TakeawayManageSheet({ order, onClose, onDeleteItem, onDeleteWhol
     })();
   };
 
-  const handleDeleteWhole = () => {
-    setError(null);
-    setWholeBusy(true);
-    void (async () => {
-      try {
-        await onDeleteWholeOrder();
-        onClose();
-      } catch (err: any) {
-        setWholeBusy(false);
-        setConfirmWhole(false);
-        setError(errorMessageFor(err));
-      }
-    })();
-  };
-
   return (
     <BottomSheet visible={!!order} onClose={onClose} title={title}>
       <View style={styles.body}>
         {mode === 'choose' ? (
           <>
-            <TouchableOpacity style={styles.option} onPress={() => setMode('items')} activeOpacity={0.85}>
-              <View style={styles.optionIcon}>
-                <Ionicons name="pricetags-outline" size={20} color={QuinckleColors.textSecondary} />
+            <TouchableOpacity style={styles.row} onPress={() => setMode('items')} activeOpacity={0.7}>
+              <View style={styles.icon}>
+                <Ionicons name="pricetags-outline" size={19} color={QuinckleColors.textPrimary} />
               </View>
-              <View style={styles.optionTextWrap}>
-                <Text style={styles.optionLabel}>Remove an item</Text>
-                <Text style={styles.optionSub}>Delete one line and recalculate the total</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowTitle}>Remove an item</Text>
+                <Text style={styles.rowSub}>Delete one line and recalculate the total</Text>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
+              <Ionicons name="chevron-forward" size={16} color={QuinckleColors.textTertiary} />
             </TouchableOpacity>
 
-            {!confirmWhole ? (
-              <TouchableOpacity
-                style={[styles.option, styles.optionDanger]}
-                onPress={() => setConfirmWhole(true)}
-                activeOpacity={0.85}
-              >
-                <View style={[styles.optionIcon, styles.optionIconDanger]}>
-                  <Ionicons name="trash-outline" size={20} color={QuinckleColors.danger} />
-                </View>
-                <View style={styles.optionTextWrap}>
-                  <Text style={[styles.optionLabel, { color: QuinckleColors.danger }]}>Delete whole order</Text>
-                  <Text style={styles.optionSub}>Cancel every item in this order</Text>
-                </View>
-              </TouchableOpacity>
-            ) : (
-              <View style={[styles.option, styles.optionDanger, styles.confirmRow]}>
-                <Text style={styles.confirmText}>Delete this entire order?</Text>
-                <View style={styles.confirmBtns}>
-                  <TouchableOpacity
-                    style={styles.confirmCancel}
-                    onPress={() => setConfirmWhole(false)}
-                    disabled={wholeBusy}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.confirmCancelText}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.confirmDelete}
-                    onPress={handleDeleteWhole}
-                    disabled={wholeBusy}
-                    activeOpacity={0.8}
-                  >
-                    {wholeBusy ? (
-                      <ActivityIndicator size="small" color="#fff" />
-                    ) : (
-                      <Text style={styles.confirmDeleteText}>Delete</Text>
-                    )}
-                  </TouchableOpacity>
-                </View>
+            <View style={styles.divider} />
+
+            <TouchableOpacity style={styles.row} onPress={onDeleteWholeOrder} activeOpacity={0.7}>
+              <View style={[styles.icon, styles.iconDanger]}>
+                <Ionicons name="trash-outline" size={19} color={QuinckleColors.danger} />
               </View>
-            )}
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.rowTitle, { color: QuinckleColors.danger }]}>Delete whole order</Text>
+                <Text style={styles.rowSub}>Cancel every item in this order</Text>
+              </View>
+            </TouchableOpacity>
           </>
         ) : (
           <>
             <TouchableOpacity style={styles.backRow} onPress={() => setMode('choose')} activeOpacity={0.7}>
-              <Ionicons name="chevron-back" size={18} color={QuinckleColors.textSecondary} />
+              <Ionicons name="chevron-back" size={17} color={QuinckleColors.textSecondary} />
               <Text style={styles.backText}>Remove an item</Text>
             </TouchableOpacity>
 
-            <View style={styles.itemList}>
-              {items.map((it) => (
-                <DeletableRow key={it.itemId} item={it} onStruck={handleStruck} disabled={wholeBusy} />
-              ))}
-              {items.length === 0 && (
-                <Text style={styles.emptyText}>No items left.</Text>
-              )}
-            </View>
+            {items.map((it, i) => (
+              <React.Fragment key={it.itemId}>
+                {i > 0 && <View style={styles.divider} />}
+                <DeletableRow item={it} onStruck={handleStruck} disabled={false} />
+              </React.Fragment>
+            ))}
+            {items.length === 0 && <Text style={styles.emptyText}>No items left.</Text>}
           </>
         )}
 
@@ -268,28 +218,17 @@ export function TakeawayManageSheet({ order, onClose, onDeleteItem, onDeleteWhol
   );
 }
 
+// Mirrors the table "Manage Table" sheet styles for a consistent look.
 const styles = StyleSheet.create({
-  body: {
-    paddingHorizontal: Spacing.xl,
-    paddingBottom: Spacing.sm,
-    gap: Spacing.md,
-  },
-  // ── choose mode ──
-  option: {
+  body: { paddingHorizontal: Spacing.xl, paddingBottom: Spacing.md, gap: 2 },
+  row: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.md,
-    backgroundColor: QuinckleColors.surfaceElevated,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
-    padding: Spacing.lg,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
   },
-  optionDanger: {
-    backgroundColor: QuinckleColors.dangerSoft,
-    borderColor: QuinckleColors.dangerBorder,
-  },
-  optionIcon: {
+  icon: {
     width: 40,
     height: 40,
     borderRadius: Radius.md,
@@ -297,102 +236,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  optionIconDanger: {
-    backgroundColor: 'rgba(239,68,68,0.14)',
-  },
-  optionTextWrap: {
-    flex: 1,
-    gap: 2,
-  },
-  optionLabel: {
-    ...Typography.bodyStrong,
-    color: QuinckleColors.textPrimary,
-  },
-  optionSub: {
-    ...Typography.caption,
-    color: QuinckleColors.textSecondary,
-  },
-  // ── inline whole-order confirm ──
-  confirmRow: {
-    flexDirection: 'column',
-    alignItems: 'stretch',
-    gap: Spacing.md,
-  },
-  confirmText: {
-    ...Typography.bodyStrong,
-    color: QuinckleColors.textPrimary,
-  },
-  confirmBtns: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-  },
-  confirmCancel: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
-    borderRadius: Radius.sm,
-    paddingVertical: 11,
-    alignItems: 'center',
-  },
-  confirmCancelText: {
-    ...Typography.bodyStrong,
-    color: QuinckleColors.textSecondary,
-  },
-  confirmDelete: {
-    flex: 1,
-    backgroundColor: QuinckleColors.danger,
-    borderRadius: Radius.sm,
-    paddingVertical: 11,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  confirmDeleteText: {
-    ...Typography.bodyStrong,
-    color: '#fff',
-  },
-  // ── items mode ──
-  backRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingVertical: 2,
-  },
-  backText: {
-    ...Typography.bodyStrong,
-    color: QuinckleColors.textSecondary,
-  },
-  itemList: {
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
-    backgroundColor: QuinckleColors.surfaceElevated,
-    overflow: 'hidden',
-  },
-  itemRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    paddingVertical: 13,
-    paddingHorizontal: Spacing.lg,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: QuinckleColors.border,
-  },
-  itemTextWrap: {
-    flex: 1,
-    justifyContent: 'center',
-  },
-  itemText: {
-    ...Typography.body,
-    color: QuinckleColors.textPrimary,
-  },
-  itemQty: {
-    color: QuinckleColors.textSecondary,
-    fontWeight: '700',
-  },
-  itemMods: {
-    color: QuinckleColors.textTertiary,
-    fontSize: 13,
-  },
+  iconDanger: { backgroundColor: QuinckleColors.dangerSoft },
+  rowTextWrap: { flex: 1, justifyContent: 'center' },
+  titleWrap: { alignSelf: 'flex-start', justifyContent: 'center' },
+  rowTitle: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '600' },
+  qty: { color: QuinckleColors.textSecondary, fontWeight: '700' },
+  rowSub: { color: QuinckleColors.textTertiary, fontSize: 12, marginTop: 2 },
+  divider: { height: 1, backgroundColor: QuinckleColors.surfaceMuted, marginVertical: 2 },
   strike: {
     position: 'absolute',
     left: 0,
@@ -402,18 +252,9 @@ const styles = StyleSheet.create({
     borderRadius: 1,
     backgroundColor: QuinckleColors.danger,
   },
-  trashBtn: {
-    padding: 4,
-  },
-  emptyText: {
-    ...Typography.caption,
-    color: QuinckleColors.textTertiary,
-    textAlign: 'center',
-    padding: Spacing.lg,
-  },
-  errorText: {
-    ...Typography.caption,
-    color: QuinckleColors.danger,
-    textAlign: 'center',
-  },
+  trashBtn: { padding: 4 },
+  backRow: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 8, paddingHorizontal: 4 },
+  backText: { color: QuinckleColors.textSecondary, fontSize: 15, fontWeight: '600' },
+  emptyText: { color: QuinckleColors.textTertiary, fontSize: 12, textAlign: 'center', paddingVertical: Spacing.lg },
+  errorText: { color: QuinckleColors.danger, fontSize: 12, textAlign: 'center', marginTop: Spacing.sm },
 });
