@@ -8,6 +8,7 @@ import {
   RefreshControl,
   Image,
   LayoutAnimation,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -53,6 +54,7 @@ import { MergeTableSheet } from '../../components/ui/MergeTableSheet';
 import { BottomNavbar } from '../../components/ui/BottomNavbar';
 import { PICKUP_LAYOUT_PRESET, PickupCard, PickupSegmented } from '../../components/ui/pickup';
 import { PrintOptionsSheet } from '../../components/ui/PrintOptionsSheet';
+import { TakeawayManageSheet } from '../../components/ui/TakeawayManageSheet';
 import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
 import { TableSkeleton } from '../../components/ui/TableSkeleton';
 import { MenuSkeleton } from '../../components/ui/MenuSkeleton';
@@ -231,8 +233,8 @@ export default function StaffDashboard() {
   const [takeawayOrders, setTakeawayOrders] = useState<TakeawayOrder[]>([]);
   const [takeawaySubTab, setTakeawaySubTab] = useState<'preparing' | 'handed'>('preparing');
   const [handingOverIds, setHandingOverIds] = useState<string[]>([]);
-  // Orders currently being deleted (whole-order) — disables the card's actions.
-  const [cancellingOrderIds, setCancellingOrderIds] = useState<string[]>([]);
+  // Order whose long-press "manage" sheet (item / whole-order delete) is open.
+  const [manageOrder, setManageOrder] = useState<TakeawayOrder | null>(null);
   const [refreshingTakeaway, setRefreshingTakeaway] = useState(false);
   const [takeawaySearchText, setTakeawaySearchText] = useState('');
   const [takeawayQrOpen, setTakeawayQrOpen] = useState(false);
@@ -468,60 +470,25 @@ export default function StaffDashboard() {
     return (typeof err?.message === 'string' && err.message) || 'Something went wrong. Please try again.';
   };
 
-  // Delete a single item line from a takeaway order (before payment). Confirms
-  // first, then reuses the shared item-cancel endpoint and reloads the board.
-  const handleDeleteTakeawayItem = (order: TakeawayOrder, item: TakeawayOrder['items'][number]) => {
-    showDialog(
-      'Remove item?',
-      `Remove ${item.qty}× ${item.name} from this order? The total will be recalculated.`,
-      [
-        { label: 'Cancel', onPress: () => {} },
-        {
-          label: 'Remove',
-          variant: 'danger',
-          onPress: () => {
-            void (async () => {
-              try {
-                await crewOrders.cancelItem(order.orderId, item.itemId);
-                await loadTakeawayOrders();
-              } catch (err: any) {
-                showDialog('Could not remove', takeawayCancelMessage(err), [{ label: 'OK', onPress: () => {} }]);
-                void loadTakeawayOrders();
-              }
-            })();
-          },
-        },
-      ],
-    );
+  // Long-press a takeaway card to open the manage sheet (item / whole-order
+  // delete). Only offered on orders that are still deletable.
+  const openTakeawayManage = (order: TakeawayOrder) => {
+    if (!canDeleteTakeaway(order)) return;
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setManageOrder(order);
   };
 
-  // Delete an entire takeaway order (all lines) before payment. Confirms first.
-  const handleDeleteTakeawayOrder = (order: TakeawayOrder) => {
-    showDialog(
-      'Delete order?',
-      `Delete this entire takeaway order${order.pickupToken ? ` (${order.pickupToken})` : ''}? This cannot be undone.`,
-      [
-        { label: 'Cancel', onPress: () => {} },
-        {
-          label: 'Delete',
-          variant: 'danger',
-          onPress: () => {
-            void (async () => {
-              setCancellingOrderIds((prev) => [...prev, order.orderId]);
-              try {
-                await crewOrders.cancelOrder(order.orderId);
-                setTakeawayOrders((prev) => prev.filter((o) => o.orderId !== order.orderId));
-              } catch (err: any) {
-                showDialog('Could not delete', takeawayCancelMessage(err), [{ label: 'OK', onPress: () => {} }]);
-                void loadTakeawayOrders();
-              } finally {
-                setCancellingOrderIds((prev) => prev.filter((id) => id !== order.orderId));
-              }
-            })();
-          },
-        },
-      ],
-    );
+  // Thin persistence callbacks handed to the sheet. They talk to the API and
+  // reconcile local state; the sheet owns the delete animation + error display,
+  // so these just resolve on success and re-throw on failure.
+  const deleteTakeawayItem = async (orderId: string, itemId: string) => {
+    await crewOrders.cancelItem(orderId, itemId);
+    void loadTakeawayOrders();
+  };
+
+  const deleteTakeawayWholeOrder = async (orderId: string) => {
+    await crewOrders.cancelOrder(orderId);
+    setTakeawayOrders((prev) => prev.filter((o) => o.orderId !== orderId));
   };
 
   // KOT auto-print toggle — loaded from server, synced via Ably.
@@ -1949,7 +1916,14 @@ export default function StaffDashboard() {
               <RefreshControl refreshing={refreshingTakeaway} onRefresh={handleRefreshTakeaway} tintColor={QuinckleColors.primary} />
             }
             renderItem={({ item }) => (
-              <View style={styles.takeawayCard}>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.takeawayCard,
+                  pressed && canDeleteTakeaway(item) && styles.takeawayCardPressed,
+                ]}
+                onLongPress={() => openTakeawayManage(item)}
+                delayLongPress={280}
+              >
                 <View style={styles.takeawayCardTop}>
                   <View style={styles.takeawayCardLeft}>
                     <Text style={styles.takeawayToken}>
@@ -1988,40 +1962,12 @@ export default function StaffDashboard() {
                 </View>
                 <View style={styles.takeawayDivider} />
                 {item.items.map((it, j) => (
-                  <View key={j} style={styles.takeawayItemRow}>
-                    <Text style={styles.takeawayItemText}>
-                      {it.qty}× {it.name}{it.modifiers ? ` (${it.modifiers})` : ''}
-                    </Text>
-                    {canDeleteTakeaway(item) && item.items.length > 1 && (
-                      <TouchableOpacity
-                        style={styles.takeawayItemDeleteBtn}
-                        onPress={() => handleDeleteTakeawayItem(item, it)}
-                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                        activeOpacity={0.7}
-                      >
-                        <Ionicons name="close-circle-outline" size={18} color={QuinckleColors.textTertiary} />
-                      </TouchableOpacity>
-                    )}
-                  </View>
+                  <Text key={j} style={styles.takeawayItemText}>
+                    {it.qty}× {it.name}{it.modifiers ? ` (${it.modifiers})` : ''}
+                  </Text>
                 ))}
                 {item.status !== 'SERVED' && (
                   <View style={styles.takeawayActionRow}>
-                    {canDeleteTakeaway(item) && (
-                      <TouchableOpacity
-                        style={[
-                          styles.takeawayDeleteBtn,
-                          cancellingOrderIds.includes(item.orderId) && styles.handoverBtnDisabled,
-                        ]}
-                        onPress={() => handleDeleteTakeawayOrder(item)}
-                        disabled={cancellingOrderIds.includes(item.orderId)}
-                        activeOpacity={0.8}
-                      >
-                        <Ionicons name="trash-outline" size={16} color={QuinckleColors.danger} />
-                        <Text style={styles.takeawayDeleteBtnText}>
-                          {cancellingOrderIds.includes(item.orderId) ? 'Deleting…' : 'Delete'}
-                        </Text>
-                      </TouchableOpacity>
-                    )}
                     {isTakeawayPendingCollection(item) && (
                       <TouchableOpacity
                         style={styles.collectTakeawayBtn}
@@ -2046,7 +1992,7 @@ export default function StaffDashboard() {
                     </TouchableOpacity>
                   </View>
                 )}
-              </View>
+              </Pressable>
             )}
             ListEmptyComponent={
               <View style={styles.emptyOrders}>
@@ -2200,6 +2146,14 @@ export default function StaffDashboard() {
         onPrintKot={() => { if (printTakeawayOrder) void handlePrintTakeawayKot(printTakeawayOrder); }}
         onPrintInvoice={() => { if (printTakeawayOrder) void handlePrintTakeawayInvoice(printTakeawayOrder); }}
         onClose={() => setPrintTakeawayOrder(null)}
+      />
+
+      <TakeawayManageSheet
+        order={manageOrder}
+        onClose={() => setManageOrder(null)}
+        onDeleteItem={(itemId) => deleteTakeawayItem(manageOrder!.orderId, itemId)}
+        onDeleteWholeOrder={() => deleteTakeawayWholeOrder(manageOrder!.orderId)}
+        errorMessageFor={takeawayCancelMessage}
       />
 
       <QrChoiceSheet
@@ -3240,6 +3194,10 @@ const styles = StyleSheet.create({
     padding: Spacing.md,
     marginBottom: Spacing.sm,
   },
+  takeawayCardPressed: {
+    backgroundColor: QuinckleColors.surfaceElevated,
+    borderColor: QuinckleColors.borderStrong,
+  },
   takeawayCardTop: {
     flexDirection: 'row',
     alignItems: 'stretch',
@@ -3373,32 +3331,6 @@ const styles = StyleSheet.create({
   },
   handoverBtnText: {
     color: '#fff',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  takeawayItemRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: Spacing.sm,
-  },
-  takeawayItemDeleteBtn: {
-    padding: 2,
-  },
-  takeawayDeleteBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    borderWidth: 1,
-    borderColor: QuinckleColors.dangerBorder,
-    backgroundColor: QuinckleColors.dangerSoft,
-    borderRadius: Radius.sm,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-  },
-  takeawayDeleteBtnText: {
-    color: QuinckleColors.danger,
     fontSize: 14,
     fontWeight: '700',
   },
