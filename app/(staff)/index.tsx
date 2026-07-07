@@ -28,7 +28,8 @@ import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewTakea
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { printKot, printBill, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
 import type { InvoiceBill } from '../../services/invoiceTemplate';
-import { setSinkContext } from '../../services/printSink';
+import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded } from '../../services/printSink';
+import { getPrintDeviceId } from '../../services/printDevice';
 
 async function playSound(file: any) {
   try {
@@ -544,39 +545,11 @@ export default function StaffDashboard() {
 
   // ── KOT print backstop (server pull-queue) ──────────────────────────────────
   // The live Ably `new_order` push is the fast path, but it only fires while the
-  // app is foregrounded and the socket is healthy. This drain is the guarantee:
-  // it pulls every order the backend still has marked kotPrintedAt=null (last 2h)
-  // and prints any that slipped through. Runs on mount, every 15s, and whenever
-  // the app returns to the foreground. printKot de-dupes so this never collides
-  // with the push path.
-  const drainPendingPrintJobs = async () => {
-    if (!kotAutoPrintRef.current) return;
-    if (getPrinterStatus() !== 'connected') return;
-    try {
-      const res = await printerApi.getPending(25);
-      const jobs = res?.data ?? [];
-      for (const job of jobs) {
-        await printKot({
-          id: job.id,
-          sessionId: job.sessionId ?? undefined,
-          orderNumber: job.orderNumber != null ? String(job.orderNumber) : undefined,
-          tableNumber: String(job.tableNumber ?? '?'),
-          channel: job.channel,
-          pickupToken: job.pickupToken ?? undefined,
-          sessionRef: job.sessionRef ?? undefined,
-          restaurantName: staffInfo?.restaurantName ?? '',
-          createdAt: job.createdAt ?? new Date().toISOString(),
-          items: (job.items ?? []).map((i: any) => ({
-            name: i.name,
-            quantity: i.quantity,
-            notes: i.notes ?? undefined,
-            modifiersSummary: i.modifiersSummary ?? undefined,
-          })),
-          isAddOn: Boolean(job.isAddOn),
-        }, Boolean(job.isAddOn));
-      }
-    } catch { /* non-fatal — next tick retries */ }
-  };
+  // app is foregrounded and the socket is healthy. The SHARED drain in
+  // printSink.ts (also used by the cook screen + FGS) is the guarantee: it
+  // flushes the ack outbox, pulls the server queue (first prints + durable
+  // reprints) with this device's sink identity, and prints anything that
+  // slipped through. The auto-print toggle reaches it via setSinkContext.
 
   const simulateNewOrder = async () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -1148,7 +1121,11 @@ export default function StaffDashboard() {
     });
 
     // Reprint request — manual, user-initiated. Prints on the connected device
-    // regardless of the auto-print toggle, force-bypassing de-dup.
+    // regardless of the auto-print toggle. Shares a de-dupe key (keyed by
+    // requestedAt) with the durable pull-queue fallback so the same request
+    // never prints twice when both paths deliver it; a fresh request (new
+    // requestedAt) still prints. Old backends without requestedAt keep the
+    // legacy force behaviour.
     const offReprint = subscribeChannel(`partner:${restaurantId}`, 'reprint_request', (data: any) => {
       if (getPrinterStatus() === 'connected' && data?.order) {
         const items = (data.order.items ?? []).map((i: any) => ({
@@ -1169,11 +1146,27 @@ export default function StaffDashboard() {
           createdAt: data.order.createdAt ?? new Date().toISOString(),
           items,
           isAddOn: false,
-        }, false, { force: true });
+        }, false, data.requestedAt != null
+          ? { dedupeKey: `reprint:${data.order.id}:${data.requestedAt}` }
+          : { force: true });
       }
     });
 
-    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off6d(); off7(); off7b(); off8(); off9(); offReprint(); offAutoPrint(); };
+    // Sink handover — another device paired (or the pairing was cleared).
+    // Clear the stale local pairing so this device can never dual-print
+    // against the new sink (critical for LAN/tcp printers).
+    const offPrinterPaired = subscribeChannel(`partner:${restaurantId}`, 'printer_paired', (data: any) => {
+      void (async () => {
+        if (getPrinterStatus() !== 'connected') return; // we don't hold a pairing
+        const myDeviceId = await getPrintDeviceId();
+        if (data?.deviceId !== myDeviceId) await handleSinkSuperseded();
+      })();
+    });
+    const offPrinterUnpaired = subscribeChannel(`partner:${restaurantId}`, 'printer_unpaired', () => {
+      if (getPrinterStatus() === 'connected') void handleSinkSuperseded();
+    });
+
+    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off6d(); off7(); off7b(); off8(); off9(); offReprint(); offAutoPrint(); offPrinterPaired(); offPrinterUnpaired(); };
   }, [staffInfo?.restaurantId]);
 
   // C1: Track Ably connection health — show a warning when the waiter channel drops.

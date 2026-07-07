@@ -22,7 +22,9 @@ import { printerApi } from './api';
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
 const KEY_CONFIG = 'printerConfig';
-const KEY_QUEUE  = 'pendingPrintQueue';
+/** Legacy failed-print queue — dead (never flushed); cleared once on init. */
+const KEY_QUEUE_LEGACY = 'pendingPrintQueue';
+const KEY_ACK_OUTBOX = 'printAckOutbox';
 const KEY_UPI_QR = 'printUpiQrOnBill';
 const KEY_UPI_QR_MODE = 'printUpiQrMode';
 
@@ -66,10 +68,19 @@ function currentProfile(): PaperProfile {
   return profileFromWidth(_config?.paperWidth ?? DEFAULT_PAPER_WIDTH, _config?.dpi);
 }
 
-interface QueueItem {
-  order: KotOrder;
+/**
+ * A KOT that made it to PAPER but whose "printed" ack hasn't reached the
+ * server yet. Persisted so an app restart can never turn a lost ack into a
+ * duplicate ticket: the server keeps re-serving the order (kotPrintedAt is
+ * still null) and this outbox is what tells us "already printed — just retry
+ * the ack". Flushed at the start of every event-driven drain; no timers.
+ */
+interface AckOutboxEntry {
+  /** De-dupe key of the print (orderId:kot / orderId:addon / reprint:{id}:{ts}). */
+  key: string;
+  orderId: string;
   isAddOn: boolean;
-  addedAt: string;
+  printedAt: string;
 }
 
 // ── Module state ──────────────────────────────────────────────────────────────
@@ -115,6 +126,10 @@ function purgeExpiredRecent(): void {
 // ── Init (call on app launch) ─────────────────────────────────────────────────
 
 export async function initPrinter(): Promise<void> {
+  // One-time cleanup: the legacy failed-print queue was appended to but never
+  // drained (the server pull-queue is the real retry path), so stale entries
+  // accumulated forever. Remove the key.
+  AsyncStorage.removeItem(KEY_QUEUE_LEGACY).catch(() => {});
   try {
     const raw = await AsyncStorage.getItem(KEY_CONFIG);
     if (raw) {
@@ -311,9 +326,12 @@ async function printRaw(text: string): Promise<void> {
 export async function printKot(
   order: KotOrder,
   isAddOn = false,
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; dedupeKey?: string } = {},
 ): Promise<'printed' | 'failed' | 'skipped'> {
-  const key = dedupeKey(order.id, isAddOn);
+  // `dedupeKey` lets reprints share ONE key across their two delivery paths
+  // (live Ably push + durable pull-queue fallback) so the same reprint request
+  // never prints twice, while a NEW request (different requestedAt) still does.
+  const key = opts.dedupeKey ?? dedupeKey(order.id, isAddOn);
 
   // Manual reprints pass force:true and bypass de-dup entirely. Auto-print
   // (Ably push + pull-queue drain) goes through the guard so the same order
@@ -322,6 +340,13 @@ export async function printKot(
     if (_inFlight.has(key)) return 'skipped';        // already printing right now
     purgeExpiredRecent();
     if (_recentlyPrinted.has(key)) return 'skipped'; // printed seconds ago
+    // Printed on an earlier run but the ack never reached the server (the
+    // in-memory guards don't survive an app restart; the durable outbox does).
+    // Never put the same ticket on paper again — just retry the ack.
+    if (await outboxHasKey(key)) {
+      void flushAckOutbox();
+      return 'skipped';
+    }
     _inFlight.add(key);
   }
 
@@ -330,18 +355,21 @@ export async function printKot(
 
   try {
     await printRaw(text);
-    // Mark as recently printed BEFORE the (async) ack so a poll firing in the
+    // Mark as recently printed BEFORE the (async) ack so a drain firing in the
     // gap before the server stamps kotPrintedAt is skipped, not re-printed.
     if (!opts.force) _recentlyPrinted.set(key, Date.now() + RECENT_TTL_MS);
+    // Durably record "paper printed, ack pending" BEFORE attempting the ack —
+    // if the ack fails and the app restarts, the outbox (not paper) retries.
+    await outboxAdd({ key, orderId: order.id, isAddOn, printedAt: new Date().toISOString() });
     try {
       await printerApi.ack(order.id, 'printed', undefined, isAddOn);
-    } catch { /* non-fatal — backend keeps kotPrintedAt null, pull-queue retries */ }
+      await outboxRemove(key);
+    } catch { /* non-fatal — the outbox retries the ack on the next drain */ }
     return 'printed';
   } catch (err: any) {
     const errorMessage = err?.message ?? 'Unknown error';
     // Failed: do NOT mark recently-printed — the server pull-queue must be able
     // to hand this order back for a retry on the next drain.
-    await enqueue(order, isAddOn);
     try {
       await printerApi.ack(order.id, 'failed', errorMessage, isAddOn);
     } catch { /* non-fatal */ }
@@ -390,40 +418,86 @@ export async function printTest(): Promise<'printed' | 'failed'> {
   }
 }
 
-// ── Queue persistence ─────────────────────────────────────────────────────────
+// ── Ack outbox persistence ────────────────────────────────────────────────────
+// Retention: entries older than 24h are pruned — by then the order has long
+// fallen out of the server's 2h pending window, so a dropped ack can no longer
+// cause a re-print.
 
-async function enqueue(order: KotOrder, isAddOn: boolean): Promise<void> {
-  try {
-    const raw = await AsyncStorage.getItem(KEY_QUEUE);
-    const queue: QueueItem[] = raw ? JSON.parse(raw) : [];
-    // Don't queue the same orderId twice
-    if (!queue.some((q) => q.order.id === order.id)) {
-      queue.push({ order, isAddOn, addedAt: new Date().toISOString() });
-      await AsyncStorage.setItem(KEY_QUEUE, JSON.stringify(queue));
-    }
-  } catch { /* non-fatal */ }
+const OUTBOX_MAX_ENTRIES = 100;
+const OUTBOX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function pruneOutbox(entries: AckOutboxEntry[]): AckOutboxEntry[] {
+  const cutoff = Date.now() - OUTBOX_MAX_AGE_MS;
+  const fresh = entries.filter((e) => {
+    const t = Date.parse(e.printedAt);
+    return Number.isFinite(t) ? t >= cutoff : false;
+  });
+  return fresh.slice(-OUTBOX_MAX_ENTRIES);
 }
 
-async function flushQueue(): Promise<void> {
+async function outboxRead(): Promise<AckOutboxEntry[]> {
   try {
-    const raw = await AsyncStorage.getItem(KEY_QUEUE);
-    if (!raw) return;
-    const queue: QueueItem[] = JSON.parse(raw);
-    if (queue.length === 0) return;
+    const raw = await AsyncStorage.getItem(KEY_ACK_OUTBOX);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 
-    const remaining: QueueItem[] = [];
-    for (const item of queue) {
+async function outboxWrite(entries: AckOutboxEntry[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(KEY_ACK_OUTBOX, JSON.stringify(entries));
+  } catch { /* non-fatal — in-memory de-dup still covers this session */ }
+}
+
+async function outboxAdd(entry: AckOutboxEntry): Promise<void> {
+  const entries = pruneOutbox(await outboxRead());
+  if (!entries.some((e) => e.key === entry.key)) {
+    entries.push(entry);
+    await outboxWrite(entries);
+  }
+}
+
+async function outboxRemove(key: string): Promise<void> {
+  const entries = await outboxRead();
+  const next = entries.filter((e) => e.key !== key);
+  if (next.length !== entries.length) await outboxWrite(next);
+}
+
+async function outboxHasKey(key: string): Promise<boolean> {
+  const entries = await outboxRead();
+  return entries.some((e) => e.key === key);
+}
+
+/**
+ * Retry every un-acked "printed" ack. Called at the start of each event-driven
+ * drain (and after an outbox hit in printKot) — never on a timer. Returns the
+ * entries that STILL couldn't be acked, so callers can avoid re-printing them.
+ */
+let _outboxFlushing = false;
+export async function flushAckOutbox(): Promise<AckOutboxEntry[]> {
+  if (_outboxFlushing) return outboxRead();
+  _outboxFlushing = true;
+  try {
+    const entries = pruneOutbox(await outboxRead());
+    if (entries.length === 0) {
+      await outboxWrite(entries);
+      return [];
+    }
+    const remaining: AckOutboxEntry[] = [];
+    for (const entry of entries) {
       try {
-        const text = buildKotText({ ...item.order, isAddOn: item.isAddOn }, currentProfile());
-        await printRaw(text);
-        try { await printerApi.ack(item.order.id, 'printed', undefined, item.isAddOn); } catch { /* non-fatal */ }
+        await printerApi.ack(entry.orderId, 'printed', undefined, entry.isAddOn);
       } catch {
-        remaining.push(item);
+        remaining.push(entry);
       }
     }
-
-    await AsyncStorage.setItem(KEY_QUEUE, JSON.stringify(remaining));
-  } catch { /* non-fatal */ }
+    await outboxWrite(remaining);
+    return remaining;
+  } finally {
+    _outboxFlushing = false;
+  }
 }
 
 /**

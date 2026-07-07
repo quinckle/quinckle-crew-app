@@ -37,6 +37,7 @@ import {
   type PrinterStatus,
 } from '../services/printer';
 import { printerApi } from '../services/api';
+import { getPrintDeviceId } from '../services/printDevice';
 import { useAuth } from '../context/AuthContext';
 
 export default function PrinterScreen() {
@@ -178,12 +179,14 @@ export default function PrinterScreen() {
     setIsPairing(true);
     try {
       await pair(device, width);
-      // Also register on backend
+      // Also register on backend — deviceId marks THIS device as the sink so
+      // any previously-paired device stands down (see printSink self-heal).
       await printerApi.setPairing({
         pairedTo: staffInfo.id,
         name: device.name,
         address: device.address,
         paperWidth: width,
+        deviceId: await getPrintDeviceId(),
       });
       setLocalStatus(getStatus());
       setConfig(getConfig());
@@ -224,6 +227,7 @@ export default function PrinterScreen() {
         name,
         address: `tcp://${ip}:${port}`,
         paperWidth: width,
+        deviceId: await getPrintDeviceId(),
       });
       setLocalStatus(getStatus());
       setConfig(getConfig());

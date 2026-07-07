@@ -32,7 +32,8 @@
 import { Platform } from 'react-native';
 import notifee, { AndroidImportance, AndroidForegroundServiceType } from '@notifee/react-native';
 import { printerApi } from './api';
-import { printKot, getStatus as getPrinterStatus } from './printer';
+import { printKot, getStatus as getPrinterStatus, flushAckOutbox, unpair } from './printer';
+import { getPrintDeviceId } from './printDevice';
 
 const CHANNEL_ID = 'kot-print-sink';
 const NOTIFICATION_ID = 'kot-print-sink';
@@ -59,42 +60,78 @@ export function setSinkContext(opts: {
 }
 
 /**
- * Pull every order the backend still has marked kotPrintedAt=null (last 2h) and
- * print any that slipped past the live push. Called on events only (screen
- * mount, foreground resume, socket reconnect) — never on a timer. printKot
- * de-dupes so overlapping triggers are harmless. No-ops unless the auto-print
- * toggle is on and this device holds the Bluetooth pairing.
+ * This device's pairing was superseded (another device paired, or the pairing
+ * was cleared remotely). Clear the stale local pairing and tear the FGS down
+ * so this device can never dual-print against the new sink — critical for
+ * network (tcp://) printers, which any device on the LAN can reach.
+ */
+export async function handleSinkSuperseded(): Promise<void> {
+  try { await unpair(); } catch { /* best-effort */ }
+  try { await stopPrintSink(); } catch { /* best-effort */ }
+}
+
+/**
+ * The ONE shared drain (staff screen, cook screen, and any future wake path all
+ * call this — do not fork per-screen copies; they drift).
+ *
+ * Order of operations:
+ *  1. Flush the ack outbox — tickets already on paper whose ack got lost are
+ *     acked, never re-printed (survives app restarts).
+ *  2. Pull the server queue (first prints + durable reprint fallbacks) with our
+ *     deviceId; a 403 PRINTER_SINK_MISMATCH means another device is the sink
+ *     now → clear local pairing and stand down.
+ *  3. Print: first-print jobs respect the auto-print toggle; reprint jobs are
+ *     a manual crew action, so they print regardless of the toggle.
+ *
+ * Called on events only (screen mount, foreground resume, socket reconnect) —
+ * never on a timer. printKot de-dupes so overlapping triggers are harmless.
  */
 export async function drainPendingPrintJobs(): Promise<void> {
-  if (!_autoPrintEnabled) return;
   if (getPrinterStatus() !== 'connected') return;
+
+  // Retrying lost acks is always safe and keeps the server queue truthful for
+  // the fetch below — do it even when auto-print is toggled off.
+  await flushAckOutbox();
+
+  let jobs: Awaited<ReturnType<typeof printerApi.getPending>>['data'] = [];
   try {
-    const res = await printerApi.getPending(25);
-    const jobs = res?.data ?? [];
-    for (const job of jobs) {
-      await printKot(
-        {
-          id: job.id,
-          sessionId: job.sessionId ?? undefined,
-          orderNumber: job.orderNumber != null ? String(job.orderNumber) : undefined,
-          tableNumber: String(job.tableNumber ?? '?'),
-          channel: job.channel,
-          pickupToken: job.pickupToken ?? undefined,
-          restaurantName: _restaurantName,
-          createdAt: job.createdAt ?? new Date().toISOString(),
-          items: (job.items ?? []).map((i) => ({
-            name: i.name,
-            quantity: i.quantity,
-            notes: i.notes ?? undefined,
-            modifiersSummary: i.modifiersSummary ?? undefined,
-          })),
-          isAddOn: Boolean(job.isAddOn),
-        },
-        Boolean(job.isAddOn),
-      );
+    const deviceId = await getPrintDeviceId();
+    const res = await printerApi.getPending(25, deviceId);
+    jobs = res?.data ?? [];
+  } catch (err: any) {
+    if (typeof err?.message === 'string' && err.message.includes('PRINTER_SINK_MISMATCH')) {
+      await handleSinkSuperseded();
     }
-  } catch {
-    /* non-fatal — the next loop tick retries */
+    return; // non-fatal — the next event-driven drain retries
+  }
+
+  for (const job of jobs) {
+    const isReprint = Boolean(job.isReprint);
+    if (!isReprint && !_autoPrintEnabled) continue;
+    await printKot(
+      {
+        id: job.id,
+        sessionId: job.sessionId ?? undefined,
+        orderNumber: job.orderNumber != null ? String(job.orderNumber) : undefined,
+        tableNumber: String(job.tableNumber ?? '?'),
+        channel: job.channel,
+        pickupToken: job.pickupToken ?? undefined,
+        sessionRef: job.sessionRef ?? undefined,
+        restaurantName: _restaurantName,
+        createdAt: job.createdAt ?? new Date().toISOString(),
+        items: (job.items ?? []).map((i) => ({
+          name: i.name,
+          quantity: i.quantity,
+          notes: i.notes ?? undefined,
+          modifiersSummary: i.modifiersSummary ?? undefined,
+        })),
+        isAddOn: Boolean(job.isAddOn),
+      },
+      Boolean(job.isAddOn),
+      // Reprints share one de-dupe key across the Ably push and this fallback,
+      // keyed by requestedAt so a NEW reprint request still prints.
+      isReprint ? { dedupeKey: `reprint:${job.id}:${job.reprintRequestedAt ?? ''}` } : {},
+    );
   }
 }
 

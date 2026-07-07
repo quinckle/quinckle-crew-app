@@ -41,8 +41,9 @@ async function request<T>(
   path: string,
   body?: object,
   useAuth = false,
+  extraHeaders?: Record<string, string>,
 ): Promise<T> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(extraHeaders ?? {}) };
   if (useAuth && _crewToken) headers['Authorization'] = `Bearer ${_crewToken}`;
 
   const res = await fetch(`${API_BASE_URL}${path}`, {
@@ -969,7 +970,12 @@ export const printerApi = {
       true,
     ),
 
-  getPending: (limit = 25) =>
+  /**
+   * Durable pull queue. `deviceId` identifies this device as the sink — the
+   * server answers 403 PRINTER_SINK_MISMATCH if another device has since
+   * paired, so the caller can clear its stale local pairing.
+   */
+  getPending: (limit = 25, deviceId?: string) =>
     request<{ success: true; data: Array<{
       id: string;
       orderNumber?: string | number;
@@ -980,6 +986,8 @@ export const printerApi = {
       sessionRef?: string | null;
       createdAt: string;
       isAddOn: boolean;
+      isReprint?: boolean;
+      reprintRequestedAt?: number | null;
       items: Array<{
         name: string;
         quantity: number;
@@ -991,18 +999,21 @@ export const printerApi = {
       `/api/crew/print/pending?limit=${Math.max(1, Math.min(limit, 100))}`,
       undefined,
       true,
+      deviceId ? { 'x-print-device': deviceId } : undefined,
     ),
 
   /**
    * Set or clear the printer pairing on behalf of the current crew member.
    * Uses the crew-auth endpoint (not the partner-auth one).
-   * Pass pairedTo: null to unpair.
+   * Pass pairedTo: null to unpair. `deviceId` registers this device as the
+   * one true print sink on the server.
    */
   setPairing: (data: {
     pairedTo: string | null;
     name?: string;
     address?: string;
     paperWidth?: number;
+    deviceId?: string;
   }) =>
     request<{ success: true; data: any }>(
       'PATCH',

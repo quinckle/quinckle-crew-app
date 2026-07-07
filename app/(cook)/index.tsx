@@ -29,7 +29,8 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { kitchen, printerApi } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { printKot, getStatus as getPrinterStatus } from '../../services/printer';
-import { setSinkContext } from '../../services/printSink';
+import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded } from '../../services/printSink';
+import { getPrintDeviceId } from '../../services/printDevice';
 import { useAuth } from '../../context/AuthContext';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { BottomNavbar, type BottomNavTab } from '../../components/ui/BottomNavbar';
@@ -96,36 +97,10 @@ export default function CookDashboard() {
   const [navTab,        setNavTab]        = useState<CookTab>('active');
   const [realtimeOk,    setRealtimeOk]    = useState(true);
 
-  const drainPendingPrintJobs = useCallback(async () => {
-    if (!kotAutoPrintRef.current) return;
-    if (getPrinterStatus() !== 'connected') return;
-    try {
-      const res = await printerApi.getPending(25);
-      const jobs = res?.data ?? [];
-      for (const job of jobs) {
-        await printKot({
-          id: job.id,
-          sessionId: job.sessionId ?? undefined,
-          orderNumber: job.orderNumber != null ? String(job.orderNumber) : undefined,
-          tableNumber: String(job.tableNumber ?? '?'),
-          channel: job.channel,
-          pickupToken: job.pickupToken ?? undefined,
-          sessionRef: job.sessionRef ?? undefined,
-          restaurantName: staffInfo?.restaurantName ?? '',
-          createdAt: job.createdAt ?? new Date().toISOString(),
-          items: (job.items ?? []).map((i) => ({
-            name: i.name,
-            quantity: i.quantity,
-            notes: i.notes ?? undefined,
-            modifiersSummary: i.modifiersSummary ?? undefined,
-          })),
-          isAddOn: Boolean(job.isAddOn),
-        }, Boolean(job.isAddOn));
-      }
-    } catch {
-      // non-fatal
-    }
-  }, [staffInfo?.restaurantName]);
+  // KOT drain: the SHARED implementation in printSink.ts (also used by the
+  // staff screen + FGS) — flushes the ack outbox, pulls the server queue with
+  // this device's sink identity, prints first prints + durable reprints. The
+  // auto-print toggle reaches it via setSinkContext.
 
   // ── Data mapping ─────────────────────────────────────────────────────────
   const mapTicket = (t: any, isCompleted = false): KitchenTicket => ({
@@ -227,7 +202,7 @@ export default function CookDashboard() {
       appStateSub.remove();
       unwatchConn?.();
     };
-  }, [drainPendingPrintJobs, staffInfo?.restaurantId]);
+  }, [staffInfo?.restaurantId]);
 
   // Keep the screen awake while this device is the print sink, so Android can't
   // suspend the JS runtime (and miss the live Ably push) when the kitchen
@@ -328,8 +303,26 @@ export default function CookDashboard() {
           createdAt: data.order.createdAt ?? new Date().toISOString(),
           items,
           isAddOn: false,
-        }, false, { force: true });
+        }, false, data.requestedAt != null
+          // Shared key with the durable pull-queue fallback — same reprint
+          // request never prints twice; a NEW request (new requestedAt) does.
+          ? { dedupeKey: `reprint:${data.order.id}:${data.requestedAt}` }
+          : { force: true }); // old backend without requestedAt: legacy behaviour
       }
+    });
+
+    // Sink handover — another device paired (or the pairing was cleared).
+    // Clear the stale local pairing so this device can never dual-print
+    // against the new sink (critical for LAN/tcp printers).
+    const unsubPrinterPaired = subscribeChannel(`partner:${restaurantId}`, 'printer_paired', (data: any) => {
+      void (async () => {
+        if (getPrinterStatus() !== 'connected') return;
+        const myDeviceId = await getPrintDeviceId();
+        if (data?.deviceId !== myDeviceId) await handleSinkSuperseded();
+      })();
+    });
+    const unsubPrinterUnpaired = subscribeChannel(`partner:${restaurantId}`, 'printer_unpaired', () => {
+      if (getPrinterStatus() === 'connected') void handleSinkSuperseded();
     });
 
     // Keep the auto-print toggle in sync when changed from any device/dashboard.
@@ -347,8 +340,10 @@ export default function CookDashboard() {
       unsubServed();
       unsubReprint();
       unsubAutoPrint();
+      unsubPrinterPaired();
+      unsubPrinterUnpaired();
     };
-  }, [staffInfo?.restaurantId, staffInfo?.restaurantName, staffInfo?.id, loadOrders, drainPendingPrintJobs]);
+  }, [staffInfo?.restaurantId, staffInfo?.restaurantName, staffInfo?.id, loadOrders]);
 
   // Connection indicator — same pattern as staff
   useEffect(() => {
