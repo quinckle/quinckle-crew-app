@@ -591,8 +591,12 @@ export default function TableDetail() {
       })),
     );
 
+    // ALWAYS refresh the branding/tax config at print time — settings changed
+    // mid-shift on the dashboard (GST registration, CGST/SGST split, inclusive
+    // pricing, UPI VPA) must apply to the very next print, not after an app
+    // restart. Offline/failure falls back to the snapshot fetched at mount.
     let invoiceMeta = restaurantInvoiceMeta;
-    if (!invoiceMeta && staffInfo?.restaurantId) {
+    if (staffInfo?.restaurantId) {
       try {
         const res = await restaurantApi.getBranding(staffInfo.restaurantId);
         if (res?.success) {
@@ -607,6 +611,10 @@ export default function TableDetail() {
             pricesIncludeTax: res.data.taxConfig?.pricesIncludeTax ?? false,
           };
           setRestaurantInvoiceMeta(invoiceMeta);
+          if (res.data.upiId) {
+            setUpiId(res.data.upiId);
+            setUpiName(res.data.upiDisplayName ?? res.data.name ?? '');
+          }
         }
       } catch {}
     }

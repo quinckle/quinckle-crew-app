@@ -295,6 +295,7 @@ export default function StaffDashboard() {
     gstin?: string | null;
     taxRate?: number | null;
     displayMode?: 'combined' | 'split';
+    pricesIncludeTax?: boolean;
   } | null>(null);
   const [upiId, setUpiId] = useState<string | null>(null);
   const [upiName, setUpiName] = useState('');
@@ -318,6 +319,7 @@ export default function StaffDashboard() {
           gstin: res.data.taxConfig?.gstin ?? null,
           taxRate: res.data.taxConfig?.taxRate ?? null,
           displayMode: (res.data.taxConfig?.displayMode as 'combined' | 'split') ?? 'combined',
+          pricesIncludeTax: res.data.taxConfig?.pricesIncludeTax ?? false,
         });
         if (res.data.upiId) {
           setUpiId(res.data.upiId);
@@ -379,15 +381,43 @@ export default function StaffDashboard() {
       modifiersSummary: item.modifiers,
     }));
 
+    // ALWAYS refresh the branding/tax config at print time — settings changed
+    // mid-shift on the dashboard must apply to the very next print, not after
+    // an app restart. Offline/failure falls back to the mount-time snapshot.
+    let meta = restaurantInvoiceMeta;
+    if (staffInfo?.restaurantId) {
+      try {
+        const res = await restaurantApi.getBranding(staffInfo.restaurantId);
+        if (res?.success) {
+          meta = {
+            address: res.data.address ?? null,
+            phone: res.data.phone ?? null,
+            email: res.data.email ?? null,
+            fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null,
+            gstRegistered: res.data.taxConfig?.gstRegistered ?? false,
+            gstin: res.data.taxConfig?.gstin ?? null,
+            taxRate: res.data.taxConfig?.taxRate ?? null,
+            displayMode: (res.data.taxConfig?.displayMode as 'combined' | 'split') ?? 'combined',
+            pricesIncludeTax: res.data.taxConfig?.pricesIncludeTax ?? false,
+          };
+          setRestaurantInvoiceMeta(meta);
+          if (res.data.upiId) {
+            setUpiId(res.data.upiId);
+            setUpiName(res.data.upiDisplayName ?? res.data.name ?? '');
+          }
+        }
+      } catch {}
+    }
+
     const runPrint = async (upiOmitAmount: boolean) => {
       const result = await printBill({
         restaurantName: staffInfo?.restaurantName ?? '',
-        restaurantAddress: restaurantInvoiceMeta?.address ?? null,
-        restaurantPhone: restaurantInvoiceMeta?.phone ?? null,
-        restaurantEmail: restaurantInvoiceMeta?.email ?? null,
-        fssaiLicenseNumber: restaurantInvoiceMeta?.fssaiLicenseNumber ?? null,
-        gstRegistered: restaurantInvoiceMeta?.gstRegistered ?? false,
-        gstin: restaurantInvoiceMeta?.gstin ?? null,
+        restaurantAddress: meta?.address ?? null,
+        restaurantPhone: meta?.phone ?? null,
+        restaurantEmail: meta?.email ?? null,
+        fssaiLicenseNumber: meta?.fssaiLicenseNumber ?? null,
+        gstRegistered: meta?.gstRegistered ?? false,
+        gstin: meta?.gstin ?? null,
         buyerGstin: buyer?.gstin ?? null,
         buyerName: buyer?.name ?? null,
         tableNumber: 0,
@@ -399,8 +429,9 @@ export default function StaffDashboard() {
         discount: order.discount,
         charges: order.serviceCharge,
         tax: order.tax,
-        taxRate: restaurantInvoiceMeta?.taxRate ?? undefined,
-        taxDisplayMode: restaurantInvoiceMeta?.displayMode,
+        taxRate: meta?.taxRate ?? undefined,
+        taxDisplayMode: meta?.displayMode,
+        pricesIncludeTax: meta?.pricesIncludeTax,
         grandTotal: order.total,
         isPaid,
         paymentMethod: order.paymentMethod ?? undefined,
