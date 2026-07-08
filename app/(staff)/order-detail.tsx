@@ -219,6 +219,11 @@ export default function OrderDetail() {
         tableNumber: session.tableNumber ?? 'Walk-in',
         channel: session.channel ?? 'DINE_IN',
         pickupToken: session.pickupToken ?? null,
+        // Historical reprints must be stable: carry the already-assigned invoice
+        // number + recipient GSTIN so a ledger reprint matches the original bill.
+        invoiceNumber: session.invoiceNumber ?? null,
+        buyerGstin: session.buyerGstin ?? null,
+        buyerName: session.buyerName ?? null,
         sessionRef: session.sessionRef ?? null,
         items,
         subtotal: session.foodSubtotal,

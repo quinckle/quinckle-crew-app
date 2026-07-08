@@ -1,20 +1,33 @@
 /**
  * PrintOptionsSheet — bottom sheet replacing the "Print KOT / Print Invoice"
- * popover on the table-detail screen. Two square cards side by side.
+ * popover on the table-detail screen. Two square cards side by side, plus an
+ * optional recipient-GSTIN capture for B2B tax invoices.
  */
 
-import React from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { BottomSheet } from './BottomSheet';
 import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
 
+/** Recipient (buyer) details for a B2B tax invoice. `undefined` = plain B2C bill. */
+export interface InvoiceBuyer {
+  gstin: string;
+  name: string | null;
+}
+
 interface Props {
   visible: boolean;
   onPrintKot: () => void;
-  onPrintInvoice: () => void;
+  onPrintInvoice: (buyer?: InvoiceBuyer) => void;
   onClose: () => void;
+  /** Prefill from a session that already has a buyer GSTIN saved. */
+  initialBuyerGstin?: string | null;
+  initialBuyerName?: string | null;
 }
+
+// Same GSTIN format the backend enforces (partner tax-config + crew buyer route).
+const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
 
 function PrintCard({
   icon,
@@ -35,18 +48,101 @@ function PrintCard({
   );
 }
 
-export function PrintOptionsSheet({ visible, onPrintKot, onPrintInvoice, onClose }: Props) {
+export function PrintOptionsSheet({
+  visible,
+  onPrintKot,
+  onPrintInvoice,
+  onClose,
+  initialBuyerGstin,
+  initialBuyerName,
+}: Props) {
+  const [gstin, setGstin] = useState('');
+  const [name, setName] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  // Re-seed the fields each time the sheet opens so a saved buyer shows up and
+  // a stale entry from a prior table never leaks in.
+  useEffect(() => {
+    if (visible) {
+      setGstin((initialBuyerGstin ?? '').toUpperCase());
+      setName(initialBuyerName ?? '');
+      setError(null);
+    }
+  }, [visible, initialBuyerGstin, initialBuyerName]);
+
+  const handlePrintInvoice = () => {
+    const g = gstin.trim().toUpperCase();
+    if (g && !GSTIN_RE.test(g)) {
+      setError('Enter a valid 15-character GSTIN, or leave it blank.');
+      return;
+    }
+    setError(null);
+    onPrintInvoice(g ? { gstin: g, name: name.trim() || null } : undefined);
+  };
+
   return (
     <BottomSheet visible={visible} onClose={onClose} title="Print">
+      <View style={styles.buyerBlock}>
+        <Text style={styles.buyerLabel}>Recipient GSTIN — business invoice (optional)</Text>
+        <TextInput
+          style={[styles.input, error ? styles.inputError : null]}
+          value={gstin}
+          onChangeText={(t) => { setGstin(t.toUpperCase()); if (error) setError(null); }}
+          placeholder="e.g. 29ABCDE1234F1Z5"
+          placeholderTextColor={QuinckleColors.textMuted}
+          autoCapitalize="characters"
+          autoCorrect={false}
+          maxLength={15}
+        />
+        {gstin.trim().length > 0 && (
+          <TextInput
+            style={styles.input}
+            value={name}
+            onChangeText={setName}
+            placeholder="Business name (optional)"
+            placeholderTextColor={QuinckleColors.textMuted}
+            autoCapitalize="words"
+          />
+        )}
+        {error && <Text style={styles.errorText}>{error}</Text>}
+      </View>
+
       <View style={styles.grid}>
         <PrintCard icon="restaurant-outline" label="Print KOT" onPress={onPrintKot} />
-        <PrintCard icon="receipt-outline" label="Print invoice" onPress={onPrintInvoice} />
+        <PrintCard icon="receipt-outline" label="Print invoice" onPress={handlePrintInvoice} />
       </View>
     </BottomSheet>
   );
 }
 
 const styles = StyleSheet.create({
+  buyerBlock: {
+    paddingHorizontal: Spacing.xl,
+    marginBottom: Spacing.lg,
+    gap: Spacing.sm,
+  },
+  buyerLabel: {
+    ...Typography.caption,
+    color: QuinckleColors.textSecondary,
+  },
+  input: {
+    ...Typography.body,
+    color: QuinckleColors.textPrimary,
+    backgroundColor: QuinckleColors.surfaceMutedHover,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+  },
+  inputError: {
+    borderColor: QuinckleColors.dangerBorder,
+    backgroundColor: QuinckleColors.dangerSoft,
+  },
+  errorText: {
+    ...Typography.caption,
+    color: QuinckleColors.danger,
+  },
   grid: {
     flexDirection: 'row',
     paddingHorizontal: Spacing.xl,

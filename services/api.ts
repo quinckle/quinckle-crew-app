@@ -300,6 +300,11 @@ export interface SessionBill {
   expires_at?: string | null;
   customer_name?: string | null;
   customer_phone?: string | null;
+  buyer_gstin?: string | null;
+  buyer_name?: string | null;
+  invoice_number?: string | null;
+  invoice_issued_at?: string | null;
+  tax_lines?: Array<{ rate: number; taxableValue: number; cgst: number; sgst: number; amount: number }>;
   orders: BillOrder[];
   session_total: number;
   tax_rate?: number;
@@ -382,6 +387,9 @@ export interface LedgerSession {
   durationMins: number;
   customerName: string | null;
   customerPhone: string | null;
+  buyerGstin?: string | null;
+  buyerName?: string | null;
+  invoiceNumber?: string | null;
   orders: LedgerOrder[];
   foodSubtotal: number;
   /** Gross value of everything voided in this session (struck original amount). */
@@ -419,6 +427,16 @@ export const crewSessions = {
   saveCustomer: (sessionId: string, phone: string, name?: string | null) =>
     request<{ success: boolean }>(
       'PATCH', `/api/crew/sessions/${sessionId}/customer`, { phone, name: name ?? null }, true
+    ),
+  /** Recipient (buyer) GSTIN for a B2B tax invoice. Empty gstin clears it. */
+  saveBuyer: (sessionId: string, gstin: string | null, name?: string | null) =>
+    request<{ success: boolean }>(
+      'PATCH', `/api/crew/sessions/${sessionId}/buyer`, { gstin: gstin ?? null, name: name ?? null }, true
+    ),
+  /** Assign (or fetch the existing) sequential tax-invoice number. Idempotent. */
+  finalizeInvoice: (sessionId: string) =>
+    request<{ success: boolean; data: { invoice_number: string; financial_year: string; issued_at: string } }>(
+      'POST', `/api/crew/sessions/${sessionId}/finalize-invoice`, undefined, true
     ),
 
   requestCollection: (sessionId: string, customerPhone?: string | null, customerName?: string | null) =>
@@ -908,7 +926,7 @@ export const restaurantApi = {
         acceptCash?: boolean;
         acceptUpiDirect?: boolean;
         acceptStaffCollect?: boolean;
-        taxConfig?: { gstRegistered: boolean; gstin: string | null; taxRate: number | null; displayMode: string };
+        taxConfig?: { gstRegistered: boolean; gstin: string | null; taxRate: number | null; displayMode: string; pricesIncludeTax?: boolean };
       };
     }>('GET', `/api/v1/dine/restaurant/${restaurantId}`),
 

@@ -26,10 +26,16 @@ export interface InvoiceBill {
   /** Only a GST-registered restaurant may legally print "TAX INVOICE" + GSTIN. Unregistered restaurants print a plain "BILL". */
   gstRegistered?: boolean;
   gstin?: string | null;
+  /** Recipient (buyer) GSTIN for a B2B tax invoice. Prints a "Bill To" block when present. */
+  buyerGstin?: string | null;
+  /** Recipient business/legal name printed alongside the buyer GSTIN. */
+  buyerName?: string | null;
   tableNumber: number | string;
   /** DINE_IN (default) prints "Table TNN"; TAKEAWAY prints the takeaway header + pickup token. */
   channel?: 'DINE_IN' | 'TAKEAWAY';
   pickupToken?: string | null;
+  /** Sequential tax-invoice number (e.g. "INV/2026-27/000123"). Printed in place of the internal session ref when present. */
+  invoiceNumber?: string | null;
   sessionRef?: string | null;
   items: InvoiceItem[];
   subtotal: number;
@@ -40,6 +46,14 @@ export interface InvoiceBill {
   tax: number;
   /** GST rate as a percentage integer (5, 12, or 18). Used for the label. */
   taxRate?: number;
+  /** 'split' prints CGST + SGST (each half the rate); 'combined' (default) prints one GST line. */
+  taxDisplayMode?: 'combined' | 'split';
+  /** Rate-wise GST grouping (Phase 2). When present, one GST block is printed per
+   *  rate; falls back to the single `tax`/`taxRate` line when absent (legacy). */
+  taxLines?: Array<{ rate: number; taxableValue: number; cgst: number; sgst: number; amount: number }>;
+  /** When true, menu prices already include GST — a note clarifies the tax is
+   *  shown for information and not added on top (Phase 4). */
+  pricesIncludeTax?: boolean;
   grandTotal: number;
   isPaid: boolean;
   paymentMethod?: 'cash' | 'upi_direct' | 'mixed' | string | null;
@@ -159,7 +173,11 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   } else {
     lines.push(`[C]Table T${tableStr}`);
   }
-  if (bill.sessionRef) {
+  // A finalized bill carries the real invoice number; the session ref is only an
+  // internal fallback for not-yet-numbered (e.g. offline first-print) bills.
+  if (bill.invoiceNumber) {
+    lines.push(`[C]<b>Invoice No: ${bill.invoiceNumber}</b>`);
+  } else if (bill.sessionRef) {
     lines.push(`[C]Session ${bill.sessionRef}`);
   }
   lines.push(`[C]Order: ${formatDateTime(orderTime)}`);
@@ -172,6 +190,16 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   if (bill.gstRegistered && bill.gstin) lines.push(`[C]GSTIN: ${bill.gstin}`);
   lines.push(`[C]Printed: ${formatDateTime(now)}`);
   lines.push(`[L]${d}`);
+
+  // ── Bill To (recipient GSTIN, B2B only) ───────────────────────────────────
+  if (bill.buyerGstin) {
+    lines.push('[L]<b>Bill To:</b>');
+    if (bill.buyerName) {
+      for (const ln of wrapText(bill.buyerName, W - 2)) lines.push(`[L]  ${ln}`);
+    }
+    lines.push(`[L]  GSTIN: ${bill.buyerGstin}`);
+    lines.push(`[L]${d}`);
+  }
 
   // ── Column header ─────────────────────────────────────────────────────────
   lines.push(`[L]${leftRight('ITEM', 'AMT', W)}`);
@@ -201,11 +229,36 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
     const chargeValue = chargeAmount < 0 ? `-${fmt(Math.abs(chargeAmount))}` : fmt(chargeAmount);
     lines.push(`[L]${leftRight(chargeLabel, chargeValue, W)}`);
   }
-  if (bill.tax > 0) {
-    const taxLabel = bill.gstRegistered
-      ? (bill.taxRate ? `GST (${bill.taxRate}%)` : 'GST')
-      : 'Tax';
-    lines.push(`[L]${leftRight(taxLabel, fmt(bill.tax), W)}`);
+  // GST lines. Prefer the rate-wise breakdown (Phase 2): one block per rate,
+  // each optionally split into CGST + SGST. Falls back to the single combined
+  // line when no per-rate data is present (legacy bills).
+  const rateLines = (bill.taxLines ?? []).filter((l) => l.amount > 0);
+  const half = (rate: number) => (rate / 2).toFixed(1).replace(/\.0$/, '');
+  if (rateLines.length > 0) {
+    for (const l of rateLines) {
+      if (bill.taxDisplayMode === 'split') {
+        lines.push(`[L]${leftRight(`CGST (${half(l.rate)}%)`, fmt(l.cgst), W)}`);
+        lines.push(`[L]${leftRight(`SGST (${half(l.rate)}%)`, fmt(l.sgst), W)}`);
+      } else {
+        lines.push(`[L]${leftRight(`GST (${l.rate}%)`, fmt(l.amount), W)}`);
+      }
+    }
+  } else if (bill.tax > 0) {
+    if (bill.gstRegistered && bill.taxDisplayMode === 'split' && bill.taxRate) {
+      const cgst = Math.round(bill.tax / 2);
+      lines.push(`[L]${leftRight(`CGST (${half(bill.taxRate)}%)`, fmt(cgst), W)}`);
+      lines.push(`[L]${leftRight(`SGST (${half(bill.taxRate)}%)`, fmt(bill.tax - cgst), W)}`);
+    } else {
+      const taxLabel = bill.gstRegistered
+        ? (bill.taxRate ? `GST (${bill.taxRate}%)` : 'GST')
+        : 'Tax';
+      lines.push(`[L]${leftRight(taxLabel, fmt(bill.tax), W)}`);
+    }
+  }
+  // Inclusive pricing: the GST above is embedded in the prices, not added — say
+  // so, otherwise the unchanged TOTAL reads like a mistake (Phase 4).
+  if (bill.pricesIncludeTax && bill.tax > 0) {
+    lines.push('[L](GST included in the prices above)');
   }
   lines.push(`[L]${D}`);
   lines.push(`[L]<b>${leftRight('TOTAL', fmt(bill.grandTotal), W)}</b>`);

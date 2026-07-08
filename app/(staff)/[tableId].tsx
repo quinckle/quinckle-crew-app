@@ -16,7 +16,7 @@ import { subscribeChannel } from '../../services/realtime';
 import type { BillOrderItem, BillOrder, MenuItem } from '../../services/api';
 import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
-import { PrintOptionsSheet } from '../../components/ui/PrintOptionsSheet';
+import { PrintOptionsSheet, type InvoiceBuyer } from '../../components/ui/PrintOptionsSheet';
 import { BillDetailsSheet } from '../../components/ui/BillDetailsSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { Skeleton } from '../../components/ui/Skeleton';
@@ -111,6 +111,8 @@ export default function TableDetail() {
     fssaiLicenseNumber?: string | null;
     gstRegistered?: boolean;
     gstin?: string | null;
+    displayMode?: 'combined' | 'split';
+    pricesIncludeTax?: boolean;
   } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [orders, setOrders] = useState<BillOrder[]>([]);
@@ -128,6 +130,10 @@ export default function TableDetail() {
   });
   const [sessionCustomerName, setSessionCustomerName] = useState<string | null>(paramCustomerName || null);
   const [sessionCustomerPhone, setSessionCustomerPhone] = useState<string | null>(paramCustomerPhone || null);
+  const [sessionBuyerGstin, setSessionBuyerGstin] = useState<string | null>(null);
+  const [sessionBuyerName, setSessionBuyerName] = useState<string | null>(null);
+  const [sessionInvoiceNumber, setSessionInvoiceNumber] = useState<string | null>(null);
+  const [sessionTaxLines, setSessionTaxLines] = useState<SessionBill['tax_lines']>(undefined);
   const [isPaid, setIsPaid] = useState(false);
   const [billTaxRate, setBillTaxRate] = useState(0);
   const [billPaymentMethod, setBillPaymentMethod] = useState<SessionBill['payment_method']>(undefined);
@@ -274,6 +280,10 @@ export default function TableDetail() {
       if (bill.expires_at !== undefined) setExpiresAt(bill.expires_at ?? null);
       if (bill.customer_name !== undefined) setSessionCustomerName(bill.customer_name ?? null);
       if (bill.customer_phone !== undefined) setSessionCustomerPhone(bill.customer_phone ?? null);
+      if (bill.buyer_gstin !== undefined) setSessionBuyerGstin(bill.buyer_gstin ?? null);
+      if (bill.buyer_name !== undefined) setSessionBuyerName(bill.buyer_name ?? null);
+      if (bill.invoice_number !== undefined) setSessionInvoiceNumber(bill.invoice_number ?? null);
+      if (bill.tax_lines !== undefined) setSessionTaxLines(bill.tax_lines);
       if (bill.started_at) {
         const d = new Date(bill.started_at);
         setSince(`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`);
@@ -311,6 +321,8 @@ export default function TableDetail() {
           fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null,
           gstRegistered: res.data.taxConfig?.gstRegistered ?? false,
           gstin: res.data.taxConfig?.gstin ?? null,
+          displayMode: (res.data.taxConfig?.displayMode as 'combined' | 'split') ?? 'combined',
+          pricesIncludeTax: res.data.taxConfig?.pricesIncludeTax ?? false,
         });
         if (res.data.upiId) {
           setUpiId(res.data.upiId);
@@ -559,7 +571,7 @@ export default function TableDetail() {
       );
   };
 
-  const handlePrintInvoice = async () => {
+  const handlePrintInvoice = async (buyer?: InvoiceBuyer) => {
     setPrintMenuOpen(false);
     if (getPrinterStatus() !== 'connected') {
       showDialog(
@@ -591,11 +603,37 @@ export default function TableDetail() {
             fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null,
             gstRegistered: res.data.taxConfig?.gstRegistered ?? false,
             gstin: res.data.taxConfig?.gstin ?? null,
+            displayMode: (res.data.taxConfig?.displayMode as 'combined' | 'split') ?? 'combined',
+            pricesIncludeTax: res.data.taxConfig?.pricesIncludeTax ?? false,
           };
           setRestaurantInvoiceMeta(invoiceMeta);
         }
       } catch {}
     }
+
+    // Persist the recipient GSTIN on the session (best-effort) so the ops PDF
+    // receipt matches this thermal print. A failure never blocks printing —
+    // the thermal bill still carries the values the crew just entered.
+    const buyerGstin = buyer?.gstin ?? null;
+    const buyerName = buyer?.name ?? null;
+    if (buyerGstin !== sessionBuyerGstin || buyerName !== sessionBuyerName) {
+      try {
+        await crewSessions.saveBuyer(sessionId, buyerGstin, buyerName);
+        setSessionBuyerGstin(buyerGstin);
+        setSessionBuyerName(buyerName);
+      } catch {}
+    }
+
+    // Assign (or reuse) the sequential tax-invoice number before printing so the
+    // printed copy carries it. Idempotent server-side; a failure (e.g. offline)
+    // falls back to the last-known number, or the internal session ref if never
+    // numbered yet.
+    let invoiceNumber = sessionInvoiceNumber;
+    try {
+      const res = await crewSessions.finalizeInvoice(sessionId);
+      invoiceNumber = res.data.invoice_number;
+      setSessionInvoiceNumber(invoiceNumber);
+    } catch {}
 
     // upiOmitAmount = true → static restaurant QR (diner types amount);
     // false → exact-amount QR. Ignored when no QR prints (paid / no VPA / toggle off).
@@ -608,6 +646,9 @@ export default function TableDetail() {
         fssaiLicenseNumber: invoiceMeta?.fssaiLicenseNumber ?? null,
         gstRegistered: invoiceMeta?.gstRegistered ?? false,
         gstin: invoiceMeta?.gstin ?? null,
+        buyerGstin,
+        buyerName,
+        invoiceNumber,
         tableNumber: tableNum,
         sessionRef: sessionRef || toSessionRef(sessionId),
         items: invoiceItems,
@@ -616,6 +657,9 @@ export default function TableDetail() {
         charges: serviceChargeTotal,
         tax: taxTotal,
         taxRate: billTaxRate,
+        taxDisplayMode: invoiceMeta?.displayMode,
+        taxLines: sessionTaxLines,
+        pricesIncludeTax: invoiceMeta?.pricesIncludeTax,
         grandTotal,
         isPaid,
         paymentMethod: billPaymentMethod,
@@ -1259,8 +1303,10 @@ export default function TableDetail() {
       <PrintOptionsSheet
         visible={printMenuOpen}
         onPrintKot={handlePrintKot}
-        onPrintInvoice={() => { void handlePrintInvoice(); }}
+        onPrintInvoice={(buyer) => { void handlePrintInvoice(buyer); }}
         onClose={() => setPrintMenuOpen(false)}
+        initialBuyerGstin={sessionBuyerGstin}
+        initialBuyerName={sessionBuyerName}
       />
 
       {/* Swap-table bottom sheet */}

@@ -54,7 +54,7 @@ import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { MergeTableSheet } from '../../components/ui/MergeTableSheet';
 import { BottomNavbar } from '../../components/ui/BottomNavbar';
 import { PICKUP_LAYOUT_PRESET, PickupCard, PickupSegmented } from '../../components/ui/pickup';
-import { PrintOptionsSheet } from '../../components/ui/PrintOptionsSheet';
+import { PrintOptionsSheet, type InvoiceBuyer } from '../../components/ui/PrintOptionsSheet';
 import { TakeawayManageSheet } from '../../components/ui/TakeawayManageSheet';
 import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
 import { TableSkeleton } from '../../components/ui/TableSkeleton';
@@ -293,6 +293,8 @@ export default function StaffDashboard() {
     fssaiLicenseNumber?: string | null;
     gstRegistered?: boolean;
     gstin?: string | null;
+    taxRate?: number | null;
+    displayMode?: 'combined' | 'split';
   } | null>(null);
   const [upiId, setUpiId] = useState<string | null>(null);
   const [upiName, setUpiName] = useState('');
@@ -314,6 +316,8 @@ export default function StaffDashboard() {
           fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null,
           gstRegistered: res.data.taxConfig?.gstRegistered ?? false,
           gstin: res.data.taxConfig?.gstin ?? null,
+          taxRate: res.data.taxConfig?.taxRate ?? null,
+          displayMode: (res.data.taxConfig?.displayMode as 'combined' | 'split') ?? 'combined',
         });
         if (res.data.upiId) {
           setUpiId(res.data.upiId);
@@ -356,7 +360,7 @@ export default function StaffDashboard() {
     }
   };
 
-  const handlePrintTakeawayInvoice = async (order: TakeawayOrder) => {
+  const handlePrintTakeawayInvoice = async (order: TakeawayOrder, buyer?: InvoiceBuyer) => {
     setPrintTakeawayOrder(null);
     if (getPrinterStatus() !== 'connected') {
       showDialog(
@@ -384,6 +388,8 @@ export default function StaffDashboard() {
         fssaiLicenseNumber: restaurantInvoiceMeta?.fssaiLicenseNumber ?? null,
         gstRegistered: restaurantInvoiceMeta?.gstRegistered ?? false,
         gstin: restaurantInvoiceMeta?.gstin ?? null,
+        buyerGstin: buyer?.gstin ?? null,
+        buyerName: buyer?.name ?? null,
         tableNumber: 0,
         channel: 'TAKEAWAY',
         pickupToken: order.pickupToken ?? null,
@@ -393,6 +399,8 @@ export default function StaffDashboard() {
         discount: order.discount,
         charges: order.serviceCharge,
         tax: order.tax,
+        taxRate: restaurantInvoiceMeta?.taxRate ?? undefined,
+        taxDisplayMode: restaurantInvoiceMeta?.displayMode,
         grandTotal: order.total,
         isPaid,
         paymentMethod: order.paymentMethod ?? undefined,
@@ -2164,7 +2172,7 @@ export default function StaffDashboard() {
       <PrintOptionsSheet
         visible={!!printTakeawayOrder}
         onPrintKot={() => { if (printTakeawayOrder) void handlePrintTakeawayKot(printTakeawayOrder); }}
-        onPrintInvoice={() => { if (printTakeawayOrder) void handlePrintTakeawayInvoice(printTakeawayOrder); }}
+        onPrintInvoice={(buyer) => { if (printTakeawayOrder) void handlePrintTakeawayInvoice(printTakeawayOrder, buyer); }}
         onClose={() => setPrintTakeawayOrder(null)}
       />
 
