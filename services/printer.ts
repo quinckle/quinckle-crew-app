@@ -16,6 +16,8 @@ import { PermissionsAndroid, Platform } from 'react-native';
 import ThermalPrinter from 'react-native-thermal-printer';
 import { buildKotText, type KotOrder } from './kotTemplate';
 import { buildInvoiceText, type InvoiceBill } from './invoiceTemplate';
+import { buildZReportText } from './zReportTemplate';
+import type { ZReport } from './api';
 import { profileFromWidth, DEFAULT_PAPER_WIDTH, type PaperProfile } from './paperProfile';
 import { printerApi } from './api';
 
@@ -390,6 +392,16 @@ export async function printBill(bill: InvoiceBill): Promise<'printed' | 'failed'
   // Honour the on-device QR toggle by dropping the VPA the template gates on.
   const billToPrint = _printUpiQr ? bill : { ...bill, upiVpa: null };
   const text = buildInvoiceText(billToPrint, currentProfile());
+  try {
+    await printRaw(text);
+    return 'printed';
+  } catch {
+    return 'failed';
+  }
+}
+
+export async function printZReport(z: ZReport): Promise<'printed' | 'failed'> {
+  const text = buildZReportText(z, currentProfile());
   try {
     await printRaw(text);
     return 'printed';

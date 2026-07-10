@@ -853,6 +853,52 @@ export const crewPayments = {
     ),
 };
 
+// ── Cash drawer shift (shift close + Z-report) ───────────────────────────────
+
+export interface CashMovement {
+  id: string; type: 'PAY_IN' | 'PAY_OUT'; amount: number | string; reason: string;
+  createdAt: string; staff?: { name: string } | null;
+}
+export interface OpenShift {
+  shift: {
+    id: string; openingFloat: string | number; openedAt: string; openingNote?: string | null;
+    openedBy?: { id: string; name: string } | null; movements: CashMovement[];
+  };
+  aggregates: { cashSales: number; payIns: number; payOuts: number; expectedCash: number };
+}
+export interface ShiftCloseResult {
+  id: string; openingFloat: string | number; countedCash: string | number;
+  expectedCash: number; cashSalesTotal: number; variance: number;
+  cashSales: number; payIns: number; payOuts: number; openedAt: string; closedAt: string;
+}
+
+export interface ZReport {
+  date: string; restaurantName: string; generatedAt: string;
+  collected: { total: number; cash: number; cashCount: number; upiDirect: number; upiCount: number; gateway: number; gatewayCount: number };
+  sales: { orders: number; sessions: number; grossSales: number; discounts: number; gstCollected: number; netSales: number };
+  adjustments: { voidCount: number; voidAmount: number; compCount: number; compAmount: number };
+  drawer:
+    | { state: 'CLOSED'; openingFloat: number; cashSales: number; expected: number; counted: number; variance: number; openedAt: string; closedAt: string }
+    | { state: 'OPEN'; openingFloat: number; openedAt: string }
+    | { state: 'NONE' };
+}
+
+export const crewShift = {
+  /** The currently open drawer (with live cash math) or null. */
+  current: () => request<{ success: true; data: OpenShift | null }>('GET', '/api/crew/shift/current', undefined, true),
+  open: (openingFloat: number, note?: string | null) =>
+    request<{ success: true; data: { id: string } }>('POST', '/api/crew/shift/open', { openingFloat, note: note ?? null }, true),
+  movement: (type: 'PAY_IN' | 'PAY_OUT', amount: number, reason: string) =>
+    request<{ success: true; data: { id: string } }>('POST', '/api/crew/shift/movement', { type, amount, reason }, true),
+  close: (countedCash: number, denominations?: Record<string, number> | null, note?: string | null) =>
+    request<{ success: true; data: ShiftCloseResult }>('POST', '/api/crew/shift/close', { countedCash, denominations: denominations ?? null, note: note ?? null }, true),
+  /** Day-end Z-report. `date` = YYYY-MM-DD (defaults to today, IST). */
+  zreport: (date?: string) =>
+    request<{ success: true; data: ZReport }>('GET', `/api/crew/shift/zreport${date ? `?date=${date}` : ''}`, undefined, true),
+  emailZreport: (date?: string, to?: string | null) =>
+    request<{ success: true; data: { sent: boolean; reason?: string } }>('POST', '/api/crew/shift/zreport/email', { date: date ?? null, to: to ?? null }, true),
+};
+
 // ── Restaurant / Menu (public) ────────────────────────────────────────────────
 
 export interface ModifierOption { id: string; name: string; priceAdjustment: string; isAvailable?: boolean; }

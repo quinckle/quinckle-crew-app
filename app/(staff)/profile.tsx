@@ -211,6 +211,46 @@ export default function StaffProfile() {
         />
 
         {/* ─── KOT PRINTER ─── */}
+        {/* ─── CASH DRAWER ─── */}
+        <View style={styles.section}>
+          <TouchableOpacity
+            style={styles.sectionRow}
+            onPress={() => router.push('/(staff)/cash-drawer')}
+            activeOpacity={0.6}
+          >
+            <View style={styles.sectionRowLeft}>
+              <View style={[styles.sectionIconWrap]}>
+                <Ionicons name="file-tray-full-outline" size={18} color='white' />
+              </View>
+              <View style={styles.sectionTextGroup}>
+                <Text style={styles.sectionTitle}>Cash Drawer</Text>
+                <Text style={styles.sectionSubtitle}>Open float, cash in/out, close & count</Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
+          </TouchableOpacity>
+        </View>
+
+        {/* ─── DAY-END REPORT (Z) ─── */}
+        <View style={styles.section}>
+          <TouchableOpacity
+            style={styles.sectionRow}
+            onPress={() => router.push('/(staff)/z-report')}
+            activeOpacity={0.6}
+          >
+            <View style={styles.sectionRowLeft}>
+              <View style={[styles.sectionIconWrap]}>
+                <Ionicons name="today-outline" size={18} color='white' />
+              </View>
+              <View style={styles.sectionTextGroup}>
+                <Text style={styles.sectionTitle}>Day-end Report</Text>
+                <Text style={styles.sectionSubtitle}>Sales, collections & cash summary · print/email</Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
+          </TouchableOpacity>
+        </View>
+
         {/* ─── EXPENSES ─── */}
         <View style={styles.section}>
           <TouchableOpacity
