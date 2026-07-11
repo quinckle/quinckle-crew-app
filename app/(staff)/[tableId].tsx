@@ -17,6 +17,7 @@ import type { BillOrderItem, BillOrder, MenuItem } from '../../services/api';
 import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
 import { PrintOptionsSheet, type InvoiceBuyer } from '../../components/ui/PrintOptionsSheet';
+import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintProgressOverlay';
 import { BillDetailsSheet } from '../../components/ui/BillDetailsSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { Skeleton } from '../../components/ui/Skeleton';
@@ -172,6 +173,9 @@ export default function TableDetail() {
   // Action menu + swap-table state for the 3-dot header
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [printMenuOpen, setPrintMenuOpen] = useState(false);
+  // Tap-to-paper progress overlay; null = hidden. Phases track the real await
+  // boundaries in the print handlers below.
+  const [printJob, setPrintJob] = useState<PrintJob | null>(null);
   const [swapOpen, setSwapOpen] = useState(false);
   const [swapSubmitting, setSwapSubmitting] = useState(false);
 
@@ -562,6 +566,7 @@ export default function TableDetail() {
     // This avoids the Ably round-trip which can fail silently if the
     // subscription isn't active or the event doesn't reach this device.
     if (getPrinterStatus() === 'connected') {
+      setPrintJob({ phase: 'printing', label: 'KOT' });
       const result = await printKot({
         id: latestOrder.order_id,
         sessionId: sessionId || undefined,
@@ -577,21 +582,30 @@ export default function TableDetail() {
         isAddOn: false,
       }, false, { force: true });
       if (result === 'printed') {
-        showDialog('Printed', 'KOT sent to printer.', [{ label: 'OK', onPress: () => {} }]);
+        setPrintJob({ phase: 'done', label: 'KOT' });
       } else {
-        showDialog('Print Failed', 'Printer connected but print failed. Check paper / Bluetooth and try again.', [{ label: 'OK', onPress: () => {} }]);
+        setPrintJob({
+          phase: 'failed',
+          label: 'KOT',
+          message: 'Printer connected but print failed. Check paper / Bluetooth and try again.',
+          onRetry: () => { void handlePrintKot(); },
+        });
       }
       return;
     }
 
     // Printer is on a different device — use the Ably round-trip.
+    setPrintJob({ phase: 'sending', label: 'KOT' });
     void printerApi
       .reprint(latestOrder.order_id, 'Manual reprint from staff screen')
-      .then(() =>
-        showDialog('Sent', 'Reprint request sent to kitchen printer.', [{ label: 'OK', onPress: () => {} }]),
-      )
+      .then(() => setPrintJob({ phase: 'sent', label: 'KOT' }))
       .catch(() =>
-        showDialog('Error', 'Could not send reprint request. Please try again.', [{ label: 'OK', onPress: () => {} }]),
+        setPrintJob({
+          phase: 'failed',
+          label: 'KOT',
+          message: 'Could not send the reprint request. Please try again.',
+          onRetry: () => { void handlePrintKot(); },
+        }),
       );
   };
 
@@ -629,6 +643,7 @@ export default function TableDetail() {
     const buyerName = buyer?.name ?? null;
     const buyerChanged = buyerGstin !== sessionBuyerGstin || buyerName !== sessionBuyerName;
 
+    setPrintJob({ phase: 'preparing', label: 'Invoice' });
     const [brandingRes, buyerRes, finalizeRes] = await Promise.allSettled([
       staffInfo?.restaurantId ? restaurantApi.getBranding(staffInfo.restaurantId) : Promise.resolve(null),
       buyerChanged ? crewSessions.saveBuyer(sessionId, buyerGstin, buyerName) : Promise.resolve(null),
@@ -669,6 +684,7 @@ export default function TableDetail() {
     // upiOmitAmount = true → static restaurant QR (diner types amount);
     // false → exact-amount QR. Ignored when no QR prints (paid / no VPA / toggle off).
     const runPrint = async (upiOmitAmount: boolean) => {
+      setPrintJob({ phase: 'printing', label: 'Invoice' });
       const result = await printBill({
         restaurantName: staffInfo?.restaurantName ?? '',
         restaurantAddress: invoiceMeta?.address ?? null,
@@ -703,11 +719,14 @@ export default function TableDetail() {
       });
 
       if (result === 'failed') {
-        showDialog(
-          'Print Failed',
-          'Could not print the invoice. Check that the printer is nearby and powered on.',
-          [{ label: 'OK', onPress: () => {} }],
-        );
+        setPrintJob({
+          phase: 'failed',
+          label: 'Invoice',
+          message: 'Could not print the invoice. Check that the printer is nearby and powered on.',
+          onRetry: () => { void runPrint(upiOmitAmount); },
+        });
+      } else {
+        setPrintJob({ phase: 'done', label: 'Invoice' });
       }
     };
 
@@ -720,7 +739,9 @@ export default function TableDetail() {
     }
 
     // Ask which QR to print via the bottom sheet; the chosen option runs the
-    // print. Dismissing the sheet (backdrop / drag) simply cancels.
+    // print. Dismissing the sheet (backdrop / drag) simply cancels. Hide the
+    // progress overlay first — it would sit on top of the QR sheet.
+    setPrintJob(null);
     qrRunRef.current = (omitAmount: boolean) => { void runPrint(omitAmount); };
     setQrSheet({ grandTotal });
   };
@@ -1339,6 +1360,9 @@ export default function TableDetail() {
         initialBuyerGstin={sessionBuyerGstin}
         initialBuyerName={sessionBuyerName}
       />
+
+      {/* Tap-to-paper print progress */}
+      <PrintProgressOverlay job={printJob} onDismiss={() => setPrintJob(null)} />
 
       {/* Swap-table bottom sheet */}
       <SwapTableSheet

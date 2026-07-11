@@ -16,6 +16,7 @@ import { printBill, getStatus as getPrinterStatus } from '../../services/printer
 import type { InvoiceBill, InvoiceItem } from '../../services/invoiceTemplate';
 import { useAuth } from '../../context/AuthContext';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
+import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintProgressOverlay';
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 function fmtMoney(n: number): string {
@@ -165,6 +166,8 @@ export default function OrderDetail() {
   // ── Reprint invoice ─────────────────────────────────────────────────────────
   const { staffInfo } = useAuth();
   const [printing, setPrinting] = useState(false);
+  // Tap-to-paper progress overlay; null = hidden.
+  const [printJob, setPrintJob] = useState<PrintJob | null>(null);
   const [meta, setMeta] = useState<{ address?: string | null; phone?: string | null; email?: string | null; fssaiLicenseNumber?: string | null; upiId?: string | null; upiName?: string | null } | null>(null);
   const [dialog, setDialog] = useState<{
     visible: boolean; title: string; message: string;
@@ -184,6 +187,7 @@ export default function OrderDetail() {
       return;
     }
     setPrinting(true);
+    setPrintJob({ phase: 'preparing', label: 'Invoice' });
     try {
       // Restaurant header meta (address / FSSAI) — fetched once, best-effort.
       let m = meta;
@@ -239,11 +243,17 @@ export default function OrderDetail() {
         generatedAt: new Date().toISOString(),
       };
 
+      setPrintJob({ phase: 'printing', label: 'Invoice' });
       const result = await printBill(bill);
       if (result === 'failed') {
-        showDialog('Print failed', 'Could not print. Check that the printer is nearby and powered on.', [{ label: 'OK', onPress: () => {} }]);
+        setPrintJob({
+          phase: 'failed',
+          label: 'Invoice',
+          message: 'Could not print. Check that the printer is nearby and powered on.',
+          onRetry: () => { void handleReprint(); },
+        });
       } else {
-        showDialog('Printed', 'Invoice sent to the printer.', [{ label: 'OK', onPress: () => {} }]);
+        setPrintJob({ phase: 'done', label: 'Invoice' });
       }
     } finally {
       setPrinting(false);
@@ -346,6 +356,9 @@ export default function OrderDetail() {
         actions={dialog.actions}
         onClose={closeDialog}
       />
+
+      {/* Tap-to-paper print progress */}
+      <PrintProgressOverlay job={printJob} onDismiss={() => setPrintJob(null)} />
     </View>
   );
 }

@@ -56,6 +56,7 @@ import { MergeTableSheet } from '../../components/ui/MergeTableSheet';
 import { BottomNavbar } from '../../components/ui/BottomNavbar';
 import { PICKUP_LAYOUT_PRESET, PickupCard, PickupSegmented } from '../../components/ui/pickup';
 import { PrintOptionsSheet, type InvoiceBuyer } from '../../components/ui/PrintOptionsSheet';
+import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintProgressOverlay';
 import { TakeawayManageSheet } from '../../components/ui/TakeawayManageSheet';
 import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
 import { TableSkeleton } from '../../components/ui/TableSkeleton';
@@ -301,6 +302,8 @@ export default function StaffDashboard() {
   const [upiId, setUpiId] = useState<string | null>(null);
   const [upiName, setUpiName] = useState('');
   const [printTakeawayOrder, setPrintTakeawayOrder] = useState<TakeawayOrder | null>(null);
+  // Tap-to-paper progress overlay for the manual takeaway prints; null = hidden.
+  const [printJob, setPrintJob] = useState<PrintJob | null>(null);
   const [qrSheet, setQrSheet] = useState<{ grandTotal: number } | null>(null);
   const qrRunRef = useRef<((omitAmount: boolean) => void) | null>(null);
 
@@ -341,6 +344,7 @@ export default function StaffDashboard() {
       );
       return;
     }
+    setPrintJob({ phase: 'printing', label: 'KOT' });
     const result = await printKot({
       id: order.orderId,
       tableNumber: 0,
@@ -357,9 +361,14 @@ export default function StaffDashboard() {
       isAddOn: false,
     }, false, { force: true });
     if (result === 'printed') {
-      showDialog('Printed', 'KOT sent to printer.', [{ label: 'OK', onPress: () => {} }]);
+      setPrintJob({ phase: 'done', label: 'KOT' });
     } else {
-      showDialog('Print Failed', 'Printer connected but print failed. Check paper / Bluetooth and try again.', [{ label: 'OK', onPress: () => {} }]);
+      setPrintJob({
+        phase: 'failed',
+        label: 'KOT',
+        message: 'Printer connected but print failed. Check paper / Bluetooth and try again.',
+        onRetry: () => { void handlePrintTakeawayKot(order); },
+      });
     }
   };
 
@@ -386,6 +395,7 @@ export default function StaffDashboard() {
     // mid-shift on the dashboard must apply to the very next print, not after
     // an app restart. Offline/failure falls back to the mount-time snapshot.
     let meta = restaurantInvoiceMeta;
+    setPrintJob({ phase: 'preparing', label: 'Invoice' });
     if (staffInfo?.restaurantId) {
       try {
         const res = await restaurantApi.getBranding(staffInfo.restaurantId);
@@ -411,6 +421,7 @@ export default function StaffDashboard() {
     }
 
     const runPrint = async (upiOmitAmount: boolean) => {
+      setPrintJob({ phase: 'printing', label: 'Invoice' });
       const result = await printBill({
         restaurantName: staffInfo?.restaurantName ?? '',
         restaurantAddress: meta?.address ?? null,
@@ -443,11 +454,14 @@ export default function StaffDashboard() {
         generatedAt: new Date().toISOString(),
       });
       if (result === 'failed') {
-        showDialog(
-          'Print Failed',
-          'Could not print the invoice. Check that the printer is nearby and powered on.',
-          [{ label: 'OK', onPress: () => {} }],
-        );
+        setPrintJob({
+          phase: 'failed',
+          label: 'Invoice',
+          message: 'Could not print the invoice. Check that the printer is nearby and powered on.',
+          onRetry: () => { void runPrint(upiOmitAmount); },
+        });
+      } else {
+        setPrintJob({ phase: 'done', label: 'Invoice' });
       }
     };
 
@@ -456,6 +470,9 @@ export default function StaffDashboard() {
       await runPrint(false);
       return;
     }
+    // Hide the progress overlay while the QR-choice sheet is up — the chosen
+    // option re-opens it in the printing phase; dismissing the sheet cancels.
+    setPrintJob(null);
     qrRunRef.current = (omitAmount: boolean) => { void runPrint(omitAmount); };
     setQrSheet({ grandTotal: order.total });
   };
@@ -2214,6 +2231,9 @@ export default function StaffDashboard() {
         onPrintInvoice={(buyer) => { if (printTakeawayOrder) void handlePrintTakeawayInvoice(printTakeawayOrder, buyer); }}
         onClose={() => setPrintTakeawayOrder(null)}
       />
+
+      {/* Tap-to-paper print progress */}
+      <PrintProgressOverlay job={printJob} onDismiss={() => setPrintJob(null)} />
 
       <TakeawayManageSheet
         order={manageOrder}
