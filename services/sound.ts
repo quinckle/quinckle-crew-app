@@ -16,7 +16,7 @@ async function play(file: number): Promise<void> {
   } catch { /* non-fatal */ }
 }
 
-/** Ascending G5→C6→E6 chime — payment collected (UPI-soundbox style). */
+/** Warm two-note marimba tap (C5→G5) — payment collected. */
 export function playPaymentSuccess(): void {
   void play(require('../assets/audio/payment_success.wav'));
 }
