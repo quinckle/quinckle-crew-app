@@ -25,6 +25,7 @@ import Svg, { Path } from 'react-native-svg';
 import { useAuth } from '../../context/AuthContext';
 import { crewOrders, crewPayments, restaurantApi, type BillBreakdown, type CrewOrderPaymentContext } from '../../services/api';
 import { BillBreakdownView } from '../../components/ui/BillBreakdownView';
+import { playPaymentSuccess } from '../../services/sound';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 
 function buildUpiUri(vpa: string, merchantName: string, amount: number): string {
@@ -101,6 +102,7 @@ function SuccessScreen({ info, onDone }: { info: SuccessInfo; onDone: () => void
   const riseAnim  = useRef(new Animated.Value(20)).current;
 
   useEffect(() => {
+    playPaymentSuccess();
     Animated.parallel([
       Animated.timing(fadeAnim, { toValue: 1, duration: 260, useNativeDriver: true }),
       Animated.timing(riseAnim, { toValue: 0, duration: 340, easing: Easing.out(Easing.cubic), useNativeDriver: true }),

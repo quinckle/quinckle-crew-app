@@ -18,6 +18,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useAuth } from '../../context/AuthContext';
 import { crewPayments, restaurantApi, type PendingCashRequest, type CollectedCashRecord } from '../../services/api';
 import { subscribeChannel } from '../../services/realtime';
+import { playPaymentSuccess } from '../../services/sound';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { CashCollectionSkeleton } from '../../components/ui/CashCollectionSkeleton';
 
@@ -244,6 +245,7 @@ export default function CashCollectionScreen() {
       }
       setOpenMenuOrderId(null);
       setUpiSuccessingOrderId(req.orderId);
+      playPaymentSuccess();
       successSweep.setValue(0);
       Animated.timing(successSweep, {
         toValue: 1,
