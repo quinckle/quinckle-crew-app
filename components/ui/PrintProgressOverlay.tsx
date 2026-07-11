@@ -46,12 +46,10 @@ const PAPER_LOOP_MS = 1300;
 // Close button so the crew is never trapped behind the modal. Closing only
 // hides the UI; the in-flight print still resolves (or fails) in background.
 const STUCK_AFTER_MS = 15_000;
-// Fast prints (printBill resolves right after the BT write, no ack round-trip
-// like printKot) can finish inside one paper-loop cycle, cutting the animation
-// off mid-rise. Hold the busy visual until at least one full cycle has played
-// before showing success — cosmetic only, the paper is already out. Failures
-// are never delayed.
-const MIN_BUSY_MS = PAPER_LOOP_MS + 250;
+// How long the paper rests fully-out between loop cycles. Also the slack
+// window the success reveal aims for (see below), so keep them one constant.
+const PAPER_HOLD_MS = 220;
+const PAPER_CYCLE_MS = PAPER_LOOP_MS + PAPER_HOLD_MS;
 
 const PAPER_W = 68;
 const PAPER_H = 78;
@@ -91,7 +89,7 @@ function PrinterGraphic({ phase }: { phase: PrintJobPhase }) {
           easing: Easing.out(Easing.cubic),
           useNativeDriver: true,
         }),
-        Animated.delay(220),
+        Animated.delay(PAPER_HOLD_MS),
         Animated.timing(paper, { toValue: 0, duration: 0, useNativeDriver: true }),
       ]),
     );
@@ -180,10 +178,12 @@ export function PrintProgressOverlay({ job, onDismiss }: Props) {
   const [stuck, setStuck] = React.useState(false);
 
   // What the card actually renders. Lags `job` only in one case: a success
-  // arriving before MIN_BUSY_MS of busy time has played, so the paper loop
-  // completes instead of being cut off mid-rise. Failures are never delayed.
+  // arriving mid paper-rise. The reveal is aligned to the animation cycle —
+  // wait until the paper is fully out (the PAPER_HOLD_MS rest window), THEN
+  // swap in the check, no matter how many loops have played. Purely cosmetic
+  // (the real paper is already out); failures are never delayed.
   const [shown, setShown] = React.useState<PrintJob | null>(job);
-  const busyStart = useRef(0);
+  const animStart = useRef(0); // when the paper loop started (printing/sending)
   const prevPhase = useRef<PrintJobPhase | undefined>(job?.phase);
 
   useEffect(() => {
@@ -194,13 +194,19 @@ export function PrintProgressOverlay({ job, onDismiss }: Props) {
       return;
     }
     if (isBusy(job.phase)) {
-      if (!isBusy(prev)) busyStart.current = Date.now();
+      const animating = job.phase === 'printing' || job.phase === 'sending';
+      const wasAnimating = prev === 'printing' || prev === 'sending';
+      if (animating && !wasAnimating) animStart.current = Date.now();
       setShown(job);
       return;
     }
-    if ((job.phase === 'done' || job.phase === 'sent') && isBusy(prev)) {
-      const wait = Math.max(0, MIN_BUSY_MS - (Date.now() - busyStart.current));
-      if (wait > 0) {
+    if ((job.phase === 'done' || job.phase === 'sent') && isBusy(prev) && animStart.current > 0) {
+      // Position within the current loop cycle; if the paper is still rising,
+      // hold the busy visual until it tops out (+ a beat of the rest window so
+      // the "fully printed" frame registers before the check appears).
+      const posInCycle = (Date.now() - animStart.current) % PAPER_CYCLE_MS;
+      if (posInCycle < PAPER_LOOP_MS) {
+        const wait = PAPER_LOOP_MS - posInCycle + PAPER_HOLD_MS / 2;
         const t = setTimeout(() => setShown(job), wait);
         return () => clearTimeout(t);
       }
