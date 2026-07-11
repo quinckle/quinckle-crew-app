@@ -13,12 +13,11 @@
  *  - Identity modal → CollectionSheet for payment
  */
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
   FlatList,
-  Image,
   KeyboardAvoidingView,
   LayoutAnimation,
   Modal,
@@ -31,6 +30,7 @@ import {
   UIManager,
   View,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -42,6 +42,7 @@ import {
 import type { MenuItem, ModifierGroup, CrewOffer } from '../../services/api';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { Skeleton } from '../../components/ui/Skeleton';
+import { readCache, writeCache, cacheKeys } from '../../services/dataCache';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -92,6 +93,145 @@ function ItemSkeleton() {
     </View>
   );
 }
+
+// ── Menu item row ─────────────────────────────────────────────────────────────
+
+// media.quinckle.com uploads have Sharp-generated R2 variants (same convention
+// as the diner web themes): `<base>.webp-thumb.webp` is the 400px thumb —
+// plenty for this 76px render at 3x DPR. Legacy uploads without variants fall
+// back to the base URL via onError.
+const menuThumbUrl = (url: string) =>
+  url.includes('media.quinckle.com') && url.endsWith('.webp') ? `${url}-thumb.webp` : url;
+
+// Memoized so a cart tap only re-renders the touched row, not every visible
+// one. All props are per-row slices; callbacks must be identity-stable.
+const MenuItemRow = React.memo(function MenuItemRow({
+  item, qty, note, noteOpen, mods, onAdd, onRemove, onToggleNote, onChangeNote,
+}: {
+  item: MenuItem;
+  qty: number;
+  note: string;
+  noteOpen: boolean;
+  mods: { groupId: string; optionId: string }[] | undefined;
+  onAdd: (item: MenuItem) => void;
+  onRemove: (itemId: string) => void;
+  onToggleNote: (itemId: string) => void;
+  onChangeNote: (itemId: string, text: string) => void;
+}) {
+  const [imgFailed, setImgFailed] = useState(false);
+  const hasImage = !!item.imageUrl;
+  const price = parseFloat(item.price);
+  const origPrice = item.originalPrice ? parseFloat(item.originalPrice) : null;
+  const discountPct = origPrice && origPrice > price
+    ? Math.round(((origPrice - price) / origPrice) * 100) : 0;
+
+  const modSummary = (() => {
+    if (!mods?.length) return null;
+    return mods.map(({ groupId, optionId }) => {
+      const g = item.modifierGroups?.find(g => g.id === groupId);
+      return g?.options.find(o => o.id === optionId)?.name;
+    }).filter(Boolean).join(', ') || null;
+  })();
+
+  return (
+    <View style={styles.itemRow}>
+      {/* Image — disk-cached thumb variant; base URL if the variant 404s */}
+      {hasImage ? (
+        <Image
+          source={{ uri: imgFailed ? item.imageUrl! : menuThumbUrl(item.imageUrl!) }}
+          style={styles.itemImg}
+          contentFit="cover"
+          cachePolicy="disk"
+          transition={0}
+          onError={() => setImgFailed(true)}
+        />
+      ) : (
+        <View style={styles.itemImgPlaceholder}>
+          <Ionicons name="fast-food-outline" size={26} color={QuinckleColors.textMuted} />
+        </View>
+      )}
+
+      {/* Info col */}
+      <View style={styles.itemInfo}>
+        <Text style={styles.itemName} numberOfLines={2}>{item.name}</Text>
+
+        {/* Meta row: veg icon + category */}
+        <View style={styles.itemMeta}>
+          <VegIcon isVeg={item.isVeg} />
+          <View style={styles.catChip}>
+            <Text style={styles.catChipText} numberOfLines={1}>{item.category}</Text>
+          </View>
+          {(item.modifierGroups?.length ?? 0) > 0 && (
+            <Text style={styles.optionsLabel}>+ options</Text>
+          )}
+        </View>
+
+        {/* Price row */}
+        <View style={styles.priceRow}>
+          <Text style={styles.price}>₹{price.toFixed(0)}</Text>
+          {origPrice && discountPct > 0 && (
+            <>
+              <Text style={styles.originalPrice}>₹{origPrice.toFixed(0)}</Text>
+              <View style={styles.discountBadge}>
+                <Text style={styles.discountText}>{discountPct}% OFF</Text>
+              </View>
+            </>
+          )}
+        </View>
+
+        {/* Modifier summary */}
+        {modSummary ? <Text style={styles.modSummary} numberOfLines={1}>{modSummary}</Text> : null}
+
+        {/* Note toggle — always rendered to reserve height, invisible when qty=0 */}
+        <TouchableOpacity
+          style={[styles.noteToggle, qty === 0 && { opacity: 0 }]}
+          onPress={() => qty > 0 && onToggleNote(item.id)}
+          activeOpacity={qty > 0 ? 0.7 : 1}
+        >
+          <Ionicons
+            name={noteOpen ? 'chevron-up' : 'create-outline'}
+            size={12}
+            color={QuinckleColors.textMuted}
+          />
+          <Text style={styles.noteToggleText}>
+            {noteOpen ? 'Hide note' : note ? `Note: ${note}` : 'Add note'}
+          </Text>
+        </TouchableOpacity>
+        {qty > 0 && noteOpen && (
+          <TextInput
+            style={styles.noteInput}
+            placeholder="e.g. no onions, extra spicy…"
+            placeholderTextColor={QuinckleColors.textMuted}
+            value={note}
+            onChangeText={text => onChangeNote(item.id, text)}
+            returnKeyType="done"
+            autoFocus
+          />
+        )}
+      </View>
+
+      {/* Qty control */}
+      <View style={styles.qtyWrap}>
+        {qty > 0 ? (
+          <View style={styles.qtyControl}>
+            <TouchableOpacity onPress={() => onRemove(item.id)} style={styles.qtyBtn} hitSlop={6}>
+              <Ionicons name="remove" size={16} color={QuinckleColors.primary} />
+            </TouchableOpacity>
+            <Text style={styles.qtyText}>{qty}</Text>
+            <TouchableOpacity onPress={() => onAdd(item)} style={styles.qtyBtn} hitSlop={6}>
+              <Ionicons name="add" size={16} color={QuinckleColors.primary} />
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <TouchableOpacity onPress={() => onAdd(item)} style={styles.addBtn} activeOpacity={0.8}>
+            <Ionicons name="add" size={15} color={QuinckleColors.primary} />
+            <Text style={styles.addBtnText}>Add</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    </View>
+  );
+});
 
 // ── Modifier bottom sheet ─────────────────────────────────────────────────────
 
@@ -239,44 +379,69 @@ export default function OrderMenuScreen() {
   const [sessionCustomerPhone, setSessionCustomerPhone] = useState(paramPhone || null);
   const [sessionCustomerName, setSessionCustomerName] = useState(paramName || null);
 
-  // ── Load menu + branding on mount ──────────────────────────────────────────
+  // ── Load menu + offers on mount — stale-while-revalidate ──────────────────
+  // The cached copy paints instantly (no skeleton on repeat opens); the fresh
+  // fetch always runs and replaces it, so the list is at most one open stale.
   useEffect(() => {
     const rid = staffInfo?.restaurantId;
     if (!rid) return;
+    const channel = isTakeaway ? 'TAKEAWAY' : 'CREW';
+    let cancelled = false;
+    let freshLanded = false;
+
+    const applyMenu = (cats: any[]) => {
+      const items = cats.flatMap((c: any) =>
+        (c.items ?? []).map((i: any) => ({ ...i, category: i.category || c.name }))
+      ).filter((i: any) => i.isAvailable !== false);
+      setMenuItems(items);
+      setMenuCategories(['All', ...cats.map((c: any) => c.name).filter(Boolean)]);
+      setIsMenuLoading(false);
+    };
+
     setIsMenuLoading(true);
+    readCache<any[]>(cacheKeys.crewOrderMenu(rid, channel)).then(cats => {
+      if (!cancelled && !freshLanded && cats?.length) applyMenu(cats);
+    });
 
     // 'CREW' → dine-in menu + crew-only special charges (e.g. birthday fees)
     // that diners never see but staff can add to a bill.
     // Takeaway sessions get the TAKEAWAY menu so per-channel availability is
     // respected (CREW-only special charges stay dine-in).
-    const menuP = restaurantApi.getMenu(rid, isTakeaway ? 'TAKEAWAY' : 'CREW')
+    restaurantApi.getMenu(rid, channel)
       .then(res => {
         const cats: any[] = (res as any)?.data ?? [];
-        const items = cats.flatMap((c: any) =>
-          (c.items ?? []).map((i: any) => ({ ...i, category: i.category || c.name }))
-        ).filter((i: any) => i.isAvailable !== false);
-        setMenuItems(items);
-        setMenuCategories(['All', ...cats.map((c: any) => c.name).filter(Boolean)]);
+        writeCache(cacheKeys.crewOrderMenu(rid, channel), cats);
+        if (cancelled) return;
+        freshLanded = true;
+        applyMenu(cats);
       })
-      .catch(() => {})
-      .finally(() => setIsMenuLoading(false));
+      .catch(() => { if (!cancelled) setIsMenuLoading(false); });
 
+    // Offers list is cacheable per restaurant; sessionSubtotalBeforeCart is
+    // session-specific so it only ever comes from the fresh response.
+    readCache<CrewOffer[]>(cacheKeys.crewOffers(rid)).then(cached => {
+      if (!cancelled && cached) setOffers(prev => (prev.length ? prev : cached));
+    });
     crewOffers.list(sessionId)
       .then(res => {
         const d = (res as any)?.data;
+        if (d?.offers) writeCache(cacheKeys.crewOffers(rid), d.offers);
+        if (cancelled) return;
         setOffers(d?.offers ?? []);
         setPriorSubtotal(Number(d?.sessionSubtotalBeforeCart ?? 0));
       })
       .catch(() => {});
+
+    return () => { cancelled = true; };
   }, [staffInfo?.restaurantId, sessionId]);
 
-  // ── Cart helpers ───────────────────────────────────────────────────────────
-  const addToCart = (itemId: string, mods?: { groupId: string; optionId: string }[]) => {
+  // ── Cart helpers — identity-stable so MenuItemRow's React.memo holds ───────
+  const addToCart = useCallback((itemId: string, mods?: { groupId: string; optionId: string }[]) => {
     setCart(prev => ({ ...prev, [itemId]: (prev[itemId] ?? 0) + 1 }));
     if (mods) setCartModifiers(prev => ({ ...prev, [itemId]: mods }));
-  };
+  }, []);
 
-  const removeFromCart = (itemId: string) => {
+  const removeFromCart = useCallback((itemId: string) => {
     setCart(prev => {
       const qty = (prev[itemId] ?? 0) - 1;
       if (qty <= 0) {
@@ -287,7 +452,7 @@ export default function OrderMenuScreen() {
       }
       return { ...prev, [itemId]: qty };
     });
-  };
+  }, []);
 
   const cartTotal = useMemo(() => Object.entries(cart).reduce((sum, [id, qty]) => {
     const item = menuItems.find(m => m.id === id);
@@ -379,7 +544,7 @@ export default function OrderMenuScreen() {
   }, [cartCount]);
 
   // ── Add item (with modifier check) ────────────────────────────────────────
-  const handleAddPress = (item: MenuItem) => {
+  const handleAddPress = useCallback((item: MenuItem) => {
     if ((item.modifierGroups?.length ?? 0) > 0) {
       const init: Record<string, string[]> = {};
       item.modifierGroups!.forEach(g => { init[g.id] = []; });
@@ -388,7 +553,15 @@ export default function OrderMenuScreen() {
     } else {
       addToCart(item.id);
     }
-  };
+  }, [addToCart]);
+
+  const handleToggleNote = useCallback((itemId: string) => {
+    setNoteExpanded(prev => ({ ...prev, [itemId]: !prev[itemId] }));
+  }, []);
+
+  const handleChangeNote = useCallback((itemId: string, text: string) => {
+    setCartNotes(prev => ({ ...prev, [itemId]: text }));
+  }, []);
 
   const handleToggleMod = (gId: string, oId: string, max: number) => {
     setPendingMods(prev => {
@@ -524,13 +697,10 @@ export default function OrderMenuScreen() {
       setCartModifiers({});
       setNoteExpanded({});
 
-      let orderTotal = Number(orderRes?.totals?.total ?? 0);
-      if (orderId) {
-        try {
-          const ctx = await crewOrders.getPaymentContext(orderId);
-          orderTotal = Number(ctx?.data?.total ?? orderTotal);
-        } catch { /* use placeOrder total */ }
-      }
+      // placeOrder already returns the full payable total (tax included) —
+      // payment-collect re-fetches its own context anyway, so no extra
+      // round trip here.
+      let orderTotal = Number(orderRes?.total ?? 0);
       if (!Number.isFinite(orderTotal) || orderTotal <= 0) orderTotal = snapshotTotal;
 
       if (!Number.isFinite(orderTotal) || orderTotal <= 0) {
@@ -551,7 +721,7 @@ export default function OrderMenuScreen() {
       setPlaced({ amount: orderTotal });
       navTimerRef.current = setTimeout(() => {
         router.replace({ pathname: '/(staff)/payment-collect', params: navParams });
-      }, 1200);
+      }, 500);
     } catch (e: any) {
       setCoError(e?.message ?? 'Failed to place order. Try again.');
     } finally {
@@ -559,118 +729,20 @@ export default function OrderMenuScreen() {
     }
   };
 
-  // ── Render each item ───────────────────────────────────────────────────────
-  const renderItem = ({ item }: { item: MenuItem }) => {
-    const qty = cart[item.id] ?? 0;
-    const note = cartNotes[item.id] ?? '';
-    const hasImage = !!item.imageUrl;
-    const price = parseFloat(item.price);
-    const origPrice = item.originalPrice ? parseFloat(item.originalPrice) : null;
-    const discountPct = origPrice && origPrice > price
-      ? Math.round(((origPrice - price) / origPrice) * 100) : 0;
-    const noteOpen = !!noteExpanded[item.id];
-
-    const modSummary = (() => {
-      const mods = cartModifiers[item.id];
-      if (!mods?.length) return null;
-      return mods.map(({ groupId, optionId }) => {
-        const g = item.modifierGroups?.find(g => g.id === groupId);
-        return g?.options.find(o => o.id === optionId)?.name;
-      }).filter(Boolean).join(', ') || null;
-    })();
-
-    return (
-      <View style={styles.itemRow}>
-        {/* Image */}
-        {hasImage ? (
-          <Image source={{ uri: item.imageUrl }} style={styles.itemImg} />
-        ) : (
-          <View style={styles.itemImgPlaceholder}>
-            <Ionicons name="fast-food-outline" size={26} color={QuinckleColors.textMuted} />
-          </View>
-        )}
-
-        {/* Info col */}
-        <View style={styles.itemInfo}>
-          <Text style={styles.itemName} numberOfLines={2}>{item.name}</Text>
-
-          {/* Meta row: veg icon + category */}
-          <View style={styles.itemMeta}>
-            <VegIcon isVeg={item.isVeg} />
-            <View style={styles.catChip}>
-              <Text style={styles.catChipText} numberOfLines={1}>{item.category}</Text>
-            </View>
-            {(item.modifierGroups?.length ?? 0) > 0 && (
-              <Text style={styles.optionsLabel}>+ options</Text>
-            )}
-          </View>
-
-          {/* Price row */}
-          <View style={styles.priceRow}>
-            <Text style={styles.price}>₹{price.toFixed(0)}</Text>
-            {origPrice && discountPct > 0 && (
-              <>
-                <Text style={styles.originalPrice}>₹{origPrice.toFixed(0)}</Text>
-                <View style={styles.discountBadge}>
-                  <Text style={styles.discountText}>{discountPct}% OFF</Text>
-                </View>
-              </>
-            )}
-          </View>
-
-          {/* Modifier summary */}
-          {modSummary ? <Text style={styles.modSummary} numberOfLines={1}>{modSummary}</Text> : null}
-
-          {/* Note toggle — always rendered to reserve height, invisible when qty=0 */}
-          <TouchableOpacity
-            style={[styles.noteToggle, qty === 0 && { opacity: 0 }]}
-            onPress={() => qty > 0 && setNoteExpanded(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
-            activeOpacity={qty > 0 ? 0.7 : 1}
-          >
-            <Ionicons
-              name={noteOpen ? 'chevron-up' : 'create-outline'}
-              size={12}
-              color={QuinckleColors.textMuted}
-            />
-            <Text style={styles.noteToggleText}>
-              {noteOpen ? 'Hide note' : note ? `Note: ${note}` : 'Add note'}
-            </Text>
-          </TouchableOpacity>
-          {qty > 0 && noteOpen && (
-            <TextInput
-              style={styles.noteInput}
-              placeholder="e.g. no onions, extra spicy…"
-              placeholderTextColor={QuinckleColors.textMuted}
-              value={note}
-              onChangeText={text => setCartNotes(prev => ({ ...prev, [item.id]: text }))}
-              returnKeyType="done"
-              autoFocus
-            />
-          )}
-        </View>
-
-        {/* Qty control */}
-        <View style={styles.qtyWrap}>
-          {qty > 0 ? (
-            <View style={styles.qtyControl}>
-              <TouchableOpacity onPress={() => removeFromCart(item.id)} style={styles.qtyBtn} hitSlop={6}>
-                <Ionicons name="remove" size={16} color={QuinckleColors.primary} />
-              </TouchableOpacity>
-              <Text style={styles.qtyText}>{qty}</Text>
-              <TouchableOpacity onPress={() => handleAddPress(item)} style={styles.qtyBtn} hitSlop={6}>
-                <Ionicons name="add" size={16} color={QuinckleColors.primary} />
-              </TouchableOpacity>
-            </View>
-          ) : (
-            <TouchableOpacity onPress={() => handleAddPress(item)} style={styles.addBtn} activeOpacity={0.8}>
-              <Ionicons name="add" size={15} color={QuinckleColors.primary} />
-              <Text style={styles.addBtnText}>Add</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
-    );
-  };
+  // ── Render each item — memoized row; only the touched row re-renders ──────
+  const renderItem = useCallback(({ item }: { item: MenuItem }) => (
+    <MenuItemRow
+      item={item}
+      qty={cart[item.id] ?? 0}
+      note={cartNotes[item.id] ?? ''}
+      noteOpen={!!noteExpanded[item.id]}
+      mods={cartModifiers[item.id]}
+      onAdd={handleAddPress}
+      onRemove={removeFromCart}
+      onToggleNote={handleToggleNote}
+      onChangeNote={handleChangeNote}
+    />
+  ), [cart, cartNotes, noteExpanded, cartModifiers, handleAddPress, removeFromCart, handleToggleNote, handleChangeNote]);
 
   // ── Guest details — its own screen (not a modal), pushed in place of the ──
   // menu when "Place Order" is tapped. Same fields/CRM lookup as before.
@@ -818,12 +890,14 @@ export default function OrderMenuScreen() {
             {/* Sits right below the name section normally; when the CRM card
                 above appears/disappears, LayoutAnimation glides it down/up
                 instead of it snapping to its new spot. */}
+            {/* The CRM lookup is informational only — never gate placing the
+                order on it, or a slow lookup adds a full RTT to every order. */}
             <TouchableOpacity
               style={[styles.coConfirm,
                 { marginTop: Spacing.lg },
-                (coLooking || coSubmitting || (coPhone.length > 0 && coPhone.length < 10)) && { opacity: 0.4 }]}
+                (coSubmitting || (coPhone.length > 0 && coPhone.length < 10)) && { opacity: 0.4 }]}
               onPress={confirmAndPlace}
-              disabled={coLooking || coSubmitting || (coPhone.length > 0 && coPhone.length < 10)}
+              disabled={coSubmitting || (coPhone.length > 0 && coPhone.length < 10)}
               activeOpacity={0.8}
             >
               {coSubmitting

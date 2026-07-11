@@ -26,6 +26,7 @@ import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
 import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewTakeaway, restaurantApi, crewAuth, printerApi } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
+import { invalidateCache } from '../../services/dataCache';
 import { printKot, printBill, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
 import type { InvoiceBill } from '../../services/invoiceTemplate';
 import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded } from '../../services/printSink';
@@ -713,21 +714,10 @@ export default function StaffDashboard() {
   const loadTables = async () => {
     try {
       const res = await crewTables.list() as any;
-      console.log('[tables] API response:', JSON.stringify(res));
-      const apiTables: Table[] = await Promise.all((res?.tables ?? []).map(async (t: any) => {
-        let billAmount = typeof t.bill_total === 'number' ? t.bill_total : undefined;
-        if (billAmount === undefined && t.session_id) {
-          try {
-            const bill = await crewSessions.getBill(t.session_id);
-            // Never assume a tax rate as fallback — the partner may have GST
-            // off entirely. If tax_total is null, treat it as zero.
-            billAmount = typeof bill.total_payable === 'number'
-              ? bill.total_payable
-              : bill.session_total + (bill.tax_total ?? 0);
-          } catch {
-            billAmount = undefined;
-          }
-        }
+      // bill_total ships on /crew/tables itself now — no per-table /bill
+      // fallback (that was an N+1: a 12-table floor cost 13 queries per load).
+      const apiTables: Table[] = (res?.tables ?? []).map((t: any) => {
+        const billAmount = typeof t.bill_total === 'number' ? t.bill_total : undefined;
 
         return {
           id: t.table_id,
@@ -751,9 +741,8 @@ export default function StaffDashboard() {
           paymentSettled: t.payment_settled === true,
           billAmount,
         };
-      }));
-      apiTables.sort((a, b) => a.number - b.number);
-      console.log('[tables] mapped count:', apiTables.length);
+      });
+      apiTables.sort((a: Table, b: Table) => a.number - b.number);
       setTables(apiTables);
     } catch (e) {
       console.error('[tables] loadTables error:', e);
@@ -1012,6 +1001,19 @@ export default function StaffDashboard() {
     const restaurantId = staffInfo?.restaurantId;
     if (!restaurantId) return;
 
+    // One kitchen/payment action fans out into several events, and every open
+    // crew device refetches on each — a trailing debounce collapses each burst
+    // into a single request per list. Sounds/haptics/prints stay immediate.
+    const timers: Record<string, ReturnType<typeof setTimeout>> = {};
+    const debounced = (key: string, fn: () => void, ms = 300) => () => {
+      if (timers[key]) clearTimeout(timers[key]);
+      timers[key] = setTimeout(() => { delete timers[key]; fn(); }, ms);
+    };
+    const refetchTables    = debounced('tables',   () => void loadTables());
+    const refetchPickup    = debounced('pickup',   () => void loadPickupOrders());
+    const refetchTakeaway  = debounced('takeaway', () => void loadTakeawayOrders());
+    const refetchServed    = debounced('served',   () => void loadServedToday(1));
+
     let lastReadyId: string | null = null;
 
     const off1 = subscribeChannel(`waiter:${restaurantId}`, 'order_ready', (data: any) => {
@@ -1019,13 +1021,13 @@ export default function StaffDashboard() {
       if (!orderId || orderId === lastReadyId) return;
       lastReadyId = orderId;
       void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
-      void loadPickupOrders();
-      void loadTables();
+      refetchPickup();
+      refetchTables();
     });
 
     const off2 = subscribeChannel(`waiter:${restaurantId}`, 'order_served', (data: any) => {
-      void loadPickupOrders();
-      void loadServedToday(1);
+      refetchPickup();
+      refetchServed();
       // Update the table card's serve-progress bar straight from the event —
       // no /api/crew/tables refetch (serving changes nothing else on the grid:
       // the table stays occupied and the bill is unchanged). Fall back to a
@@ -1036,14 +1038,14 @@ export default function StaffDashboard() {
             ? { ...t, itemsServed: data.itemsServed ?? t.itemsServed, itemsTotal: data.itemsTotal }
             : t));
       } else {
-        void loadTables();
+        refetchTables();
       }
     });
 
     const off3 = subscribeChannel(`waiter:${restaurantId}`, 'new_order', (data: any) => {
-      void loadPickupOrders();
-      if (data?.channel === 'TAKEAWAY') void loadTakeawayOrders();
-      void loadTables();
+      refetchPickup();
+      if (data?.channel === 'TAKEAWAY') refetchTakeaway();
+      refetchTables();
       // Auto-print fast path — gate on the live local printer connection + the
       // auto-print toggle. (Live getPrinterStatus() avoids any startup race with
       // the async refreshPrintSinkOwnership ref.) The event-driven reconnect/
@@ -1083,39 +1085,39 @@ export default function StaffDashboard() {
     });
 
     const off4 = subscribeChannel(`waiter:${restaurantId}`, 'session_ended', () => {
-      void loadPickupOrders();
-      void loadTables();
+      refetchPickup();
+      refetchTables();
     });
 
     const off5 = subscribeChannel(`waiter:${restaurantId}`, 'session_started', () => {
-      void loadTables();
+      refetchTables();
     });
 
     const off6 = subscribeChannel(`waiter:${restaurantId}`, 'payment_confirmed', () => {
-      void loadTables();
+      refetchTables();
     });
 
     // Table status flipped (offline/online/reserved/available) from another
     // device — refresh the grid so this device matches.
     const off6a = subscribeChannel(`waiter:${restaurantId}`, 'table_offline', () => {
-      void loadTables();
+      refetchTables();
     });
     const off6b = subscribeChannel(`waiter:${restaurantId}`, 'table_online', () => {
-      void loadTables();
+      refetchTables();
     });
     // Session swap from another device — both source + target need re-render.
     const off6c = subscribeChannel(`waiter:${restaurantId}`, 'session_moved', () => {
-      void loadTables();
+      refetchTables();
     });
     // Two tables merged into one bill from another device — the absorbed table
     // is now free and the survivor's bill grew, so re-render the grid.
     const off6d = subscribeChannel(`waiter:${restaurantId}`, 'session_merged', () => {
-      void loadTables();
+      refetchTables();
     });
 
     const off7 = subscribeChannel(`waiter:${restaurantId}`, 'item_bumped', () => {
-      void loadPickupOrders();
-      void loadTakeawayOrders(); // takeaway tab: keep status live now that the 10s poll is gone
+      refetchPickup();
+      refetchTakeaway(); // takeaway tab: keep status live now that the 10s poll is gone
     });
 
     // Per-item ready: drives a refetch the moment the cook flips a single item.
@@ -1123,15 +1125,15 @@ export default function StaffDashboard() {
     // the same UX fires whether the realtime event or a manual refresh
     // surfaces a newly-ready item.
     const off7b = subscribeChannel(`waiter:${restaurantId}`, 'item_ready', () => {
-      void loadPickupOrders();
-      void loadTakeawayOrders(); // takeaway tab: keep status live now that the 10s poll is gone
+      refetchPickup();
+      refetchTakeaway(); // takeaway tab: keep status live now that the 10s poll is gone
     });
 
     const off8 = subscribeChannel(`waiter:${restaurantId}`, 'cash_collection_requested', (data: any) => {
       const tableNumber = data?.tableNumber as number | undefined;
       const amount = data?.amount as number | undefined;
       setPendingCashCount(c => c + 1);
-      if (data?.channel === 'TAKEAWAY') void loadTakeawayOrders();
+      if (data?.channel === 'TAKEAWAY') refetchTakeaway();
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
       void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
       Notifications.scheduleNotificationAsync({
@@ -1147,7 +1149,7 @@ export default function StaffDashboard() {
         },
         trigger: null,
       }).catch(() => { });
-      void loadTables();
+      refetchTables();
     });
 
     // When any waiter (this one or another) marks an order collected,
@@ -1155,8 +1157,8 @@ export default function StaffDashboard() {
     // refresh the grid so the table card's "paid" icon lights up live.
     const off9 = subscribeChannel(`waiter:${restaurantId}`, 'cash_payment_collected', () => {
       setPendingCashCount(c => Math.max(0, c - 1));
-      void loadTakeawayOrders();
-      void loadTables();
+      refetchTakeaway();
+      refetchTables();
     });
 
     // Reprint request — manual, user-initiated. Prints on the connected device
@@ -1205,7 +1207,10 @@ export default function StaffDashboard() {
       if (getPrinterStatus() === 'connected') void handleSinkSuperseded();
     });
 
-    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off6d(); off7(); off7b(); off8(); off9(); offReprint(); offAutoPrint(); offPrinterPaired(); offPrinterUnpaired(); };
+    return () => {
+      Object.values(timers).forEach(clearTimeout);
+      off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off6d(); off7(); off7b(); off8(); off9(); offReprint(); offAutoPrint(); offPrinterPaired(); offPrinterUnpaired();
+    };
   }, [staffInfo?.restaurantId]);
 
   // C1: Track Ably connection health — show a warning when the waiter channel drops.
@@ -1260,6 +1265,8 @@ export default function StaffDashboard() {
     setMenuData(prev => prev.map(m => m.id === itemId ? { ...m, available: next } : m)); // optimistic
     try {
       await crewMenu.setAvailability(itemId, next);
+      // Drop the order-menu screen's cached copy so the 86 shows on next open.
+      invalidateCache('crew-order-menu:');
     } catch {
       // Revert on failure so the UI never lies about the real state.
       setMenuData(prev => prev.map(m => m.id === itemId ? { ...m, available: !next } : m));
@@ -1283,6 +1290,7 @@ export default function StaffDashboard() {
     setOptionState(itemId, optionId, next); // optimistic
     try {
       await crewMenu.setOptionAvailability(optionId, next);
+      invalidateCache('crew-order-menu:');
     } catch {
       setOptionState(itemId, optionId, !next); // revert
     }

@@ -333,11 +333,18 @@ export default function TableDetail() {
     return () => { cancelled = true; };
   }, [staffInfo?.restaurantId]);
 
-  // Ably: waiter:{restaurantId} — refresh bill on any order/payment event
+  // Ably: waiter:{restaurantId} — refresh bill on any order/payment event.
+  // One kitchen action fans out into several events (order_ready + item_ready
+  // + item_bumped…); a trailing debounce collapses each burst into a single
+  // /bill fetch instead of 3-4 back-to-back ones.
   useEffect(() => {
     const restaurantId = staffInfo?.restaurantId;
     if (!restaurantId || !sessionId) return;
-    const refetch = () => void loadBill();
+    let refetchTimer: ReturnType<typeof setTimeout> | null = null;
+    const refetch = () => {
+      if (refetchTimer) clearTimeout(refetchTimer);
+      refetchTimer = setTimeout(() => { refetchTimer = null; void loadBill(); }, 300);
+    };
     const unsubs = [
       subscribeChannel(`waiter:${restaurantId}`, 'order_ready',       refetch),
       subscribeChannel(`waiter:${restaurantId}`, 'order_served',      refetch),
@@ -354,7 +361,10 @@ export default function TableDetail() {
         }
       }),
     ];
-    return () => unsubs.forEach(u => u());
+    return () => {
+      if (refetchTimer) clearTimeout(refetchTimer);
+      unsubs.forEach(u => u());
+    };
   }, [staffInfo?.restaurantId, sessionId, router]);
 
 
@@ -485,13 +495,27 @@ export default function TableDetail() {
     if (isPaid || !sessionId || isRequestingCollection || grandTotal <= 0 || orders.length === 0) return;
     setIsRequestingCollection(true);
     try {
+      // Flag the session's orders PENDING_STAFF_COLLECTION server-side (so
+      // other devices / the dashboard see them), then jump STRAIGHT to this
+      // table's collection sheet — no detour through the stacked cash-collection
+      // list. The bill refetch happens in the background; the focus effect
+      // re-syncs this screen when the crew comes back anyway.
       const res = await crewSessions.requestCollection(sessionId, sessionCustomerPhone ?? '', sessionCustomerName ?? null);
-      await loadBill();
-      if (res?.data?.alreadyInCollection) {
-        setToast('Already in Payment Collection');
-        setTimeout(() => setToast(null), 2200);
-      }
-      router.push('/(staff)/cash-collection');
+      void loadBill();
+      const orderIds = res?.data?.orderIds?.length ? res.data.orderIds : orders.map(o => o.order_id);
+      const amount = Number(res?.data?.totalAmount ?? 0) > 0 ? Number(res.data.totalAmount) : grandTotal;
+      router.push({
+        pathname: '/(staff)/payment-collect',
+        params: {
+          orderId: orderIds[0] ?? '',
+          sessionId,
+          orderIds: JSON.stringify(orderIds),
+          tableNumber: String(tableNum ?? ''),
+          amount: String(amount),
+          customerName: sessionCustomerName ?? '',
+          customerPhone: sessionCustomerPhone ?? '',
+        },
+      });
     } catch (err: any) {
       showDialog(
         'Could not create collection request',
@@ -591,57 +615,56 @@ export default function TableDetail() {
       })),
     );
 
-    // ALWAYS refresh the branding/tax config at print time — settings changed
-    // mid-shift on the dashboard (GST registration, CGST/SGST split, inclusive
-    // pricing, UPI VPA) must apply to the very next print, not after an app
-    // restart. Offline/failure falls back to the snapshot fetched at mount.
-    let invoiceMeta = restaurantInvoiceMeta;
-    if (staffInfo?.restaurantId) {
-      try {
-        const res = await restaurantApi.getBranding(staffInfo.restaurantId);
-        if (res?.success) {
-          invoiceMeta = {
-            address: res.data.address ?? null,
-            phone: res.data.phone ?? null,
-            email: res.data.email ?? null,
-            fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null,
-            gstRegistered: res.data.taxConfig?.gstRegistered ?? false,
-            gstin: res.data.taxConfig?.gstin ?? null,
-            displayMode: (res.data.taxConfig?.displayMode as 'combined' | 'split') ?? 'combined',
-            pricesIncludeTax: res.data.taxConfig?.pricesIncludeTax ?? false,
-          };
-          setRestaurantInvoiceMeta(invoiceMeta);
-          if (res.data.upiId) {
-            setUpiId(res.data.upiId);
-            setUpiName(res.data.upiDisplayName ?? res.data.name ?? '');
-          }
-        }
-      } catch {}
-    }
-
-    // Persist the recipient GSTIN on the session (best-effort) so the ops PDF
-    // receipt matches this thermal print. A failure never blocks printing —
-    // the thermal bill still carries the values the crew just entered.
+    // Three independent server calls gate the print; run them CONCURRENTLY so
+    // the tap-to-paper delay is one round trip, not three stacked ones.
+    //
+    //  1. Branding/tax refresh — settings changed mid-shift on the dashboard
+    //     (GST registration, CGST/SGST split, inclusive pricing, UPI VPA) must
+    //     apply to the very next print. Failure falls back to the mount snapshot.
+    //  2. Recipient GSTIN persist (best-effort, only when changed) so the ops
+    //     PDF receipt matches this thermal print. Never blocks printing.
+    //  3. Sequential tax-invoice number (idempotent server-side). Failure falls
+    //     back to the last-known number, or the session ref if never numbered.
     const buyerGstin = buyer?.gstin ?? null;
     const buyerName = buyer?.name ?? null;
-    if (buyerGstin !== sessionBuyerGstin || buyerName !== sessionBuyerName) {
-      try {
-        await crewSessions.saveBuyer(sessionId, buyerGstin, buyerName);
-        setSessionBuyerGstin(buyerGstin);
-        setSessionBuyerName(buyerName);
-      } catch {}
+    const buyerChanged = buyerGstin !== sessionBuyerGstin || buyerName !== sessionBuyerName;
+
+    const [brandingRes, buyerRes, finalizeRes] = await Promise.allSettled([
+      staffInfo?.restaurantId ? restaurantApi.getBranding(staffInfo.restaurantId) : Promise.resolve(null),
+      buyerChanged ? crewSessions.saveBuyer(sessionId, buyerGstin, buyerName) : Promise.resolve(null),
+      crewSessions.finalizeInvoice(sessionId),
+    ]);
+
+    let invoiceMeta = restaurantInvoiceMeta;
+    if (brandingRes.status === 'fulfilled' && brandingRes.value?.success) {
+      const res = brandingRes.value;
+      invoiceMeta = {
+        address: res.data.address ?? null,
+        phone: res.data.phone ?? null,
+        email: res.data.email ?? null,
+        fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null,
+        gstRegistered: res.data.taxConfig?.gstRegistered ?? false,
+        gstin: res.data.taxConfig?.gstin ?? null,
+        displayMode: (res.data.taxConfig?.displayMode as 'combined' | 'split') ?? 'combined',
+        pricesIncludeTax: res.data.taxConfig?.pricesIncludeTax ?? false,
+      };
+      setRestaurantInvoiceMeta(invoiceMeta);
+      if (res.data.upiId) {
+        setUpiId(res.data.upiId);
+        setUpiName(res.data.upiDisplayName ?? res.data.name ?? '');
+      }
     }
 
-    // Assign (or reuse) the sequential tax-invoice number before printing so the
-    // printed copy carries it. Idempotent server-side; a failure (e.g. offline)
-    // falls back to the last-known number, or the internal session ref if never
-    // numbered yet.
+    if (buyerChanged && buyerRes.status === 'fulfilled') {
+      setSessionBuyerGstin(buyerGstin);
+      setSessionBuyerName(buyerName);
+    }
+
     let invoiceNumber = sessionInvoiceNumber;
-    try {
-      const res = await crewSessions.finalizeInvoice(sessionId);
-      invoiceNumber = res.data.invoice_number;
+    if (finalizeRes.status === 'fulfilled') {
+      invoiceNumber = finalizeRes.value.data.invoice_number;
       setSessionInvoiceNumber(invoiceNumber);
-    } catch {}
+    }
 
     // upiOmitAmount = true → static restaurant QR (diner types amount);
     // false → exact-amount QR. Ignored when no QR prints (paid / no VPA / toggle off).

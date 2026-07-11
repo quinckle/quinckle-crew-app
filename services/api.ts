@@ -615,8 +615,10 @@ export const crewOrders = {
       'POST', `/api/crew/orders/${orderId}/waive`, { reason }, true,
     ),
 
+  // Response `total` is the order's full payable amount (breakdown.total, tax
+  // included) — no follow-up payment-context fetch is needed to display it.
   placeOrder: (sessionId: string, items: { item_id: string; qty: number; note?: string; selectedModifiers?: { groupId: string; optionId: string }[]; modifiers_summary?: string }[]) =>
-    request<{ success: boolean; order_id: string; totals?: { total?: number } }>(
+    request<{ success: boolean; order_id: string; status: string; total: number }>(
       'POST',
       '/api/crew/orders',
       { session_id: sessionId, items },
