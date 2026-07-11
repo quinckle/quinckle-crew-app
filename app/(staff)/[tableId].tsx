@@ -630,7 +630,10 @@ export default function TableDetail() {
     );
 
     // Three independent server calls gate the print; run them CONCURRENTLY so
-    // the tap-to-paper delay is one round trip, not three stacked ones.
+    // the tap-to-paper delay is one round trip, not three stacked ones. The
+    // promise is NOT awaited here — when the QR-choice sheet is shown, these
+    // calls run behind it so choosing a QR overlaps the network round-trip
+    // instead of stacking a "Preparing…" wait in front of the sheet.
     //
     //  1. Branding/tax refresh — settings changed mid-shift on the dashboard
     //     (GST registration, CGST/SGST split, inclusive pricing, UPI VPA) must
@@ -643,47 +646,54 @@ export default function TableDetail() {
     const buyerName = buyer?.name ?? null;
     const buyerChanged = buyerGstin !== sessionBuyerGstin || buyerName !== sessionBuyerName;
 
-    setPrintJob({ phase: 'preparing', label: 'Invoice' });
-    const [brandingRes, buyerRes, finalizeRes] = await Promise.allSettled([
-      staffInfo?.restaurantId ? restaurantApi.getBranding(staffInfo.restaurantId) : Promise.resolve(null),
-      buyerChanged ? crewSessions.saveBuyer(sessionId, buyerGstin, buyerName) : Promise.resolve(null),
-      crewSessions.finalizeInvoice(sessionId),
-    ]);
+    const prep = (async () => {
+      const [brandingRes, buyerRes, finalizeRes] = await Promise.allSettled([
+        staffInfo?.restaurantId ? restaurantApi.getBranding(staffInfo.restaurantId) : Promise.resolve(null),
+        buyerChanged ? crewSessions.saveBuyer(sessionId, buyerGstin, buyerName) : Promise.resolve(null),
+        crewSessions.finalizeInvoice(sessionId),
+      ]);
 
-    let invoiceMeta = restaurantInvoiceMeta;
-    if (brandingRes.status === 'fulfilled' && brandingRes.value?.success) {
-      const res = brandingRes.value;
-      invoiceMeta = {
-        address: res.data.address ?? null,
-        phone: res.data.phone ?? null,
-        email: res.data.email ?? null,
-        fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null,
-        gstRegistered: res.data.taxConfig?.gstRegistered ?? false,
-        gstin: res.data.taxConfig?.gstin ?? null,
-        displayMode: (res.data.taxConfig?.displayMode as 'combined' | 'split') ?? 'combined',
-        pricesIncludeTax: res.data.taxConfig?.pricesIncludeTax ?? false,
-      };
-      setRestaurantInvoiceMeta(invoiceMeta);
-      if (res.data.upiId) {
-        setUpiId(res.data.upiId);
-        setUpiName(res.data.upiDisplayName ?? res.data.name ?? '');
+      let invoiceMeta = restaurantInvoiceMeta;
+      if (brandingRes.status === 'fulfilled' && brandingRes.value?.success) {
+        const res = brandingRes.value;
+        invoiceMeta = {
+          address: res.data.address ?? null,
+          phone: res.data.phone ?? null,
+          email: res.data.email ?? null,
+          fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null,
+          gstRegistered: res.data.taxConfig?.gstRegistered ?? false,
+          gstin: res.data.taxConfig?.gstin ?? null,
+          displayMode: (res.data.taxConfig?.displayMode as 'combined' | 'split') ?? 'combined',
+          pricesIncludeTax: res.data.taxConfig?.pricesIncludeTax ?? false,
+        };
+        setRestaurantInvoiceMeta(invoiceMeta);
+        if (res.data.upiId) {
+          setUpiId(res.data.upiId);
+          setUpiName(res.data.upiDisplayName ?? res.data.name ?? '');
+        }
       }
-    }
 
-    if (buyerChanged && buyerRes.status === 'fulfilled') {
-      setSessionBuyerGstin(buyerGstin);
-      setSessionBuyerName(buyerName);
-    }
+      if (buyerChanged && buyerRes.status === 'fulfilled') {
+        setSessionBuyerGstin(buyerGstin);
+        setSessionBuyerName(buyerName);
+      }
 
-    let invoiceNumber = sessionInvoiceNumber;
-    if (finalizeRes.status === 'fulfilled') {
-      invoiceNumber = finalizeRes.value.data.invoice_number;
-      setSessionInvoiceNumber(invoiceNumber);
-    }
+      let invoiceNumber = sessionInvoiceNumber;
+      if (finalizeRes.status === 'fulfilled') {
+        invoiceNumber = finalizeRes.value.data.invoice_number;
+        setSessionInvoiceNumber(invoiceNumber);
+      }
+
+      return { invoiceMeta, invoiceNumber };
+    })();
 
     // upiOmitAmount = true → static restaurant QR (diner types amount);
     // false → exact-amount QR. Ignored when no QR prints (paid / no VPA / toggle off).
     const runPrint = async (upiOmitAmount: boolean) => {
+      // Usually resolved already (prep ran while the QR sheet was up), so the
+      // preparing phase is a flash at most.
+      setPrintJob({ phase: 'preparing', label: 'Invoice' });
+      const { invoiceMeta, invoiceNumber } = await prep;
       setPrintJob({ phase: 'printing', label: 'Invoice' });
       const result = await printBill({
         restaurantName: staffInfo?.restaurantName ?? '',
@@ -738,10 +748,9 @@ export default function TableDetail() {
       return;
     }
 
-    // Ask which QR to print via the bottom sheet; the chosen option runs the
-    // print. Dismissing the sheet (backdrop / drag) simply cancels. Hide the
-    // progress overlay first — it would sit on top of the QR sheet.
-    setPrintJob(null);
+    // Ask which QR to print via the bottom sheet — shown IMMEDIATELY (prep is
+    // already running behind it). The chosen option runs the print; dismissing
+    // the sheet (backdrop / drag) simply cancels.
     qrRunRef.current = (omitAmount: boolean) => { void runPrint(omitAmount); };
     setQrSheet({ grandTotal });
   };

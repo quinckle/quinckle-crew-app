@@ -394,33 +394,41 @@ export default function StaffDashboard() {
     // ALWAYS refresh the branding/tax config at print time — settings changed
     // mid-shift on the dashboard must apply to the very next print, not after
     // an app restart. Offline/failure falls back to the mount-time snapshot.
-    let meta = restaurantInvoiceMeta;
-    setPrintJob({ phase: 'preparing', label: 'Invoice' });
-    if (staffInfo?.restaurantId) {
-      try {
-        const res = await restaurantApi.getBranding(staffInfo.restaurantId);
-        if (res?.success) {
-          meta = {
-            address: res.data.address ?? null,
-            phone: res.data.phone ?? null,
-            email: res.data.email ?? null,
-            fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null,
-            gstRegistered: res.data.taxConfig?.gstRegistered ?? false,
-            gstin: res.data.taxConfig?.gstin ?? null,
-            taxRate: res.data.taxConfig?.taxRate ?? null,
-            displayMode: (res.data.taxConfig?.displayMode as 'combined' | 'split') ?? 'combined',
-            pricesIncludeTax: res.data.taxConfig?.pricesIncludeTax ?? false,
-          };
-          setRestaurantInvoiceMeta(meta);
-          if (res.data.upiId) {
-            setUpiId(res.data.upiId);
-            setUpiName(res.data.upiDisplayName ?? res.data.name ?? '');
+    // Not awaited here: when the QR-choice sheet is shown, the refresh runs
+    // behind it so choosing a QR overlaps the round-trip.
+    const prep = (async () => {
+      let meta = restaurantInvoiceMeta;
+      if (staffInfo?.restaurantId) {
+        try {
+          const res = await restaurantApi.getBranding(staffInfo.restaurantId);
+          if (res?.success) {
+            meta = {
+              address: res.data.address ?? null,
+              phone: res.data.phone ?? null,
+              email: res.data.email ?? null,
+              fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null,
+              gstRegistered: res.data.taxConfig?.gstRegistered ?? false,
+              gstin: res.data.taxConfig?.gstin ?? null,
+              taxRate: res.data.taxConfig?.taxRate ?? null,
+              displayMode: (res.data.taxConfig?.displayMode as 'combined' | 'split') ?? 'combined',
+              pricesIncludeTax: res.data.taxConfig?.pricesIncludeTax ?? false,
+            };
+            setRestaurantInvoiceMeta(meta);
+            if (res.data.upiId) {
+              setUpiId(res.data.upiId);
+              setUpiName(res.data.upiDisplayName ?? res.data.name ?? '');
+            }
           }
-        }
-      } catch {}
-    }
+        } catch {}
+      }
+      return meta;
+    })();
 
     const runPrint = async (upiOmitAmount: boolean) => {
+      // Usually resolved already (prep ran while the QR sheet was up), so the
+      // preparing phase is a flash at most.
+      setPrintJob({ phase: 'preparing', label: 'Invoice' });
+      const meta = await prep;
       setPrintJob({ phase: 'printing', label: 'Invoice' });
       const result = await printBill({
         restaurantName: staffInfo?.restaurantName ?? '',
@@ -470,9 +478,8 @@ export default function StaffDashboard() {
       await runPrint(false);
       return;
     }
-    // Hide the progress overlay while the QR-choice sheet is up — the chosen
-    // option re-opens it in the printing phase; dismissing the sheet cancels.
-    setPrintJob(null);
+    // QR-choice sheet shown IMMEDIATELY (prep runs behind it). The chosen
+    // option runs the print; dismissing the sheet cancels.
     qrRunRef.current = (omitAmount: boolean) => { void runPrint(omitAmount); };
     setQrSheet({ grandTotal: order.total });
   };
