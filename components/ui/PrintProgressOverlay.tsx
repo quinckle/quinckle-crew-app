@@ -40,23 +40,27 @@ interface Props {
 
 const AUTO_DISMISS_DONE_MS = 900;
 const AUTO_DISMISS_SENT_MS = 1400;
-const PAPER_LOOP_MS = 1300;
 // The native print write has no JS-side timeout — a dead TCP target can stall
 // for the full OS connect timeout. After this long in a busy phase, surface a
 // Close button so the crew is never trapped behind the modal. Closing only
 // hides the UI; the in-flight print still resolves (or fails) in background.
 const STUCK_AFTER_MS = 15_000;
-// How long the paper rests fully-out between loop cycles. Also the slack
-// window the success reveal aims for (see below), so keep them one constant.
-const PAPER_HOLD_MS = 220;
-const PAPER_CYCLE_MS = PAPER_LOOP_MS + PAPER_HOLD_MS;
+// Progress-style rise: the paper emerges quickly at first then decelerates
+// toward RISE_TARGET over RISE_MS (a progress bar in paper form — the print's
+// real duration is unknowable up front). When the print actually resolves, the
+// paper snaps through the last stretch in FINISH_MS and the check lands on a
+// fully-printed receipt. One paper per print — nothing loops, so nothing can
+// be cut mid-rise or come out twice.
+const RISE_MS = 5000;
+const RISE_TARGET = 0.92;
+const FINISH_MS = 450;
 
 const PAPER_W = 68;
 const PAPER_H = 78;
 const WINDOW_H = 58;
 
-/** The looping "receipt sliding out of the printer" graphic. */
-function PrinterGraphic({ phase }: { phase: PrintJobPhase }) {
+/** The "receipt rising out of the printer" graphic — progress-bar style. */
+function PrinterGraphic({ phase, complete }: { phase: PrintJobPhase; complete: boolean }) {
   const paper = useRef(new Animated.Value(0)).current; // 0 = hidden in slot, 1 = fully out
   const led = useRef(new Animated.Value(0)).current;
 
@@ -76,26 +80,34 @@ function PrinterGraphic({ phase }: { phase: PrintJobPhase }) {
 
   useEffect(() => {
     if (!animating) {
+      paper.stopAnimation();
       paper.setValue(0);
       return;
     }
-    // Paper emerges, holds a beat, then the next receipt starts — a deliberate
-    // loop rather than a spinner, so the wait reads as "the printer is working".
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(paper, {
-          toValue: 1,
-          duration: PAPER_LOOP_MS,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.delay(PAPER_HOLD_MS),
-        Animated.timing(paper, { toValue: 0, duration: 0, useNativeDriver: true }),
-      ]),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [animating, paper]);
+    if (complete) {
+      // Print resolved — snap through the remaining rise so the check lands on
+      // a fully-printed receipt. stopAnimation freezes at the current value,
+      // so the snap starts from wherever the rise had reached.
+      paper.stopAnimation();
+      Animated.timing(paper, {
+        toValue: 1,
+        duration: FINISH_MS - 120,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }).start();
+      return;
+    }
+    // Decelerating rise toward RISE_TARGET — moves fast early, crawls if the
+    // print is slow, and never tops out on its own (completion is the print's).
+    const rise = Animated.timing(paper, {
+      toValue: RISE_TARGET,
+      duration: RISE_MS,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    });
+    rise.start();
+    return () => rise.stop();
+  }, [animating, complete, paper]);
 
   const paperTranslate = paper.interpolate({
     inputRange: [0, 1],
@@ -178,39 +190,33 @@ export function PrintProgressOverlay({ job, onDismiss }: Props) {
   const [stuck, setStuck] = React.useState(false);
 
   // What the card actually renders. Lags `job` only in one case: a success
-  // arriving mid paper-rise. The reveal is aligned to the animation cycle —
-  // wait until the paper is fully out (the PAPER_HOLD_MS rest window), THEN
-  // swap in the check, no matter how many loops have played. Purely cosmetic
-  // (the real paper is already out); failures are never delayed.
+  // arriving while the paper is mid-rise. Then `finishing` flips the graphic
+  // into its snap-to-complete animation and the check swaps in FINISH_MS later
+  // — always onto a fully-printed receipt. Purely cosmetic (the real paper is
+  // already out); failures are never delayed.
   const [shown, setShown] = React.useState<PrintJob | null>(job);
-  const animStart = useRef(0); // when the paper loop started (printing/sending)
+  const [finishing, setFinishing] = React.useState(false);
   const prevPhase = useRef<PrintJobPhase | undefined>(job?.phase);
 
   useEffect(() => {
     const prev = prevPhase.current;
     prevPhase.current = job?.phase;
     if (!job) {
+      setFinishing(false);
       setShown(null);
       return;
     }
     if (isBusy(job.phase)) {
-      const animating = job.phase === 'printing' || job.phase === 'sending';
-      const wasAnimating = prev === 'printing' || prev === 'sending';
-      if (animating && !wasAnimating) animStart.current = Date.now();
+      setFinishing(false);
       setShown(job);
       return;
     }
-    if ((job.phase === 'done' || job.phase === 'sent') && isBusy(prev) && animStart.current > 0) {
-      // Position within the current loop cycle; if the paper is still rising,
-      // hold the busy visual until it tops out (+ a beat of the rest window so
-      // the "fully printed" frame registers before the check appears).
-      const posInCycle = (Date.now() - animStart.current) % PAPER_CYCLE_MS;
-      if (posInCycle < PAPER_LOOP_MS) {
-        const wait = PAPER_LOOP_MS - posInCycle + PAPER_HOLD_MS / 2;
-        const t = setTimeout(() => setShown(job), wait);
-        return () => clearTimeout(t);
-      }
+    if ((job.phase === 'done' || job.phase === 'sent') && (prev === 'printing' || prev === 'sending')) {
+      setFinishing(true);
+      const t = setTimeout(() => { setFinishing(false); setShown(job); }, FINISH_MS);
+      return () => clearTimeout(t);
     }
+    setFinishing(false);
     setShown(job);
   }, [job]);
 
@@ -267,7 +273,7 @@ export function PrintProgressOverlay({ job, onDismiss }: Props) {
         <Animated.View style={[styles.card, { transform: [{ translateX: shake }] }]}>
           {terminal
             ? <ResultBadge ok={shown.phase !== 'failed'} />
-            : <PrinterGraphic phase={shown.phase} />}
+            : <PrinterGraphic phase={shown.phase} complete={finishing} />}
 
           <Text style={styles.title}>{phaseTitle(shown)}</Text>
           {subtitle && <Text style={styles.subtitle}>{subtitle}</Text>}
