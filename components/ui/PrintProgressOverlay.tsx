@@ -46,6 +46,12 @@ const PAPER_LOOP_MS = 1300;
 // Close button so the crew is never trapped behind the modal. Closing only
 // hides the UI; the in-flight print still resolves (or fails) in background.
 const STUCK_AFTER_MS = 15_000;
+// Fast prints (printBill resolves right after the BT write, no ack round-trip
+// like printKot) can finish inside one paper-loop cycle, cutting the animation
+// off mid-rise. Hold the busy visual until at least one full cycle has played
+// before showing success — cosmetic only, the paper is already out. Failures
+// are never delayed.
+const MIN_BUSY_MS = PAPER_LOOP_MS + 250;
 
 const PAPER_W = 68;
 const PAPER_H = 78;
@@ -165,11 +171,44 @@ function phaseSubtitle(job: PrintJob): string | null {
   }
 }
 
+const isBusy = (p?: PrintJobPhase) =>
+  p === 'preparing' || p === 'printing' || p === 'sending';
+
 export function PrintProgressOverlay({ job, onDismiss }: Props) {
   const shake = useRef(new Animated.Value(0)).current;
-  const phase = job?.phase;
   // True once a busy phase has overstayed STUCK_AFTER_MS — unlocks Close.
   const [stuck, setStuck] = React.useState(false);
+
+  // What the card actually renders. Lags `job` only in one case: a success
+  // arriving before MIN_BUSY_MS of busy time has played, so the paper loop
+  // completes instead of being cut off mid-rise. Failures are never delayed.
+  const [shown, setShown] = React.useState<PrintJob | null>(job);
+  const busyStart = useRef(0);
+  const prevPhase = useRef<PrintJobPhase | undefined>(job?.phase);
+
+  useEffect(() => {
+    const prev = prevPhase.current;
+    prevPhase.current = job?.phase;
+    if (!job) {
+      setShown(null);
+      return;
+    }
+    if (isBusy(job.phase)) {
+      if (!isBusy(prev)) busyStart.current = Date.now();
+      setShown(job);
+      return;
+    }
+    if ((job.phase === 'done' || job.phase === 'sent') && isBusy(prev)) {
+      const wait = Math.max(0, MIN_BUSY_MS - (Date.now() - busyStart.current));
+      if (wait > 0) {
+        const t = setTimeout(() => setShown(job), wait);
+        return () => clearTimeout(t);
+      }
+    }
+    setShown(job);
+  }, [job]);
+
+  const phase = shown?.phase;
 
   // Watchdog: the busy phases await native calls with no JS-side timeout, so
   // after STUCK_AFTER_MS offer an escape hatch rather than trapping the crew.
@@ -203,10 +242,10 @@ export function PrintProgressOverlay({ job, onDismiss }: Props) {
     }
   }, [phase, onDismiss, shake]);
 
-  if (!job) return null;
+  if (!shown) return null;
 
-  const terminal = job.phase === 'done' || job.phase === 'sent' || job.phase === 'failed';
-  const subtitle = phaseSubtitle(job);
+  const terminal = shown.phase === 'done' || shown.phase === 'sent' || shown.phase === 'failed';
+  const subtitle = phaseSubtitle(shown);
 
   return (
     <Modal
@@ -216,15 +255,15 @@ export function PrintProgressOverlay({ job, onDismiss }: Props) {
       statusBarTranslucent
       // Back button: never cancel a print in flight (it would double-print on
       // retry confusion); only a failed or stuck job can be dismissed.
-      onRequestClose={() => { if (job.phase === 'failed' || stuck) onDismiss(); }}
+      onRequestClose={() => { if (shown.phase === 'failed' || stuck) onDismiss(); }}
     >
       <View style={styles.backdrop}>
         <Animated.View style={[styles.card, { transform: [{ translateX: shake }] }]}>
           {terminal
-            ? <ResultBadge ok={job.phase !== 'failed'} />
-            : <PrinterGraphic phase={job.phase} />}
+            ? <ResultBadge ok={shown.phase !== 'failed'} />
+            : <PrinterGraphic phase={shown.phase} />}
 
-          <Text style={styles.title}>{phaseTitle(job)}</Text>
+          <Text style={styles.title}>{phaseTitle(shown)}</Text>
           {subtitle && <Text style={styles.subtitle}>{subtitle}</Text>}
 
           {stuck && !terminal && (
@@ -243,7 +282,7 @@ export function PrintProgressOverlay({ job, onDismiss }: Props) {
             </View>
           )}
 
-          {job.phase === 'failed' && (
+          {shown.phase === 'failed' && (
             <View style={styles.actions}>
               <TouchableOpacity
                 style={[styles.btn, styles.btnGhost]}
@@ -252,10 +291,10 @@ export function PrintProgressOverlay({ job, onDismiss }: Props) {
               >
                 <Text style={styles.btnGhostText}>Close</Text>
               </TouchableOpacity>
-              {job.onRetry && (
+              {shown.onRetry && (
                 <TouchableOpacity
                   style={[styles.btn, styles.btnPrimary]}
-                  onPress={() => { const r = job.onRetry; onDismiss(); r?.(); }}
+                  onPress={() => { const r = shown.onRetry; onDismiss(); r?.(); }}
                   activeOpacity={0.8}
                 >
                   <Ionicons name="refresh" size={16} color="#fff" />
