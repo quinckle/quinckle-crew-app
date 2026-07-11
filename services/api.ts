@@ -899,6 +899,27 @@ export const crewShift = {
     request<{ success: true; data: { sent: boolean; reason?: string } }>('POST', '/api/crew/shift/zreport/email', { date: date ?? null, to: to ?? null }, true),
 };
 
+// ── Stock (crew: stock-take + wastage) ───────────────────────────────────────
+
+export interface CrewStockItem {
+  id: string; name: string; unit: string; currentQty: number; lowStockAt: number | null;
+  isLow: boolean; isOut: boolean;
+}
+
+export const crewStock = {
+  list: (low?: boolean, search?: string) => {
+    const q = new URLSearchParams();
+    if (low) q.set('low', 'true');
+    if (search) q.set('search', search);
+    const s = q.toString();
+    return request<{ success: true; data: { items: CrewStockItem[]; valuation: number; lowCount: number } }>('GET', `/api/crew/stock${s ? `?${s}` : ''}`, undefined, true);
+  },
+  adjust: (id: string, countedQty: number) =>
+    request<{ success: true; data: { newQty: number } }>('POST', `/api/crew/stock/${id}/adjust`, { countedQty, reason: 'Stock-take' }, true),
+  wastage: (id: string, qty: number, reason: string) =>
+    request<{ success: true; data: { newQty: number } }>('POST', `/api/crew/stock/${id}/wastage`, { qty, reason }, true),
+};
+
 // ── Restaurant / Menu (public) ────────────────────────────────────────────────
 
 export interface ModifierOption { id: string; name: string; priceAdjustment: string; isAvailable?: boolean; }

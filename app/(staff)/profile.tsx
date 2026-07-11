@@ -251,6 +251,26 @@ export default function StaffProfile() {
           </TouchableOpacity>
         </View>
 
+        {/* ─── STOCK ─── */}
+        <View style={styles.section}>
+          <TouchableOpacity
+            style={styles.sectionRow}
+            onPress={() => router.push('/(staff)/stock')}
+            activeOpacity={0.6}
+          >
+            <View style={styles.sectionRowLeft}>
+              <View style={[styles.sectionIconWrap]}>
+                <Ionicons name="cube-outline" size={18} color='white' />
+              </View>
+              <View style={styles.sectionTextGroup}>
+                <Text style={styles.sectionTitle}>Stock</Text>
+                <Text style={styles.sectionSubtitle}>Levels, stock-take & wastage</Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
+          </TouchableOpacity>
+        </View>
+
         {/* ─── EXPENSES ─── */}
         <View style={styles.section}>
           <TouchableOpacity
