@@ -113,7 +113,7 @@ export async function drainPendingPrintJobs(): Promise<void> {
         id: job.id,
         sessionId: job.sessionId ?? undefined,
         orderNumber: job.orderNumber != null ? String(job.orderNumber) : undefined,
-        tableNumber: String(job.tableNumber ?? '?'),
+        tableNumber: `${String(job.tableNumber ?? '?')}${job.partyGroupLabel ? ` · ${job.partyGroupLabel}` : ''}`,
         channel: job.channel,
         pickupToken: job.pickupToken ?? undefined,
         sessionRef: job.sessionRef ?? undefined,

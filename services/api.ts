@@ -177,7 +177,10 @@ export const kitchen = {
 
 // ── Crew Tables (STEWARD/ADMIN) ───────────────────────────────────────────────
 
-export interface CrewTable { table_id: string; table_number: number; capacity: number; status: 'available' | 'occupied' | 'reserved' | 'offline'; session_id: string | null; occupied_since: string | null; expires_at?: string | null; customer_name?: string | null; customer_phone?: string | null; bill_subtotal?: number; bill_tax?: number; bill_total?: number; items_served?: number; items_total?: number; payment_settled?: boolean; }
+export interface CrewTableGroup { session_id: string; party_slot: number; label: string; occupied_since: string | null; expires_at?: string | null; customer_name?: string | null; customer_phone?: string | null; bill_subtotal?: number; bill_tax?: number; bill_total?: number; items_served?: number; items_total?: number; payment_settled?: boolean; }
+// `groups` (shared seating): one entry per live party on the table, slot order.
+// Single-party tables have one entry mirroring the legacy top-level fields.
+export interface CrewTable { table_id: string; table_number: number; capacity: number; status: 'available' | 'occupied' | 'reserved' | 'offline'; session_id: string | null; occupied_since: string | null; expires_at?: string | null; customer_name?: string | null; customer_phone?: string | null; bill_subtotal?: number; bill_tax?: number; bill_total?: number; items_served?: number; items_total?: number; payment_settled?: boolean; groups?: CrewTableGroup[]; max_parties?: number; }
 
 export const crewTables = {
   list: () => request<{ tables: CrewTable[] }>('GET', '/api/crew/tables', undefined, true),
@@ -416,9 +419,11 @@ export interface LedgerResponse {
 }
 
 export const crewSessions = {
-  start: (tableId: string) =>
-    request<{ success: true; session_id: string; session_ref: string; table_id: string; table_number: number; started_at: string }>(
-      'POST', '/api/crew/sessions', { table_id: tableId }, true
+  // newParty (shared seating): seat a SEPARATE party on an occupied table —
+  // the backend assigns the next free party slot (409 TABLE_PARTIES_FULL at cap).
+  start: (tableId: string, newParty?: boolean) =>
+    request<{ success: true; session_id: string; session_ref: string; table_id: string; table_number: number; party_slot?: number; started_at: string }>(
+      'POST', '/api/crew/sessions', { table_id: tableId, ...(newParty ? { new_party: true } : {}) }, true
     ),
   end: (sessionId: string) =>
     request<unknown>('DELETE', `/api/crew/sessions/${sessionId}`, undefined, true),
@@ -1071,6 +1076,7 @@ export const printerApi = {
       channel?: 'DINE_IN' | 'TAKEAWAY';
       pickupToken?: string | null;
       sessionRef?: string | null;
+      partyGroupLabel?: string | null;
       createdAt: string;
       isAddOn: boolean;
       isReprint?: boolean;

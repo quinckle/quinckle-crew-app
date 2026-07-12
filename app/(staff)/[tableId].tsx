@@ -62,11 +62,15 @@ function toSessionRef(sessionId: string | null | undefined): string {
 
 export default function TableDetail() {
   const insets = useSafeAreaInsets();
-  const { tableId, sessionId: paramSessionId, tableDbId, occupiedSince, expiresAt: paramExpiresAt, customerName: paramCustomerName, customerPhone: paramCustomerPhone } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string; occupiedSince: string; expiresAt: string; customerName: string; customerPhone: string }>();
+  const { tableId, sessionId: paramSessionId, tableDbId, occupiedSince, expiresAt: paramExpiresAt, customerName: paramCustomerName, customerPhone: paramCustomerPhone, groupLabel: paramGroupLabel } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string; occupiedSince: string; expiresAt: string; customerName: string; customerPhone: string; groupLabel?: string }>();
   const router = useRouter();
   const { staffInfo } = useAuth();
 
   const tableNum = String(tableId ?? '').padStart(2, '0');
+  // Shared seating: set when this table hosts >1 party ("G2"). Rides on the
+  // header and every printout so staff can match paper to the right group.
+  const groupLabel = (paramGroupLabel ?? '').trim();
+  const tablePrintLabel = groupLabel ? `${tableNum} · ${groupLabel}` : tableNum;
 
   const [sessionId] = useState(paramSessionId ?? '');
   const [sessionRef, setSessionRef] = useState('');
@@ -571,7 +575,7 @@ export default function TableDetail() {
         id: latestOrder.order_id,
         sessionId: sessionId || undefined,
         sessionRef: sessionRef || undefined,
-        tableNumber: tableId,
+        tableNumber: tablePrintLabel,
         restaurantName: staffInfo?.restaurantName ?? '',
         createdAt: latestOrder.placed_at ?? new Date().toISOString(),
         items: latestOrder.items.map((item) => ({
@@ -706,7 +710,7 @@ export default function TableDetail() {
         buyerGstin,
         buyerName,
         invoiceNumber,
-        tableNumber: tableNum,
+        tableNumber: tablePrintLabel,
         sessionRef: sessionRef || toSessionRef(sessionId),
         items: invoiceItems,
         subtotal: sessionTotal,
@@ -915,7 +919,7 @@ export default function TableDetail() {
             <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
           </TouchableOpacity>
           <View>
-            <Text style={styles.tableTitle}>T{tableNum}</Text>
+            <Text style={styles.tableTitle}>T{tableNum}{groupLabel ? ` · ${groupLabel}` : ''}</Text>
             {sessionRef ? <Text style={styles.sessionRefText}>{sessionRef}</Text> : null}
           </View>
         </View>

@@ -117,6 +117,26 @@ type Table = {
   itemsServed?: number;
   itemsTotal?: number;
   paymentSettled?: boolean;
+  // Shared seating: one entry per live party (slot order). >1 → the tap
+  // opens a group picker and the card shows a groups badge + combined total.
+  groups?: TableGroup[];
+  // Party cap (maxActiveSessionsPerTable). >1 lets crew seat another group
+  // on an occupied table.
+  maxParties?: number;
+};
+
+type TableGroup = {
+  session_id: string;
+  party_slot: number;
+  label: string;
+  occupied_since: string | null;
+  expires_at?: string | null;
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  bill_total?: number;
+  items_served?: number;
+  items_total?: number;
+  payment_settled?: boolean;
 };
 
 const MENU_DATA_INITIAL = [
@@ -741,9 +761,16 @@ export default function StaffDashboard() {
       // bill_total ships on /crew/tables itself now — no per-table /bill
       // fallback (that was an N+1: a 12-table floor cost 13 queries per load).
       const apiTables: Table[] = (res?.tables ?? []).map((t: any) => {
-        const billAmount = typeof t.bill_total === 'number' ? t.bill_total : undefined;
+        const groups: TableGroup[] | undefined = Array.isArray(t.groups) && t.groups.length > 0 ? t.groups : undefined;
+        // Multi-group tables show the combined floor total on the card;
+        // per-group totals live in the picker.
+        const billAmount = groups && groups.length > 1
+          ? groups.reduce((sum: number, g: any) => sum + (Number(g.bill_total) || 0), 0)
+          : typeof t.bill_total === 'number' ? t.bill_total : undefined;
 
         return {
+          groups,
+          maxParties: typeof t.max_parties === 'number' ? t.max_parties : 1,
           id: t.table_id,
           number: t.table_number,
           status: (t.status === 'reserved' ? 'occupied' : t.status) as TableStatus,
@@ -1091,7 +1118,7 @@ export default function StaffDashboard() {
           id: data.orderId,
           sessionId: data.sessionId ?? undefined,
           orderNumber: data.orderNumber,
-          tableNumber: data.tableNumber,
+          tableNumber: `${String(data.tableNumber ?? '?')}${data.partyGroupLabel ? ` · ${data.partyGroupLabel}` : ''}`,
           channel: data.channel,
           pickupToken: data.pickupToken ?? undefined,
           sessionRef: data.sessionRef ?? undefined,
@@ -1203,7 +1230,7 @@ export default function StaffDashboard() {
           id: data.order.id,
           sessionId: data.order.sessionId ?? undefined,
           orderNumber: data.order.orderNumber != null ? String(data.order.orderNumber) : undefined,
-          tableNumber: String(data.order.tableNumber ?? '?'),
+          tableNumber: `${String(data.order.tableNumber ?? '?')}${data.order.partyGroupLabel ? ` · ${data.order.partyGroupLabel}` : ''}`,
           channel: data.order.channel,
           pickupToken: data.order.pickupToken ?? undefined,
           sessionRef: data.order.sessionRef ?? undefined,
@@ -1467,15 +1494,78 @@ export default function StaffDashboard() {
       setNewSessionTable(table);
     } else {
       const table = tables.find(t => t.number === tableNum);
-      router.push({ pathname: '/(staff)/[tableId]', params: {
-        tableId: String(tableNum),
-        sessionId: table?.sessionId ?? '',
-        tableDbId: table?.id ?? '',
-        occupiedSince: table?.occupiedSince ?? '',
-        expiresAt: table?.expiresAt ?? '',
-        customerName: table?.customerName ?? '',
-        customerPhone: table?.customerPhone ?? '',
-      } });
+      if (!table) return;
+
+      const openGroup = (g?: TableGroup) => {
+        router.push({ pathname: '/(staff)/[tableId]', params: {
+          tableId: String(tableNum),
+          sessionId: g?.session_id ?? table.sessionId ?? '',
+          tableDbId: table.id ?? '',
+          occupiedSince: (g?.occupied_since ?? table.occupiedSince) ?? '',
+          expiresAt: (g?.expires_at ?? table.expiresAt) ?? '',
+          customerName: (g?.customer_name ?? table.customerName) ?? '',
+          customerPhone: (g?.customer_phone ?? table.customerPhone) ?? '',
+          groupLabel: g && (table.groups?.length ?? 0) > 1 ? g.label : '',
+        } });
+      };
+
+      // Shared seating: crew seats a SEPARATE walk-in party (didn't scan the
+      // QR) on this occupied table — backend assigns the next free slot.
+      const startNewParty = async () => {
+        try {
+          const res = await crewSessions.start(table.id, true) as any;
+          void loadTables();
+          router.push({ pathname: '/(staff)/[tableId]', params: {
+            tableId: String(tableNum),
+            sessionId: res.session_id,
+            tableDbId: table.id ?? '',
+            occupiedSince: res.started_at ?? '',
+            expiresAt: '',
+            customerName: '',
+            customerPhone: '',
+            groupLabel: res.party_slot ? `G${res.party_slot}` : '',
+          } });
+        } catch (e: any) {
+          const msg = typeof e?.message === 'string' && e.message.includes('TABLE_PARTIES_FULL')
+            ? 'This table already has the maximum number of groups.'
+            : (e?.message ?? 'Please try again.');
+          showDialog('Could not start group', msg, [{ label: 'OK', onPress: () => { } }]);
+        }
+      };
+
+      // Shared seating: several parties on one table → ask which group's
+      // bill to open (plus "seat new group" while under the cap). A single
+      // party at a shared-seating restaurant still gets the dialog so crew
+      // can seat a second group; everyone else goes straight through.
+      const groups = table.groups ?? [];
+      const maxParties = table.maxParties ?? 1;
+      const canAddParty = maxParties > 1 && groups.length >= 1 && groups.length < maxParties;
+      if (groups.length > 1 || canAddParty) {
+        const timeOf = (iso?: string | null) => {
+          if (!iso) return '';
+          const d = new Date(iso);
+          return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+        };
+        showDialog(
+          `Table T${String(tableNum).padStart(2, '0')} — ${groups.length} group${groups.length === 1 ? '' : 's'}`,
+          groups.length > 1 ? 'Which group do you want to open?' : 'Open the bill, or seat a separate group?',
+          [
+            ...groups.map((g) => ({
+              label: `${groups.length > 1 ? `${g.label} · ` : 'Open bill · '}₹${Math.round(Number(g.bill_total) || 0)} · since ${timeOf(g.occupied_since)}${g.payment_settled ? ' · paid' : ''}`,
+              variant: 'primary' as const,
+              onPress: () => openGroup(g),
+            })),
+            ...(canAddParty ? [{
+              label: '+ Seat new group (separate bill)',
+              onPress: () => { void startNewParty(); },
+            }] : []),
+            { label: 'Cancel', onPress: () => { } },
+          ],
+        );
+        return;
+      }
+
+      openGroup(groups[0]);
     }
   };
 
@@ -1681,7 +1771,11 @@ export default function StaffDashboard() {
                               <View style={styles.occupiedBottomRow}>
                                 <View style={styles.occupiedBottomLeft}>
                                   <Text style={styles.billAmount}>₹{(item.billAmount ?? 0).toLocaleString()}</Text>
-                                  <Text style={styles.billSubtitle}>{item.since ? `since ${item.since}` : 'active session'}</Text>
+                                  <Text style={styles.billSubtitle}>
+                                    {(item.groups?.length ?? 0) > 1
+                                      ? `${item.groups!.length} groups`
+                                      : item.since ? `since ${item.since}` : 'active session'}
+                                  </Text>
                                 </View>
                                 {timeLeft && (
                                   <View style={styles.cardTimer}>
