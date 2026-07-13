@@ -145,6 +145,8 @@ export default function TableDetail() {
   const [isPaid, setIsPaid] = useState(false);
   const [billTaxRate, setBillTaxRate] = useState(0);
   const [billPaymentMethod, setBillPaymentMethod] = useState<SessionBill['payment_method']>(undefined);
+  // Khata (pay later): portion of a settled bill owed on the customer's khata.
+  const [billDueAmount, setBillDueAmount] = useState<number | undefined>(undefined);
   const [billSplits, setBillSplits] = useState<SessionBill['splits']>(undefined);
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -292,6 +294,7 @@ export default function TableDetail() {
       setMergedFrom(bill.merged_from ?? []);
       setIsPaid(bill.status === 'paid');
       setBillPaymentMethod(bill.payment_method);
+      setBillDueAmount(bill.due_amount);
       setBillSplits(bill.splits);
       if (bill.expires_at !== undefined) setExpiresAt(bill.expires_at ?? null);
       if (bill.customer_name !== undefined) setSessionCustomerName(bill.customer_name ?? null);
@@ -732,6 +735,7 @@ export default function TableDetail() {
         grandTotal,
         isPaid,
         paymentMethod: billPaymentMethod,
+        customerName: sessionCustomerName,
         upiVpa: upiId,
         upiName: upiName || null,
         upiOmitAmount,
@@ -1184,10 +1188,27 @@ export default function TableDetail() {
         <TouchableOpacity style={styles.totalRow} activeOpacity={0.85} onPress={() => setIsExpanded(true)}>
           <View>
             <Text style={styles.totalLabel}>Total Payable</Text>
-            <View style={[styles.paidBadge, isPaid ? styles.paidBadgeActive : styles.paidBadgeInactive]}>
-              <Text style={[styles.paidBadgeText, isPaid ? styles.paidBadgeTextActive : styles.paidBadgeTextInactive]}>
+            {/* Khata (pay later) bills settle the table but the money is owed
+                on the customer's khata — amber, never green, so it can't be
+                read as cash-in-drawer, and never "Pending" so nobody
+                double-collects at the table. */}
+            <View style={[
+              styles.paidBadge,
+              isPaid
+                ? (billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? styles.paidBadgeKhata : styles.paidBadgeActive
+                : styles.paidBadgeInactive,
+            ]}>
+              <Text style={[
+                styles.paidBadgeText,
+                isPaid
+                  ? (billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? styles.paidBadgeTextKhata : styles.paidBadgeTextActive
+                  : styles.paidBadgeTextInactive,
+              ]}>
                 {isPaid
-                  ? billPaymentMethod === 'cash' ? 'via Cash'
+                  ? billPaymentMethod === 'due' ? 'On khata'
+                  : (billDueAmount ?? 0) > 0 ? `Split · ₹${Math.round(billDueAmount ?? 0)} on khata`
+                  : billPaymentMethod === 'waived' ? 'Waived'
+                  : billPaymentMethod === 'cash' ? 'via Cash'
                   : billPaymentMethod === 'upi_direct' ? 'via UPI'
                   : billPaymentMethod === 'mixed' ? 'Split'
                   : 'Settled'
@@ -2002,9 +2023,13 @@ const styles = StyleSheet.create({
   paidBadge: { alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 2, borderRadius: Radius.sm, marginTop: 6, borderWidth: 1 },
   paidBadgeActive: { backgroundColor: QuinckleColors.successSoft, borderColor: QuinckleColors.successBorder },
   paidBadgeInactive: { backgroundColor: QuinckleColors.warningSoft, borderColor: QuinckleColors.warningBorder },
+  // Khata (pay later): settled but owed — brand orange, distinct from both
+  // green (money in hand) and amber (still to collect at the table).
+  paidBadgeKhata: { backgroundColor: QuinckleColors.primarySoft, borderColor: QuinckleColors.primarySoftBorder },
   paidBadgeText: { fontSize: 9, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6 },
   paidBadgeTextActive: { color: QuinckleColors.success },
   paidBadgeTextInactive: { color: QuinckleColors.warning },
+  paidBadgeTextKhata: { color: QuinckleColors.primary },
   payBtn: { backgroundColor: QuinckleColors.primary, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, paddingVertical: 14, borderRadius: Radius.md },
   payBtnPaid: { backgroundColor: QuinckleColors.success },
   payBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },

@@ -30,6 +30,8 @@ export interface InvoiceBill {
   buyerGstin?: string | null;
   /** Recipient business/legal name printed alongside the buyer GSTIN. */
   buyerName?: string | null;
+  /** Khata: the customer the pay-later amount is recorded under. */
+  customerName?: string | null;
   tableNumber: number | string;
   /** DINE_IN (default) prints "Table TNN"; TAKEAWAY prints the takeaway header + pickup token. */
   channel?: 'DINE_IN' | 'TAKEAWAY';
@@ -263,6 +265,19 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   lines.push(`[L]${D}`);
   lines.push(`[L]<b>${leftRight('TOTAL', fmt(bill.grandTotal), W)}</b>`);
   lines.push(`[L]${D}`);
+
+  // ── Khata (pay later) ─────────────────────────────────────────────────────
+  // The bill is settled at the table but the money is owed on the customer's
+  // khata — say so on paper, with the name it's recorded under, so a walked
+  // copy matches the ledger.
+  if (bill.paymentMethod === 'due') {
+    lines.push(`[C]<b>PAY LATER — ON KHATA</b>`);
+    if (bill.customerName) lines.push(`[C]Recorded for ${bill.customerName}`);
+    lines.push(`[L]${D}`);
+  } else if (bill.paymentMethod === 'waived') {
+    lines.push(`[C]<b>BILL WAIVED</b>`);
+    lines.push(`[L]${D}`);
+  }
 
   // ── Scan-to-pay UPI QR (unpaid bills with a configured VPA only) ──────────
   // `upiOmitAmount` prints the restaurant's static QR (payee only, diner enters

@@ -322,7 +322,10 @@ export interface SessionBill {
   total_payable?: number;
   /** Canonical breakdown — render from this when present. */
   breakdown?: BillBreakdown;
-  payment_method?: 'cash' | 'upi_direct' | 'mixed';
+  // 'due' = fully on khata (pay later); 'waived' = written off. due_amount
+  // carries the khata portion when a split left part of the bill on credit.
+  payment_method?: 'cash' | 'upi_direct' | 'mixed' | 'due' | 'waived';
+  due_amount?: number;
   splits?: Array<{ method: 'CASH' | 'UPI_DIRECT'; amount: number }>;
   /** Sessions merged INTO this one — shown beside the ref so staff/kitchen see
    *  a unified bill spans more than one original scan. Absent when none. */
