@@ -53,6 +53,7 @@ import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { MergeTableSheet } from '../../components/ui/MergeTableSheet';
+import { GroupPickerSheet } from '../../components/ui/GroupPickerSheet';
 import { BottomNavbar } from '../../components/ui/BottomNavbar';
 import { PICKUP_LAYOUT_PRESET, PickupCard, PickupSegmented } from '../../components/ui/pickup';
 import { PrintOptionsSheet, type InvoiceBuyer } from '../../components/ui/PrintOptionsSheet';
@@ -201,6 +202,9 @@ export default function StaffDashboard() {
   // New-session bottom sheet (replaces the old confirm dialog). `starting` drives
   // the inline spinner so the tap → navigate gap shows feedback instead of freezing.
   const [newSessionTable, setNewSessionTable] = useState<Table | null>(null);
+  // Shared seating: which occupied table's group picker sheet is open.
+  const [groupPicker, setGroupPicker] = useState<{ table: Table; groups: TableGroup[]; canAddParty: boolean } | null>(null);
+  const [seatingParty, setSeatingParty] = useState(false);
 
   // ── Manual takeaway entry (counter / phone orders) ─────────────────────────
   // Guest name/phone are collected later on order-menu's guest CRM row (before
@@ -1496,50 +1500,13 @@ export default function StaffDashboard() {
       const table = tables.find(t => t.number === tableNum);
       if (!table) return;
 
-      const openGroup = (g?: TableGroup) => {
-        router.push({ pathname: '/(staff)/[tableId]', params: {
-          tableId: String(tableNum),
-          sessionId: g?.session_id ?? table.sessionId ?? '',
-          tableDbId: table.id ?? '',
-          occupiedSince: (g?.occupied_since ?? table.occupiedSince) ?? '',
-          expiresAt: (g?.expires_at ?? table.expiresAt) ?? '',
-          customerName: (g?.customer_name ?? table.customerName) ?? '',
-          customerPhone: (g?.customer_phone ?? table.customerPhone) ?? '',
-          groupLabel: g && (table.groups?.length ?? 0) > 1 ? g.label : '',
-        } });
-      };
-
-      // Shared seating: crew seats a SEPARATE walk-in party (didn't scan the
-      // QR) on this occupied table — backend assigns the next free slot.
-      const startNewParty = async () => {
-        try {
-          const res = await crewSessions.start(table.id, true) as any;
-          void loadTables();
-          router.push({ pathname: '/(staff)/[tableId]', params: {
-            tableId: String(tableNum),
-            sessionId: res.session_id,
-            tableDbId: table.id ?? '',
-            occupiedSince: res.started_at ?? '',
-            expiresAt: '',
-            customerName: '',
-            customerPhone: '',
-            groupLabel: res.party_slot ? `G${res.party_slot}` : '',
-          } });
-        } catch (e: any) {
-          const msg = typeof e?.message === 'string' && e.message.includes('TABLE_PARTIES_FULL')
-            ? 'This table already has the maximum number of groups.'
-            : (e?.message ?? 'Please try again.');
-          showDialog('Could not start group', msg, [{ label: 'OK', onPress: () => { } }]);
-        }
-      };
-
-      // Shared seating: several parties on one table → ask which group's
-      // bill to open (plus "seat new group" while under the cap). A single
-      // party at a shared-seating restaurant still gets the dialog so crew
-      // can seat a second group; everyone else goes straight through.
-      // Fallback: if groups[] is missing (older cached /tables response) but
-      // the table has a session, synthesize one entry from the legacy fields
-      // so the dialog still works at shared-seating restaurants.
+      // Shared seating: several parties on one table → bottom sheet asks
+      // which group's bill to open (plus "seat new group" while under the
+      // cap). A single party at a shared-seating restaurant still gets the
+      // sheet so crew can seat a second group; everyone else goes straight
+      // through. Fallback: if groups[] is missing (older cached /tables
+      // response) but the table has a session, synthesize one entry from the
+      // legacy fields so the sheet still works.
       const groups: TableGroup[] = (table.groups && table.groups.length > 0)
         ? table.groups
         : table.sessionId
@@ -1552,37 +1519,62 @@ export default function StaffDashboard() {
               customer_name: table.customerName ?? null,
               customer_phone: table.customerPhone ?? null,
               bill_total: table.billAmount,
+              items_total: table.itemsTotal,
               payment_settled: table.paymentSettled,
             }]
           : [];
       const maxParties = table.maxParties ?? 1;
       const canAddParty = maxParties > 1 && groups.length >= 1 && groups.length < maxParties;
       if (groups.length > 1 || canAddParty) {
-        const timeOf = (iso?: string | null) => {
-          if (!iso) return '';
-          const d = new Date(iso);
-          return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-        };
-        showDialog(
-          `Table T${String(tableNum).padStart(2, '0')} — ${groups.length} group${groups.length === 1 ? '' : 's'}`,
-          groups.length > 1 ? 'Which group do you want to open?' : 'Open the bill, or seat a separate group?',
-          [
-            ...groups.map((g) => ({
-              label: `${groups.length > 1 ? `${g.label} · ` : 'Open bill · '}₹${Math.round(Number(g.bill_total) || 0)} · since ${timeOf(g.occupied_since)}${g.payment_settled ? ' · paid' : ''}`,
-              variant: 'primary' as const,
-              onPress: () => openGroup(g),
-            })),
-            ...(canAddParty ? [{
-              label: '+ Seat new group (separate bill)',
-              onPress: () => { void startNewParty(); },
-            }] : []),
-            { label: 'Cancel', onPress: () => { } },
-          ],
-        );
+        setGroupPicker({ table, groups, canAddParty });
         return;
       }
 
-      openGroup(groups[0]);
+      openGroupForTable(table, groups[0]);
+    }
+  };
+
+  // Shared seating: open one party's bill on the table-detail screen.
+  const openGroupForTable = (table: Table, g?: TableGroup, opts?: { forceLabel?: boolean }) => {
+    router.push({ pathname: '/(staff)/[tableId]', params: {
+      tableId: String(table.number),
+      sessionId: g?.session_id ?? table.sessionId ?? '',
+      tableDbId: table.id ?? '',
+      occupiedSince: (g?.occupied_since ?? table.occupiedSince) ?? '',
+      expiresAt: (g?.expires_at ?? table.expiresAt) ?? '',
+      customerName: (g?.customer_name ?? table.customerName) ?? '',
+      customerPhone: (g?.customer_phone ?? table.customerPhone) ?? '',
+      groupLabel: g && (opts?.forceLabel || (table.groups?.length ?? 0) > 1) ? g.label : '',
+    } });
+  };
+
+  // Shared seating: crew seats a SEPARATE walk-in party (didn't scan the QR)
+  // on an occupied table — backend assigns the next free slot.
+  const seatNewParty = async (table: Table) => {
+    if (seatingParty) return;
+    setSeatingParty(true);
+    try {
+      const res = await crewSessions.start(table.id, true) as any;
+      void loadTables();
+      setGroupPicker(null);
+      router.push({ pathname: '/(staff)/[tableId]', params: {
+        tableId: String(table.number),
+        sessionId: res.session_id,
+        tableDbId: table.id ?? '',
+        occupiedSince: res.started_at ?? '',
+        expiresAt: '',
+        customerName: '',
+        customerPhone: '',
+        groupLabel: res.party_slot ? `G${res.party_slot}` : '',
+      } });
+    } catch (e: any) {
+      setGroupPicker(null);
+      const msg = typeof e?.message === 'string' && e.message.includes('TABLE_PARTIES_FULL')
+        ? 'This table already has the maximum number of groups.'
+        : (e?.message ?? 'Please try again.');
+      showDialog('Could not start group', msg, [{ label: 'OK', onPress: () => { } }]);
+    } finally {
+      setSeatingParty(false);
     }
   };
 
@@ -2332,6 +2324,22 @@ export default function StaffDashboard() {
         onClose={() => { if (!mergeSubmitting) setMergeTable(null); }}
         onMerge={confirmMergeFromGrid}
         submitting={mergeSubmitting}
+      />
+
+      {/* Shared seating — pick a group's bill or seat a separate party */}
+      <GroupPickerSheet
+        visible={!!groupPicker}
+        tableNum={String(groupPicker?.table.number ?? 0).padStart(2, '0')}
+        groups={groupPicker?.groups ?? []}
+        canAddParty={groupPicker?.canAddParty ?? false}
+        submitting={seatingParty}
+        onClose={() => { if (!seatingParty) setGroupPicker(null); }}
+        onOpenGroup={(g) => {
+          const t = groupPicker?.table;
+          setGroupPicker(null);
+          if (t) openGroupForTable(t, g as TableGroup, { forceLabel: (groupPicker?.groups.length ?? 0) > 1 });
+        }}
+        onSeatNewGroup={() => { if (groupPicker) void seatNewParty(groupPicker.table); }}
       />
 
       <ThemedDialog
