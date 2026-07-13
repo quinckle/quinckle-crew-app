@@ -751,26 +751,39 @@ export interface PendingPaymentIntent {
   createdAt: string;
 }
 
+// DUE = khata: that portion is NOT collected — the backend opens a Due against
+// the customer's phone (required) for later settlement on the Dues screen.
+export type CollectSplitMethod = 'CASH' | 'UPI_DIRECT' | 'DUE';
+export interface CollectDueOptions {
+  customerPhone: string;
+  customerName?: string | null;
+  dueDate?: string | null; // YYYY-MM-DD
+}
+
 export const crewPayments = {
-  // v3: Unified Collection endpoint. Supports 1-method (all cash or all UPI)
-  // or 2-method splits like [{method:'CASH', amount:200},{method:'UPI_DIRECT', amount:320}].
+  // v3: Unified Collection endpoint. Supports splits, one per method:
+  // [{method:'CASH', amount:200},{method:'UPI_DIRECT', amount:320}] or a khata
+  // remainder [{method:'CASH', amount:300},{method:'DUE', amount:200}].
   // Works on PENDING_STAFF_COLLECTION (v3) AND legacy PENDING_CASH/UPI_DIRECT/UNPAID
   // orders — staff can use this single sheet for all of them.
   collectPayment: (
     orderId: string,
     staffId: string,
-    splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[],
+    splits: { method: CollectSplitMethod; amount: number }[],
     idempotencyKey: string,
     upiReference?: string | null,
+    dueOptions?: CollectDueOptions | null,
   ) =>
     request<{
       success: true;
       order_id: string;
       session_id: string;
       status: 'paid';
-      payment_method: 'cash' | 'upi_direct' | 'mixed';
+      payment_method: 'cash' | 'upi_direct' | 'mixed' | 'due';
       total: number;
-      splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number; payment_id: string }[];
+      splits: { method: CollectSplitMethod; amount: number; payment_id: string }[];
+      due_amount?: number;
+      due_id?: string | null;
       collected_by: string;
       paid_at: string;
     }>('POST', '/api/crew/payments/collect', {
@@ -779,6 +792,9 @@ export const crewPayments = {
       splits,
       idempotency_key: idempotencyKey,
       upi_reference: upiReference ?? null,
+      customer_phone: dueOptions?.customerPhone ?? null,
+      customer_name:  dueOptions?.customerName ?? null,
+      due_date:       dueOptions?.dueDate ?? null,
     }, true),
 
   // v3 (whole table): settle EVERY pending order the card was showing in one
@@ -788,18 +804,21 @@ export const crewPayments = {
     sessionId: string,
     orderIds: string[],
     staffId: string,
-    splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[],
+    splits: { method: CollectSplitMethod; amount: number }[],
     idempotencyKey: string,
     upiReference?: string | null,
+    dueOptions?: CollectDueOptions | null,
   ) =>
     request<{
       success: true;
       session_id: string;
       order_ids: string[];
       status: 'paid';
-      payment_method: 'cash' | 'upi_direct' | 'mixed';
+      payment_method: 'cash' | 'upi_direct' | 'mixed' | 'due';
       total: number;
-      splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number; payment_id: string }[];
+      splits: { method: CollectSplitMethod; amount: number; payment_id: string }[];
+      due_amount?: number;
+      due_ids?: string[];
       collected_by: string;
       paid_at: string;
     }>('POST', '/api/crew/payments/collect-session', {
@@ -809,6 +828,9 @@ export const crewPayments = {
       splits,
       idempotency_key: idempotencyKey,
       upi_reference:   upiReference ?? null,
+      customer_phone: dueOptions?.customerPhone ?? null,
+      customer_name:  dueOptions?.customerName ?? null,
+      due_date:       dueOptions?.dueDate ?? null,
     }, true),
 
   // Powers the cash-collection screen: pending requests + today's history.
@@ -1183,4 +1205,70 @@ export const crewExpenses = {
 
   create: (input: CrewExpenseCreateInput) =>
     request<{ success: boolean; data: CrewExpenseItem; error?: string }>('POST', '/api/crew/expenses', input, true),
+};
+
+// ── Dues (customer khata — recorded at collection, settled later) ────────────
+
+export interface CrewDueParty {
+  key: string;
+  phone: string | null;
+  customerName: string | null;
+  outstanding: number;
+  dueCount: number;
+  oldestAt: string;
+  nextDueDate: string | null;
+}
+
+export interface CrewDueSettlement {
+  id: string;
+  dueId: string;
+  amount: number;
+  method: 'CASH' | 'UPI' | 'BANK_TRANSFER' | 'CARD' | 'OTHER';
+  settledAt: string;
+  note: string | null;
+  status: 'RECORDED' | 'VOID';
+}
+
+export interface CrewDue {
+  id: string;
+  partyType: 'CUSTOMER' | 'VENDOR';
+  customerPhone: string | null;
+  customerName: string | null;
+  orderId: string | null;
+  sessionId: string | null;
+  originalAmount: number;
+  settledAmount: number;
+  balance: number;
+  status: 'OPEN' | 'SETTLED' | 'WRITTEN_OFF' | 'VOID';
+  dueDate: string | null;
+  note: string | null;
+  createdAt: string;
+  settlements?: CrewDueSettlement[];
+}
+
+export const crewDues = {
+  // Open khata grouped by customer phone — the "collect from" list.
+  parties: () =>
+    request<{ success: boolean; data: CrewDueParty[] }>('GET', '/api/crew/dues/parties', undefined, true),
+
+  // Individual dues, optionally for one phone (status defaults to OPEN).
+  list: (phone?: string, status: 'OPEN' | 'SETTLED' | 'WRITTEN_OFF' | 'ALL' = 'OPEN') =>
+    request<{ success: boolean; data: { items: CrewDue[]; totalOutstanding: number } }>(
+      'GET',
+      `/api/crew/dues?status=${status}${phone ? `&phone=${encodeURIComponent(phone)}` : ''}`,
+      undefined,
+      true,
+    ),
+
+  get: (id: string) =>
+    request<{ success: boolean; data: CrewDue }>('GET', `/api/crew/dues/${id}`, undefined, true),
+
+  // Settle (full or partial) — real collected money, replay-safe by key.
+  settle: (id: string, amount: number, method: 'CASH' | 'UPI', idempotencyKey: string, note?: string | null) =>
+    request<{ success: boolean; data: { due: CrewDue; settlement: CrewDueSettlement } }>(
+      'POST',
+      `/api/crew/dues/${id}/settle`,
+      { amount, method, idempotencyKey, note: note ?? null },
+      true,
+    ),
 };

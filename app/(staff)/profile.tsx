@@ -291,6 +291,26 @@ export default function StaffProfile() {
           </TouchableOpacity>
         </View>
 
+        {/* ─── DUES (KHATA) ─── */}
+        <View style={styles.section}>
+          <TouchableOpacity
+            style={styles.sectionRow}
+            onPress={() => router.push('/(staff)/dues')}
+            activeOpacity={0.6}
+          >
+            <View style={styles.sectionRowLeft}>
+              <View style={[styles.sectionIconWrap]}>
+                <Ionicons name="book-outline" size={18} color='white' />
+              </View>
+              <View style={styles.sectionTextGroup}>
+                <Text style={styles.sectionTitle}>Dues (Khata)</Text>
+                <Text style={styles.sectionSubtitle}>Customer pay-later balances · collect</Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
+          </TouchableOpacity>
+        </View>
+
         {/* ─── ORDER LEDGER ─── */}
         <View style={styles.section}>
           <TouchableOpacity
