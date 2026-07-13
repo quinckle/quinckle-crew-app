@@ -67,9 +67,12 @@ export default function TableDetail() {
   const { staffInfo } = useAuth();
 
   const tableNum = String(tableId ?? '').padStart(2, '0');
-  // Shared seating: set when this table hosts >1 party ("G2"). Rides on the
-  // header and every printout so staff can match paper to the right group.
-  const groupLabel = (paramGroupLabel ?? '').trim();
+  // Shared seating: "G2" when this table hosts >1 party. Rides on the header
+  // and every printout so staff can match paper to the right group. The nav
+  // param gives an instant value from the picker; the bill response is the
+  // authority so the label shows on EVERY entry path (orders feed, search)
+  // and disappears once the other groups have left.
+  const [groupLabel, setGroupLabel] = useState((paramGroupLabel ?? '').trim());
   const tablePrintLabel = groupLabel ? `${tableNum} · ${groupLabel}` : tableNum;
 
   const [sessionId] = useState(paramSessionId ?? '');
@@ -281,6 +284,11 @@ export default function TableDetail() {
       setPayableTotal(grand);
       setSessionStatus(bill.status);
       setSessionRef(bill.session_ref ?? '');
+      // Shared seating: bill is the authority for the group label — shows it
+      // on every entry path, clears it when this is again the only party.
+      if (bill.party_count !== undefined) {
+        setGroupLabel(Number(bill.party_count) > 1 ? `G${Number(bill.party_slot ?? 1)}` : '');
+      }
       setMergedFrom(bill.merged_from ?? []);
       setIsPaid(bill.status === 'paid');
       setBillPaymentMethod(bill.payment_method);

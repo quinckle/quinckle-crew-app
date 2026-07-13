@@ -298,6 +298,10 @@ export interface SessionBill {
   session_id: string;
   session_ref: string;
   table_number: number;
+  // Shared seating: this session's party slot + live parties on the table.
+  // party_count > 1 → show the "G2" label on header/prints.
+  party_slot?: number;
+  party_count?: number;
   status: 'active' | 'paid' | 'closed';
   started_at?: string;
   expires_at?: string | null;

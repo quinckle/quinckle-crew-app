@@ -1537,7 +1537,24 @@ export default function StaffDashboard() {
       // bill to open (plus "seat new group" while under the cap). A single
       // party at a shared-seating restaurant still gets the dialog so crew
       // can seat a second group; everyone else goes straight through.
-      const groups = table.groups ?? [];
+      // Fallback: if groups[] is missing (older cached /tables response) but
+      // the table has a session, synthesize one entry from the legacy fields
+      // so the dialog still works at shared-seating restaurants.
+      const groups: TableGroup[] = (table.groups && table.groups.length > 0)
+        ? table.groups
+        : table.sessionId
+          ? [{
+              session_id: table.sessionId,
+              party_slot: 1,
+              label: 'G1',
+              occupied_since: table.occupiedSince ?? null,
+              expires_at: table.expiresAt ?? null,
+              customer_name: table.customerName ?? null,
+              customer_phone: table.customerPhone ?? null,
+              bill_total: table.billAmount,
+              payment_settled: table.paymentSettled,
+            }]
+          : [];
       const maxParties = table.maxParties ?? 1;
       const canAddParty = maxParties > 1 && groups.length >= 1 && groups.length < maxParties;
       if (groups.length > 1 || canAddParty) {
