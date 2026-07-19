@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -60,7 +60,7 @@ function useShimmerTx() {
     );
     loop.start();
     return () => loop.stop();
-  }, []);
+  }, [p]);
   return p.interpolate({ inputRange: [0, 1], outputRange: [-SWEEP, SWEEP] });
 }
 
@@ -109,7 +109,7 @@ function SuccessScreen({ info, onDone }: { info: SuccessInfo; onDone: () => void
     ]).start();
     const t = setTimeout(onDone, 2400);
     return () => clearTimeout(t);
-  }, []);
+  }, [fadeAnim, riseAnim, onDone]);
 
   const cashSplit = info.splits.find(s => s.method === 'CASH');
   const upiSplit  = info.splits.find(s => s.method === 'UPI_DIRECT');
@@ -224,6 +224,7 @@ const sc = StyleSheet.create({
 // ── Main screen ──────────────────────────────────────────────────────────────
 export default function PaymentCollectScreen() {
   const router  = useRouter();
+  const returnToPreviousScreen = useCallback(() => router.back(), [router]);
   const insets  = useSafeAreaInsets();
   const { staffInfo } = useAuth();
   const params  = useLocalSearchParams<{
@@ -779,7 +780,7 @@ export default function PaymentCollectScreen() {
         )}
       </View>
 
-      {successInfo && <SuccessScreen info={successInfo} onDone={() => router.back()} />}
+      {successInfo && <SuccessScreen info={successInfo} onDone={returnToPreviousScreen} />}
     </KeyboardAvoidingView>
   );
 }

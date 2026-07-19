@@ -1,9 +1,7 @@
-import React, { useMemo, useState, useEffect, useRef } from 'react';
+import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
 import {
   ActivityIndicator,
-  Animated,
   AppState,
-  Dimensions,
   FlatList,
   RefreshControl,
   Image,
@@ -20,17 +18,43 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { LinearGradient } from 'expo-linear-gradient';
 import QRCode from 'react-native-qrcode-svg';
 
-const SCREEN_WIDTH = Dimensions.get('window').width;
-
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
-import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewTakeaway, restaurantApi, crewAuth, printerApi } from '../../services/api';
+import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewTakeaway, restaurantApi, printerApi, type ClosedSessionInfo } from '../../services/api';
+import { Swipeable } from 'react-native-gesture-handler';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { invalidateCache } from '../../services/dataCache';
 import { printKot, printBill, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
 import type { InvoiceBill } from '../../services/invoiceTemplate';
 import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded } from '../../services/printSink';
 import { getPrintDeviceId } from '../../services/printDevice';
+import type { TakeawayOrder } from '../../services/api';
+import { router } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Haptics from 'expo-haptics';
+import * as Notifications from 'expo-notifications';
+import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
+import { ThemedDialog } from '../../components/ui/themed-dialog';
+import { BottomSheet } from '../../components/ui/BottomSheet';
+import { CenteredModal } from '../../components/ui/CenteredModal';
+import { StartSessionOverlay, type StartSessionJob } from '../../components/ui/StartSessionOverlay';
+import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
+import { MergeTableSheet } from '../../components/ui/MergeTableSheet';
+import { GroupPickerSheet } from '../../components/ui/GroupPickerSheet';
+import { UndoSnackbar } from '../../components/ui/UndoSnackbar';
+import { FreeTableOverlay, type FreeJob } from '../../components/ui/FreeTableOverlay';
+import { ClearFlash } from '../../components/ui/ClearFlash';
+import { BottomNavbar } from '../../components/ui/BottomNavbar';
+import { PICKUP_LAYOUT_PRESET, PickupCard, PickupSegmented } from '../../components/ui/pickup';
+import { PrintOptionsSheet, type InvoiceBuyer } from '../../components/ui/PrintOptionsSheet';
+import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintProgressOverlay';
+import { TakeawayManageSheet } from '../../components/ui/TakeawayManageSheet';
+import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
+import { TableSkeleton } from '../../components/ui/TableSkeleton';
+import { MenuSkeleton } from '../../components/ui/MenuSkeleton';
+import { SideDrawer } from '../../components/ui/SideDrawer';
+import { useResponsive } from '../../hooks/useResponsive';
 
 async function playSound(file: any) {
   try {
@@ -41,38 +65,6 @@ async function playSound(file: any) {
       if (s.isLoaded && s.didJustFinish) sound.unloadAsync();
     });
   } catch { /* non-fatal */ }
-}
-import type { ActiveOrder, MenuItem, TakeawayOrder } from '../../services/api';
-import { router } from 'expo-router';
-import { Ionicons, MaterialIcons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import * as Haptics from 'expo-haptics';
-import * as Notifications from 'expo-notifications';
-import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
-import { ThemedDialog } from '../../components/ui/themed-dialog';
-import { BottomSheet } from '../../components/ui/BottomSheet';
-import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
-import { MergeTableSheet } from '../../components/ui/MergeTableSheet';
-import { GroupPickerSheet } from '../../components/ui/GroupPickerSheet';
-import { BottomNavbar } from '../../components/ui/BottomNavbar';
-import { PICKUP_LAYOUT_PRESET, PickupCard, PickupSegmented } from '../../components/ui/pickup';
-import { PrintOptionsSheet, type InvoiceBuyer } from '../../components/ui/PrintOptionsSheet';
-import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintProgressOverlay';
-import { TakeawayManageSheet } from '../../components/ui/TakeawayManageSheet';
-import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
-import { TableSkeleton } from '../../components/ui/TableSkeleton';
-import { MenuSkeleton } from '../../components/ui/MenuSkeleton';
-import { CombosSkeleton } from '../../components/ui/CombosSkeleton';
-import { FeaturedSkeleton } from '../../components/ui/FeaturedSkeleton';
-import { SideDrawer } from '../../components/ui/SideDrawer';
-
-// Format an Indian phone like "9051138485" → "+91 90511 38485" for display
-function formatPhone(raw?: string | null): string {
-  if (!raw) return '';
-  const digits = raw.replace(/\D/g, '');
-  const last10 = digits.slice(-10);
-  if (last10.length !== 10) return raw;
-  return `+91 ${last10.slice(0, 5)} ${last10.slice(5)}`;
 }
 
 // Compact session countdown for the table card — time only, no "left" label.
@@ -167,26 +159,24 @@ type MenuRow = {
 type PickupItem = { id: string; name: string; qty: number; orderedAt: string; isServed: boolean; isReady: boolean };
 type PickupOrder = { id: string; tableNo: string; items: PickupItem[]; completedAt?: string };
 
-// Real-time activity feed — populated from session/order events on the
-// waiter:{restaurantId} Ably channel as they happen. Empty by default;
-// historical demo entries were removed (no backend persistence needed for
-// this session-scoped feed).
-const ACTIVITY_DATA: Array<{ id: string; message: string; date: string; time: string }> = [];
-
-const INITIAL_TABLES: Table[] = [
-  { id: '1', number: 1, status: 'occupied', seats: 4, billAmount: 2050, since: '14:15', location: 'Main Hall' },
-  { id: '2', number: 2, status: 'occupied', seats: 2, billAmount: 1280, since: '14:40', location: 'Window' },
-  { id: '3', number: 3, status: 'available', seats: 2, location: 'Bar Side' },
-  { id: '4', number: 4, status: 'occupied', seats: 4, billAmount: 3420, since: '13:30', location: 'Corner' },
-  { id: '5', number: 5, status: 'available', seats: 2, location: 'Terrace' },
-  { id: '6', number: 6, status: 'offline', seats: 4, location: 'Garden' },
-  { id: '7', number: 7, status: 'available', seats: 6, location: 'Main Hall' },
-  { id: '8', number: 8, status: 'occupied', seats: 2, since: '15:00', location: 'Window' },
-  { id: '9', number: 9, status: 'available', seats: 4, location: 'Garden' },
-  { id: '10', number: 10, status: 'available', seats: 8, location: 'Main Hall' },
-  { id: '11', number: 11, status: 'offline', seats: 4, location: 'Main Hall' },
-  { id: '12', number: 12, status: 'available', seats: 4, location: 'Window' },
-];
+function mapCompletedOrder(order: any): PickupOrder {
+  return {
+    id: order.order_id,
+    tableNo: order.channel === 'TAKEAWAY' ? (order.pickup_token ?? 'TK') : `T${order.table_number}`,
+    completedAt: order.served_at ?? order.placed_at,
+    items: order.items.map((item: any) => ({
+      id: item.item_id,
+      name: `${item.qty}× ${item.name}`,
+      qty: item.qty,
+      orderedAt: (() => {
+        const d = new Date(order.placed_at);
+        return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      })(),
+      isServed: true,
+      isReady: true,
+    })),
+  };
+}
 
 const STATUS_META: Record<TableStatus, { label: string; color: string }> = {
   available: { label: 'Available', color: QuinckleColors.success },
@@ -197,11 +187,20 @@ const STATUS_META: Record<TableStatus, { label: string; color: string }> = {
 export default function StaffDashboard() {
   const insets = useSafeAreaInsets();
   const { staffInfo } = useAuth();
+  const { width: winWidth, isTablet, isWide } = useResponsive();
+  // Table grid columns: phones stay 2-up; tablets scale with width (target
+  // ~240dp per card) so landscape fills the screen instead of leaving 2 wide
+  // columns. space-between + a ~2% gutter keeps the existing look.
+  const tableColumns = isTablet ? Math.max(3, Math.floor(winWidth / 240)) : 2;
+  const tableCellWidth = `${(100 - 2 * (tableColumns - 1)) / tableColumns}%` as `${number}%`;
   const [activeTab, setActiveTab] = useState<NavItem>('tables');
   const [filterVisible, setFilterVisible] = useState(false);
-  // New-session bottom sheet (replaces the old confirm dialog). `starting` drives
-  // the inline spinner so the tap → navigate gap shows feedback instead of freezing.
-  const [newSessionTable, setNewSessionTable] = useState<Table | null>(null);
+  // Tapping a free table starts the session immediately — no confirm modal.
+  // Long-press is already "mark offline" (see handleLongPress), so a single
+  // tap unambiguously means "open this table". StartSessionOverlay is the
+  // only feedback while the create-session call is in flight.
+  const [startSessionJob, setStartSessionJob] = useState<StartSessionJob | null>(null);
+  const pendingSessionNav = useRef<Parameters<typeof router.push>[0] | null>(null);
   // Shared seating: which occupied table's group picker sheet is open.
   const [groupPicker, setGroupPicker] = useState<{ table: Table; groups: TableGroup[]; canAddParty: boolean } | null>(null);
   const [seatingParty, setSeatingParty] = useState(false);
@@ -210,8 +209,6 @@ export default function StaffDashboard() {
   // Guest name/phone are collected later on order-menu's guest CRM row (before
   // placing), not here — asking twice was redundant.
   const [startingTakeaway, setStartingTakeaway] = useState(false);
-  const [startingSession, setStartingSession] = useState(false);
-  const [startError, setStartError] = useState<string | null>(null);
   // Manage-table action sheet (occupied long-press) + reused swap sheet.
   const [manageTable, setManageTable] = useState<Table | null>(null);
   const [swapTable, setSwapTable] = useState<{ id: string; number: number } | null>(null);
@@ -220,6 +217,19 @@ export default function StaffDashboard() {
   const [mergeSubmitting, setMergeSubmitting] = useState(false);
   const [tables, setTables] = useState<Table[]>([]);
   const [isLoadingTables, setIsLoadingTables] = useState(true);
+  // Freeing UX:
+  //  · freeOverlay — the celebratory "table cleared" modal for a single free.
+  //  · undo        — the snackbar (group + batch frees), holds sessions to reopen.
+  // Both carry a busy flag while their reopen request is inflight.
+  const [freeOverlay, setFreeOverlay] = useState<FreeJob | null>(null);
+  const [overlayBusy, setOverlayBusy] = useState(false);
+  const [undo, setUndo] = useState<{ message: string; sessions: ClosedSessionInfo[] } | null>(null);
+  const [undoBusy, setUndoBusy] = useState(false);
+  // Ids of cards that just cleared in a batch — drives a brief in-card sweep.
+  const [recentlyFreedIds, setRecentlyFreedIds] = useState<Set<string>>(new Set());
+  // End-of-service multi-select clear: toggle + the set of picked table ids.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   // Single shared clock for every card's session countdown. Minute precision is
   // all the grid needs, so one 30s tick is far cheaper than a per-card 1s timer.
   const [now, setNow] = useState(() => Date.now());
@@ -249,11 +259,11 @@ export default function StaffDashboard() {
   //  - cash_payment_collected   Ably event (−1, floored at 0)
   const [pendingCashCount, setPendingCashCount] = useState(0);
   const [pickupOrders, setPickupOrders] = useState<PickupOrder[]>([]);
+  const pickupOrderIdsRef = useRef<Set<string>>(new Set());
   const [completedPickupOrders, setCompletedPickupOrders] = useState<PickupOrder[]>([]);
   const [completedPage, setCompletedPage] = useState(1);
   const [completedHasMore, setCompletedHasMore] = useState(false);
   const [isLoadingMoreCompleted, setIsLoadingMoreCompleted] = useState(false);
-  const [liveOrders, setLiveOrders] = useState<ActiveOrder[]>([]);
   const [ordersSubTab, setOrdersSubTab] = useState<'active' | 'completed'>('active');
   const [completingIds, setCompletingIds] = useState<string[]>([]);
   // ── Takeaway state ──
@@ -280,7 +290,7 @@ export default function StaffDashboard() {
     return token.includes(q) || ref.includes(q) || phone.includes(q);
   };
 
-  const loadTakeawayOrders = async () => {
+  const loadTakeawayOrders = useCallback(async () => {
     try {
       const res = await crewOrders.getTakeaway();
       setTakeawayOrders(res?.data ?? []);
@@ -288,7 +298,7 @@ export default function StaffDashboard() {
     finally {
       setRefreshingTakeaway(false);
     }
-  };
+  }, []);
 
   const handleRefreshTakeaway = () => {
     setRefreshingTakeaway(true);
@@ -607,29 +617,27 @@ export default function StaffDashboard() {
     }, 220);
   };
 
-  // KOT auto-print toggle — loaded from server, synced via Ably.
-  // Stored in both state (for UI) and a ref (so Ably callbacks always see latest value).
-  const [kotAutoPrint, setKotAutoPrint] = useState(true);
+  // KOT auto-print toggle — loaded from server and retained in a ref so
+  // realtime callbacks always see the current value without forcing renders.
   const kotAutoPrintRef = useRef(true);
-  const setKotAutoPrintSync = (v: boolean) => {
+  const setKotAutoPrintSync = useCallback((v: boolean) => {
     kotAutoPrintRef.current = v;
-    setKotAutoPrint(v);
     setSinkContext({ autoPrint: v }); // keep the background FGS gate in sync
-  };
+  }, []);
 
   // Sync the KOT auto-print toggle from the server. Auto-print itself gates on
   // the *live* local printer connection (getPrinterStatus), never on staff
   // identity — the Bluetooth pairing is the real single-sink guarantee, so any
   // crew member on the paired device drives printing. Default toggle stays true
   // so a transient status-fetch failure never silently disables printing.
-  const refreshPrintSinkOwnership = async () => {
+  const refreshPrintSinkOwnership = useCallback(async () => {
     try {
       const res = await printerApi.getStatus();
       if (typeof res?.data?.kotAutoPrint === 'boolean') {
         setKotAutoPrintSync(res.data.kotAutoPrint);
       }
     } catch { /* keep last known toggle value */ }
-  };
+  }, [setKotAutoPrintSync]);
 
   // ── KOT print backstop (server pull-queue) ──────────────────────────────────
   // The live Ably `new_order` push is the fast path, but it only fires while the
@@ -638,30 +646,6 @@ export default function StaffDashboard() {
   // flushes the ack outbox, pulls the server queue (first prints + durable
   // reprints) with this device's sink identity, and prints anything that
   // slipped through. The auto-print toggle reaches it via setSinkContext.
-
-  const simulateNewOrder = async () => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-    try {
-      // Play a premium, soft "Ding" style chime (elevator arrival sound)
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: 'https://upload.wikimedia.org/wikipedia/commons/b/b5/Elevator_ding.ogg' },
-        { shouldPlay: true }
-      );
-    } catch (e) {
-      console.warn('Could not play in-app sound', e);
-    }
-
-    await Notifications.scheduleNotificationAsync({
-      content: {
-        title: "🛎 New Order Ready!",
-        body: "Table T08 - 2x Paneer Tikka is ready for pickup.",
-        sound: true,
-        android: { largeIcon: 'ic_notification_large' },
-      },
-      trigger: null,
-    });
-  };
 
   const togglePickupItem = (orderId: string, itemId: string) => {
     Haptics.selectionAsync().catch(() => {});
@@ -759,7 +743,7 @@ export default function StaffDashboard() {
     });
   };
 
-  const loadTables = async () => {
+  const loadTables = useCallback(async () => {
     try {
       const res = await crewTables.list() as any;
       // bill_total ships on /crew/tables itself now — no per-table /bill
@@ -804,9 +788,9 @@ export default function StaffDashboard() {
     } finally {
       setIsLoadingTables(false);
     }
-  };
+  }, []);
 
-  const loadMenuFromApi = async () => {
+  const loadMenuFromApi = useCallback(async () => {
     if (!staffInfo?.restaurantId) return;
     const rid = staffInfo.restaurantId;
     try {
@@ -859,13 +843,12 @@ export default function StaffDashboard() {
     } finally {
       setIsLoadingMenu(false);
     }
-  };
+  }, [staffInfo?.restaurantId]);
 
-  const loadPickupOrders = async () => {
+  const loadPickupOrders = useCallback(async () => {
     try {
       const res = await crewOrders.getActive();
       const allOrders = res.orders ?? [];
-      setLiveOrders(allOrders);
 
       // Simplified flow: show any order that has unserved items, regardless of
       // order status. Serving is always open — no kitchen pipeline gate.
@@ -876,7 +859,7 @@ export default function StaffDashboard() {
 
       // Notify staff the moment a brand-new order lands on the floor — they
       // no longer need to wait for kitchen to flip status to READY.
-      const prevOrderIds = new Set(pickupOrders.map(o => o.id));
+      const prevOrderIds = pickupOrderIdsRef.current;
       const newOrders = serveableOrders.filter(o => !prevOrderIds.has(o.order_id));
       if (newOrders.length > 0) {
         void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
@@ -885,7 +868,6 @@ export default function StaffDashboard() {
             title: '🔔 New Order',
             body: newOrders.map(o => o.channel === 'TAKEAWAY' ? (o.pickup_token ?? 'TK') : `T${o.table_number}`).join(', ') + ' — ready to serve',
             sound: true,
-            android: { largeIcon: 'ic_notification_large' },
           },
           trigger: null,
         }).catch(() => { });
@@ -909,29 +891,13 @@ export default function StaffDashboard() {
         })),
       }));
 
+      pickupOrderIdsRef.current = new Set(refreshedActive.map(order => order.id));
       setPickupOrders(refreshedActive);
     } catch (e) { console.error('[pickup] loadPickupOrders error:', e); }
-  };
-
-  const mapCompletedOrder = (order: any): PickupOrder => ({
-    id: order.order_id,
-    tableNo: order.channel === 'TAKEAWAY' ? (order.pickup_token ?? 'TK') : `T${order.table_number}`,
-    completedAt: order.served_at ?? order.placed_at,
-    items: order.items.map((item: any) => ({
-      id: item.item_id,
-      name: `${item.qty}× ${item.name}`,
-      qty: item.qty,
-      orderedAt: (() => {
-        const d = new Date(order.placed_at);
-        return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-      })(),
-      isServed: true,
-      isReady: true,
-    })),
-  });
+  }, []);
 
   // Completed tab source of truth: backend paginated list (last 24h served).
-  const loadServedToday = async (page = 1) => {
+  const loadServedToday = useCallback(async (page = 1) => {
     try {
       const res = await crewOrders.getServedToday(page, 30);
       // Takeaway has its own dedicated tab — keep this list dine-in only.
@@ -950,7 +916,7 @@ export default function StaffDashboard() {
       setCompletedPage(page);
       setCompletedHasMore(Boolean(res.hasMore));
     } catch (e) { console.error('[pickup] loadServedToday error:', e); }
-  };
+  }, []);
 
   const loadMoreCompletedOrders = async () => {
     if (isLoadingMoreCompleted || !completedHasMore) return;
@@ -962,15 +928,30 @@ export default function StaffDashboard() {
     }
   };
 
+  const loadPendingCashCount = useCallback(async () => {
+    try {
+      const data = await crewPayments.getCashRequests();
+      setPendingCashCount(data.pending.length);
+    } catch { /* non-fatal — Ably will keep the count fresh */ }
+  }, []);
+
   // Load once on mount — Ably drives all subsequent updates
   useEffect(() => {
-    loadTables();
-    loadMenuFromApi();
-    loadPickupOrders();
-    loadServedToday();
-    loadPendingCashCount();
+    void loadTables();
+    void loadMenuFromApi();
+    void loadPickupOrders();
+    void loadServedToday();
+    void loadPendingCashCount();
     void refreshPrintSinkOwnership();
-  }, [staffInfo?.restaurantId]);
+  }, [
+    staffInfo?.restaurantId,
+    loadTables,
+    loadMenuFromApi,
+    loadPickupOrders,
+    loadServedToday,
+    loadPendingCashCount,
+    refreshPrintSinkOwnership,
+  ]);
 
   // Advance the shared clock every 30s so card countdowns stay current — but
   // only while the Tables tab is open and at least one table has an expiry, so
@@ -1009,8 +990,7 @@ export default function StaffDashboard() {
       appStateSub.remove();
       unwatchConn();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [staffInfo?.restaurantId]);
+  }, [staffInfo?.restaurantId, refreshPrintSinkOwnership]);
 
   // Keep the screen awake while this device holds the printer, so Android can't
   // suspend the JS runtime and miss prints when the screen would sleep.
@@ -1034,18 +1014,11 @@ export default function StaffDashboard() {
     };
   }, []);
 
-  const loadPendingCashCount = async () => {
-    try {
-      const data = await crewPayments.getCashRequests();
-      setPendingCashCount(data.pending.length);
-    } catch { /* non-fatal — Ably will keep the count fresh */ }
-  };
-
   // Immediately refresh pickup orders when switching to Orders tab
   useEffect(() => {
     if (activeTab === 'orders') void loadPickupOrders();
     if (activeTab === 'takeaway') void loadTakeawayOrders();
-  }, [activeTab]);
+  }, [activeTab, loadPickupOrders, loadTakeawayOrders]);
 
   // Takeaway list stays fresh via the waiter:{restaurantId} Ably push below
   // (new_order / cash events call loadTakeawayOrders) plus the tab-switch load
@@ -1200,7 +1173,6 @@ export default function StaffDashboard() {
             ? `₹${amount} due ${data?.channel === 'TAKEAWAY' ? 'at the counter' : 'at the table'}`
             : 'Customer is paying by cash',
           sound: true,
-          android: { largeIcon: 'ic_notification_large' },
         },
         trigger: null,
       }).catch(() => { });
@@ -1266,7 +1238,15 @@ export default function StaffDashboard() {
       Object.values(timers).forEach(clearTimeout);
       off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off6d(); off7(); off7b(); off8(); off9(); offReprint(); offAutoPrint(); offPrinterPaired(); offPrinterUnpaired();
     };
-  }, [staffInfo?.restaurantId]);
+  }, [
+    staffInfo?.restaurantId,
+    staffInfo?.restaurantName,
+    loadTables,
+    loadPickupOrders,
+    loadTakeawayOrders,
+    loadServedToday,
+    setKotAutoPrintSync,
+  ]);
 
   // C1: Track Ably connection health — show a warning when the waiter channel drops.
   useEffect(() => {
@@ -1295,22 +1275,145 @@ export default function StaffDashboard() {
     }
   };
 
-  // Free any occupied/reserved table directly from the floor — no conditions.
-  // Routes through the session-end path (fans out via Ably + clears caches) when
-  // a session exists; falls back to a plain status flip for phantom-occupied.
-  const freeTable = async (table: { id: string; number: number; sessionId?: string }) => {
-    // Optimistic local update so the grid responds instantly.
-    setTables(prev => prev.map(t => (t.id === table.id ? { ...t, status: 'available' as TableStatus, sessionId: undefined } : t)));
+  // ── Freeing (optimistic + Undo) ─────────────────────────────────────────────
+  // Every free path below flips the grid immediately, hits the backend, and
+  // raises a single Undo snackbar carrying the closed sessions. Undo replays
+  // them to /reopen. Uncollected money always moves to Outstanding server-side.
+
+  // Free EVERY party on a table in one tap. Used by the grid swipe, the manage
+  // sheet, and the group picker's "Free whole table". A single free gets the
+  // celebratory "table cleared" overlay (Undo lives on it); the snackbar is
+  // reserved for the group + batch paths.
+  const freeWholeTable = async (table: { id: string; number: number }) => {
+    setTables(prev => prev.map(t =>
+      t.id === table.id ? { ...t, status: 'available' as TableStatus, sessionId: undefined, groups: undefined } : t));
     try {
-      if (table.sessionId) {
-        await crewSessions.end(table.sessionId);
-      } else {
-        await crewTables.updateStatus(table.id, 'available');
+      const res = await crewTables.free(table.id);
+      const sessions = res.data.closed_sessions ?? [];
+      if (sessions.length > 0) {
+        setFreeOverlay({ tableNumber: table.number, sessions });
       }
     } catch {
-      // ignore — resync from server below regardless
+      // ignore — resync below regardless
     } finally {
-      await loadTables();
+      void loadTables();
+    }
+  };
+
+  // Free a single party from a shared table. The single-session end route
+  // doesn't return a reopen descriptor, so we build one locally from the group.
+  const freeOneGroup = async (table: Table, group: TableGroup) => {
+    const remaining = (table.groups ?? []).filter(g => g.session_id !== group.session_id);
+    setTables(prev => prev.map(t => {
+      if (t.id !== table.id) return t;
+      if (remaining.length === 0) return { ...t, status: 'available' as TableStatus, sessionId: undefined, groups: undefined };
+      return { ...t, groups: remaining, billAmount: remaining.reduce((s, g) => s + (Number(g.bill_total) || 0), 0) };
+    }));
+    const info: ClosedSessionInfo = {
+      session_id: group.session_id,
+      session_ref: '',
+      party_slot: group.party_slot,
+      prior_status: group.payment_settled ? 'PAID' : 'ACTIVE',
+      table_id: table.id,
+    };
+    try {
+      await crewSessions.end(group.session_id);
+      setUndo({ message: `${group.label} · T${String(table.number).padStart(2, '0')} freed`, sessions: [info] });
+    } catch {
+      // ignore
+    } finally {
+      void loadTables();
+    }
+  };
+
+  // Shared reopen — revive closed sessions and surface any per-table failure
+  // (a fresh party took the slot, or the window lapsed). Returns nothing; the
+  // callers own their busy flag + which affordance to clear.
+  const reopenAndReport = async (sessions: ClosedSessionInfo[]) => {
+    const res = await crewTables.reopen(sessions);
+    const failed = (res.data.tables ?? []).filter(t => !t.reopened);
+    if (failed.length > 0) {
+      const reoccupied = failed.some(f => f.error === 'TABLE_REOCCUPIED');
+      showDialog(
+        'Couldn’t undo',
+        reoccupied
+          ? 'A new group was already seated there, so that table can’t be restored.'
+          : 'The undo window has passed.',
+        [{ label: 'OK', onPress: () => {} }],
+      );
+    }
+  };
+
+  // Undo from the snackbar (group + batch frees).
+  const undoLastFree = async () => {
+    if (!undo || undoBusy) return;
+    setUndoBusy(true);
+    try {
+      await reopenAndReport(undo.sessions);
+    } catch {
+      showDialog('Couldn’t undo', 'Please try again.', [{ label: 'OK', onPress: () => {} }]);
+    } finally {
+      setUndo(null);
+      setUndoBusy(false);
+      void loadTables();
+    }
+  };
+
+  // Undo from the "table cleared" overlay (single whole-table free).
+  const undoOverlayFree = async () => {
+    if (!freeOverlay || overlayBusy) return;
+    setOverlayBusy(true);
+    try {
+      await reopenAndReport(freeOverlay.sessions);
+    } catch {
+      showDialog('Couldn’t undo', 'Please try again.', [{ label: 'OK', onPress: () => {} }]);
+    } finally {
+      setFreeOverlay(null);
+      setOverlayBusy(false);
+      void loadTables();
+    }
+  };
+
+  // Drop a card from the in-card sweep set once its ClearFlash finishes.
+  const removeFreedId = useCallback((id: string) => {
+    setRecentlyFreedIds(prev => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
+  // ── End-of-service multi-select ─────────────────────────────────────────────
+  const exitSelectMode = () => { setSelectMode(false); setSelectedIds(new Set()); };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const freeSelectedTables = async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) { exitSelectMode(); return; }
+    // In-card sweep on every cleared card (the batch counterpart to the overlay).
+    setRecentlyFreedIds(new Set(ids));
+    setTables(prev => prev.map(t =>
+      selectedIds.has(t.id) ? { ...t, status: 'available' as TableStatus, sessionId: undefined, groups: undefined } : t));
+    exitSelectMode();
+    try {
+      const res = await crewTables.freeBatch(ids);
+      const sessions = res.data.closed_sessions ?? [];
+      const freed = res.data.freed_count ?? 0;
+      if (sessions.length > 0) {
+        setUndo({ message: `${freed} table${freed === 1 ? '' : 's'} freed`, sessions });
+      }
+    } catch {
+      // ignore
+    } finally {
+      void loadTables();
     }
   };
 
@@ -1351,24 +1454,37 @@ export default function StaffDashboard() {
     }
   };
 
-  // Start a session from the new-session sheet. Shows an inline spinner during
-  // the create, then navigates — replacing the old blank tap→navigate gap. On
-  // failure the sheet stays open with an error so staff can retry.
-  const startSessionForTable = async () => {
-    const table = newSessionTable;
-    if (!table) return;
-    setStartingSession(true);
-    setStartError(null);
+  // Tapping a free table calls this directly (see handleTablePress) — no
+  // confirm step. StartSessionOverlay shows the "timer sweep" progress while
+  // the create-session call is in flight; navigation is deferred until the
+  // overlay's success animation has actually played (see onDismissStartSession),
+  // so the checkmark is never cut short by the screen changing under it.
+  const startSessionForTable = async (table: Table) => {
+    const tableLabel = `T${String(table.number).padStart(2, '0')}`;
+    setStartSessionJob({ phase: 'starting', tableLabel });
     try {
       const res = await crewSessions.start(table.id);
       void loadTables();
-      setNewSessionTable(null);
-      router.push({ pathname: '/(staff)/[tableId]', params: { tableId: String(table.number), sessionId: res.session_id, tableDbId: table.id } });
+      pendingSessionNav.current = {
+        pathname: '/(staff)/[tableId]',
+        params: { tableId: String(table.number), sessionId: res.session_id, tableDbId: table.id },
+      };
+      setStartSessionJob({ phase: 'done', tableLabel });
     } catch (e: any) {
-      setStartError(e?.message ?? 'Could not start session. Try again.');
-    } finally {
-      setStartingSession(false);
+      setStartSessionJob({
+        phase: 'failed',
+        tableLabel,
+        message: e?.message ?? 'Could not start session. Try again.',
+        onRetry: () => { void startSessionForTable(table); },
+      });
     }
+  };
+
+  const onDismissStartSession = () => {
+    const nav = pendingSessionNav.current;
+    pendingSessionNav.current = null;
+    setStartSessionJob(null);
+    if (nav) router.push(nav);
   };
 
   // Create a crew takeaway session (tableless) straight from the '+' button —
@@ -1413,21 +1529,14 @@ export default function StaffDashboard() {
     if (t) setTimeout(() => setMergeTable({ id: t.id, number: t.number }), 220);
   };
 
-  // Manage-sheet → Free: close the action sheet, then show the existing confirm.
+  // Manage-sheet → Free: close the sheet and free the whole table immediately.
+  // No confirm dialog — the Undo snackbar is the safety net. Frees every party
+  // on a shared table in one go.
   const onPressFreeFromManage = () => {
     const t = manageTable;
     setManageTable(null);
     if (!t) return;
-    setTimeout(() => {
-      showDialog(
-        'Free Table',
-        `Free Table T${String(t.number).padStart(2, '0')}? It’s released for new guests. Any uncollected payment moves to Outstanding so you can still collect or waive it.`,
-        [
-          { label: 'Cancel', onPress: () => { } },
-          { label: 'Free Table', variant: 'danger', onPress: () => { void freeTable(t); } },
-        ],
-      );
-    }, 220);
+    void freeWholeTable({ id: t.id, number: t.number });
   };
 
   // Swap from the grid — same API + UX as the detail screen, but refreshes the
@@ -1494,8 +1603,7 @@ export default function StaffDashboard() {
     if (currentStatus === 'available') {
       const table = tables.find(t => t.number === tableNum);
       if (!table) return;
-      setStartError(null);
-      setNewSessionTable(table);
+      void startSessionForTable(table);
     } else {
       const table = tables.find(t => t.number === tableNum);
       if (!table) return;
@@ -1612,17 +1720,104 @@ export default function StaffDashboard() {
     { key: 'occupied', label: 'Occupied', count: counts.occupied },
   ] as const;
 
+  // Shared between the CenteredModal (tablet-landscape) and BottomSheet
+  // (everywhere else) filter pickers below.
+  const filterChipRows = FILTER_CHIPS.map((chip) => {
+    const active = activeFilter === chip.key;
+    return (
+      <TouchableOpacity
+        key={chip.key}
+        style={[styles.sheetOptionRow, active && styles.sheetOptionRowActive]}
+        onPress={() => { setActiveFilter(chip.key as 'all' | TableStatus); setFilterVisible(false); }}
+        activeOpacity={0.7}
+      >
+        <Text style={[styles.sheetOptionText, active && styles.sheetOptionTextActive]}>{chip.label}</Text>
+        <View style={styles.sheetOptionRight}>
+          <Text style={styles.sheetOptionCount}>{chip.count}</Text>
+          {active && <Ionicons name="checkmark" size={16} color={QuinckleColors.primary} />}
+        </View>
+      </TouchableOpacity>
+    );
+  });
+
+  // Search + refresh + select + filter cluster for the Tables tab. On tablet
+  // it sits inline in the top bar beside the burger icon; on phone it keeps
+  // its own row below (not enough width to fit alongside the burger + avatar).
+  const tableControls = (
+    <>
+      <View style={[styles.searchBox, isTablet && styles.searchBoxCompact]}>
+        <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
+        <TextInput
+          value={searchText}
+          onChangeText={setSearchText}
+          placeholder="Search tables…"
+          placeholderTextColor={QuinckleColors.textTertiary}
+          style={styles.searchInput}
+        />
+      </View>
+
+      <TouchableOpacity
+        style={styles.refreshTableBtn}
+        onPress={() => { void loadTables(); }}
+        activeOpacity={0.7}
+        disabled={isLoadingTables}
+      >
+        <Ionicons
+          name="refresh"
+          size={16}
+          color={isLoadingTables ? QuinckleColors.textTertiary : QuinckleColors.textPrimary}
+        />
+      </TouchableOpacity>
+
+      {/* Multi-select clear — enter select mode to free several tables at
+          once (end of service). Hidden while no table is occupied. */}
+      {counts.occupied > 0 && (
+        <TouchableOpacity
+          style={[styles.refreshTableBtn, selectMode && styles.selectToggleActive]}
+          onPress={() => { if (selectMode) exitSelectMode(); else setSelectMode(true); }}
+          activeOpacity={0.7}
+        >
+          <Ionicons
+            name={selectMode ? 'close' : 'checkmark-done'}
+            size={16}
+            color={selectMode ? QuinckleColors.primary : QuinckleColors.textPrimary}
+          />
+        </TouchableOpacity>
+      )}
+
+      <TouchableOpacity
+        style={styles.filterDropdown}
+        onPress={() => setFilterVisible(true)}
+        activeOpacity={0.7}
+      >
+        <Ionicons name="filter" size={14} color={QuinckleColors.textPrimary} />
+        <Text style={styles.filterValueText}>
+          {FILTER_CHIPS.find((c) => c.key === activeFilter)?.label}
+        </Text>
+        <Ionicons name="chevron-down" size={13} color={QuinckleColors.textTertiary} />
+      </TouchableOpacity>
+    </>
+  );
+
   return (
     <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
       <View style={styles.topBar}>
-        <TouchableOpacity
-          style={styles.burgerBtn}
-          onPress={() => setDrawerOpen(true)}
-          activeOpacity={0.7}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-        >
-          <Ionicons name="menu" size={26} color={QuinckleColors.textPrimary} />
-        </TouchableOpacity>
+        <View style={styles.topBarLeft}>
+          <TouchableOpacity
+            style={styles.burgerBtn}
+            onPress={() => setDrawerOpen(true)}
+            activeOpacity={0.7}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="menu" size={26} color={QuinckleColors.textPrimary} />
+          </TouchableOpacity>
+
+          {/* Tablet: search/refresh/filter live inline beside the burger icon
+              instead of their own row below — more width to spare here. */}
+          {activeTab === 'tables' && isTablet && (
+            <View style={styles.topBarControls}>{tableControls}</View>
+          )}
+        </View>
 
         <View style={styles.headerActions}>
           {/* Cash-collection icon: tap to see pending requests + today's history.
@@ -1662,44 +1857,11 @@ export default function StaffDashboard() {
 
       {activeTab === 'tables' ? (
         <>
-          <View style={styles.controlsRow}>
-            <View style={styles.searchBox}>
-              <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
-              <TextInput
-                value={searchText}
-                onChangeText={setSearchText}
-                placeholder="Search tables…"
-                placeholderTextColor={QuinckleColors.textTertiary}
-                style={styles.searchInput}
-              />
-            </View>
-
-            <TouchableOpacity
-              style={styles.refreshTableBtn}
-              onPress={() => { void loadTables(); }}
-              activeOpacity={0.7}
-              disabled={isLoadingTables}
-            >
-              <Ionicons
-                name="refresh"
-                size={16}
-                color={isLoadingTables ? QuinckleColors.textTertiary : QuinckleColors.textPrimary}
-              />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.filterDropdown}
-              onPress={() => setFilterVisible(true)}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="filter" size={14} color={QuinckleColors.textPrimary} />
-              <Text style={styles.filterValueText}>
-                {FILTER_CHIPS.find((c) => c.key === activeFilter)?.label}
-              </Text>
-              <Ionicons name="chevron-down" size={13} color={QuinckleColors.textTertiary} />
-            </TouchableOpacity>
-          </View>
-
+          {/* Phone: no room beside the burger icon, so search/refresh/filter
+              keep their own row. Tablet renders this cluster inline above. */}
+          {!isTablet && (
+            <View style={styles.controlsRow}>{tableControls}</View>
+          )}
 
           {isLoadingTables && tables.length === 0 ? (
             <TableSkeleton />
@@ -1734,12 +1896,22 @@ export default function StaffDashboard() {
                     const allServed = showStatusIcons && total > 0 && (item.itemsServed ?? 0) >= total;
                     const paid = showStatusIcons && item.paymentSettled === true;
                     const timeLeft = item.status === 'occupied' ? formatTimeLeft(item.expiresAt, now) : null;
-                    return (
+                    const isOccupied = item.status === 'occupied';
+                    const selected = selectedIds.has(item.id);
+                    // In select mode only occupied cards are actionable; others dim.
+                    const dimmed = selectMode && !isOccupied;
+                    const cardInner = (
                       <TouchableOpacity
-                        key={item.id}
-                        style={[styles.tableCardOuter, item.status === 'offline' && styles.offlineCard]}
-                        onPress={() => handleTablePress(item.number, item.status)}
-                        onLongPress={() => handleLongPress(item.id, item.status)}
+                        style={[
+                          styles.tableCardOuter,
+                          item.status === 'offline' && styles.offlineCard,
+                          dimmed && styles.selectDim,
+                        ]}
+                        onPress={() => {
+                          if (selectMode) { if (isOccupied) toggleSelect(item.id); return; }
+                          handleTablePress(item.number, item.status);
+                        }}
+                        onLongPress={() => { if (!selectMode) handleLongPress(item.id, item.status); }}
                         activeOpacity={0.82}
                         delayLongPress={500}
                       >
@@ -1750,6 +1922,23 @@ export default function StaffDashboard() {
                           end={{ x: 1, y: 1 }}
                           style={StyleSheet.absoluteFillObject}
                         />
+                        {/* Selection tint + check (multi-select mode) */}
+                        {selectMode && isOccupied && selected && (
+                          <View style={styles.selectedOverlay} pointerEvents="none" />
+                        )}
+                        {selectMode && isOccupied && (
+                          <View style={styles.selectCheck} pointerEvents="none">
+                            <Ionicons
+                              name={selected ? 'checkmark-circle' : 'ellipse-outline'}
+                              size={22}
+                              color={selected ? QuinckleColors.primary : QuinckleColors.textTertiary}
+                            />
+                          </View>
+                        )}
+                        {/* Batch-free sweep — brief green wash over the just-cleared card */}
+                        {recentlyFreedIds.has(item.id) && (
+                          <ClearFlash onDone={() => removeFreedId(item.id)} />
+                        )}
                         {/* Dark inner card */}
                         <View style={styles.tableCard}>
                           <View style={styles.cardHeader}>
@@ -1813,7 +2002,37 @@ export default function StaffDashboard() {
                         </View>
                       </TouchableOpacity>
                     );
+                    return (
+                      <View key={item.id} style={[styles.swipeCell, { width: tableCellWidth }]}>
+                        {isOccupied && !selectMode ? (
+                          <Swipeable
+                            friction={2}
+                            rightThreshold={40}
+                            overshootRight={false}
+                            renderRightActions={() => (
+                              <View style={styles.cardFreeAction}>
+                                <Ionicons name="exit-outline" size={20} color="#fff" />
+                                <Text style={styles.cardFreeActionText}>Free</Text>
+                              </View>
+                            )}
+                            onSwipeableOpen={() => { void freeWholeTable({ id: item.id, number: item.number }); }}
+                          >
+                            {cardInner}
+                          </Swipeable>
+                        ) : cardInner}
+                      </View>
+                    );
                   })}
+                  {/* tableGrid uses justifyContent:'space-between' per row; a
+                      short last row would otherwise have its slack spread
+                      across the gaps instead of matching the column grid
+                      above. Invisible fillers pad it to a full row so the
+                      real cards land on the same column positions. */}
+                  {Array.from({
+                    length: (tableColumns - (filteredTables.length % tableColumns)) % tableColumns,
+                  }).map((_, i) => (
+                    <View key={`filler-${i}`} style={{ width: tableCellWidth }} />
+                  ))}
                 </View>
               )}
             </ScrollView>
@@ -2207,6 +2426,43 @@ export default function StaffDashboard() {
         </View>
       ) : null}
 
+      {/* End-of-service multi-select action bar — floats above the navbar. */}
+      {activeTab === 'tables' && selectMode && (
+        <View style={[styles.selectBar, { paddingBottom: insets.bottom + Spacing.sm }]}>
+          <TouchableOpacity style={styles.selectCancel} onPress={exitSelectMode} activeOpacity={0.7}>
+            <Text style={styles.selectCancelText}>Cancel</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.selectFreeBtn, selectedIds.size === 0 && { opacity: 0.4 }]}
+            onPress={() => { void freeSelectedTables(); }}
+            disabled={selectedIds.size === 0}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="exit-outline" size={17} color="#fff" />
+            <Text style={styles.selectFreeText}>
+              {selectedIds.size === 0 ? 'Select tables to free' : `Free ${selectedIds.size} table${selectedIds.size === 1 ? '' : 's'}`}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Undo snackbar — reverses a group or batch free. */}
+      <UndoSnackbar
+        visible={!!undo}
+        message={undo?.message ?? ''}
+        busy={undoBusy}
+        onUndo={() => { void undoLastFree(); }}
+        onDismiss={() => setUndo(null)}
+      />
+
+      {/* "Table cleared" overlay — celebratory confirmation for a single free. */}
+      <FreeTableOverlay
+        job={freeOverlay}
+        busy={overlayBusy}
+        onUndo={() => { void undoOverlayFree(); }}
+        onDismiss={() => setFreeOverlay(null)}
+      />
+
       <BottomNavbar
         activeTab={activeTab}
         onTabChange={setActiveTab}
@@ -2218,52 +2474,21 @@ export default function StaffDashboard() {
         ]}
       />
 
-      {/* Filter tables — bottom sheet */}
-      <BottomSheet visible={filterVisible} onClose={() => setFilterVisible(false)} title="Filter tables">
-        <View style={styles.sheetBody}>
-          {FILTER_CHIPS.map((chip) => {
-            const active = activeFilter === chip.key;
-            return (
-              <TouchableOpacity
-                key={chip.key}
-                style={[styles.sheetOptionRow, active && styles.sheetOptionRowActive]}
-                onPress={() => { setActiveFilter(chip.key as 'all' | TableStatus); setFilterVisible(false); }}
-                activeOpacity={0.7}
-              >
-                <Text style={[styles.sheetOptionText, active && styles.sheetOptionTextActive]}>{chip.label}</Text>
-                <View style={styles.sheetOptionRight}>
-                  <Text style={styles.sheetOptionCount}>{chip.count}</Text>
-                  {active && <Ionicons name="checkmark" size={16} color={QuinckleColors.primary} />}
-                </View>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      </BottomSheet>
+      {/* Filter tables — centered modal on tablet-landscape, bottom sheet elsewhere */}
+      {isWide ? (
+        <CenteredModal visible={filterVisible} onClose={() => setFilterVisible(false)} title="Filter tables">
+          <View style={styles.sheetBody}>{filterChipRows}</View>
+        </CenteredModal>
+      ) : (
+        <BottomSheet visible={filterVisible} onClose={() => setFilterVisible(false)} title="Filter tables">
+          <View style={styles.sheetBody}>{filterChipRows}</View>
+        </BottomSheet>
+      )}
 
-      {/* Start session — bottom sheet with inline spinner (replaces the freeze) */}
-      <BottomSheet
-        visible={!!newSessionTable}
-        onClose={() => { if (!startingSession) { setNewSessionTable(null); setStartError(null); } }}
-        title="Start session"
-      >
-        <View style={styles.sheetBody}>
-          <Text style={styles.sheetMessage}>
-            Start a new session for Table T{String(newSessionTable?.number ?? 0).padStart(2, '0')}?
-          </Text>
-          {startError ? <Text style={styles.sheetErrorText}>{startError}</Text> : null}
-          <TouchableOpacity
-            style={[styles.sheetPrimaryBtn, startingSession && { opacity: 0.85 }]}
-            onPress={() => { void startSessionForTable(); }}
-            disabled={startingSession}
-            activeOpacity={0.85}
-          >
-            {startingSession
-              ? <ActivityIndicator size="small" color="#fff" />
-              : <Text style={styles.sheetPrimaryText}>Start session</Text>}
-          </TouchableOpacity>
-        </View>
-      </BottomSheet>
+      {/* Tapping a free table starts the session immediately (see
+          handleTablePress) — this overlay is the only feedback while it's
+          in flight, no confirm step. */}
+      <StartSessionOverlay job={startSessionJob} onDismiss={onDismissStartSession} />
 
       {/* Manage occupied table — bottom sheet (Swap / Free) */}
       <BottomSheet
@@ -2340,6 +2565,21 @@ export default function StaffDashboard() {
           if (t) openGroupForTable(t, g as TableGroup, { forceLabel: (groupPicker?.groups.length ?? 0) > 1 });
         }}
         onSeatNewGroup={() => { if (groupPicker) void seatNewParty(groupPicker.table); }}
+        onFreeGroup={(g) => {
+          const t = groupPicker?.table;
+          if (!t) return;
+          // Last group leaving closes the sheet; otherwise keep it open on the
+          // shrinking list.
+          const remaining = (groupPicker?.groups ?? []).filter(x => x.session_id !== g.session_id);
+          if (remaining.length <= 1) setGroupPicker(null);
+          else setGroupPicker({ ...groupPicker!, groups: remaining });
+          void freeOneGroup(t, g as TableGroup);
+        }}
+        onFreeTable={() => {
+          const t = groupPicker?.table;
+          setGroupPicker(null);
+          if (t) void freeWholeTable({ id: t.id, number: t.number });
+        }}
       />
 
       <ThemedDialog
@@ -2423,23 +2663,6 @@ const styles = StyleSheet.create({
   sheetOptionTextActive: { color: QuinckleColors.textPrimary, fontWeight: '700' },
   sheetOptionRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   sheetOptionCount: { color: QuinckleColors.textTertiary, fontSize: 13, fontWeight: '600' },
-  sheetMessage: {
-    color: QuinckleColors.textSecondary,
-    fontSize: 14,
-    lineHeight: 20,
-    marginBottom: Spacing.md,
-    paddingHorizontal: 2,
-  },
-  sheetErrorText: { color: QuinckleColors.danger, fontSize: 13, marginBottom: Spacing.sm, paddingHorizontal: 2 },
-  sheetPrimaryBtn: {
-    height: 50,
-    borderRadius: Radius.md,
-    backgroundColor: QuinckleColors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 4,
-  },
-  sheetPrimaryText: { color: '#fff', fontSize: 15, fontWeight: '700' },
   manageRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2466,6 +2689,17 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: Spacing.lg,
     paddingVertical: Spacing.sm,
+  },
+  topBarLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    flexShrink: 1,
+  },
+  topBarControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
   },
   burgerBtn: {
     width: 42,
@@ -2596,6 +2830,12 @@ const styles = StyleSheet.create({
     height: 40,
     gap: Spacing.sm,
   },
+  // Inline in the tablet top bar, next to the burger icon — kept narrow so
+  // it doesn't crowd out the avatar/cash icons on the right.
+  searchBoxCompact: {
+    flex: 0,
+    width: 220,
+  },
   searchBoxFull: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2708,13 +2948,90 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     justifyContent: 'space-between',
   },
-  tableCardOuter: {
+  // The grid cell owns the 2-column width; the card fills it. This lets an
+  // occupied card be wrapped in a Swipeable without breaking the grid layout.
+  swipeCell: {
     width: '48.5%',
+    marginBottom: Spacing.md,
+  },
+  tableCardOuter: {
+    width: '100%',
     minHeight: 130,
     borderRadius: Radius.lg + 1.5,
     padding: 1.5,
     overflow: 'hidden',
-    marginBottom: Spacing.md,
+  },
+  // Red "Free" panel revealed by swiping an occupied card left.
+  cardFreeAction: {
+    backgroundColor: QuinckleColors.danger,
+    borderRadius: Radius.lg + 1.5,
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 92,
+    marginLeft: Spacing.sm,
+    gap: 3,
+  },
+  cardFreeActionText: {
+    ...Typography.caption,
+    color: '#fff',
+    fontWeight: '700',
+  },
+  // Multi-select overlays.
+  selectDim: { opacity: 0.35 },
+  selectedOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: QuinckleColors.primarySoft,
+    borderRadius: Radius.lg + 1.5,
+    borderWidth: 1.5,
+    borderColor: QuinckleColors.primary,
+  },
+  selectCheck: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    zIndex: 2,
+  },
+  selectToggleActive: {
+    backgroundColor: QuinckleColors.primarySoft,
+    borderColor: QuinckleColors.primarySoftBorder,
+  },
+  selectBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
+    backgroundColor: QuinckleColors.surface,
+    borderTopWidth: 1,
+    borderTopColor: QuinckleColors.border,
+    zIndex: 900,
+  },
+  selectCancel: {
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+  },
+  selectCancelText: {
+    ...Typography.bodyStrong,
+    color: QuinckleColors.textSecondary,
+  },
+  selectFreeBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    backgroundColor: QuinckleColors.danger,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.md,
+  },
+  selectFreeText: {
+    ...Typography.bodyStrong,
+    color: '#fff',
+    fontWeight: '700',
   },
   tableCard: {
     flex: 1,

@@ -14,7 +14,7 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
-import { crewAuth, restaurantApi, crewPayments } from '../../services/api';
+import { crewAuth } from '../../services/api';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import UpdateStatus from '../../components/ui/UpdateStatus';
@@ -39,29 +39,19 @@ export default function StaffProfile() {
   const insets = useSafeAreaInsets();
   const { logout, staffInfo, setPhotoUrl } = useAuth();
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
-  const [cashLedger, setCashLedger] = useState<any>(null);
   const [joinedAt, setJoinedAt] = useState<string | null>(null);
 
   const [dialog, setDialog] = useState<{
     visible: boolean;
     title: string;
     message: string;
-    actions: Array<{ label: string; variant?: 'default' | 'danger' | 'primary'; onPress: () => void }>;
+    actions: { label: string; variant?: 'default' | 'danger' | 'primary'; onPress: () => void }[];
   }>({
     visible: false,
     title: '',
     message: '',
     actions: [],
   });
-
-  // Load cash ledger
-  useEffect(() => {
-    if (staffInfo?.id) {
-      crewPayments.getCashLedger()
-        .then(res => setCashLedger(res))
-        .catch(() => { });
-    }
-  }, [staffInfo]);
 
   // Fetch joinedAt (not stored in AuthContext)
   useEffect(() => {

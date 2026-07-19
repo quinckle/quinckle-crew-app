@@ -22,7 +22,6 @@ export default function Index() {
   // Animation values
   const logoScale = useRef(new Animated.Value(0.8)).current;
   const logoOpacity = useRef(new Animated.Value(0)).current;
-  const splashOpacity = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     // Start splash animation
@@ -46,17 +45,17 @@ export default function Index() {
     }, 2000);
 
     return () => clearTimeout(timer);
-  }, []);
+  }, [logoScale, logoOpacity]);
 
   // Handle redirect only after splash is done AND navigation is ready
   const isReady = rootNavigationState?.key && isSplashReady && !isRestoring;
 
   // Route imperatively exactly once. This screen subscribes to
   // useRootNavigationState(), so it re-renders on every navigation. A
-  // declarative <Redirect href="/login"> here re-fired each time the user
-  // pushed forward to /credential while logged out — popping them straight
-  // back to /login (the "auth page keeps redirecting back" bug). A one-shot
-  // guarded replace decides the entry route and then never fights forward nav.
+  // declarative <Redirect href="/login"> here re-fired on every re-render
+  // while logged out, fighting the login screen's own internal step state
+  // (the "auth page keeps redirecting back" bug). A one-shot guarded replace
+  // decides the entry route and then never fights forward nav.
   const hasRedirected = useRef(false);
   useEffect(() => {
     if (!isReady || hasRedirected.current) return;

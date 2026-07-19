@@ -222,7 +222,59 @@ export const crewTables = {
       { minutes },
       true,
     ),
+  /**
+   * Free a whole table in one tap — closes EVERY live party on it and releases
+   * it. Returns the closed sessions so the caller can offer Undo (feed them
+   * straight to `reopen`). Uncollected money moves to Outstanding, same as
+   * ending a single session.
+   */
+  free: (tableId: string) =>
+    request<{ success: true; data: FreeTableResult }>(
+      'POST',
+      `/api/crew/tables/${tableId}/free`,
+      undefined,
+      true,
+    ),
+  /**
+   * End-of-service batch clear — free many tables at once. Per-table results +
+   * the aggregated `closed_sessions` (for a single "Undo all") come back.
+   */
+  freeBatch: (tableIds: string[]) =>
+    request<{ success: true; data: { results: { table_id: string; freed: boolean; error?: string; closed_sessions: ClosedSessionInfo[] }[]; closed_sessions: ClosedSessionInfo[]; freed_count: number } }>(
+      'POST',
+      `/api/crew/tables/free`,
+      { table_ids: tableIds },
+      true,
+    ),
+  /**
+   * UNDO a free — revive the just-closed sessions and re-occupy their tables.
+   * Pass back the `closed_sessions` from a `free`/`freeBatch` response. Per-table
+   * outcomes flag TABLE_REOCCUPIED (a fresh party took the slot) or EXPIRED.
+   */
+  reopen: (sessions: ClosedSessionInfo[]) =>
+    request<{ success: true; data: { reopened: string[]; tables: { table_id: string; reopened: boolean; error?: string }[] } }>(
+      'POST',
+      `/api/crew/tables/reopen`,
+      { sessions },
+      true,
+    ),
 };
+
+// Closed-party descriptor returned by free/freeBatch and replayed to reopen.
+export interface ClosedSessionInfo {
+  session_id: string;
+  session_ref: string;
+  party_slot: number;
+  prior_status: 'ACTIVE' | 'PAID';
+  table_id: string;
+}
+
+export interface FreeTableResult {
+  table_id: string;
+  table_number: number | null;
+  freed: boolean;
+  closed_sessions: ClosedSessionInfo[];
+}
 
 // ── Crew Menu (STEWARD/ADMIN) ─────────────────────────────────────────────────
 export const crewMenu = {
@@ -1029,6 +1081,9 @@ export const restaurantApi = {
         acceptCash?: boolean;
         acceptUpiDirect?: boolean;
         acceptStaffCollect?: boolean;
+        // Owner's custom bill text — printed on the invoice footer.
+        billThankYouMsg?: string | null;
+        billFooterNote?: string | null;
         taxConfig?: { gstRegistered: boolean; gstin: string | null; taxRate: number | null; displayMode: string; pricesIncludeTax?: boolean };
       };
     }>('GET', `/api/v1/dine/restaurant/${restaurantId}`),
@@ -1249,6 +1304,8 @@ export interface CrewDue {
   status: 'OPEN' | 'SETTLED' | 'WRITTEN_OFF' | 'VOID';
   dueDate: string | null;
   note: string | null;
+  writtenOffAt?: string | null;
+  writeOffReason?: string | null;
   createdAt: string;
   settlements?: CrewDueSettlement[];
 }

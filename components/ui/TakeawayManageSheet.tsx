@@ -133,7 +133,7 @@ export function TakeawayManageSheet({ order, onClose, onDeleteItem, onDeleteWhol
     setMode('choose');
     setItems(order?.items ?? []);
     setError(null);
-  }, [order?.orderId]);
+  }, [order?.orderId, order?.items]);
 
   const title = useMemo(() => {
     if (!order) return 'Manage order';

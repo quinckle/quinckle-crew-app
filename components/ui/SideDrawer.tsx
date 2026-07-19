@@ -88,7 +88,7 @@ export function SideDrawer({ visible, onClose, venueName, realtimeOk }: Props) {
         if (finished) setModalMounted(false);
       });
     }
-  }, [visible]);
+  }, [visible, slideAnim, backdropAnim]);
 
   const handleNav = (route: string) => {
     onClose();

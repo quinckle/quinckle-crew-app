@@ -194,7 +194,7 @@ export default function CashDrawer() {
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalWrap}>
           <View style={styles.modalCard}>
             <Text style={styles.cardTitle}>Close drawer</Text>
-            <Text style={styles.hint}>Count the cash physically in the drawer and enter the total. We'll compare it to what's expected.</Text>
+            <Text style={styles.hint}>Count the cash physically in the drawer and enter the total. We’ll compare it to what’s expected.</Text>
             <Row label="Expected" value={inr(expected)} />
             <Text style={styles.label}>Counted cash (₹)</Text>
             <TextInput style={styles.input} value={counted} onChangeText={setCounted} keyboardType="decimal-pad" placeholder="0"

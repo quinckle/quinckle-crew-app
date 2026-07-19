@@ -9,7 +9,6 @@ import {
   TouchableOpacity,
   View,
   Image,
-  Dimensions,
 } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';

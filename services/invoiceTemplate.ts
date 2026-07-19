@@ -69,6 +69,12 @@ export interface InvoiceBill {
   upiOmitAmount?: boolean;
   generatedAt?: string; // ISO string — defaults to now
   orderDateTime?: string; // ISO string of order/session time
+  /** Owner's custom "thank you" line (Bill Settings). Replaces the default
+   *  "Thank you for dining with us." / "Thank you for your order." when set. */
+  thankYouMessage?: string | null;
+  /** Owner's custom free-text footer note (Bill Settings), printed below the
+   *  thank-you line. Word-wrapped to the paper width. */
+  footerNote?: string | null;
 }
 
 /**
@@ -299,9 +305,15 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
 
   // ── Footer ────────────────────────────────────────────────────────────────
   lines.push(`[L]${d}`);
-  lines.push(bill.channel === 'TAKEAWAY'
-    ? '[C]Thank you for your order.'
-    : '[C]Thank you for dining with us.');
+  // Owner's custom thank-you line overrides the channel default when configured.
+  const thankYou = bill.thankYouMessage?.trim()
+    || (bill.channel === 'TAKEAWAY' ? 'Thank you for your order.' : 'Thank you for dining with us.');
+  for (const ln of wrapText(thankYou, W)) lines.push(`[C]${ln}`);
+  // Owner's custom free-text footer note (e.g. "No returns on cooked food",
+  // "WiFi: guest123"), printed below the thank-you line when set.
+  if (bill.footerNote?.trim()) {
+    for (const ln of wrapText(bill.footerNote.trim(), W)) lines.push(`[C]${ln}`);
+  }
   lines.push('[C]Support & feedback:');
   lines.push('[C]quinckle.com/support');
   lines.push('[C]support@quinckle.com');

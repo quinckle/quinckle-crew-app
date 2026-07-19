@@ -13,7 +13,6 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
-  FlatList,
   TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -80,7 +79,7 @@ export default function PrinterScreen() {
 
   const [dialog, setDialog] = useState<{
     visible: boolean; title: string; message: string;
-    actions: Array<{ label: string; variant?: 'default' | 'danger' | 'primary'; onPress: () => void }>;
+    actions: { label: string; variant?: 'default' | 'danger' | 'primary'; onPress: () => void }[];
   }>({ visible: false, title: '', message: '', actions: [] });
 
   // ── Load server status on mount ────────────────────────────────────────────

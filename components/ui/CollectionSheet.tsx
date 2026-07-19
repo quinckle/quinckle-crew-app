@@ -118,7 +118,17 @@ export function CollectionSheet({ visible, onClose, bill, partner, onConfirm }: 
       cashFillAnim.setValue(0);
       upiFillAnim.setValue(0);
     }
-  }, [visible, bill?.orderId]);
+  }, [
+    visible,
+    bill?.orderId,
+    contentOpacity,
+    qrAnim,
+    errorOpacity,
+    cashScale,
+    upiScale,
+    cashFillAnim,
+    upiFillAnim,
+  ]);
 
   // ── QR card spring in/out ───────────────────────────────────────────────────
   const showQr = (mode === 'one-tap' && hi === 'upi') || (mode === 'split' && Number(upiAmt) > 0);
@@ -131,7 +141,7 @@ export function CollectionSheet({ visible, onClose, bill, partner, onConfirm }: 
       Animated.spring(qrAnim, { toValue: 0, damping: 22, stiffness: 220, useNativeDriver: true })
         .start(({ finished }) => { if (finished) setQrVisible(false); });
     }
-  }, [showQr]);
+  }, [showQr, qrAnim]);
 
   // ── Error fade in/out ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -142,7 +152,7 @@ export function CollectionSheet({ visible, onClose, bill, partner, onConfirm }: 
       Animated.timing(errorOpacity, { toValue: 0, duration: 150, useNativeDriver: true })
         .start(({ finished }) => { if (finished) setDisplayedError(null); });
     }
-  }, [error]);
+  }, [error, errorOpacity]);
 
   // ── Mode cross-fade helpers ──────────────────────────────────────────────────
   const switchToSplit = () => {

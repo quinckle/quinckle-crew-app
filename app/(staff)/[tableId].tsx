@@ -1,27 +1,26 @@
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, FlatList, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator, Share } from 'react-native';
+import { Animated, FlatList, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
+import { QuinckleColors, Radius, Spacing , Typography } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
-import { crewSessions, crewTables, crewOrders, crewPayments, crewDiners, restaurantApi, printerApi } from '../../services/api';
-import type { CrewTable, SessionBill } from '../../services/api';
+import { crewSessions, crewTables, crewOrders, restaurantApi, printerApi } from '../../services/api';
+import type { SessionBill, BillOrderItem, BillOrder } from '../../services/api';
 import { printBill, printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
 import type { InvoiceBill } from '../../services/invoiceTemplate';
 import { useAuth } from '../../context/AuthContext';
 import { useCountdown } from '../../hooks/useCountdown';
 import { subscribeChannel } from '../../services/realtime';
-import type { BillOrderItem, BillOrder, MenuItem } from '../../services/api';
 import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
 import { PrintOptionsSheet, type InvoiceBuyer } from '../../components/ui/PrintOptionsSheet';
 import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintProgressOverlay';
-import { BillDetailsSheet } from '../../components/ui/BillDetailsSheet';
+import { BillDetailsSheet, BillBreakdownContent } from '../../components/ui/BillDetailsSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { Skeleton } from '../../components/ui/Skeleton';
-import { Typography } from '../../constants/Colors';
+import { useResponsive } from '../../hooks/useResponsive';
 
 type ItemStatus = 'prep' | 'served';
 
@@ -36,11 +35,6 @@ type FlatItem = {
   price: number;
   orderedAt: string;
   qty: number;
-};
-
-const STATUS_META: Record<ItemStatus, { label: string; color: string; bg: string }> = {
-  prep:   { label: 'Preparing', color: QuinckleColors.warning, bg: QuinckleColors.warningSoft },
-  served: { label: 'Served',    color: QuinckleColors.textTertiary, bg: 'transparent' },
 };
 
 function itemStatus(item: BillOrderItem): ItemStatus {
@@ -62,7 +56,11 @@ function toSessionRef(sessionId: string | null | undefined): string {
 
 export default function TableDetail() {
   const insets = useSafeAreaInsets();
-  const { tableId, sessionId: paramSessionId, tableDbId, occupiedSince, expiresAt: paramExpiresAt, customerName: paramCustomerName, customerPhone: paramCustomerPhone, groupLabel: paramGroupLabel } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string; occupiedSince: string; expiresAt: string; customerName: string; customerPhone: string; groupLabel?: string }>();
+  // Tablet-landscape: session details + a permanently-visible bill breakdown
+  // sit in a left pane, ordered items alone fill the right pane. Phone and
+  // tablet-portrait keep the original single-column stack.
+  const { isWide } = useResponsive();
+  const { tableId, sessionId: paramSessionId, tableDbId, occupiedSince, expiresAt: paramExpiresAt, customerName: paramCustomerName, customerPhone: paramCustomerPhone, groupLabel: paramGroupLabel, openBill } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string; occupiedSince: string; expiresAt: string; customerName: string; customerPhone: string; groupLabel?: string; openBill?: string }>();
   const router = useRouter();
   const { staffInfo } = useAuth();
 
@@ -77,7 +75,7 @@ export default function TableDetail() {
 
   const [sessionId] = useState(paramSessionId ?? '');
   const [sessionRef, setSessionRef] = useState('');
-  const [mergedFrom, setMergedFrom] = useState<Array<{ session_ref: string; table_number: number | null }>>([]);
+  const [mergedFrom, setMergedFrom] = useState<{ session_ref: string; table_number: number | null }[]>([]);
   // Payment-QR picker: `qrSheet` holds the bill total for the sheet label;
   // `qrRunRef` holds the print runner the chosen option invokes.
   const [qrSheet, setQrSheet] = useState<{ grandTotal: number } | null>(null);
@@ -121,6 +119,8 @@ export default function TableDetail() {
     gstin?: string | null;
     displayMode?: 'combined' | 'split';
     pricesIncludeTax?: boolean;
+    billThankYouMsg?: string | null;
+    billFooterNote?: string | null;
   } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [orders, setOrders] = useState<BillOrder[]>([]);
@@ -150,15 +150,20 @@ export default function TableDetail() {
   const [billSplits, setBillSplits] = useState<SessionBill['splits']>(undefined);
   const [isExpanded, setIsExpanded] = useState(false);
 
-
-  // Online payment QR modal state
-  const [showQRModal, setShowQRModal] = useState(false);
-  const [paymentLinkUrl, setPaymentLinkUrl] = useState('');
-  const [paymentLinkAmount, setPaymentLinkAmount] = useState(0);
-  const [isGeneratingLink, setIsGeneratingLink] = useState(false);
+  // Landing here right after placing an order (see order-menu.tsx's
+  // confirmAndPlace) forces the bill breakdown open, so the crew reviews
+  // exactly what was ordered before doing anything else. Tablet-landscape
+  // already shows the breakdown permanently in the left pane, so this only
+  // matters on the single-column layout.
+  useEffect(() => {
+    if (openBill === '1') {
+      if (!isWide) setIsExpanded(true);
+      router.setParams({ openBill: undefined });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openBill]);
 
   const [isRequestingCollection, setIsRequestingCollection] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
 
   // UPI QR generator
   const [upiId, setUpiId]           = useState<string | null>(null);
@@ -257,7 +262,7 @@ export default function TableDetail() {
     setExtendSheetOpen(true);
   };
 
-  const loadBill = async () => {
+  const loadBill = useCallback(async () => {
     if (!sessionId) { setIsLoading(false); return; }
     try {
       const bill = await crewSessions.getBill(sessionId);
@@ -312,17 +317,17 @@ export default function TableDetail() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [sessionId]);
 
   // Load once on mount; Ably drives all subsequent updates
-  useEffect(() => { loadBill(); }, [sessionId]);
+  useEffect(() => { void loadBill(); }, [loadBill]);
 
   // Refresh bill whenever screen regains focus — ensures the "Collect Payment"
   // button and paid badge settle immediately after returning from payment-collect.
   useFocusEffect(
     useCallback(() => {
       void loadBill();
-    }, [sessionId]),
+    }, [loadBill]),
   );
 
 
@@ -342,6 +347,8 @@ export default function TableDetail() {
           gstin: res.data.taxConfig?.gstin ?? null,
           displayMode: (res.data.taxConfig?.displayMode as 'combined' | 'split') ?? 'combined',
           pricesIncludeTax: res.data.taxConfig?.pricesIncludeTax ?? false,
+          billThankYouMsg: res.data.billThankYouMsg ?? null,
+          billFooterNote: res.data.billFooterNote ?? null,
         });
         if (res.data.upiId) {
           setUpiId(res.data.upiId);
@@ -384,7 +391,7 @@ export default function TableDetail() {
       if (refetchTimer) clearTimeout(refetchTimer);
       unsubs.forEach(u => u());
     };
-  }, [staffInfo?.restaurantId, sessionId, router]);
+  }, [staffInfo?.restaurantId, sessionId, router, loadBill]);
 
 
   // Flat list of all items across all orders
@@ -413,7 +420,7 @@ export default function TableDetail() {
 
   useEffect(() => {
     Animated.spring(progressAnim, { toValue: serviceProgress, useNativeDriver: false, bounciness: 4, speed: 12 }).start();
-  }, [serviceProgress]);
+  }, [serviceProgress, progressAnim]);
 
   const tax = taxTotal;
   const grandTotal = payableTotal;
@@ -505,11 +512,6 @@ export default function TableDetail() {
   // longer offers a "Collect Cash" action because cash collection is driven
   // by diner-initiated cash checkouts (paymentStatus: PENDING_CASH).
 
-  // Auto-dismiss QR modal when Ably payment_confirmed arrives and isPaid flips
-  useEffect(() => {
-    if (isPaid && showQRModal) setShowQRModal(false);
-  }, [isPaid]);
-
   const requestCollection = async () => {
     if (isPaid || !sessionId || isRequestingCollection || grandTotal <= 0 || orders.length === 0) return;
     setIsRequestingCollection(true);
@@ -543,25 +545,6 @@ export default function TableDetail() {
       );
     } finally {
       setIsRequestingCollection(false);
-    }
-  };
-
-  const handleRequestOnlinePayment = async () => {
-    if (isPaid || !sessionId || isGeneratingLink) return;
-    setIsGeneratingLink(true);
-    try {
-      const result = await crewPayments.requestOnlinePaymentLink(sessionId);
-      setPaymentLinkUrl(result.payment_link_url);
-      setPaymentLinkAmount(result.amount);
-      setShowQRModal(true);
-    } catch (e: any) {
-      showDialog(
-        'Error',
-        e.message ?? 'Could not generate payment link. Please try again.',
-        [{ label: 'OK', onPress: () => {} }],
-      );
-    } finally {
-      setIsGeneratingLink(false);
     }
   };
 
@@ -680,6 +663,8 @@ export default function TableDetail() {
           gstin: res.data.taxConfig?.gstin ?? null,
           displayMode: (res.data.taxConfig?.displayMode as 'combined' | 'split') ?? 'combined',
           pricesIncludeTax: res.data.taxConfig?.pricesIncludeTax ?? false,
+          billThankYouMsg: res.data.billThankYouMsg ?? null,
+          billFooterNote: res.data.billFooterNote ?? null,
         };
         setRestaurantInvoiceMeta(invoiceMeta);
         if (res.data.upiId) {
@@ -742,6 +727,8 @@ export default function TableDetail() {
         splits: billSplits?.map(s => ({ method: s.method ?? '', amount: Number(s.amount ?? 0) })),
         orderDateTime: orders[0]?.placed_at ?? undefined,
         generatedAt: new Date().toISOString(),
+        thankYouMessage: invoiceMeta?.billThankYouMsg ?? null,
+        footerNote: invoiceMeta?.billFooterNote ?? null,
       });
 
       if (result === 'failed') {
@@ -923,6 +910,161 @@ export default function TableDetail() {
     );
   }
 
+  // Shared between the tablet-landscape two-pane layout and the phone/
+  // tablet-portrait single-column stack below.
+  const sessionSectionJsx = (
+    <>
+      <Text style={styles.sessionSectionLabel}>Session</Text>
+      <View style={styles.sessionGroup}>
+        <View style={styles.sessionInfoRow}>
+          <Text style={styles.sessionInfoLabel}>Ref</Text>
+          <Text style={[styles.sessionInfoValue, styles.sessionRefMono]}>
+            {sessionRef || toSessionRef(sessionId)}
+          </Text>
+        </View>
+        {mergedFrom.length > 0 ? (
+          <>
+            <View style={styles.sessionInfoSep} />
+            <View style={styles.sessionInfoRow}>
+              <Text style={styles.sessionInfoLabel}>Merged</Text>
+              <Text style={[styles.sessionInfoValue, styles.sessionRefMono, { flexShrink: 1, textAlign: 'right' }]}>
+                {mergedFrom
+                  .map(m => `${m.session_ref}${m.table_number != null ? ` (T${String(m.table_number).padStart(2, '0')})` : ''}`)
+                  .join(', ')}
+              </Text>
+            </View>
+          </>
+        ) : null}
+        <View style={styles.sessionInfoSep} />
+        <View style={styles.sessionInfoRow}>
+          <Text style={styles.sessionInfoLabel}>Guest</Text>
+          <Text style={styles.sessionInfoValue}>{sessionCustomerName?.trim() || 'N/A'}</Text>
+        </View>
+        <View style={styles.sessionInfoSep} />
+        <View style={styles.sessionInfoRow}>
+          <Text style={styles.sessionInfoLabel}>Phone</Text>
+          <Text style={styles.sessionInfoValue}>{sessionCustomerPhone?.trim() || 'N/A'}</Text>
+        </View>
+        {since ? (
+          <>
+            <View style={styles.sessionInfoSep} />
+            <View style={styles.sessionInfoRow}>
+              <Text style={styles.sessionInfoLabel}>Opened</Text>
+              <Text style={styles.sessionInfoValue}>{since}</Text>
+            </View>
+          </>
+        ) : null}
+        {(countdownStr || elapsed) ? (
+          <>
+            <View style={styles.sessionInfoSep} />
+            <View style={styles.sessionInfoRow}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <Ionicons name="timer-outline" size={13} color={isNearExpiry ? QuinckleColors.danger : QuinckleColors.textSecondary} />
+                <Text style={[styles.sessionInfoLabel, isNearExpiry && { color: QuinckleColors.danger }]}>
+                  {countdownStr ? 'Time left' : 'Active for'}
+                </Text>
+              </View>
+              <Text style={[styles.sessionInfoValueStrong, { fontVariant: ['tabular-nums'] as any }, isNearExpiry && { color: QuinckleColors.danger }]}>
+                {countdownStr ?? elapsed}
+              </Text>
+            </View>
+          </>
+        ) : null}
+      </View>
+    </>
+  );
+
+  const orderListJsx = (
+    <>
+      <View style={styles.sectionHeader}>
+        <View style={styles.sectionTitleRow}>
+          <Text style={styles.sectionTitle}>Active Orders</Text>
+          <Text style={styles.progressText}>{servedCount}/{totalCount} served</Text>
+        </View>
+        <View style={styles.serviceProgressTrack}>
+          <Animated.View
+            style={[styles.serviceProgressFill, {
+              width: progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }),
+            }]}
+          />
+        </View>
+      </View>
+
+      <FlatList
+        style={isWide ? styles.wideFlatList : undefined}
+        data={flatItems}
+        keyExtractor={item => item.key}
+        contentContainerStyle={styles.listContent}
+        onRefresh={handleRefresh}
+        refreshing={refreshing}
+        ListEmptyComponent={
+          <View style={styles.emptyState}>
+            <Ionicons name="restaurant-outline" size={28} color={QuinckleColors.textTertiary} />
+            <Text style={styles.emptyText}>No items ordered yet.</Text>
+          </View>
+        }
+        renderItem={({ item }) => {
+          const isServed = item.status === 'served';
+          if (item.cancelled) {
+            return (
+              <View style={[styles.orderItemRow, { opacity: 0.5 }]}>
+                <View style={styles.orderItemLeft}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.itemName, styles.itemNameCancelled]}>{item.name}</Text>
+                    <View style={styles.itemMetaRow}>
+                      <Text style={[styles.itemPrice, styles.itemNameCancelled]}>₹{item.price.toFixed(0)}</Text>
+                    </View>
+                  </View>
+                </View>
+                <View style={styles.cancelledBadge}>
+                  <Ionicons name="close" size={11} color={QuinckleColors.danger} />
+                  <Text style={styles.cancelledBadgeText}>Cancelled</Text>
+                </View>
+              </View>
+            );
+          }
+          return (
+            <TouchableOpacity
+              activeOpacity={0.9}
+              onLongPress={() => setCancelTarget(item)}
+              delayLongPress={350}
+              style={[styles.orderItemRow, isServed && { opacity: 0.55 }]}
+            >
+              <View style={styles.orderItemLeft}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.itemName, isServed && styles.itemNameServed]}>{item.name}</Text>
+                  {item.modifiersSummary ? (
+                    <Text style={styles.itemModifiers} numberOfLines={1}>{item.modifiersSummary}</Text>
+                  ) : null}
+                  <View style={styles.itemMetaRow}>
+                    <Text style={styles.itemPrice}>₹{item.price.toFixed(0)}</Text>
+                    <Text style={styles.itemDot}>·</Text>
+                    <Text style={styles.itemTime}>{item.orderedAt}</Text>
+                  </View>
+                </View>
+              </View>
+
+              {isServed ? (
+                <View style={styles.servedBadge}>
+                  <Ionicons name="checkmark" size={11} color="#4ade80" />
+                  <Text style={styles.servedBadgeText}>Served</Text>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={styles.markServedBtn}
+                  onPress={() => void handleServe(item)}
+                  activeOpacity={0.75}
+                >
+                  <Text style={styles.markServedText}>Mark served</Text>
+                </TouchableOpacity>
+              )}
+            </TouchableOpacity>
+          );
+        }}
+      />
+    </>
+  );
+
   return (
     <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
       <View style={styles.header}>
@@ -1038,211 +1180,177 @@ export default function TableDetail() {
         </View>{/* end headerRight */}
       </View>{/* end header */}
 
-
-      {/* Session section */}
-      <Text style={styles.sessionSectionLabel}>Session</Text>
-      <View style={styles.sessionGroup}>
-        <View style={styles.sessionInfoRow}>
-          <Text style={styles.sessionInfoLabel}>Ref</Text>
-          <Text style={[styles.sessionInfoValue, styles.sessionRefMono]}>
-            {sessionRef || toSessionRef(sessionId)}
-          </Text>
-        </View>
-        {mergedFrom.length > 0 ? (
-          <>
-            <View style={styles.sessionInfoSep} />
-            <View style={styles.sessionInfoRow}>
-              <Text style={styles.sessionInfoLabel}>Merged</Text>
-              <Text style={[styles.sessionInfoValue, styles.sessionRefMono, { flexShrink: 1, textAlign: 'right' }]}>
-                {mergedFrom
-                  .map(m => `${m.session_ref}${m.table_number != null ? ` (T${String(m.table_number).padStart(2, '0')})` : ''}`)
-                  .join(', ')}
-              </Text>
-            </View>
-          </>
-        ) : null}
-        <View style={styles.sessionInfoSep} />
-        <View style={styles.sessionInfoRow}>
-          <Text style={styles.sessionInfoLabel}>Guest</Text>
-          <Text style={styles.sessionInfoValue}>{sessionCustomerName?.trim() || 'N/A'}</Text>
-        </View>
-        <View style={styles.sessionInfoSep} />
-        <View style={styles.sessionInfoRow}>
-          <Text style={styles.sessionInfoLabel}>Phone</Text>
-          <Text style={styles.sessionInfoValue}>{sessionCustomerPhone?.trim() || 'N/A'}</Text>
-        </View>
-        {since ? (
-          <>
-            <View style={styles.sessionInfoSep} />
-            <View style={styles.sessionInfoRow}>
-              <Text style={styles.sessionInfoLabel}>Opened</Text>
-              <Text style={styles.sessionInfoValue}>{since}</Text>
-            </View>
-          </>
-        ) : null}
-        {(countdownStr || elapsed) ? (
-          <>
-            <View style={styles.sessionInfoSep} />
-            <View style={styles.sessionInfoRow}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                <Ionicons name="timer-outline" size={13} color={isNearExpiry ? QuinckleColors.danger : QuinckleColors.textSecondary} />
-                <Text style={[styles.sessionInfoLabel, isNearExpiry && { color: QuinckleColors.danger }]}>
-                  {countdownStr ? 'Time left' : 'Active for'}
-                </Text>
-              </View>
-              <Text style={[styles.sessionInfoValueStrong, { fontVariant: ['tabular-nums'] as any }, isNearExpiry && { color: QuinckleColors.danger }]}>
-                {countdownStr ?? elapsed}
-              </Text>
-            </View>
-          </>
-        ) : null}
-      </View>
-
-      <View style={styles.sectionHeader}>
-        <View style={styles.sectionTitleRow}>
-          <Text style={styles.sectionTitle}>Active Orders</Text>
-          <Text style={styles.progressText}>{servedCount}/{totalCount} served</Text>
-        </View>
-        <View style={styles.serviceProgressTrack}>
-          <Animated.View
-            style={[styles.serviceProgressFill, {
-              width: progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }),
-            }]}
-          />
-        </View>
-      </View>
-
-      <FlatList
-        data={flatItems}
-        keyExtractor={item => item.key}
-        contentContainerStyle={styles.listContent}
-        onRefresh={handleRefresh}
-        refreshing={refreshing}
-        ListEmptyComponent={
-          <View style={styles.emptyState}>
-            <Ionicons name="restaurant-outline" size={28} color={QuinckleColors.textTertiary} />
-            <Text style={styles.emptyText}>No items ordered yet.</Text>
+      {isWide ? (
+        // ── POS layout: order ticket fills the main pane, a fixed receipt rail
+        //    on the right carries the session summary, itemized bill, and the
+        //    docked pay CTA. ──
+        <View style={[styles.wideRow, { paddingBottom: insets.bottom + Spacing.md }]}>
+          <View style={styles.wideMainPane}>
+            {orderListJsx}
           </View>
-        }
-        renderItem={({ item }) => {
-          const isServed = item.status === 'served';
-          if (item.cancelled) {
-            return (
-              <View style={[styles.orderItemRow, { opacity: 0.5 }]}>
-                <View style={styles.orderItemLeft}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.itemName, styles.itemNameCancelled]}>{item.name}</Text>
-                    <View style={styles.itemMetaRow}>
-                      <Text style={[styles.itemPrice, styles.itemNameCancelled]}>₹{item.price.toFixed(0)}</Text>
-                    </View>
-                  </View>
-                </View>
-                <View style={styles.cancelledBadge}>
-                  <Ionicons name="close" size={11} color={QuinckleColors.danger} />
-                  <Text style={styles.cancelledBadgeText}>Cancelled</Text>
-                </View>
-              </View>
-            );
-          }
-          return (
-            <TouchableOpacity
-              activeOpacity={0.9}
-              onLongPress={() => setCancelTarget(item)}
-              delayLongPress={350}
-              style={[styles.orderItemRow, isServed && { opacity: 0.55 }]}
-            >
-              <View style={styles.orderItemLeft}>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.itemName, isServed && styles.itemNameServed]}>{item.name}</Text>
-                  {item.modifiersSummary ? (
-                    <Text style={styles.itemModifiers} numberOfLines={1}>{item.modifiersSummary}</Text>
-                  ) : null}
-                  <View style={styles.itemMetaRow}>
-                    <Text style={styles.itemPrice}>₹{item.price.toFixed(0)}</Text>
-                    <Text style={styles.itemDot}>·</Text>
-                    <Text style={styles.itemTime}>{item.orderedAt}</Text>
-                  </View>
-                </View>
-              </View>
 
-              {isServed ? (
-                <View style={styles.servedBadge}>
-                  <Ionicons name="checkmark" size={11} color="#4ade80" />
-                  <Text style={styles.servedBadgeText}>Served</Text>
+          <View style={styles.railPane}>
+            {/* Compact session header (T{num} + ref already live in the screen
+                header, so the rail shows the guest + time context instead). */}
+            <View style={styles.railHeader}>
+              <View style={styles.railHeaderTop}>
+                <Text style={styles.railGuest} numberOfLines={1}>
+                  {sessionCustomerName?.trim() || 'Walk-in guest'}
+                </Text>
+                {(countdownStr || elapsed) ? (
+                  <View style={[styles.railTimeChip, isNearExpiry && styles.railTimeChipDanger]}>
+                    <Ionicons
+                      name="timer-outline"
+                      size={12}
+                      color={isNearExpiry ? QuinckleColors.danger : QuinckleColors.textSecondary}
+                    />
+                    <Text style={[styles.railTimeText, isNearExpiry && { color: QuinckleColors.danger }]}>
+                      {countdownStr ?? elapsed}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+              {sessionCustomerPhone?.trim() ? (
+                <Text style={styles.railPhone}>{sessionCustomerPhone.trim()}</Text>
+              ) : null}
+            </View>
+
+            <View style={styles.railBillWrap}>
+              <BillBreakdownContent
+                items={billableFlatItems}
+                subtotal={sessionTotal}
+                discountTotal={discountTotal}
+                serviceChargeTotal={serviceChargeTotal}
+                tax={tax}
+                taxRate={billTaxRate}
+                tipTotal={tipTotal}
+                grandTotal={grandTotal}
+                canGiveDiscount={!isPaid && orders.length > 0}
+                onGiveDiscount={() => setDiscountModalOpen(true)}
+                showItems
+                variant="receipt"
+              />
+            </View>
+
+            {/* Docked CTA / status */}
+            <View style={styles.railFooter}>
+              {!isPaid && grandTotal > 0 && orders.length > 0 ? (
+                <TouchableOpacity
+                  style={[styles.collectBtn, isRequestingCollection && { opacity: 0.65 }]}
+                  onPress={() => { setIsExpanded(false); void requestCollection(); }}
+                  disabled={isRequestingCollection}
+                  activeOpacity={0.85}
+                >
+                  {isRequestingCollection
+                    ? <ActivityIndicator size="small" color="#fff" />
+                    : <Ionicons name="cash-outline" size={16} color="#fff" />}
+                  <Text style={styles.collectBtnText}>
+                    {isRequestingCollection ? 'Creating request...' : 'Send to Payment Collection'}
+                  </Text>
+                </TouchableOpacity>
+              ) : isPaid ? (
+                <View style={[
+                  styles.railPaidBadge,
+                  (billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? styles.paidBadgeKhata : styles.paidBadgeActive,
+                ]}>
+                  <Ionicons
+                    name={(billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? 'book-outline' : 'checkmark-circle'}
+                    size={15}
+                    color={(billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? QuinckleColors.warning : QuinckleColors.success}
+                  />
+                  <Text style={[
+                    styles.railPaidText,
+                    { color: (billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? QuinckleColors.warning : QuinckleColors.success },
+                  ]}>
+                    {billPaymentMethod === 'due' ? 'On khata'
+                      : (billDueAmount ?? 0) > 0 ? `Split · ₹${Math.round(billDueAmount ?? 0)} on khata`
+                      : billPaymentMethod === 'waived' ? 'Waived'
+                      : billPaymentMethod === 'cash' ? 'Settled · Cash'
+                      : billPaymentMethod === 'upi_direct' ? 'Settled · UPI'
+                      : billPaymentMethod === 'mixed' ? 'Settled · Split'
+                      : 'Settled'}
+                  </Text>
                 </View>
               ) : (
-                <TouchableOpacity
-                  style={styles.markServedBtn}
-                  onPress={() => void handleServe(item)}
-                  activeOpacity={0.75}
-                >
-                  <Text style={styles.markServedText}>Mark served</Text>
-                </TouchableOpacity>
+                <Text style={styles.railEmptyHint}>No items to bill yet</Text>
               )}
-            </TouchableOpacity>
-          );
-        }}
-      />
-
-      <View style={styles.bottomBar}>
-        <TouchableOpacity style={styles.totalRow} activeOpacity={0.85} onPress={() => setIsExpanded(true)}>
-          <View>
-            <Text style={styles.totalLabel}>Total Payable</Text>
-            {/* Khata (pay later) bills settle the table but the money is owed
-                on the customer's khata — amber, never green, so it can't be
-                read as cash-in-drawer, and never "Pending" so nobody
-                double-collects at the table. */}
-            <View style={[
-              styles.paidBadge,
-              isPaid
-                ? (billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? styles.paidBadgeKhata : styles.paidBadgeActive
-                : styles.paidBadgeInactive,
-            ]}>
-              <Text style={[
-                styles.paidBadgeText,
-                isPaid
-                  ? (billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? styles.paidBadgeTextKhata : styles.paidBadgeTextActive
-                  : styles.paidBadgeTextInactive,
-              ]}>
-                {isPaid
-                  ? billPaymentMethod === 'due' ? 'On khata'
-                  : (billDueAmount ?? 0) > 0 ? `Split · ₹${Math.round(billDueAmount ?? 0)} on khata`
-                  : billPaymentMethod === 'waived' ? 'Waived'
-                  : billPaymentMethod === 'cash' ? 'via Cash'
-                  : billPaymentMethod === 'upi_direct' ? 'via UPI'
-                  : billPaymentMethod === 'mixed' ? 'Split'
-                  : 'Settled'
-                  : 'Pending'}
-              </Text>
             </View>
           </View>
-          <View style={styles.totalValueContainer}>
-            <Text style={styles.totalValue}>₹{grandTotal.toFixed(0)}</Text>
-            <Ionicons name="chevron-up" size={18} color={QuinckleColors.textTertiary} style={{ marginLeft: Spacing.sm }} />
-          </View>
-        </TouchableOpacity>
+        </View>
+      ) : (
+        <>
+          {sessionSectionJsx}
+          {orderListJsx}
+        </>
+      )}
 
-        {!isPaid && grandTotal > 0 && orders.length > 0 && (
-          <TouchableOpacity
-            style={[styles.collectBtn, isRequestingCollection && { opacity: 0.65 }]}
-            onPress={() => {
-              setIsExpanded(false);
-              void requestCollection();
-            }}
-            disabled={isRequestingCollection}
-            activeOpacity={0.85}
-          >
-            {isRequestingCollection ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Ionicons name="cash-outline" size={16} color="#fff" />
-            )}
-            <Text style={styles.collectBtnText}>
-              {isRequestingCollection ? 'Creating request...' : 'Send to Payment Collection'}
-            </Text>
-          </TouchableOpacity>
-        )}
-      </View>
+      {/* Tablet-landscape: Grand Total is already always visible in the left
+          pane's receipt, so repeating it here would be a second duplicate —
+          show the bar only when there's an actual action to take. Phone
+          keeps the full total row since the breakdown lives behind a tap. */}
+      {!isWide && (
+        <View style={styles.bottomBar}>
+          {!isWide && (
+            <TouchableOpacity style={styles.totalRow} activeOpacity={0.85} onPress={() => setIsExpanded(true)}>
+              <View>
+                <Text style={styles.totalLabel}>Total Payable</Text>
+                {/* Khata (pay later) bills settle the table but the money is owed
+                    on the customer's khata — amber, never green, so it can't be
+                    read as cash-in-drawer, and never "Pending" so nobody
+                    double-collects at the table. */}
+                <View style={[
+                  styles.paidBadge,
+                  isPaid
+                    ? (billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? styles.paidBadgeKhata : styles.paidBadgeActive
+                    : styles.paidBadgeInactive,
+                ]}>
+                  <Text style={[
+                    styles.paidBadgeText,
+                    isPaid
+                      ? (billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? styles.paidBadgeTextKhata : styles.paidBadgeTextActive
+                      : styles.paidBadgeTextInactive,
+                  ]}>
+                    {isPaid
+                      ? billPaymentMethod === 'due' ? 'On khata'
+                      : (billDueAmount ?? 0) > 0 ? `Split · ₹${Math.round(billDueAmount ?? 0)} on khata`
+                      : billPaymentMethod === 'waived' ? 'Waived'
+                      : billPaymentMethod === 'cash' ? 'via Cash'
+                      : billPaymentMethod === 'upi_direct' ? 'via UPI'
+                      : billPaymentMethod === 'mixed' ? 'Split'
+                      : 'Settled'
+                      : 'Pending'}
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.totalValueContainer}>
+                <Text style={styles.totalValue}>₹{grandTotal.toFixed(0)}</Text>
+                <Ionicons name="restaurant-outline" size={18} color={QuinckleColors.textTertiary} style={{ marginLeft: Spacing.sm }} />
+              </View>
+            </TouchableOpacity>
+          )}
+
+          {!isPaid && grandTotal > 0 && orders.length > 0 && (
+            <TouchableOpacity
+              style={[styles.collectBtn, isRequestingCollection && { opacity: 0.65 }]}
+              onPress={() => {
+                setIsExpanded(false);
+                void requestCollection();
+              }}
+              disabled={isRequestingCollection}
+              activeOpacity={0.85}
+            >
+              {isRequestingCollection ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Ionicons name="cash-outline" size={16} color="#fff" />
+              )}
+              <Text style={styles.collectBtnText}>
+                {isRequestingCollection ? 'Creating request...' : 'Send to Payment Collection'}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
 
       <ThemedDialog visible={dialog.visible} title={dialog.title} message={dialog.message} actions={dialog.actions} onClose={closeDialog} />
 
@@ -1463,58 +1571,6 @@ export default function TableDetail() {
         <View style={{ height: Spacing.md }} />
       </BottomSheet>
 
-      {/* Online Payment QR Modal */}
-      <Modal
-        visible={showQRModal}
-        animationType="slide"
-        presentationStyle="pageSheet"
-        onRequestClose={() => setShowQRModal(false)}
-      >
-        <View style={styles.qrModalContainer}>
-          <View style={styles.qrModalHeader}>
-            <Text style={styles.qrModalTitle}>Scan to Pay</Text>
-            <TouchableOpacity style={styles.iconBtn} onPress={() => setShowQRModal(false)}>
-              <Ionicons name="close" size={20} color={QuinckleColors.textPrimary} />
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.qrModalBody}>
-            <Text style={styles.qrAmountLabel}>Amount Due</Text>
-            <Text style={styles.qrAmount}>₹{paymentLinkAmount.toFixed(0)}</Text>
-
-            <View style={styles.qrCodeWrapper}>
-              {paymentLinkUrl ? (
-                <TouchableOpacity
-                  style={styles.shareLinkBtn}
-                  onPress={() => Share.share({ message: paymentLinkUrl })}
-                  activeOpacity={0.85}
-                >
-                  <Ionicons name="share-outline" size={20} color="#09090b" />
-                  <Text style={styles.shareLinkBtnText}>Share payment link</Text>
-                </TouchableOpacity>
-              ) : null}
-            </View>
-
-            <Text style={styles.qrHint}>
-              Share this link with the guest to collect payment
-            </Text>
-
-            <View style={styles.qrWaitingRow}>
-              <ActivityIndicator size="small" color={QuinckleColors.textTertiary} />
-              <Text style={styles.qrWaitingText}>Waiting for payment confirmation…</Text>
-            </View>
-          </View>
-
-          <TouchableOpacity
-            style={styles.qrCancelBtn}
-            onPress={() => setShowQRModal(false)}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.qrCancelText}>Cancel</Text>
-          </TouchableOpacity>
-        </View>
-      </Modal>
-
       {/* Crew custom discount */}
       <Modal visible={discountModalOpen} transparent animationType="fade" onRequestClose={() => setDiscountModalOpen(false)}>
         <View style={styles.swapBackdrop}>
@@ -1650,11 +1706,6 @@ export default function TableDetail() {
         </View>
       </Modal>
 
-      {toast && (
-        <View style={[styles.toast, { bottom: insets.bottom + 24 }]}>
-          <Text style={styles.toastText}>{toast}</Text>
-        </View>
-      )}
 
     </View>
   );
@@ -1915,6 +1966,55 @@ const styles = StyleSheet.create({
   },
 
   container: { flex: 1, backgroundColor: QuinckleColors.background, paddingHorizontal: Spacing.lg },
+  // Tablet-landscape two-pane layout: session details + a permanently-
+  // visible bill breakdown on the left, ordered items alone on the right.
+  wideRow: { flex: 1, flexDirection: 'row', gap: Spacing.lg },
+  wideLeftPane: { width: 360 },
+  wideDivider: { width: 1, backgroundColor: QuinckleColors.border },
+  wideRightPane: { flex: 1, paddingLeft: Spacing.xs },
+  wideBillWrap: { flex: 1, marginTop: Spacing.md },
+  wideFlatList: { flex: 1 },
+
+  // ── POS layout: order ticket (main) + receipt rail (right) ──
+  wideMainPane: { flex: 1 },
+  railPane: {
+    width: 340,
+    backgroundColor: QuinckleColors.surface,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    overflow: 'hidden',
+  },
+  railHeader: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.lg, paddingBottom: Spacing.md },
+  railHeaderTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.sm },
+  railGuest: { ...Typography.subtitle, color: QuinckleColors.textPrimary, flex: 1 },
+  railPhone: { ...Typography.caption, color: QuinckleColors.textSecondary, marginTop: 2 },
+  railTimeChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: QuinckleColors.surfaceMuted, borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.sm, paddingVertical: 4,
+    borderWidth: 1, borderColor: QuinckleColors.border,
+  },
+  railTimeChipDanger: { borderColor: QuinckleColors.danger },
+  railTimeText: { fontSize: 12, fontWeight: '700', color: QuinckleColors.textSecondary, fontVariant: ['tabular-nums'] as any },
+  railBillWrap: {
+    flex: 1,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.sm,
+    paddingBottom: Spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: QuinckleColors.borderSubtle,
+  },
+  railFooter: {
+    paddingHorizontal: Spacing.lg, paddingTop: Spacing.lg, paddingBottom: Spacing.lg,
+    borderTopWidth: 1, borderTopColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surface,
+  },
+  railPaidBadge: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 12, borderRadius: Radius.md, borderWidth: 1,
+  },
+  railPaidText: { fontSize: 14, fontWeight: '700' },
+  railEmptyHint: { ...Typography.caption, color: QuinckleColors.textMuted, textAlign: 'center', paddingVertical: 12 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.xl },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
@@ -2016,6 +2116,9 @@ const styles = StyleSheet.create({
   emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: Spacing.huge, gap: Spacing.md },
   emptyText: { color: QuinckleColors.textTertiary, fontSize: 14 },
   bottomBar: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: Spacing.xl, paddingBottom: Spacing.xxl, paddingTop: Spacing.lg, backgroundColor: QuinckleColors.surface, borderTopWidth: 1, borderTopColor: QuinckleColors.border },
+  // Constrained to the right pane's width so it never overlaps the left
+  // pane's always-visible receipt at the bottom.
+  bottomBarWide: { left: Spacing.lg + 360 + Spacing.lg + 1 },
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   totalLabel: { color: QuinckleColors.textTertiary, fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 },
   totalValueContainer: { flexDirection: 'row', alignItems: 'center' },

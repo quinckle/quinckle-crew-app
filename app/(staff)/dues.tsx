@@ -43,7 +43,9 @@ export default function DuesScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
+  const [view, setView] = useState<'OPEN' | 'WRITTEN_OFF'>('OPEN');
   const [parties, setParties] = useState<CrewDueParty[]>([]);
+  const [writtenOff, setWrittenOff] = useState<CrewDue[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [expandedPhone, setExpandedPhone] = useState<string | null>(null);
@@ -60,12 +62,17 @@ export default function DuesScreen() {
   const load = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true); else setLoading(true);
     try {
-      const res = await crewDues.parties();
-      setParties(res.data ?? []);
-      // Refresh any expanded party's dues too so balances stay honest.
-      if (expandedPhone) {
-        const list = await crewDues.list(expandedPhone);
-        setDuesByPhone(prev => ({ ...prev, [expandedPhone]: list.data?.items ?? [] }));
+      if (view === 'WRITTEN_OFF') {
+        const res = await crewDues.list(undefined, 'WRITTEN_OFF');
+        setWrittenOff(res.data?.items ?? []);
+      } else {
+        const res = await crewDues.parties();
+        setParties(res.data ?? []);
+        // Refresh any expanded party's dues too so balances stay honest.
+        if (expandedPhone) {
+          const list = await crewDues.list(expandedPhone);
+          setDuesByPhone(prev => ({ ...prev, [expandedPhone]: list.data?.items ?? [] }));
+        }
       }
     } catch {
       // Non-fatal: pull-to-refresh retries.
@@ -73,7 +80,7 @@ export default function DuesScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [expandedPhone]);
+  }, [expandedPhone, view]);
 
   useFocusEffect(useCallback(() => { void load(); }, [load]));
 
@@ -166,12 +173,54 @@ export default function DuesScreen() {
         <Text style={s.summarySub}>{parties.length} customer{parties.length === 1 ? '' : 's'} owe{parties.length === 1 ? 's' : ''} money</Text>
       </View>
 
+      {/* Open / Written-off toggle */}
+      <View style={s.segmentRow}>
+        {(['OPEN', 'WRITTEN_OFF'] as const).map(v => (
+          <TouchableOpacity
+            key={v}
+            style={[s.segment, view === v && s.segmentActive]}
+            onPress={() => { void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setView(v); }}
+            activeOpacity={0.8}
+          >
+            <Text style={[s.segmentText, view === v && s.segmentTextActive]}>{v === 'OPEN' ? 'Open' : 'Written off'}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{ padding: Spacing.lg, paddingBottom: insets.bottom + 32, gap: Spacing.md }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void load(true)} tintColor={QuinckleColors.textTertiary} />}
       >
-        {loading && !refreshing ? (
+        {view === 'WRITTEN_OFF' ? (
+          loading && !refreshing ? (
+            <ActivityIndicator style={{ marginTop: 48 }} color={QuinckleColors.textTertiary} />
+          ) : writtenOff.length === 0 ? (
+            <View style={s.empty}>
+              <Ionicons name="ban-outline" size={36} color={QuinckleColors.textTertiary} />
+              <Text style={s.emptyTitle}>Nothing written off</Text>
+              <Text style={s.emptySub}>Dues the owner has given up collecting show here with the reason.</Text>
+            </View>
+          ) : (
+            writtenOff.map(due => (
+              <View key={due.id} style={s.card}>
+                <View style={s.woRow}>
+                  <View style={{ flex: 1 }}>
+                    <View style={s.woTopRow}>
+                      <Text style={s.dueRowAmount}>{fmt(due.balance)}</Text>
+                      <View style={s.woBadge}><Text style={s.woBadgeText}>Written off</Text></View>
+                    </View>
+                    <Text style={s.cardName} numberOfLines={1}>
+                      {due.customerName ?? 'Customer'}{due.customerPhone ? ` · ${due.customerPhone}` : ''}
+                    </Text>
+                    {due.writeOffReason ? <Text style={s.woReason}>“{due.writeOffReason}”</Text> : null}
+                    <Text style={s.dueRowMeta}>Written off {fmtDate(due.writtenOffAt ?? null)}</Text>
+                  </View>
+                </View>
+              </View>
+            ))
+          )
+        ) : loading && !refreshing ? (
           <ActivityIndicator style={{ marginTop: 48 }} color={QuinckleColors.textTertiary} />
         ) : parties.length === 0 ? (
           <View style={s.empty}>
@@ -318,6 +367,22 @@ const s = StyleSheet.create({
   summaryLabel: { color: QuinckleColors.warning, fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8 },
   summaryAmount: { color: QuinckleColors.textPrimary, fontSize: 30, fontWeight: '800', letterSpacing: -0.8, marginTop: 4 },
   summarySub: { color: QuinckleColors.textTertiary, fontSize: 12, marginTop: 2 },
+
+  segmentRow: { flexDirection: 'row', gap: Spacing.sm, marginHorizontal: Spacing.lg, marginTop: Spacing.md },
+  segment: {
+    flex: 1, alignItems: 'center', paddingVertical: 9,
+    borderRadius: Radius.md, borderWidth: 1, borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surface,
+  },
+  segmentActive: { borderColor: QuinckleColors.primarySoftBorder, backgroundColor: QuinckleColors.primarySoft },
+  segmentText: { color: QuinckleColors.textSecondary, fontSize: 13, fontWeight: '600' },
+  segmentTextActive: { color: QuinckleColors.primary },
+
+  woRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, padding: Spacing.lg },
+  woTopRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  woBadge: { backgroundColor: 'rgba(239,68,68,0.12)', borderRadius: Radius.sm, paddingHorizontal: 7, paddingVertical: 2 },
+  woBadgeText: { fontSize: 10, fontWeight: '700', color: '#f87171' },
+  woReason: { color: QuinckleColors.textSecondary, fontSize: 12, fontStyle: 'italic', marginTop: 3 },
 
   empty: { alignItems: 'center', paddingTop: 64, gap: 8, paddingHorizontal: 32 },
   emptyTitle: { color: QuinckleColors.textPrimary, fontSize: 16, fontWeight: '700' },

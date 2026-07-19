@@ -4,7 +4,7 @@
     "slug": "QuinckleCrew",
     "owner": "quinckle",
     "version": "1.0.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/images/quinckle crew icon converted.png",
     "scheme": "quincklecrew",
     "userInterfaceStyle": "automatic",

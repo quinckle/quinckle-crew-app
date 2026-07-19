@@ -95,7 +95,7 @@ export function MergeTableSheet({
     <BottomSheet visible={visible} onClose={onClose} title="Merge bill">
       <Text style={styles.sub}>
         Merge T{currentTableNum} into another table — orders + any collected
-        payment join that table's bill, and T{currentTableNum} is freed.
+        payment join that table’s bill, and T{currentTableNum} is freed.
       </Text>
 
       {loading ? (

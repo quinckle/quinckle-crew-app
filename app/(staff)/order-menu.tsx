@@ -34,6 +34,7 @@ import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useResponsive } from '../../hooks/useResponsive';
 import { useAuth } from '../../context/AuthContext';
 import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
 import {
@@ -41,6 +42,7 @@ import {
 } from '../../services/api';
 import type { MenuItem, ModifierGroup, CrewOffer } from '../../services/api';
 import { BottomSheet } from '../../components/ui/BottomSheet';
+import { CartReviewSheet, type CartLine } from '../../components/ui/CartReviewSheet';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { readCache, writeCache, cacheKeys } from '../../services/dataCache';
 
@@ -233,6 +235,131 @@ const MenuItemRow = React.memo(function MenuItemRow({
   );
 });
 
+// ── Menu item card (tablet-landscape POS grid) ───────────────────────────────
+
+// Square-ish tile used in the wide two-pane grid: image on top with a veg
+// badge + discount overlay, name/price below, and an Add / qty control docked
+// to the bottom edge so every card is the same height regardless of name len.
+const MenuItemCard = React.memo(function MenuItemCard({
+  item, qty, onAdd, onRemove,
+}: {
+  item: MenuItem;
+  qty: number;
+  onAdd: (item: MenuItem) => void;
+  onRemove: (itemId: string) => void;
+}) {
+  const [imgFailed, setImgFailed] = useState(false);
+  const hasImage = !!item.imageUrl;
+  const price = parseFloat(item.price);
+  const origPrice = item.originalPrice ? parseFloat(item.originalPrice) : null;
+  const discountPct = origPrice && origPrice > price
+    ? Math.round(((origPrice - price) / origPrice) * 100) : 0;
+  const hasMods = (item.modifierGroups?.length ?? 0) > 0;
+
+  return (
+    <View style={[cardStyles.card, qty > 0 && cardStyles.cardActive]}>
+      {/* Image */}
+      <View style={cardStyles.imgWrap}>
+        {hasImage ? (
+          <Image
+            source={{ uri: imgFailed ? item.imageUrl! : menuThumbUrl(item.imageUrl!) }}
+            style={cardStyles.img}
+            contentFit="cover"
+            cachePolicy="disk"
+            transition={0}
+            onError={() => setImgFailed(true)}
+          />
+        ) : (
+          <View style={[cardStyles.img, cardStyles.imgPlaceholder]}>
+            <Ionicons name="fast-food-outline" size={30} color={QuinckleColors.textMuted} />
+          </View>
+        )}
+        <View style={cardStyles.vegBadge}>
+          <VegIcon isVeg={item.isVeg} />
+        </View>
+        {discountPct > 0 && (
+          <View style={cardStyles.discountBadge}>
+            <Text style={cardStyles.discountText}>{discountPct}% OFF</Text>
+          </View>
+        )}
+      </View>
+
+      {/* Body */}
+      <View style={cardStyles.body}>
+        <Text style={cardStyles.name} numberOfLines={2}>{item.name}</Text>
+        <View style={cardStyles.priceRow}>
+          <Text style={cardStyles.price}>₹{price.toFixed(0)}</Text>
+          {origPrice && discountPct > 0 && (
+            <Text style={cardStyles.originalPrice}>₹{origPrice.toFixed(0)}</Text>
+          )}
+          {hasMods && <Text style={cardStyles.optionsLabel}>+ options</Text>}
+        </View>
+
+        {/* Add / qty control — docked at the bottom */}
+        {qty > 0 ? (
+          <View style={cardStyles.qtyControl}>
+            <TouchableOpacity onPress={() => onRemove(item.id)} style={cardStyles.qtyBtn} hitSlop={6}>
+              <Ionicons name="remove" size={18} color={QuinckleColors.primary} />
+            </TouchableOpacity>
+            <Text style={cardStyles.qtyText}>{qty}</Text>
+            <TouchableOpacity onPress={() => onAdd(item)} style={cardStyles.qtyBtn} hitSlop={6}>
+              <Ionicons name="add" size={18} color={QuinckleColors.primary} />
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <TouchableOpacity onPress={() => onAdd(item)} style={cardStyles.addBtn} activeOpacity={0.85}>
+            <Ionicons name="add" size={16} color="#fff" />
+            <Text style={cardStyles.addBtnText}>Add</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    </View>
+  );
+});
+
+const cardStyles = StyleSheet.create({
+  card: {
+    flex: 1,
+    backgroundColor: QuinckleColors.surface,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    overflow: 'hidden',
+  },
+  cardActive: { borderColor: QuinckleColors.primarySoftBorder },
+  imgWrap: { width: '100%', aspectRatio: 1.3, backgroundColor: QuinckleColors.surfaceElevated },
+  img: { width: '100%', height: '100%' },
+  imgPlaceholder: { alignItems: 'center', justifyContent: 'center' },
+  vegBadge: {
+    position: 'absolute', top: 6, left: 6,
+    backgroundColor: QuinckleColors.surface, borderRadius: 4, padding: 2,
+  },
+  discountBadge: {
+    position: 'absolute', top: 6, right: 6,
+    backgroundColor: QuinckleColors.successSoft, borderRadius: Radius.pill,
+    paddingHorizontal: 6, paddingVertical: 2, borderWidth: 1, borderColor: QuinckleColors.successBorder,
+  },
+  discountText: { fontSize: 10, fontWeight: '700', color: QuinckleColors.success },
+  body: { padding: Spacing.md, gap: 6, flex: 1 },
+  name: { ...Typography.caption, color: QuinckleColors.textPrimary, fontWeight: '600', lineHeight: 17, minHeight: 34 },
+  priceRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  price: { fontSize: 15, fontWeight: '700', color: QuinckleColors.primary, letterSpacing: -0.3 },
+  originalPrice: { fontSize: 12, color: QuinckleColors.textMuted, textDecorationLine: 'line-through' },
+  optionsLabel: { fontSize: 10, fontWeight: '600', color: QuinckleColors.primary },
+  addBtn: {
+    marginTop: 'auto', flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 4, backgroundColor: QuinckleColors.primary, borderRadius: Radius.md, height: 38,
+  },
+  addBtnText: { fontSize: 14, color: '#fff', fontWeight: '700' },
+  qtyControl: {
+    marginTop: 'auto', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: QuinckleColors.primarySoft, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: QuinckleColors.primarySoftBorder, height: 38, overflow: 'hidden',
+  },
+  qtyBtn: { width: 44, height: '100%', alignItems: 'center', justifyContent: 'center' },
+  qtyText: { ...Typography.body, color: QuinckleColors.primary, fontWeight: '700', minWidth: 20, textAlign: 'center' },
+});
+
 // ── Modifier bottom sheet ─────────────────────────────────────────────────────
 
 function ModifierSheet({
@@ -289,10 +416,21 @@ function ModifierSheet({
 
 // ── Main screen ───────────────────────────────────────────────────────────────
 
+// Left category rail width in the tablet-landscape two-pane layout.
+const RAIL_WIDTH = 208;
+
 export default function OrderMenuScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { staffInfo } = useAuth();
+  const { isWide, width, contentMaxWidth } = useResponsive();
+
+  // Grid columns for the wide POS layout — target ~200dp per card in the space
+  // left of the category rail, clamped so cards never get comically wide/thin.
+  const gridColumns = useMemo(() => {
+    const avail = width - RAIL_WIDTH - Spacing.xl * 2;
+    return Math.max(2, Math.min(5, Math.floor(avail / 200)));
+  }, [width]);
 
   const {
     tableId,
@@ -335,6 +473,7 @@ export default function OrderMenuScreen() {
   const [cartNotes, setCartNotes] = useState<Record<string, string>>({});
   const [cartModifiers, setCartModifiers] = useState<Record<string, { groupId: string; optionId: string }[]>>({});
   const [noteExpanded, setNoteExpanded] = useState<Record<string, boolean>>({});
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   // ── Modifiers ──────────────────────────────────────────────────────────────
   const [modifierItem, setModifierItem] = useState<MenuItem | null>(null);
@@ -371,7 +510,7 @@ export default function OrderMenuScreen() {
     Animated.spring(placedTickAnim, {
       toValue: 1, damping: 9, stiffness: 200, mass: 0.6, delay: 100, useNativeDriver: true,
     }).start();
-  }, [placed]);
+  }, [placed, placedCardAnim, placedTickAnim]);
   const [coSubmitting, setCoSubmitting] = useState(false);
   const [coError, setCoError] = useState<string | null>(null);
 
@@ -433,7 +572,7 @@ export default function OrderMenuScreen() {
       .catch(() => {});
 
     return () => { cancelled = true; };
-  }, [staffInfo?.restaurantId, sessionId]);
+  }, [staffInfo?.restaurantId, sessionId, isTakeaway]);
 
   // ── Cart helpers — identity-stable so MenuItemRow's React.memo holds ───────
   const addToCart = useCallback((itemId: string, mods?: { groupId: string; optionId: string }[]) => {
@@ -464,6 +603,31 @@ export default function OrderMenuScreen() {
     });
     return sum + base;
   }, 0), [cart, menuItems, cartModifiers]);
+
+  // Flattened cart lines for the review sheet — one entry per cart key (an item
+  // keeps a single line regardless of qty), with its modifier-adjusted unit
+  // price and a readable modifier summary.
+  const cartLines = useMemo<CartLine[]>(() => Object.entries(cart).map(([id, qty]) => {
+    const item = menuItems.find(m => m.id === id);
+    const mods = cartModifiers[id] ?? [];
+    let unit = parseFloat(item?.price ?? '0');
+    const names: string[] = [];
+    mods.forEach(({ groupId, optionId }) => {
+      const g = item?.modifierGroups?.find(g => g.id === groupId);
+      const opt = g?.options.find(o => o.id === optionId);
+      if (opt) { unit += parseFloat(opt.priceAdjustment ?? '0'); if (opt.name) names.push(opt.name); }
+    });
+    return {
+      id,
+      name: item?.name ?? 'Item',
+      qty,
+      unitPrice: unit,
+      lineTotal: unit * qty,
+      modSummary: names.length ? names.join(', ') : null,
+      note: cartNotes[id]?.trim() || null,
+      imageUrl: item?.imageUrl ?? null,
+    };
+  }), [cart, menuItems, cartModifiers, cartNotes]);
 
   // Spend-threshold offer nudge: nearest unmet offer (or best already-unlocked).
   // Item-triggered offers are skipped here (no "remaining amount" to show).
@@ -511,7 +675,7 @@ export default function OrderMenuScreen() {
     if (!offerNudge) return;
     Animated.spring(offerProgressAnim, { toValue: offerNudge.progress, useNativeDriver: false, damping: 18, stiffness: 140, mass: 0.7 }).start();
     Animated.timing(offerUnlockAnim, { toValue: offerNudge.unlocked ? 1 : 0, duration: 320, useNativeDriver: false }).start();
-  }, [offerNudge?.progress, offerNudge?.unlocked]);
+  }, [offerNudge, offerProgressAnim, offerUnlockAnim]);
 
   // Smoothly reveal / collapse the whole section as offers (dis)appear.
   useEffect(() => {
@@ -647,11 +811,6 @@ export default function OrderMenuScreen() {
     if (digits.length === 10) void lookupGuest(digits);
   };
 
-  const buildIdempotencyKey = (
-    orderId: string,
-    splits: { method: string; amount: number }[],
-  ) => `crew-collect:${orderId}:${splits.map(s => `${s.method}:${Number(s.amount).toFixed(2)}`).join('|')}`;
-
   const confirmAndPlace = async () => {
     const phone = coPhone.replace(/\D/g, '');
     if (phone.length > 0 && phone.length !== 10) {
@@ -709,18 +868,37 @@ export default function OrderMenuScreen() {
       }
 
       // Show a short-lived "Order placed" confirmation, then replace order-menu
-      // in the stack so back from payment-collect → [tableId].
-      const navParams = {
-        orderId,
-        tableNumber: String(tableId ?? 0),
-        ...(isTakeaway ? { channel: 'TAKEAWAY', pickupToken: pickupToken ?? '' } : {}),
-        amount: String(orderTotal),
-        customerName: guestName ?? '',
-        customerPhone: guestPhone,
-      };
+      // in the stack. Dine-in returns to [tableId] with the bill breakdown
+      // forced open — so the crew reviews exactly what was ordered before
+      // doing anything else — instead of jumping straight to payment
+      // collection. Takeaway has no table screen to return to, so it still
+      // goes to payment-collect directly.
       setPlaced({ amount: orderTotal });
       navTimerRef.current = setTimeout(() => {
-        router.replace({ pathname: '/(staff)/payment-collect', params: navParams });
+        if (isTakeaway) {
+          router.replace({
+            pathname: '/(staff)/payment-collect',
+            params: {
+              orderId,
+              tableNumber: String(tableId ?? 0),
+              channel: 'TAKEAWAY',
+              pickupToken: pickupToken ?? '',
+              amount: String(orderTotal),
+              customerName: guestName ?? '',
+              customerPhone: guestPhone,
+            },
+          });
+        } else {
+          router.replace({
+            pathname: '/(staff)/[tableId]',
+            params: {
+              tableId: String(tableId ?? 0),
+              sessionId: sessionId ?? '',
+              tableDbId: tableDbId ?? '',
+              openBill: '1',
+            },
+          });
+        }
       }, 500);
     } catch (e: any) {
       setCoError(e?.message ?? 'Failed to place order. Try again.');
@@ -743,6 +921,31 @@ export default function OrderMenuScreen() {
       onChangeNote={handleChangeNote}
     />
   ), [cart, cartNotes, noteExpanded, cartModifiers, handleAddPress, removeFromCart, handleToggleNote, handleChangeNote]);
+
+  // Pad the last grid row with invisible fillers so an incomplete final row
+  // doesn't let its flex:1 cards stretch to fill the width (FlatList would
+  // otherwise blow up 2 leftover cards to half-screen each).
+  const gridData = useMemo(() => {
+    const remainder = filteredItems.length % gridColumns;
+    if (remainder === 0) return filteredItems;
+    const fillers = Array.from({ length: gridColumns - remainder }, (_, i) => ({
+      id: `__filler_${i}`, __filler: true,
+    })) as unknown as MenuItem[];
+    return [...filteredItems, ...fillers];
+  }, [filteredItems, gridColumns]);
+
+  // Grid card renderer for the tablet-landscape POS layout.
+  const renderCard = useCallback(({ item }: { item: MenuItem }) => {
+    if ((item as any).__filler) return <View style={{ flex: 1 }} />;
+    return (
+      <MenuItemCard
+        item={item}
+        qty={cart[item.id] ?? 0}
+        onAdd={handleAddPress}
+        onRemove={removeFromCart}
+      />
+    );
+  }, [cart, handleAddPress, removeFromCart]);
 
   // ── Guest details — its own screen (not a modal), pushed in place of the ──
   // menu when "Place Order" is tapped. Same fields/CRM lookup as before.
@@ -810,7 +1013,10 @@ export default function OrderMenuScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
           <ScrollView
-            contentContainerStyle={styles.coScreenBody}
+            contentContainerStyle={[
+              styles.coScreenBody,
+              contentMaxWidth != null && { maxWidth: contentMaxWidth, width: '100%', alignSelf: 'center' },
+            ]}
             keyboardShouldPersistTaps="handled"
           >
             {/* Phone */}
@@ -911,91 +1117,242 @@ export default function OrderMenuScreen() {
   }
 
   // ── UI ─────────────────────────────────────────────────────────────────────
+
+  // ── Shared bits, hoisted so the phone and tablet-landscape layouts reuse the
+  //    exact same offer nudge / search input / footer without duplication. ──
+
+  const offerNudgeJsx = nudgeMounted && lastNudge.current && (
+    <Animated.View
+      style={{
+        overflow: 'hidden',
+        opacity: offerSectionAnim,
+        maxHeight: offerSectionAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 140] }),
+        transform: [{ translateY: offerSectionAnim.interpolate({ inputRange: [0, 1], outputRange: [-10, 0] }) }],
+      }}
+    >
+      <Animated.View
+        style={[
+          styles.offerBar,
+          {
+            backgroundColor: offerUnlockAnim.interpolate({ inputRange: [0, 1], outputRange: [QuinckleColors.primarySoft, QuinckleColors.successSoft] }),
+            borderColor: offerUnlockAnim.interpolate({ inputRange: [0, 1], outputRange: [QuinckleColors.primarySoftBorder, QuinckleColors.successBorder] }),
+          },
+        ]}
+      >
+        <View style={styles.offerBarRow}>
+          <Ionicons
+            name={lastNudge.current.unlocked ? 'checkmark-circle' : 'pricetag'}
+            size={14}
+            color={lastNudge.current.unlocked ? QuinckleColors.success : QuinckleColors.primary}
+          />
+          <Text style={styles.offerBarText} numberOfLines={1}>
+            {lastNudge.current.unlocked
+              ? `${lastNudge.current.reward} unlocked — ${lastNudge.current.name}`
+              : `Add ₹${lastNudge.current.remaining} more to unlock ${lastNudge.current.reward}`}
+          </Text>
+        </View>
+        <View style={styles.offerTrack}>
+          <Animated.View
+            style={[
+              styles.offerFill,
+              {
+                width: offerProgressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'], extrapolate: 'clamp' }),
+                backgroundColor: offerUnlockAnim.interpolate({ inputRange: [0, 1], outputRange: [QuinckleColors.primary, QuinckleColors.success] }),
+              },
+            ]}
+          />
+        </View>
+      </Animated.View>
+    </Animated.View>
+  );
+
+  const searchBarJsx = (
+    <View style={styles.searchBar}>
+      <Ionicons name="search" size={15} color={QuinckleColors.textMuted} />
+      <TextInput
+        style={styles.searchInput}
+        placeholder="Search menu…"
+        placeholderTextColor={QuinckleColors.textMuted}
+        value={search}
+        onChangeText={setSearch}
+        returnKeyType="search"
+      />
+      {search.length > 0 && (
+        <TouchableOpacity onPress={() => setSearch('')} hitSlop={8}>
+          <Ionicons name="close-circle" size={15} color={QuinckleColors.textMuted} />
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+
+  const footerJsx = footerMounted && (
+    <Animated.View style={[
+      styles.footer,
+      { paddingBottom: insets.bottom + Spacing.sm },
+      {
+        opacity: footerAnim,
+        transform: [{ translateY: footerAnim.interpolate({ inputRange: [0, 1], outputRange: [56, 0] }) }],
+      },
+    ]}>
+      <TouchableOpacity
+        style={styles.footerLeft}
+        onPress={() => setReviewOpen(true)}
+        activeOpacity={0.7}
+        accessibilityLabel="Review order summary"
+      >
+        <View style={styles.footerChevron}>
+          <Ionicons name="chevron-up" size={16} color={QuinckleColors.primary} />
+        </View>
+        <View>
+          <Text style={styles.footerCount}>{cartCount} item{cartCount !== 1 ? 's' : ''}</Text>
+          <Text style={styles.footerTotal}>₹{cartTotal.toFixed(0)}</Text>
+        </View>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.placeBtn} onPress={openCheckout} activeOpacity={0.85}>
+        <Text style={styles.placeBtnText}>Place Order</Text>
+        <Ionicons name="arrow-forward" size={16} color="#fff" />
+      </TouchableOpacity>
+    </Animated.View>
+  );
+
+  const cartReviewJsx = (
+    <CartReviewSheet
+      visible={reviewOpen && cartLines.length > 0}
+      onClose={() => setReviewOpen(false)}
+      isWide={isWide}
+      lines={cartLines}
+      total={cartTotal}
+      onInc={addToCart}
+      onDec={removeFromCart}
+      onCheckout={() => { setReviewOpen(false); openCheckout(); }}
+    />
+  );
+
+  const headerJsx = (
+    <View style={styles.header}>
+      <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} activeOpacity={0.7}>
+        <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
+      </TouchableOpacity>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.headerTitle}>{isTakeaway ? 'New Takeaway Order' : 'Add Items'}</Text>
+        <Text style={[styles.headerSub, isTakeaway && { color: QuinckleColors.primary, fontWeight: '700' }]}>
+          {isTakeaway ? `TAKEAWAY${pickupToken ? ` · ${pickupToken}` : ''}` : `Table T${tableNum}`}
+        </Text>
+      </View>
+      {cartCount > 0 && (
+        <View style={styles.cartBadge}>
+          <Text style={styles.cartBadgeText}>{cartCount} item{cartCount !== 1 ? 's' : ''}</Text>
+        </View>
+      )}
+    </View>
+  );
+
+  const emptyJsx = (
+    <View style={styles.empty}>
+      <Ionicons name="search-outline" size={32} color={QuinckleColors.textMuted} />
+      <Text style={styles.emptyText}>
+        {menuItems.length === 0 ? 'No items available' : 'No items match your search'}
+      </Text>
+    </View>
+  );
+
+  // ── Tablet-landscape "full POS" layout: category rail on the left, a grid of
+  //    square item cards on the right (multi-column, like a till). ──
+  if (isWide) {
+    return (
+      <View style={[styles.screen, { paddingTop: insets.top }]}>
+        {headerJsx}
+        {offerNudgeJsx}
+
+        <View style={styles.wideRow}>
+          {/* Category rail */}
+          <View style={styles.rail}>
+            <View style={styles.railSearch}>{searchBarJsx}</View>
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingVertical: Spacing.sm }}>
+              {menuCategories.map(cat => {
+                const active = activeCategory === cat;
+                return (
+                  <TouchableOpacity
+                    key={cat}
+                    style={[styles.railItem, active && styles.railItemActive]}
+                    onPress={() => setActiveCategory(cat)}
+                    activeOpacity={0.75}
+                  >
+                    <View style={[styles.railAccent, active && styles.railAccentActive]} />
+                    <Text
+                      style={[styles.railText, active && styles.railTextActive]}
+                      numberOfLines={2}
+                    >
+                      {cat}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+
+          <View style={styles.wideDivider} />
+
+          {/* Item grid */}
+          <View style={styles.wideRightPane}>
+            <KeyboardAvoidingView
+              style={{ flex: 1 }}
+              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+              keyboardVerticalOffset={0}
+            >
+              {isMenuLoading ? (
+                <ActivityIndicator size="large" color={QuinckleColors.primary} style={{ marginTop: Spacing.huge }} />
+              ) : filteredItems.length === 0 ? (
+                emptyJsx
+              ) : (
+                <FlatList
+                  key={`grid-${gridColumns}`}
+                  data={gridData}
+                  keyExtractor={item => item.id}
+                  renderItem={renderCard}
+                  numColumns={gridColumns}
+                  columnWrapperStyle={{ gap: Spacing.md }}
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                  contentContainerStyle={{
+                    padding: Spacing.xl,
+                    gap: Spacing.md,
+                    paddingBottom: footerMounted ? 110 : Spacing.xxl,
+                  }}
+                />
+              )}
+              {footerJsx}
+            </KeyboardAvoidingView>
+          </View>
+        </View>
+
+        {/* ── Modifier sheet ── */}
+        <ModifierSheet
+          item={modifierItem}
+          pending={pendingMods}
+          onToggle={handleToggleMod}
+          onConfirm={handleConfirmMods}
+          onCancel={() => setModifierItem(null)}
+        />
+
+        {/* ── Cart review (right-side drawer on tablet-landscape) ── */}
+        {cartReviewJsx}
+      </View>
+    );
+  }
+
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
 
       {/* ── Header ── */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} activeOpacity={0.7}>
-          <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
-        </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>{isTakeaway ? 'New Takeaway Order' : 'Add Items'}</Text>
-          <Text style={[styles.headerSub, isTakeaway && { color: QuinckleColors.primary, fontWeight: '700' }]}>
-            {isTakeaway ? `TAKEAWAY${pickupToken ? ` · ${pickupToken}` : ''}` : `Table T${tableNum}`}
-          </Text>
-        </View>
-        {cartCount > 0 && (
-          <View style={styles.cartBadge}>
-            <Text style={styles.cartBadgeText}>{cartCount} item{cartCount !== 1 ? 's' : ''}</Text>
-          </View>
-        )}
-      </View>
+      {headerJsx}
 
       {/* ── Offer progress nudge ── */}
-      {nudgeMounted && lastNudge.current && (
-        <Animated.View
-          style={{
-            overflow: 'hidden',
-            opacity: offerSectionAnim,
-            maxHeight: offerSectionAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 140] }),
-            transform: [{ translateY: offerSectionAnim.interpolate({ inputRange: [0, 1], outputRange: [-10, 0] }) }],
-          }}
-        >
-          <Animated.View
-            style={[
-              styles.offerBar,
-              {
-                backgroundColor: offerUnlockAnim.interpolate({ inputRange: [0, 1], outputRange: [QuinckleColors.primarySoft, QuinckleColors.successSoft] }),
-                borderColor: offerUnlockAnim.interpolate({ inputRange: [0, 1], outputRange: [QuinckleColors.primarySoftBorder, QuinckleColors.successBorder] }),
-              },
-            ]}
-          >
-            <View style={styles.offerBarRow}>
-              <Ionicons
-                name={lastNudge.current.unlocked ? 'checkmark-circle' : 'pricetag'}
-                size={14}
-                color={lastNudge.current.unlocked ? QuinckleColors.success : QuinckleColors.primary}
-              />
-              <Text style={styles.offerBarText} numberOfLines={1}>
-                {lastNudge.current.unlocked
-                  ? `${lastNudge.current.reward} unlocked — ${lastNudge.current.name}`
-                  : `Add ₹${lastNudge.current.remaining} more to unlock ${lastNudge.current.reward}`}
-              </Text>
-            </View>
-            <View style={styles.offerTrack}>
-              <Animated.View
-                style={[
-                  styles.offerFill,
-                  {
-                    width: offerProgressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'], extrapolate: 'clamp' }),
-                    backgroundColor: offerUnlockAnim.interpolate({ inputRange: [0, 1], outputRange: [QuinckleColors.primary, QuinckleColors.success] }),
-                  },
-                ]}
-              />
-            </View>
-          </Animated.View>
-        </Animated.View>
-      )}
+      {offerNudgeJsx}
 
       {/* ── Search + Category dropdown ── */}
       <View style={styles.searchRow}>
-        <View style={styles.searchBar}>
-          <Ionicons name="search" size={15} color={QuinckleColors.textMuted} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search menu…"
-            placeholderTextColor={QuinckleColors.textMuted}
-            value={search}
-            onChangeText={setSearch}
-            returnKeyType="search"
-          />
-          {search.length > 0 && (
-            <TouchableOpacity onPress={() => setSearch('')} hitSlop={8}>
-              <Ionicons name="close-circle" size={15} color={QuinckleColors.textMuted} />
-            </TouchableOpacity>
-          )}
-        </View>
+        {searchBarJsx}
 
         {/* Category dropdown trigger */}
         <TouchableOpacity
@@ -1046,12 +1403,7 @@ export default function OrderMenuScreen() {
             <View style={{ height: Spacing.huge }} />
           </ScrollView>
         ) : filteredItems.length === 0 ? (
-          <View style={styles.empty}>
-            <Ionicons name="search-outline" size={32} color={QuinckleColors.textMuted} />
-            <Text style={styles.emptyText}>
-              {menuItems.length === 0 ? 'No items available' : 'No items match your search'}
-            </Text>
-          </View>
+          emptyJsx
         ) : (
           <FlatList
             data={filteredItems}
@@ -1064,25 +1416,7 @@ export default function OrderMenuScreen() {
         )}
 
         {/* ── Footer CTA — springs up, fades out smoothly ── */}
-        {footerMounted && (
-          <Animated.View style={[
-            styles.footer,
-            { paddingBottom: insets.bottom + Spacing.sm },
-            {
-              opacity: footerAnim,
-              transform: [{ translateY: footerAnim.interpolate({ inputRange: [0, 1], outputRange: [56, 0] }) }],
-            },
-          ]}>
-            <View style={styles.footerLeft}>
-              <Text style={styles.footerCount}>{cartCount} item{cartCount !== 1 ? 's' : ''}</Text>
-              <Text style={styles.footerTotal}>₹{cartTotal.toFixed(0)}</Text>
-            </View>
-            <TouchableOpacity style={styles.placeBtn} onPress={openCheckout} activeOpacity={0.85}>
-              <Text style={styles.placeBtnText}>Place Order</Text>
-              <Ionicons name="arrow-forward" size={16} color="#fff" />
-            </TouchableOpacity>
-          </Animated.View>
-        )}
+        {footerJsx}
       </KeyboardAvoidingView>
 
       {/* ── Modifier sheet ── */}
@@ -1093,6 +1427,9 @@ export default function OrderMenuScreen() {
         onConfirm={handleConfirmMods}
         onCancel={() => setModifierItem(null)}
       />
+
+      {/* ── Cart review (bottom sheet on phone) ── */}
+      {cartReviewJsx}
 
     </View>
   );
@@ -1135,6 +1472,22 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 3,
   },
+
+  // Tablet-landscape two-pane POS layout
+  wideRow: { flex: 1, flexDirection: 'row' },
+  rail: { width: RAIL_WIDTH, paddingLeft: Spacing.md },
+  railSearch: { flexDirection: 'row', paddingRight: Spacing.md, paddingTop: Spacing.sm, paddingBottom: Spacing.sm },
+  railItem: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingVertical: 12, paddingRight: Spacing.md, borderRadius: Radius.md, marginBottom: 2,
+  },
+  railItemActive: { backgroundColor: QuinckleColors.primarySoft },
+  railAccent: { width: 3, height: 20, borderRadius: 2, backgroundColor: 'transparent' },
+  railAccentActive: { backgroundColor: QuinckleColors.primary },
+  railText: { ...Typography.body, color: QuinckleColors.textSecondary, fontWeight: '500', flex: 1 },
+  railTextActive: { color: QuinckleColors.primary, fontWeight: '700' },
+  wideDivider: { width: 1, backgroundColor: QuinckleColors.border, marginHorizontal: Spacing.sm },
+  wideRightPane: { flex: 1 },
 
   // Search row
   searchRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.xl, marginBottom: Spacing.md, gap: Spacing.sm },
@@ -1188,7 +1541,12 @@ const styles = StyleSheet.create({
 
   // Footer
   footer: { backgroundColor: QuinckleColors.surface, borderTopWidth: 1, borderTopColor: QuinckleColors.border, paddingHorizontal: Spacing.xl, paddingTop: Spacing.md, flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
-  footerLeft: { flex: 1 },
+  footerLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  footerChevron: {
+    width: 32, height: 32, borderRadius: Radius.md,
+    backgroundColor: QuinckleColors.primarySoft, borderWidth: 1, borderColor: QuinckleColors.primarySoftBorder,
+    alignItems: 'center', justifyContent: 'center',
+  },
   footerCount: { ...Typography.micro, color: QuinckleColors.textSecondary },
   footerTotal: { ...Typography.subtitle, color: QuinckleColors.textPrimary, marginTop: 1 },
   placeBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: QuinckleColors.primary, paddingHorizontal: Spacing.xl, paddingVertical: 13, borderRadius: Radius.md },

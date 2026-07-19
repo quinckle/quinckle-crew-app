@@ -32,7 +32,7 @@ export default function CookProfile() {
     visible: boolean;
     title: string;
     message: string;
-    actions: Array<{ label: string; variant?: 'default' | 'danger' | 'primary'; onPress: () => void }>;
+    actions: { label: string; variant?: 'default' | 'danger' | 'primary'; onPress: () => void }[];
   }>({
     visible: false,
     title: '',

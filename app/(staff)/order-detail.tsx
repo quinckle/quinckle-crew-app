@@ -168,14 +168,25 @@ export default function OrderDetail() {
   const [printing, setPrinting] = useState(false);
   // Tap-to-paper progress overlay; null = hidden.
   const [printJob, setPrintJob] = useState<PrintJob | null>(null);
-  const [meta, setMeta] = useState<{ address?: string | null; phone?: string | null; email?: string | null; fssaiLicenseNumber?: string | null; upiId?: string | null; upiName?: string | null } | null>(null);
+  const [meta, setMeta] = useState<{ address?: string | null; phone?: string | null; email?: string | null; fssaiLicenseNumber?: string | null; upiId?: string | null; upiName?: string | null; billThankYouMsg?: string | null; billFooterNote?: string | null } | null>(null);
   const [dialog, setDialog] = useState<{
     visible: boolean; title: string; message: string;
     actions: { label: string; onPress: () => void; variant?: 'default' | 'danger' | 'primary' }[];
   }>({ visible: false, title: '', message: '', actions: [] });
-  const closeDialog = () => setDialog((prev) => ({ ...prev, visible: false }));
-  const showDialog = (title: string, message: string, actions: typeof dialog['actions']) =>
-    setDialog({ visible: true, title, message, actions: actions.map((a) => ({ ...a, onPress: () => { closeDialog(); a.onPress(); } })) });
+  const closeDialog = useCallback(() => {
+    setDialog((prev) => ({ ...prev, visible: false }));
+  }, []);
+  const showDialog = useCallback((title: string, message: string, actions: typeof dialog['actions']) => {
+    setDialog({
+      visible: true,
+      title,
+      message,
+      actions: actions.map((action) => ({
+        ...action,
+        onPress: () => { closeDialog(); action.onPress(); },
+      })),
+    });
+  }, [closeDialog]);
 
   const handleReprint = useCallback(async () => {
     if (!session || printing) return;
@@ -195,7 +206,7 @@ export default function OrderDetail() {
         try {
           const res = await restaurantApi.getBranding(staffInfo.restaurantId);
           if (res?.success) {
-            m = { address: res.data.address ?? null, phone: res.data.phone ?? null, email: res.data.email ?? null, fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null, upiId: res.data.upiId ?? null, upiName: res.data.upiDisplayName ?? res.data.name ?? null };
+            m = { address: res.data.address ?? null, phone: res.data.phone ?? null, email: res.data.email ?? null, fssaiLicenseNumber: res.data.fssaiLicenseNumber ?? null, upiId: res.data.upiId ?? null, upiName: res.data.upiDisplayName ?? res.data.name ?? null, billThankYouMsg: res.data.billThankYouMsg ?? null, billFooterNote: res.data.billFooterNote ?? null };
             setMeta(m);
           }
         } catch { /* meta is optional */ }
@@ -241,6 +252,8 @@ export default function OrderDetail() {
         upiName: m?.upiName ?? null,
         orderDateTime: session.openedAt,
         generatedAt: new Date().toISOString(),
+        thankYouMessage: m?.billThankYouMsg ?? null,
+        footerNote: m?.billFooterNote ?? null,
       };
 
       setPrintJob({ phase: 'printing', label: 'Invoice' });
@@ -258,7 +271,7 @@ export default function OrderDetail() {
     } finally {
       setPrinting(false);
     }
-  }, [session, printing, meta, staffInfo]);
+  }, [session, printing, meta, staffInfo, showDialog]);
 
   const st = session ? statusMeta(session) : null;
 
