@@ -24,6 +24,7 @@ export type KitchenItem = {
   id:                string;
   name:              string;
   modifiersSummary?: string | null;
+  item_status?:      'pending' | 'done';
 };
 
 export type KitchenTicket = {
@@ -43,6 +44,12 @@ interface Props {
   index:          number;
   isCompletedTab: boolean;
   onReprint?:     () => void;
+  // DUAL_CHANNEL only: when true the item rows become tappable so the cook can
+  // mark food ready per item, plus a "Mark all ready" shortcut. Left undefined
+  // in SIMPLE mode, where the card stays a read-only display board.
+  dualChannel?:    boolean;
+  onToggleItem?:   (itemId: string, next: 'done' | 'pending') => void;
+  onMarkAllReady?: () => void;
 }
 
 // Format elapsed time as "0:42" / "06:18" / "1h 24m"
@@ -64,6 +71,9 @@ export function KitchenTicketCard({
   index,
   isCompletedTab,
   onReprint,
+  dualChannel,
+  onToggleItem,
+  onMarkAllReady,
 }: Props) {
   // Entry animation for completed tab
   const entryT = useRef(new Animated.Value(isCompletedTab ? 22 : 0)).current;
@@ -151,20 +161,63 @@ export function KitchenTicketCard({
           </View>
         </View>
 
-        {/* ── Item list (read-only) ─────────────────────────── */}
+        {/* ── Item list ─────────────────────────────────────── */}
+        {/* Read-only in SIMPLE; tappable per-item in DUAL_CHANNEL so the cook  */}
+        {/* marks each plate ready as it comes off the pass.                    */}
         <View style={styles.itemList}>
-          {ticket.items.map((entry) => (
-            <View key={entry.id} style={styles.itemRow}>
-              <Ionicons name="ellipse" size={5} color={QuinckleColors.textTertiary} style={{ marginTop: 6 }} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.itemLine}>{entry.name}</Text>
-                {entry.modifiersSummary ? (
-                  <Text style={styles.itemModifiers}>{entry.modifiersSummary}</Text>
-                ) : null}
-              </View>
-            </View>
-          ))}
+          {ticket.items.map((entry) => {
+            const done = entry.item_status === 'done';
+            const interactive = !!dualChannel && !isCompletedTab && !!onToggleItem;
+            const inner = (
+              <>
+                <Ionicons
+                  name={!interactive ? 'ellipse' : done ? 'checkmark-circle' : 'ellipse-outline'}
+                  size={interactive ? 16 : 5}
+                  color={done ? QuinckleColors.success : QuinckleColors.textTertiary}
+                  style={{ marginTop: interactive ? 1 : 6 }}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.itemLine, interactive && done && styles.itemLineDone]}>{entry.name}</Text>
+                  {entry.modifiersSummary ? (
+                    <Text style={styles.itemModifiers}>{entry.modifiersSummary}</Text>
+                  ) : null}
+                </View>
+                {interactive && done ? <Text style={styles.itemReadyTag}>Ready</Text> : null}
+              </>
+            );
+            return interactive ? (
+              <TouchableOpacity
+                key={entry.id}
+                style={styles.itemRow}
+                activeOpacity={0.7}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  onToggleItem!(entry.id, done ? 'pending' : 'done');
+                }}
+              >
+                {inner}
+              </TouchableOpacity>
+            ) : (
+              <View key={entry.id} style={styles.itemRow}>{inner}</View>
+            );
+          })}
         </View>
+
+        {/* ── Mark all ready (DUAL_CHANNEL, active tab, ≥1 pending) ────────── */}
+        {dualChannel && !isCompletedTab && onMarkAllReady &&
+          ticket.items.some((i) => i.item_status !== 'done') ? (
+          <TouchableOpacity
+            style={styles.markAllBtn}
+            activeOpacity={0.8}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              onMarkAllReady();
+            }}
+          >
+            <Ionicons name="checkmark-done" size={14} color={QuinckleColors.success} />
+            <Text style={styles.markAllText}>Mark all ready</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
     </Animated.View>
     </View>
@@ -281,5 +334,32 @@ const styles = StyleSheet.create({
     fontSize:  11,
     fontStyle: 'italic',
     marginTop: 1,
+  },
+  itemLineDone: {
+    color:              QuinckleColors.textTertiary,
+    textDecorationLine: 'line-through',
+  },
+  itemReadyTag: {
+    color:      QuinckleColors.success,
+    fontSize:   11,
+    fontWeight: '700',
+    alignSelf:  'center',
+  },
+  markAllBtn: {
+    flexDirection:   'row',
+    alignItems:      'center',
+    justifyContent:  'center',
+    gap:             6,
+    marginTop:       Spacing.md,
+    paddingVertical: 8,
+    borderRadius:    Radius.md,
+    borderWidth:     1,
+    borderColor:     QuinckleColors.successBorder,
+    backgroundColor: QuinckleColors.successSoft,
+  },
+  markAllText: {
+    color:      QuinckleColors.success,
+    fontSize:   12,
+    fontWeight: '700',
   },
 });

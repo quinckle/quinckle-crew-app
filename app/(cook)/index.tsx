@@ -26,7 +26,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
-import { kitchen, printerApi } from '../../services/api';
+import { kitchen, printerApi, restaurantApi } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { printKot, getStatus as getPrinterStatus } from '../../services/printer';
 import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded } from '../../services/printSink';
@@ -96,6 +96,9 @@ export default function CookDashboard() {
   const [searchText,    setSearchText]    = useState('');
   const [navTab,        setNavTab]        = useState<CookTab>('active');
   const [realtimeOk,    setRealtimeOk]    = useState(true);
+  // Venue order-status flow. In DUAL_CHANNEL the cook marks items ready; in
+  // SIMPLE the ticket list stays a read-only display board. Defaults to SIMPLE.
+  const [dinerStatusMode, setDinerStatusMode] = useState<'SIMPLE' | 'DUAL_CHANNEL'>('SIMPLE');
 
   // KOT drain: the SHARED implementation in printSink.ts (also used by the
   // staff screen + FGS) — flushes the ack outbox, pulls the server queue with
@@ -116,6 +119,7 @@ export default function CookDashboard() {
       id:               item.item_id,
       name:             `${item.qty}× ${item.name}${item.note ? ` — ${item.note}` : ''}`,
       modifiersSummary: item.modifiers_summary ?? item.modifiersSummary ?? null,
+      item_status:      (item.item_status ?? 'pending') as 'pending' | 'done',
     })),
   });
 
@@ -165,6 +169,52 @@ export default function CookDashboard() {
       setIsLoadingMoreCompleted(false);
     }
   }, [completedHasMore, completedPage, isLoadingMoreCompleted]);
+
+  // Load the venue's order-status flow once — gates the mark-ready UI below.
+  useEffect(() => {
+    const restaurantId = staffInfo?.restaurantId;
+    if (!restaurantId) return;
+    let cancelled = false;
+    restaurantApi.getBranding(restaurantId)
+      .then((res) => {
+        if (cancelled || !res?.success) return;
+        setDinerStatusMode((res.data.dinerStatusMode ?? 'SIMPLE') as 'SIMPLE' | 'DUAL_CHANNEL');
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [staffInfo?.restaurantId]);
+
+  // Cook marks a single item ready/undone. Optimistic; the backend flips the
+  // order to PREPARING on the first done and auto-bumps to READY on the last,
+  // and pushes item_ready so the steward sees that plate go Ready in real time.
+  const handleToggleItem = useCallback(async (orderId: string, itemId: string, next: 'done' | 'pending') => {
+    setOrders((prev) => prev.map((o) => o.id !== orderId ? o : {
+      ...o,
+      items: o.items.map((it) => it.id === itemId ? { ...it, item_status: next } : it),
+    }));
+    try {
+      await kitchen.updateItemStatus(orderId, itemId, next);
+    } catch {
+      void loadOrders(); // reconcile from server on failure
+    }
+  }, [loadOrders]);
+
+  // "Mark all ready" — flip every not-yet-done item on the ticket to done.
+  const handleMarkAllReady = useCallback(async (orderId: string) => {
+    const order = orders.find((o) => o.id === orderId);
+    if (!order) return;
+    const pending = order.items.filter((it) => it.item_status !== 'done');
+    if (pending.length === 0) return;
+    setOrders((prev) => prev.map((o) => o.id !== orderId ? o : {
+      ...o,
+      items: o.items.map((it) => ({ ...it, item_status: 'done' as const })),
+    }));
+    try {
+      await Promise.all(pending.map((it) => kitchen.updateItemStatus(orderId, it.id, 'done')));
+    } catch {
+      void loadOrders();
+    }
+  }, [orders, loadOrders]);
 
   useEffect(() => {
     loadOrders();
@@ -456,6 +506,9 @@ export default function CookDashboard() {
               ticket={item}
               index={index + 1}
               isCompletedTab={navTab === 'completed'}
+              dualChannel={dinerStatusMode === 'DUAL_CHANNEL'}
+              onToggleItem={(itemId, next) => void handleToggleItem(item.id, itemId, next)}
+              onMarkAllReady={() => void handleMarkAllReady(item.id)}
               onReprint={getPrinterStatus() === 'connected' ? () => {
                 // Print directly — printer is on this device. No Ably round-trip needed.
                 // KitchenItem.name is already prefixed "2× Paneer Tikka" from mapTicket,
