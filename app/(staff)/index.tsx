@@ -43,6 +43,7 @@ import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { MergeTableSheet } from '../../components/ui/MergeTableSheet';
 import { GroupPickerSheet } from '../../components/ui/GroupPickerSheet';
 import { UndoSnackbar } from '../../components/ui/UndoSnackbar';
+import { ItemReadyToast, type ReadyToast } from '../../components/ui/ItemReadyToast';
 import { FreeTableOverlay, type FreeJob } from '../../components/ui/FreeTableOverlay';
 import { ClearFlash } from '../../components/ui/ClearFlash';
 import { BottomNavbar } from '../../components/ui/BottomNavbar';
@@ -260,6 +261,14 @@ export default function StaffDashboard() {
   const [pendingCashCount, setPendingCashCount] = useState(0);
   const [pickupOrders, setPickupOrders] = useState<PickupOrder[]>([]);
   const pickupOrderIdsRef = useRef<Set<string>>(new Set());
+
+  // DUAL_CHANNEL "item ready" toast cards. In DUAL_CHANNEL the kitchen marks
+  // items done; loadPickupOrders diffs item_status transitions (pending → done)
+  // and drops a coalesced-per-table card + distinct chime so staff notice.
+  const [readyToasts, setReadyToasts] = useState<ReadyToast[]>([]);
+  const dualChannelRef = useRef(false);
+  const prevItemStatusRef = useRef<Map<string, 'pending' | 'done'>>(new Map());
+  const pickupSeededRef = useRef(false);
   const [completedPickupOrders, setCompletedPickupOrders] = useState<PickupOrder[]>([]);
   const [completedPage, setCompletedPage] = useState(1);
   const [completedHasMore, setCompletedHasMore] = useState(false);
@@ -873,6 +882,56 @@ export default function StaffDashboard() {
         }).catch(() => { });
       }
 
+      // DUAL_CHANNEL only: detect items the kitchen just flipped done (and not
+      // yet served) by diffing item_status against the previous snapshot, then
+      // drop a coalesced-per-table "ready" card + distinct chime + haptic. The
+      // first load only seeds the snapshot (no burst of chimes on app open).
+      if (dualChannelRef.current) {
+        const prevStatus = prevItemStatusRef.current;
+        const readyByTable = new Map<number, number>();
+        for (const o of serveableOrders) {
+          if (o.channel === 'TAKEAWAY' || o.table_number == null) continue;
+          for (const it of o.items) {
+            if (it.item_status === 'done' && !it.served && prevStatus.get(it.item_id) === 'pending') {
+              readyByTable.set(o.table_number, (readyByTable.get(o.table_number) ?? 0) + 1);
+            }
+          }
+        }
+
+        // Snapshot every item's status (across all orders) for the next diff.
+        const nextStatus = new Map<string, 'pending' | 'done'>();
+        for (const o of allOrders) for (const it of o.items) nextStatus.set(it.item_id, it.item_status);
+        prevItemStatusRef.current = nextStatus;
+
+        // Tables that still have something to serve — used to prune stale cards
+        // once a table has been fully served or its session closed elsewhere.
+        const activeTables = new Set(serveableOrders.map(o => o.table_number));
+
+        if (pickupSeededRef.current && readyByTable.size > 0) {
+          void playSound(require('../../assets/audio/notifications/item-ready.wav'));
+          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          setReadyToasts(prev => {
+            const map = new Map(prev.map(t => [t.tableNumber, t]));
+            for (const [tableNumber, added] of readyByTable) {
+              const ex = map.get(tableNumber);
+              map.set(tableNumber, ex
+                ? { ...ex, count: ex.count + added, nonce: ex.nonce + 1 }
+                : { tableNumber, count: added, nonce: 0 });
+            }
+            return [...map.values()].filter(t => activeTables.has(t.tableNumber));
+          });
+        } else {
+          // No new ready items — drop any card whose table is no longer active.
+          // Returning `prev` unchanged when nothing was pruned skips the render.
+          setReadyToasts(prev => {
+            if (prev.length === 0) return prev;
+            const next = prev.filter(t => activeTables.has(t.tableNumber));
+            return next.length === prev.length ? prev : next;
+          });
+        }
+        pickupSeededRef.current = true;
+      }
+
       const refreshedActive = serveableOrders.map(order => ({
         id: order.order_id,
         tableNo: order.channel === 'TAKEAWAY' ? (order.pickup_token ?? 'TK') : `T${order.table_number}`,
@@ -952,6 +1011,23 @@ export default function StaffDashboard() {
     loadPendingCashCount,
     refreshPrintSinkOwnership,
   ]);
+
+  // Learn whether this venue runs the DUAL_CHANNEL flow (kitchen marks items
+  // done → staff serve). Only then do we surface "item ready" toast cards; a
+  // SIMPLE venue behaves exactly as before. Held in a ref so loadPickupOrders'
+  // stable callback can read it without re-arming.
+  useEffect(() => {
+    const restaurantId = staffInfo?.restaurantId;
+    if (!restaurantId) return;
+    let cancelled = false;
+    restaurantApi.getBranding(restaurantId)
+      .then((res) => {
+        if (cancelled || !res?.success) return;
+        dualChannelRef.current = (res.data.dinerStatusMode ?? 'SIMPLE') === 'DUAL_CHANNEL';
+      })
+      .catch(() => { /* non-fatal — stays SIMPLE, no toasts */ });
+    return () => { cancelled = true; };
+  }, [staffInfo?.restaurantId]);
 
   // Advance the shared clock every 30s so card countdowns stay current — but
   // only while the Tables tab is open and at least one table has an expiry, so
@@ -2445,6 +2521,26 @@ export default function StaffDashboard() {
           </TouchableOpacity>
         </View>
       )}
+
+      {/* DUAL_CHANNEL "item ready" cards — tap opens the table to serve. */}
+      <ItemReadyToast
+        toasts={readyToasts}
+        onDismiss={(tableNumber) => setReadyToasts(prev => prev.filter(t => t.tableNumber !== tableNumber))}
+        onPress={(t) => {
+          setReadyToasts(prev => prev.filter(x => x.tableNumber !== t.tableNumber));
+          const table = tables.find(tb => tb.number === t.tableNumber);
+          if (table?.sessionId) {
+            router.push({
+              pathname: '/(staff)/[tableId]',
+              params: { tableId: String(table.number), sessionId: table.sessionId, tableDbId: table.id },
+            });
+          } else {
+            // Session raced away (served/closed elsewhere) — just switch to the
+            // floor grid so staff can pick the table manually.
+            setActiveTab('tables');
+          }
+        }}
+      />
 
       {/* Undo snackbar — reverses a group or batch free. */}
       <UndoSnackbar
