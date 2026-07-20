@@ -22,7 +22,7 @@ import { BottomSheet } from '../../components/ui/BottomSheet';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { useResponsive } from '../../hooks/useResponsive';
 
-type ItemStatus = 'prep' | 'served';
+type ItemStatus = 'prep' | 'ready' | 'served';
 
 type FlatItem = {
   key: string;
@@ -37,8 +37,14 @@ type FlatItem = {
   qty: number;
 };
 
-function itemStatus(item: BillOrderItem): ItemStatus {
+// In DUAL_CHANNEL mode the kitchen's per-item "done" marking surfaces to the
+// steward as a distinct "ready to serve" state, so they can see which plates
+// are up on the pass without walking to the kitchen. In SIMPLE mode this
+// collapses back to the original two-state prep/served behaviour — existing
+// venues see no change at all.
+function itemStatus(item: BillOrderItem, dualChannel: boolean): ItemStatus {
   if (item.served) return 'served';
+  if (dualChannel && item.item_status === 'done') return 'ready';
   return 'prep';
 }
 
@@ -75,6 +81,10 @@ export default function TableDetail() {
 
   const [sessionId] = useState(paramSessionId ?? '');
   const [sessionRef, setSessionRef] = useState('');
+  // Venue's order-status flow. Loaded once with branding; gates the item-level
+  // "ready to serve" indicators below. Defaults to SIMPLE so the screen renders
+  // its legacy two-state (prep/served) UI until we know otherwise.
+  const [dinerStatusMode, setDinerStatusMode] = useState<'SIMPLE' | 'DUAL_CHANNEL'>('SIMPLE');
   const [mergedFrom, setMergedFrom] = useState<{ session_ref: string; table_number: number | null }[]>([]);
   // Payment-QR picker: `qrSheet` holds the bill total for the sheet label;
   // `qrRunRef` holds the print runner the chosen option invokes.
@@ -338,6 +348,7 @@ export default function TableDetail() {
     restaurantApi.getBranding(restaurantId)
       .then((res) => {
         if (cancelled || !res?.success) return;
+        setDinerStatusMode((res.data.dinerStatusMode ?? 'SIMPLE') as 'SIMPLE' | 'DUAL_CHANNEL');
         setRestaurantInvoiceMeta({
           address: res.data.address ?? null,
           phone: res.data.phone ?? null,
@@ -403,13 +414,13 @@ export default function TableDetail() {
         order_id: order.order_id,
         name: `${item.qty}× ${item.name}`,
         modifiersSummary: item.modifiers_summary,
-        status: itemStatus(item),
+        status: itemStatus(item, dinerStatusMode === 'DUAL_CHANNEL'),
         cancelled: item.item_status === 'cancelled',
         price: item.price * item.qty,
         orderedAt: formatTime(order.placed_at),
         qty: item.qty,
       }))
-    ), [orders]);
+    ), [orders, dinerStatusMode]);
 
   // Cancelled items don't count toward serve progress.
   const servedCount = flatItems.filter(i => !i.cancelled && i.status === 'served').length;
@@ -1050,13 +1061,28 @@ export default function TableDetail() {
                   <Text style={styles.servedBadgeText}>Served</Text>
                 </View>
               ) : (
-                <TouchableOpacity
-                  style={styles.markServedBtn}
-                  onPress={() => void handleServe(item)}
-                  activeOpacity={0.75}
-                >
-                  <Text style={styles.markServedText}>Mark served</Text>
-                </TouchableOpacity>
+                <View style={styles.serveActions}>
+                  {dinerStatusMode === 'DUAL_CHANNEL' ? (
+                    item.status === 'ready' ? (
+                      <View style={styles.readyBadge}>
+                        <Ionicons name="checkmark-circle" size={11} color={QuinckleColors.success} />
+                        <Text style={styles.readyBadgeText}>Ready</Text>
+                      </View>
+                    ) : (
+                      <View style={styles.prepBadge}>
+                        <Ionicons name="time-outline" size={11} color={QuinckleColors.warning} />
+                        <Text style={styles.prepBadgeText}>Preparing</Text>
+                      </View>
+                    )
+                  ) : null}
+                  <TouchableOpacity
+                    style={styles.markServedBtn}
+                    onPress={() => void handleServe(item)}
+                    activeOpacity={0.75}
+                  >
+                    <Text style={styles.markServedText}>Mark served</Text>
+                  </TouchableOpacity>
+                </View>
               )}
             </TouchableOpacity>
           );
@@ -2099,6 +2125,12 @@ const styles = StyleSheet.create({
   markServedText: { color: QuinckleColors.primary, fontSize: 11, fontWeight: '700' },
   servedBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, backgroundColor: 'rgba(74,222,128,0.1)' },
   servedBadgeText: { color: '#4ade80', fontSize: 11, fontWeight: '700' },
+  // Dual-channel only: item-level kitchen state shown beside the serve button.
+  serveActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  readyBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, backgroundColor: QuinckleColors.successSoft },
+  readyBadgeText: { color: QuinckleColors.success, fontSize: 11, fontWeight: '700' },
+  prepBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, backgroundColor: QuinckleColors.warningSoft },
+  prepBadgeText: { color: QuinckleColors.warning, fontSize: 11, fontWeight: '700' },
   itemNameCancelled: { textDecorationLine: 'line-through', color: QuinckleColors.textTertiary },
   cancelledBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, backgroundColor: 'rgba(239,68,68,0.12)' },
   cancelledBadgeText: { color: QuinckleColors.danger, fontSize: 11, fontWeight: '700' },

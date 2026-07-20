@@ -1078,6 +1078,10 @@ export const restaurantApi = {
         dineTheme: string;
         upiId?: string | null;
         upiDisplayName?: string | null;
+        // Order-status flow the venue runs. DUAL_CHANNEL splits kitchen (mark
+        // ready) from front-of-house (mark served); SIMPLE keeps the legacy
+        // single-step flow. Defaults to SIMPLE server-side when unset.
+        dinerStatusMode?: 'SIMPLE' | 'DUAL_CHANNEL';
         acceptCash?: boolean;
         acceptUpiDirect?: boolean;
         acceptStaffCollect?: boolean;
