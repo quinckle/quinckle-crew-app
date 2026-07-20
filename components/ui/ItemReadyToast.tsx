@@ -29,6 +29,10 @@ export interface ReadyToast {
   count: number;
   /** Bumped by the parent each time `count` changes, to re-arm the auto-expire. */
   nonce: number;
+  /** Session to open on tap (captured when the card is raised). */
+  sessionId?: string | null;
+  /** Table DB id — enables transfer/extend on the detail screen. */
+  tableDbId?: string | null;
 }
 
 interface Props {
