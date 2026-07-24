@@ -6,6 +6,7 @@ import {
   RefreshControl,
   Image,
   LayoutAnimation,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -54,6 +55,7 @@ import { TakeawayManageSheet } from '../../components/ui/TakeawayManageSheet';
 import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
 import { TableSkeleton } from '../../components/ui/TableSkeleton';
 import { MenuSkeleton } from '../../components/ui/MenuSkeleton';
+import { TakeawaySkeleton } from '../../components/ui/TakeawaySkeleton';
 import { SideDrawer } from '../../components/ui/SideDrawer';
 import { useResponsive } from '../../hooks/useResponsive';
 
@@ -287,6 +289,8 @@ export default function StaffDashboard() {
   // Order whose long-press "manage" sheet (item / whole-order delete) is open.
   const [manageOrder, setManageOrder] = useState<TakeawayOrder | null>(null);
   const [refreshingTakeaway, setRefreshingTakeaway] = useState(false);
+  // First-load flag drives the shimmer skeleton; refreshes reuse the pull spinner.
+  const [isLoadingTakeaway, setIsLoadingTakeaway] = useState(true);
   const [takeawaySearchText, setTakeawaySearchText] = useState('');
   const [takeawayQrOpen, setTakeawayQrOpen] = useState(false);
   const takeawayOrderUrl = staffInfo?.restaurantId
@@ -311,6 +315,7 @@ export default function StaffDashboard() {
     } catch { /* non-fatal */ }
     finally {
       setRefreshingTakeaway(false);
+      setIsLoadingTakeaway(false);
     }
   }, []);
 
@@ -2391,6 +2396,9 @@ export default function StaffDashboard() {
             </TouchableOpacity>
           </View>
 
+          {isLoadingTakeaway && takeawayOrders.length === 0 ? (
+            <TakeawaySkeleton />
+          ) : (
           <FlatList
             data={
               (takeawaySubTab === 'preparing'
@@ -2421,9 +2429,25 @@ export default function StaffDashboard() {
                       </Text>
                     </Text>
                     {(item.customerName || item.customerPhone) && (
-                      <Text style={styles.takeawayCustomer}>
-                        {item.customerName ?? ''}{item.customerName && item.customerPhone ? ' · ' : ''}{item.customerPhone ?? ''}
-                      </Text>
+                      <View style={styles.takeawayCustomerRow}>
+                        {item.customerName ? (
+                          <Text style={styles.takeawayCustomer}>{item.customerName}</Text>
+                        ) : null}
+                        {item.customerName && item.customerPhone ? (
+                          <Text style={styles.takeawayCustomer}>·</Text>
+                        ) : null}
+                        {item.customerPhone ? (
+                          <TouchableOpacity
+                            onPress={() => { void Linking.openURL(`tel:${(item.customerPhone ?? '').replace(/[^0-9+]/g, '')}`); }}
+                            hitSlop={{ top: 6, bottom: 6, left: 4, right: 10 }}
+                            activeOpacity={0.7}
+                            style={styles.takeawayPhoneBtn}
+                          >
+                            <Ionicons name="call-outline" size={12} color={QuinckleColors.primary} />
+                            <Text style={styles.takeawayPhoneLink}>{item.customerPhone}</Text>
+                          </TouchableOpacity>
+                        ) : null}
+                      </View>
                     )}
                     {item.sessionRef && (
                       <Text style={styles.takeawayRef}>{item.sessionRef}</Text>
@@ -2498,6 +2522,7 @@ export default function StaffDashboard() {
               </View>
             }
           />
+          )}
         </View>
       ) : null}
 
@@ -3844,10 +3869,26 @@ const styles = StyleSheet.create({
     color: QuinckleColors.textTertiary,
     fontWeight: '400',
   },
+  takeawayCustomerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 4,
+  },
   takeawayCustomer: {
     fontSize: 13,
     color: QuinckleColors.textSecondary,
-    marginTop: 4,
+  },
+  takeawayPhoneBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  takeawayPhoneLink: {
+    fontSize: 13,
+    color: QuinckleColors.primary,
+    fontWeight: '600',
   },
   takeawayRef: {
     fontSize: 11,
