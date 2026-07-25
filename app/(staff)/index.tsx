@@ -119,6 +119,12 @@ type Table = {
   // Party cap (maxActiveSessionsPerTable). >1 lets crew seat another group
   // on an occupied table.
   maxParties?: number;
+  // Seating zone ("Rooftop", "Jalsaghar") — a grouping label only, so the
+  // table number, its QR and any live session are unaffected. Null means
+  // unassigned, and the grid drops those into a trailing section.
+  zoneId?: string | null;
+  zoneName?: string | null;
+  zoneSortOrder?: number | null;
 };
 
 type TableGroup = {
@@ -744,6 +750,48 @@ export default function StaffDashboard() {
     return matchesFilter && matchesSearch;
   }), [tables, activeFilter, searchText]);
 
+  /**
+   * The floor split into seating-zone sections, in the order the partner set
+   * on the dashboard, with unassigned tables last.
+   *
+   * A restaurant that hasn't created any zones gets a single unnamed section
+   * holding every table — i.e. the grid a steward sees today, unchanged. The
+   * headers only appear once there is a real zone to name, so this can't
+   * disturb the four pilots who don't use zones.
+   *
+   * Empty sections are dropped so filtering to "occupied" doesn't leave a
+   * column of bare headers behind.
+   */
+  const zoneSections = useMemo(() => {
+    const hasZones = filteredTables.some((t) => !!t.zoneId);
+    if (!hasZones) return [{ key: 'all', name: null as string | null, tables: filteredTables }];
+
+    const byZone = new Map<string, { name: string; sortOrder: number; tables: Table[] }>();
+    const unassigned: Table[] = [];
+
+    for (const t of filteredTables) {
+      if (!t.zoneId) { unassigned.push(t); continue; }
+      const existing = byZone.get(t.zoneId);
+      if (existing) existing.tables.push(t);
+      else byZone.set(t.zoneId, {
+        name: t.zoneName ?? 'Zone',
+        sortOrder: t.zoneSortOrder ?? 0,
+        tables: [t],
+      });
+    }
+
+    const sections = [...byZone.entries()]
+      // sortOrder is the partner's chosen order; name breaks ties so the
+      // grid never reshuffles between refreshes.
+      .sort((a, b) => a[1].sortOrder - b[1].sortOrder || a[1].name.localeCompare(b[1].name))
+      .map(([id, z]) => ({ key: id, name: z.name as string | null, tables: z.tables }));
+
+    if (unassigned.length > 0) {
+      sections.push({ key: '__unassigned__', name: 'Unassigned', tables: unassigned });
+    }
+    return sections;
+  }, [filteredTables]);
+
   const closeDialog = () => setDialog((prev) => ({ ...prev, visible: false }));
 
   const showDialog = (
@@ -790,7 +838,12 @@ export default function StaffDashboard() {
             : undefined,
           occupiedSince: t.occupied_since ?? undefined,
           expiresAt: t.expires_at ?? null,
-          location: undefined,
+          zoneId: t.zone_id ?? null,
+          zoneName: t.zone_name ?? null,
+          zoneSortOrder: typeof t.zone_sort_order === 'number' ? t.zone_sort_order : null,
+          // `location` is what the search box already matches on, so pointing
+          // it at the zone name makes "rooftop" a working search term for free.
+          location: t.zone_name ?? undefined,
           sessionId: t.session_id ?? undefined,
           customerName: t.customer_name ?? null,
           customerPhone: t.customer_phone ?? null,
@@ -1960,8 +2013,17 @@ export default function StaffDashboard() {
                   <Text style={styles.emptyText}>No tables match this filter.</Text>
                 </View>
               ) : (
+                zoneSections.map((section) => (
+                <View key={section.key}>
+                {section.name !== null && (
+                  <View style={styles.zoneHeader}>
+                    <Text style={styles.zoneHeaderName}>{section.name}</Text>
+                    <View style={styles.zoneHeaderRule} />
+                    <Text style={styles.zoneHeaderCount}>{section.tables.length}</Text>
+                  </View>
+                )}
                 <View style={styles.tableGrid}>
-                  {filteredTables.map((item) => {
+                  {section.tables.map((item) => {
                     const meta = STATUS_META[item.status] || STATUS_META.available;
                     const gradColors: [string, string, string, string, string] = [
                       'transparent',
@@ -2107,13 +2169,16 @@ export default function StaffDashboard() {
                       short last row would otherwise have its slack spread
                       across the gaps instead of matching the column grid
                       above. Invisible fillers pad it to a full row so the
-                      real cards land on the same column positions. */}
+                      real cards land on the same column positions. Counted
+                      per zone section — each one ends in its own short row. */}
                   {Array.from({
-                    length: (tableColumns - (filteredTables.length % tableColumns)) % tableColumns,
+                    length: (tableColumns - (section.tables.length % tableColumns)) % tableColumns,
                   }).map((_, i) => (
                     <View key={`filler-${i}`} style={{ width: tableCellWidth }} />
                   ))}
                 </View>
+                </View>
+                ))
               )}
             </ScrollView>
           )}
@@ -3050,6 +3115,33 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
+  },
+  // Seating-zone section header. Only rendered when the restaurant actually
+  // has zones, so a floor without them looks exactly as it always has.
+  zoneHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 14,
+    marginBottom: 8,
+  },
+  zoneHeaderName: {
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    color: QuinckleColors.textSecondary,
+  },
+  zoneHeaderRule: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: QuinckleColors.border,
+  },
+  zoneHeaderCount: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: QuinckleColors.textTertiary,
+    fontVariant: ['tabular-nums'],
   },
   // The grid cell owns the 2-column width; the card fills it. This lets an
   // occupied card be wrapped in a Swipeable without breaking the grid layout.
