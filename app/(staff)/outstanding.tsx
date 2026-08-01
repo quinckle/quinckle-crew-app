@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import {
-  ActivityIndicator, FlatList, Modal, RefreshControl, StyleSheet, Text, TextInput, TouchableOpacity, View,
+  ActivityIndicator, FlatList, Modal, RefreshControl, StyleSheet, Text, TouchableOpacity, View,
 } from 'react-native';
 import { Stack, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -8,6 +8,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
 import { crewPayments, crewOrders, type OutstandingGroup } from '../../services/api';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
+import { ReasonChips } from '../../components/ui/ReasonSheet';
+import { WAIVE_REASONS, isReasonComplete, toReasonPayload } from '../../constants/adjustmentReasons';
 
 function timeAgo(iso: string): string {
   const mins = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
@@ -30,6 +32,7 @@ export default function OutstandingScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [waiveTarget, setWaiveTarget] = useState<OutstandingGroup | null>(null);
   const [waiveReason, setWaiveReason] = useState('');
+  const [waiveCode, setWaiveCode] = useState<string | null>(null);
   const [waiving, setWaiving] = useState(false);
 
   const load = useCallback(async () => {
@@ -65,18 +68,23 @@ export default function OutstandingScreen() {
 
   const submitWaive = async () => {
     if (!waiveTarget) return;
-    const reason = waiveReason.trim();
-    if (!reason) return;
+    // The coded reason reaches the adjustments ledger; the free text stays as
+    // the note. The picker guarantees completeness, so the server's
+    // INVALID_REASON / REASON_TEXT_REQUIRED can't be reached from here.
+    if (!isReasonComplete(waiveCode, waiveReason)) return;
+    const coded = toReasonPayload(waiveCode!, waiveReason);
+    const reason = waiveReason.trim() || WAIVE_REASONS.find((r) => r.code === waiveCode)!.label;
     setWaiving(true);
     try {
       for (const id of waiveTarget.orderIds) {
-        try { await crewOrders.waive(id, reason); }
+        try { await crewOrders.waive(id, reason, coded); }
         catch (e: any) {
           if (String(e?.code ?? e?.error ?? e?.message ?? '').includes('ADMIN_REQUIRED')) throw e;
         }
       }
       setWaiveTarget(null);
       setWaiveReason('');
+      setWaiveCode(null);
       await load();
     } catch {
       // surfaced on next load; keep it simple
@@ -163,25 +171,23 @@ export default function OutstandingScreen() {
             </Text>
             <Text style={s.modalTitle}>Waive ₹{waiveTarget?.amount.toLocaleString('en-IN')}?</Text>
             <Text style={s.modalSub}>Records a write-off (no money collected). Reason required.</Text>
-            <View style={s.inputWrap}>
-              <TextInput
-                style={s.input}
-                value={waiveReason}
-                onChangeText={setWaiveReason}
-                placeholder="Reason (e.g. walkout, comp)"
-                placeholderTextColor={QuinckleColors.textMuted}
-                maxLength={200}
-                autoFocus
-              />
-            </View>
+            <ReasonChips
+              reasons={WAIVE_REASONS}
+              prompt="Why is it being written off?"
+              code={waiveCode}
+              text={waiveReason}
+              onPickCode={setWaiveCode}
+              onChangeText={setWaiveReason}
+              disabled={waiving}
+            />
             <View style={s.modalFooter}>
               <TouchableOpacity style={s.cancelBtn} onPress={() => setWaiveTarget(null)} disabled={waiving}>
                 <Text style={s.cancelBtnText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[s.confirmBtn, (!waiveReason.trim() || waiving) && { opacity: 0.4 }]}
+                style={[s.confirmBtn, (!isReasonComplete(waiveCode, waiveReason) || waiving) && { opacity: 0.4 }]}
                 onPress={submitWaive}
-                disabled={!waiveReason.trim() || waiving}
+                disabled={!isReasonComplete(waiveCode, waiveReason) || waiving}
               >
                 {waiving ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.confirmBtnText}>Waive</Text>}
               </TouchableOpacity>

@@ -34,9 +34,9 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { BottomSheet } from './BottomSheet';
-import { CancelReasonPicker } from './CancelReasonSheet';
+import { ReasonPicker } from './ReasonSheet';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
-import type { CancelReason } from '../../constants/cancelReasons';
+import type { CancelReason } from '../../constants/adjustmentReasons';
 import type { TakeawayOrder } from '../../services/api';
 
 // LayoutAnimation needs this opt-in on old-arch Android; harmless no-op on Fabric.
@@ -235,7 +235,7 @@ export function TakeawayManageSheet({ order, onClose, onDeleteItem, onDeleteWhol
             </TouchableOpacity>
           </>
         ) : mode === 'reason' ? (
-          <CancelReasonPicker
+          <ReasonPicker
             subject={reasonFor ? `${reasonFor.qty}× ${reasonFor.name}` : null}
             note="This line will be removed and the total recalculated."
             confirmLabel="Remove item"

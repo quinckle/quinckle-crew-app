@@ -19,8 +19,8 @@ import { PrintOptionsSheet, type InvoiceBuyer } from '../../components/ui/PrintO
 import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintProgressOverlay';
 import { BillDetailsSheet, BillBreakdownContent } from '../../components/ui/BillDetailsSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
-import { CancelReasonSheet } from '../../components/ui/CancelReasonSheet';
-import type { CancelReason } from '../../constants/cancelReasons';
+import { ReasonSheet, ReasonChips } from '../../components/ui/ReasonSheet';
+import { WAIVE_REASONS, isReasonComplete, toReasonPayload, type CancelReason } from '../../constants/adjustmentReasons';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { useResponsive } from '../../hooks/useResponsive';
 
@@ -196,6 +196,7 @@ export default function TableDetail() {
   const [freeModalOpen, setFreeModalOpen] = useState(false);
   const [freeStep, setFreeStep] = useState<'choose' | 'waive'>('choose');
   const [waiveReason, setWaiveReason] = useState('');
+  const [waiveCode, setWaiveCode] = useState<string | null>(null);
   const [freeing, setFreeing] = useState(false);
   const isAdmin = staffInfo?.role === 'ADMIN';
 
@@ -815,6 +816,7 @@ export default function TableDetail() {
       // outstanding (which the backend records + keeps visible).
       setFreeStep('choose');
       setWaiveReason('');
+      setWaiveCode(null); // never inherit the last write-off's reason
       setFreeModalOpen(true);
       return;
     }
@@ -844,12 +846,16 @@ export default function TableDetail() {
 
   // Admin write-off of every uncollected order, then free.
   const handleWaiveAndFree = async () => {
-    const reason = waiveReason.trim();
-    if (!reason) { showDialog('Reason needed', 'Add a short reason for writing this off.', [{ label: 'OK', onPress: () => {} }]); return; }
+    // The coded reason is what reaches the adjustments ledger; the free text is
+    // kept as the note. The picker guarantees a complete selection, so the
+    // server's INVALID_REASON / REASON_TEXT_REQUIRED can't be hit from here.
+    if (!isReasonComplete(waiveCode, waiveReason)) return;
+    const coded = toReasonPayload(waiveCode!, waiveReason);
+    const reason = waiveReason.trim() || WAIVE_REASONS.find((r) => r.code === waiveCode)!.label;
     setFreeing(true);
     try {
       for (const id of orders.map((o) => o.order_id)) {
-        try { await crewOrders.waive(id, reason); }
+        try { await crewOrders.waive(id, reason, coded); }
         catch (e: any) {
           const code = String(e?.code ?? e?.error ?? e?.message ?? '');
           if (code.includes('ADMIN_REQUIRED')) throw e;        // hard stop
@@ -1449,7 +1455,7 @@ export default function TableDetail() {
       />
 
       {/* ── Item cancel bottom sheet (confirm + reason in one step) ── */}
-      <CancelReasonSheet
+      <ReasonSheet
         visible={!!cancelTarget}
         title="Cancel this item?"
         subject={cancelTarget?.name}
@@ -1715,26 +1721,23 @@ export default function TableDetail() {
                 <Text style={styles.swapEyebrow}>Write off · Table T{tableNum}</Text>
                 <Text style={styles.swapTitle}>Waive ₹{grandTotal.toFixed(0)}?</Text>
                 <Text style={styles.swapSubtitle}>This records a write-off (no money collected). Reason required.</Text>
-                <View style={[styles.dinerInputWrap, { marginTop: 14 }]}>
-                  <TextInput
-                    style={[styles.dinerInput, { paddingLeft: 14 }]}
-                    value={waiveReason}
-                    onChangeText={setWaiveReason}
-                    placeholder="Reason (e.g. walkout, comp)"
-                    placeholderTextColor={QuinckleColors.textMuted}
-                    maxLength={200}
-                    autoFocus
-                    returnKeyType="done"
-                  />
-                </View>
+                <ReasonChips
+                  reasons={WAIVE_REASONS}
+                  prompt="Why is it being written off?"
+                  code={waiveCode}
+                  text={waiveReason}
+                  onPickCode={setWaiveCode}
+                  onChangeText={setWaiveReason}
+                  disabled={freeing}
+                />
                 <View style={styles.swapFooter}>
                   <TouchableOpacity style={styles.swapCancel} onPress={() => setFreeStep('choose')} activeOpacity={0.8} disabled={freeing}>
                     <Text style={styles.swapCancelText}>Back</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={[styles.swapConfirm, (!waiveReason.trim() || freeing) && { opacity: 0.4 }]}
+                    style={[styles.swapConfirm, (!isReasonComplete(waiveCode, waiveReason) || freeing) && { opacity: 0.4 }]}
                     onPress={handleWaiveAndFree}
-                    disabled={!waiveReason.trim() || freeing}
+                    disabled={!isReasonComplete(waiveCode, waiveReason) || freeing}
                     activeOpacity={0.85}
                   >
                     {freeing ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.swapConfirmText}>Waive &amp; free</Text>}

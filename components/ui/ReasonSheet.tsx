@@ -1,104 +1,75 @@
 /**
- * Cancellation reason capture — confirm a cancel AND record why, in one step.
+ * Adjustment-reason capture — confirm a destructive money action AND record
+ * why, in one step. Used for cancels (VOID) and write-offs (COMP).
  *
- * Replaces the plain "are you sure?" confirm that used to front item cancels.
+ * Replaces the plain "are you sure?" confirm that used to front these actions.
  * Folding the reason into the existing confirm keeps the flow at the same
  * number of taps for the crew (pick a reason = confirm) instead of adding a
  * second sheet on top of a destructive action they already have to think about.
  *
  * Confirm stays disabled until the selection is something the server will
  * accept, so the backend's 400s (INVALID_REASON / REASON_TEXT_REQUIRED) are
- * unreachable from this UI — the crew never sees a cancel fail on validation.
+ * unreachable from this UI — the crew never sees an action fail on validation.
  *
- * Two exports:
- *   • CancelReasonPicker — just the body. For hosts that already own a sheet
- *     (TakeawayManageSheet renders it as one mode of its state machine, since
- *     stacking a second BottomSheet would fight the first's backdrop + drag).
- *   • CancelReasonSheet   — the picker wrapped in its own BottomSheet.
+ * Three levels, because the hosts differ:
+ *   • ReasonChips  — controlled grid + the OTHER free-text box, nothing else.
+ *     For hosts that already own their confirm buttons (the waive modals).
+ *   • ReasonPicker — chips + copy + Keep/Confirm actions, no sheet of its own.
+ *     For hosts that already own a sheet (TakeawayManageSheet renders it as one
+ *     mode of its state machine; stacking a second BottomSheet would double the
+ *     backdrop and fight over drag-to-dismiss).
+ *   • ReasonSheet  — the picker wrapped in its own BottomSheet.
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { BottomSheet } from './BottomSheet';
-import { CANCEL_REASONS, REASON_TEXT_MAX, type CancelReason, type CancelReasonCode } from '../../constants/cancelReasons';
+import {
+  CANCEL_REASONS,
+  REASON_TEXT_MAX,
+  isReasonComplete,
+  toReasonPayload,
+  type CancelReason,
+  type ReasonOption,
+} from '../../constants/adjustmentReasons';
 import { QuinckleColors } from '../../constants/Colors';
 
-interface PickerProps {
-  /** Headline, e.g. "Cancel this item?". Omit when the host sheet has a title. */
-  title?: string | null;
-  /** What is being cancelled — item or order name. */
-  subject?: string | null;
-  /** Consequence line, e.g. "₹240 will be removed from the bill." */
-  note?: string | null;
-  /** Confirm button label. Defaults to "Cancel item". */
-  confirmLabel?: string;
-  /** Dismiss button label. Defaults to "Keep". */
-  cancelLabel?: string;
-  busy?: boolean;
-  /** Reset the selection whenever this changes — see the note in the effect. */
-  resetKey?: string | number | null;
-  onConfirm: (reason: CancelReason) => void;
-  onCancel: () => void;
+// ── Level 1: the chips ────────────────────────────────────────────────────────
+
+interface ChipsProps {
+  reasons?: readonly ReasonOption[];
+  code: string | null;
+  text: string;
+  onPickCode: (code: string) => void;
+  onChangeText: (text: string) => void;
+  disabled?: boolean;
+  /** Label above the grid. */
+  prompt?: string;
 }
 
-export function CancelReasonPicker({
-  title,
-  subject,
-  note,
-  confirmLabel = 'Cancel item',
-  cancelLabel = 'Keep',
-  busy = false,
-  resetKey,
-  onConfirm,
-  onCancel,
-}: PickerProps) {
-  const [code, setCode] = useState<CancelReasonCode | null>(null);
-  const [text, setText] = useState('');
-
-  // Never carry a previous cancellation's reason into the next one — that is
-  // how a whole shift ends up tagged "Out of stock".
-  useEffect(() => {
-    setCode(null);
-    setText('');
-  }, [resetKey]);
-
-  const trimmed = text.trim();
-  const canConfirm = useMemo(() => {
-    if (busy || !code) return false;
-    return code !== 'OTHER' || trimmed.length > 0;
-  }, [busy, code, trimmed]);
-
-  const handleConfirm = () => {
-    if (!canConfirm || !code) return;
-    onConfirm(code === 'OTHER' ? { reason_code: code, reason_text: trimmed } : { reason_code: code });
-  };
-
+export function ReasonChips({
+  reasons = CANCEL_REASONS,
+  code,
+  text,
+  onPickCode,
+  onChangeText,
+  disabled = false,
+  prompt = 'Why is it being cancelled?',
+}: ChipsProps) {
   return (
-    <View style={styles.body}>
-      {title ? (
-        <>
-          <View style={styles.icon}>
-            <Ionicons name="trash-outline" size={22} color={QuinckleColors.danger} />
-          </View>
-          <Text style={styles.title}>{title}</Text>
-        </>
-      ) : null}
-      {subject ? <Text style={styles.subject}>{subject}</Text> : null}
-      {note ? <Text style={styles.note}>{note}</Text> : null}
-
-      <Text style={styles.prompt}>Why is it being cancelled?</Text>
-
+    <>
+      <Text style={styles.prompt}>{prompt}</Text>
       <View style={styles.grid}>
-        {CANCEL_REASONS.map((r) => {
+        {reasons.map((r) => {
           const active = code === r.code;
           return (
             <TouchableOpacity
               key={r.code}
               style={[styles.chip, active && styles.chipActive]}
-              onPress={() => setCode(r.code)}
+              onPress={() => onPickCode(r.code)}
               activeOpacity={0.8}
-              disabled={busy}
+              disabled={disabled}
             >
               <Ionicons
                 name={r.icon as any}
@@ -119,14 +90,89 @@ export function CancelReasonPicker({
           placeholder="Say what happened"
           placeholderTextColor={QuinckleColors.textMuted}
           value={text}
-          onChangeText={setText}
+          onChangeText={onChangeText}
           maxLength={REASON_TEXT_MAX}
           autoFocus
-          editable={!busy}
+          editable={!disabled}
           returnKeyType="done"
-          onSubmitEditing={handleConfirm}
         />
       ) : null}
+    </>
+  );
+}
+
+// ── Level 2: chips + copy + actions ───────────────────────────────────────────
+
+interface PickerProps {
+  /** Headline, e.g. "Cancel this item?". Omit when the host sheet has a title. */
+  title?: string | null;
+  /** What is being adjusted — item or order name. */
+  subject?: string | null;
+  /** Consequence line, e.g. "₹240 will be removed from the bill." */
+  note?: string | null;
+  reasons?: readonly ReasonOption[];
+  prompt?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  busy?: boolean;
+  /** Reset the selection whenever this changes — see the note in the effect. */
+  resetKey?: string | number | null;
+  onConfirm: (reason: CancelReason) => void;
+  onCancel: () => void;
+}
+
+export function ReasonPicker({
+  title,
+  subject,
+  note,
+  reasons = CANCEL_REASONS,
+  prompt,
+  confirmLabel = 'Cancel item',
+  cancelLabel = 'Keep',
+  busy = false,
+  resetKey,
+  onConfirm,
+  onCancel,
+}: PickerProps) {
+  const [code, setCode] = useState<string | null>(null);
+  const [text, setText] = useState('');
+
+  // Never carry a previous adjustment's reason into the next one — that is how
+  // a whole shift ends up tagged "Out of stock".
+  useEffect(() => {
+    setCode(null);
+    setText('');
+  }, [resetKey]);
+
+  const canConfirm = useMemo(() => !busy && isReasonComplete(code, text), [busy, code, text]);
+
+  const handleConfirm = () => {
+    if (!canConfirm || !code) return;
+    onConfirm(toReasonPayload(code, text));
+  };
+
+  return (
+    <View style={styles.body}>
+      {title ? (
+        <>
+          <View style={styles.icon}>
+            <Ionicons name="trash-outline" size={22} color={QuinckleColors.danger} />
+          </View>
+          <Text style={styles.title}>{title}</Text>
+        </>
+      ) : null}
+      {subject ? <Text style={styles.subject}>{subject}</Text> : null}
+      {note ? <Text style={styles.note}>{note}</Text> : null}
+
+      <ReasonChips
+        reasons={reasons}
+        prompt={prompt}
+        code={code}
+        text={text}
+        onPickCode={setCode}
+        onChangeText={setText}
+        disabled={busy}
+      />
 
       <View style={styles.actions}>
         <TouchableOpacity
@@ -154,13 +200,15 @@ export function CancelReasonPicker({
   );
 }
 
+// ── Level 3: picker in its own sheet ──────────────────────────────────────────
+
 interface SheetProps extends Omit<PickerProps, 'onCancel' | 'resetKey' | 'title'> {
   visible: boolean;
   title: string;
   onClose: () => void;
 }
 
-export function CancelReasonSheet({ visible, busy = false, onClose, ...rest }: SheetProps) {
+export function ReasonSheet({ visible, busy = false, onClose, ...rest }: SheetProps) {
   // Bump only on open. The sheet keeps its children mounted while it animates
   // out, so resetting on close too would visibly deselect the chips on the way
   // down. `openCount` changing is what tells the picker to start clean.
@@ -171,7 +219,7 @@ export function CancelReasonSheet({ visible, busy = false, onClose, ...rest }: S
 
   return (
     <BottomSheet visible={visible} onClose={() => { if (!busy) onClose(); }}>
-      <CancelReasonPicker {...rest} busy={busy} resetKey={openCount} onCancel={onClose} />
+      <ReasonPicker {...rest} busy={busy} resetKey={openCount} onCancel={onClose} />
     </BottomSheet>
   );
 }

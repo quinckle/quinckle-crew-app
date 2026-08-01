@@ -1,5 +1,5 @@
 import { API_BASE_URL } from '../constants/env';
-import type { CancelReason } from '../constants/cancelReasons';
+import type { CancelReason } from '../constants/adjustmentReasons';
 
 let _crewToken: string | null = null;
 let _on401: (() => void) | null = null;
@@ -693,9 +693,12 @@ export const crewOrders = {
     ),
 
   // Write off an uncollected order (walkout / comp). ADMIN-only on the backend.
-  waive: (orderId: string, reason: string) =>
+  // `reason` is the free-text note the server has always required; `coded` is
+  // the optional comp-shaped reason that lands on the adjustments ledger. Void
+  // codes are rejected here with 400 INVALID_REASON — see WAIVE_REASONS.
+  waive: (orderId: string, reason: string, coded?: CancelReason) =>
     request<{ success: boolean; data: { orderId: string; sessionId: string; amount: number } }>(
-      'POST', `/api/crew/orders/${orderId}/waive`, { reason }, true,
+      'POST', `/api/crew/orders/${orderId}/waive`, { reason, ...(coded ?? {}) }, true,
     ),
 
   // Response `total` is the order's full payable amount (breakdown.total, tax

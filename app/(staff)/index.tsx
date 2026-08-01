@@ -53,8 +53,8 @@ import { PICKUP_LAYOUT_PRESET, PickupCard, PickupSegmented } from '../../compone
 import { PrintOptionsSheet, type InvoiceBuyer } from '../../components/ui/PrintOptionsSheet';
 import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintProgressOverlay';
 import { TakeawayManageSheet } from '../../components/ui/TakeawayManageSheet';
-import { CancelReasonSheet } from '../../components/ui/CancelReasonSheet';
-import type { CancelReason } from '../../constants/cancelReasons';
+import { ReasonSheet } from '../../components/ui/ReasonSheet';
+import type { CancelReason } from '../../constants/adjustmentReasons';
 import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
 import { TableSkeleton } from '../../components/ui/TableSkeleton';
 import { MenuSkeleton } from '../../components/ui/MenuSkeleton';
@@ -2778,7 +2778,7 @@ export default function StaffDashboard() {
         errorMessageFor={takeawayCancelMessage}
       />
 
-      <CancelReasonSheet
+      <ReasonSheet
         visible={!!deleteWholeTarget}
         title="Delete this order?"
         subject={deleteWholeTarget?.pickupToken ? `Order ${deleteWholeTarget.pickupToken}` : null}
