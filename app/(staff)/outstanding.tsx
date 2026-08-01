@@ -5,10 +5,10 @@ import {
 import { Stack, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useAuth } from '../../context/AuthContext';
 import { crewPayments, crewOrders, type OutstandingGroup } from '../../services/api';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ReasonChips } from '../../components/ui/ReasonSheet';
+import { useManagerApproval } from '../../components/ui/ManagerPinSheet';
 import { WAIVE_REASONS, isReasonComplete, toReasonPayload } from '../../constants/adjustmentReasons';
 
 function timeAgo(iso: string): string {
@@ -23,8 +23,6 @@ function timeAgo(iso: string): string {
 export default function OutstandingScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { staffInfo } = useAuth();
-  const isAdmin = staffInfo?.role === 'ADMIN';
 
   const [groups, setGroups] = useState<OutstandingGroup[]>([]);
   const [totalDue, setTotalDue] = useState(0);
@@ -34,6 +32,7 @@ export default function OutstandingScreen() {
   const [waiveReason, setWaiveReason] = useState('');
   const [waiveCode, setWaiveCode] = useState<string | null>(null);
   const [waiving, setWaiving] = useState(false);
+  const { sheet: managerPinSheet, runWithApproval } = useManagerApproval();
 
   const load = useCallback(async () => {
     try {
@@ -76,16 +75,22 @@ export default function OutstandingScreen() {
     const reason = waiveReason.trim() || WAIVE_REASONS.find((r) => r.code === waiveCode)!.label;
     setWaiving(true);
     try {
-      for (const id of waiveTarget.orderIds) {
-        try { await crewOrders.waive(id, reason, coded); }
-        catch (e: any) {
-          if (String(e?.code ?? e?.error ?? e?.message ?? '').includes('ADMIN_REQUIRED')) throw e;
+      // One PIN entry, one grant per bill in the group.
+      await runWithApproval({ action: 'COMP_ORDER', amount: waiveTarget.amount }, async (mint) => {
+        for (const id of waiveTarget.orderIds) {
+          try {
+            const grantId = mint ? await mint(id, null) : undefined;
+            await crewOrders.waive(id, reason, coded, grantId);
+          } catch (e: any) {
+            const code = String(e?.code ?? e?.error ?? e?.message ?? '');
+            if (code === 'ADMIN_REQUIRED' || code === 'AUTHORIZATION_REQUIRED' || code.startsWith('GRANT_') || code === 'PIN_LOCKED_OUT') throw e;
+          }
         }
-      }
-      setWaiveTarget(null);
-      setWaiveReason('');
-      setWaiveCode(null);
-      await load();
+        setWaiveTarget(null);
+        setWaiveReason('');
+        setWaiveCode(null);
+        await load();
+      });
     } catch {
       // surfaced on next load; keep it simple
     } finally {
@@ -117,11 +122,11 @@ export default function OutstandingScreen() {
         <TouchableOpacity style={s.collectBtn} onPress={() => handleCollect(g)} activeOpacity={0.85}>
           <Text style={s.collectBtnText}>Collect</Text>
         </TouchableOpacity>
-        {isAdmin && (
-          <TouchableOpacity style={s.waiveBtn} onPress={() => { setWaiveTarget(g); setWaiveReason(''); }} activeOpacity={0.85}>
-            <Text style={s.waiveBtnText}>Waive</Text>
-          </TouchableOpacity>
-        )}
+        {/* Not admin-gated in the UI any more — a steward starts it, a manager
+            approves with the PIN, and the server remains the real gate. */}
+        <TouchableOpacity style={s.waiveBtn} onPress={() => { setWaiveTarget(g); setWaiveReason(''); setWaiveCode(null); }} activeOpacity={0.85}>
+          <Text style={s.waiveBtnText}>Waive</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -195,6 +200,8 @@ export default function OutstandingScreen() {
           </View>
         </View>
       </Modal>
+
+      {managerPinSheet}
     </View>
   );
 }

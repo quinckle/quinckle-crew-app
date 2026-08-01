@@ -176,6 +176,22 @@ export const kitchen = {
     request<unknown>('POST', `/api/kitchen/orders/${orderId}/undo`, undefined, true),
 };
 
+// ── Manager authorization (POS adjustments C2) ────────────────────────────────
+
+/** Actions a manager PIN can approve. Must match the backend's PrivilegedAction. */
+export type PrivilegedAction = 'VOID_POST_KOT' | 'COMP_ORDER' | 'EXEMPT_SESSION' | 'REFUND';
+
+export const crewAuthorization = {
+  /**
+   * Exchange a manager PIN for a single-use grant, bound to this action, this
+   * order/session and this amount. Expires in ~2 minutes.
+   */
+  verifyPin: (body: { pin: string; action: PrivilegedAction; scopeRef?: string | null; amount?: number | null }) =>
+    request<{ success: boolean; data: { grantId: string; expiresAt: string } }>(
+      'POST', '/api/crew/authorization/verify-pin', body, true,
+    ),
+};
+
 // ── Crew Tables (STEWARD/ADMIN) ───────────────────────────────────────────────
 
 export interface CrewTableGroup { session_id: string; party_slot: number; label: string; occupied_since: string | null; expires_at?: string | null; customer_name?: string | null; customer_phone?: string | null; bill_subtotal?: number; bill_tax?: number; bill_total?: number; items_served?: number; items_total?: number; payment_settled?: boolean; }
@@ -526,11 +542,12 @@ export const crewSessions = {
     // A discount that zeroes the whole bill is an EXEMPTION: ADMIN-only on the
     // backend (403 ADMIN_REQUIRED) and recorded on the adjustments ledger.
     coded?: CancelReason,
+    grantId?: string | null,
   ) =>
     request<{ success: boolean; data: { sessionId: string; tableNumber: number; manualDiscountTotal: number; sessionTotal: number } }>(
       'POST',
       `/api/crew/sessions/${sessionId}/discount`,
-      { type, value, note: note ?? null, ...(coded ?? {}) },
+      { type, value, note: note ?? null, ...(coded ?? {}), ...(grantId ? { grantId } : {}) },
       true,
     ),
 
@@ -704,9 +721,10 @@ export const crewOrders = {
   // `reason` is the free-text note the server has always required; `coded` is
   // the optional comp-shaped reason that lands on the adjustments ledger. Void
   // codes are rejected here with 400 INVALID_REASON — see WAIVE_REASONS.
-  waive: (orderId: string, reason: string, coded?: CancelReason) =>
+  waive: (orderId: string, reason: string, coded?: CancelReason, grantId?: string | null) =>
     request<{ success: boolean; data: { orderId: string; sessionId: string; amount: number } }>(
-      'POST', `/api/crew/orders/${orderId}/waive`, { reason, ...(coded ?? {}) }, true,
+      'POST', `/api/crew/orders/${orderId}/waive`,
+      { reason, ...(coded ?? {}), ...(grantId ? { grantId } : {}) }, true,
     ),
 
   // Response `total` is the order's full payable amount (breakdown.total, tax

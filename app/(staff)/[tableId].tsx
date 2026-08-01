@@ -20,6 +20,7 @@ import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintPr
 import { BillDetailsSheet, BillBreakdownContent } from '../../components/ui/BillDetailsSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { ReasonSheet, ReasonChips } from '../../components/ui/ReasonSheet';
+import { useManagerApproval } from '../../components/ui/ManagerPinSheet';
 import { WAIVE_REASONS, EXEMPTION_REASONS, isReasonComplete, toReasonPayload, wouldZeroBill, type CancelReason } from '../../constants/adjustmentReasons';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { useResponsive } from '../../hooks/useResponsive';
@@ -199,6 +200,7 @@ export default function TableDetail() {
   const [freeStep, setFreeStep] = useState<'choose' | 'waive'>('choose');
   const [waiveReason, setWaiveReason] = useState('');
   const [waiveCode, setWaiveCode] = useState<string | null>(null);
+  const { sheet: managerPinSheet, runWithApproval } = useManagerApproval();
   const [freeing, setFreeing] = useState(false);
   const isAdmin = staffInfo?.role === 'ADMIN';
 
@@ -472,7 +474,10 @@ export default function TableDetail() {
 
     setApplyingDiscount(true);
     try {
-      await crewSessions.applyDiscount(sessionId, discountType, v, discountNote.trim() || null, coded);
+      await runWithApproval({ action: 'EXEMPT_SESSION', amount: sessionTotal }, async (mint) => {
+        const grantId = mint ? await mint(sessionId, null) : undefined;
+        await crewSessions.applyDiscount(sessionId, discountType, v, discountNote.trim() || null, coded, grantId);
+      });
       setDiscountModalOpen(false);
       setDiscountValue('');
       setDiscountNote('');
@@ -483,8 +488,8 @@ export default function TableDetail() {
       const code = e?.code as string | undefined;
       const msg = code === 'NO_DISCOUNTABLE_ORDERS'
         ? 'Everything on this table is already paid — nothing to discount.'
-        : code === 'ADMIN_REQUIRED'
-        ? 'Only an admin can write the whole bill off. Ask an admin to apply a full discount.'
+        : code === 'ADMIN_REQUIRED' || code === 'AUTHORIZATION_REQUIRED'
+        ? 'A manager must approve clearing the whole bill.'
         : (typeof e?.message === 'string' && e.message) || 'Please try again.';
       showDialog('Could not apply discount', msg, [{ label: 'OK', onPress: () => {} }]);
     } finally {
@@ -497,7 +502,7 @@ export default function TableDetail() {
   const canApplyDiscount =
     parseFloat(discountValue) > 0 &&
     !applyingDiscount &&
-    (!discountZeroesBill || (isAdmin && isReasonComplete(exemptCode, exemptText)));
+    (!discountZeroesBill || isReasonComplete(exemptCode, exemptText));
 
   // `nextQty` is the ABSOLUTE served count the line should stand at. A tap
   // hands over one more unit; a hold on the button hands over the rest.
@@ -873,19 +878,26 @@ export default function TableDetail() {
     const reason = waiveReason.trim() || WAIVE_REASONS.find((r) => r.code === waiveCode)!.label;
     setFreeing(true);
     try {
-      for (const id of orders.map((o) => o.order_id)) {
-        try { await crewOrders.waive(id, reason, coded); }
-        catch (e: any) {
-          const code = String(e?.code ?? e?.error ?? e?.message ?? '');
-          if (code.includes('ADMIN_REQUIRED')) throw e;        // hard stop
-          // ORDER_ALREADY_TERMINAL etc. — that order's already resolved, skip.
+      // A table can hold several unpaid orders. Each needs its own single-use
+      // grant, but the manager should only type the PIN once — hence `mint`.
+      await runWithApproval({ action: 'COMP_ORDER', amount: grandTotal }, async (mint) => {
+        for (const o of orders) {
+          try {
+            const grantId = mint ? await mint(o.order_id, null) : undefined;
+            await crewOrders.waive(o.order_id, reason, coded, grantId);
+          } catch (e: any) {
+            const code = String(e?.code ?? e?.error ?? e?.message ?? '');
+            // Surface anything a PIN could fix so the sheet can open.
+            if (code === 'ADMIN_REQUIRED' || code === 'AUTHORIZATION_REQUIRED' || code.startsWith('GRANT_') || code === 'PIN_LOCKED_OUT') throw e;
+            // ORDER_ALREADY_TERMINAL etc. — that order's already resolved, skip.
+          }
         }
-      }
-      setFreeModalOpen(false);
-      await doEndSession();
+        setFreeModalOpen(false);
+        await doEndSession();
+      });
     } catch (e: any) {
       const code = String(e?.code ?? e?.error ?? e?.message ?? '');
-      showDialog('Could not waive', code.includes('ADMIN_REQUIRED') ? 'Only an admin can write off a payment.' : 'Please try again.', [{ label: 'OK', onPress: () => {} }]);
+      showDialog('Could not waive', code.includes('ADMIN_REQUIRED') ? 'A manager must approve this write-off.' : 'Please try again.', [{ label: 'OK', onPress: () => {} }]);
     } finally {
       setFreeing(false);
     }
@@ -1473,6 +1485,8 @@ export default function TableDetail() {
         onClose={() => setQrSheet(null)}
       />
 
+      {managerPinSheet}
+
       {/* ── Item cancel bottom sheet (confirm + reason in one step) ── */}
       <ReasonSheet
         visible={!!cancelTarget}
@@ -1682,10 +1696,10 @@ export default function TableDetail() {
               />
             </View>
 
-            {/* Zeroing the bill is an exemption, not a discount — say why, and
-                only an admin may do it. */}
+            {/* Zeroing the bill is an exemption, not a discount — say why. A
+                non-admin can still do it; a manager approves with the PIN. */}
             {discountZeroesBill && (
-              isAdmin ? (
+              <>
                 <ReasonChips
                   reasons={EXEMPTION_REASONS}
                   prompt="This clears the whole bill. Why?"
@@ -1695,11 +1709,12 @@ export default function TableDetail() {
                   onChangeText={setExemptText}
                   disabled={applyingDiscount}
                 />
-              ) : (
-                <Text style={styles.discountAdminNote}>
-                  Clearing the whole bill is an admin action. Ask an admin, or lower the discount.
-                </Text>
-              )
+                {!isAdmin && (
+                  <Text style={styles.discountAdminNote}>
+                    A manager will be asked to approve this.
+                  </Text>
+                )}
+              </>
             )}
 
             <View style={styles.swapFooter}>
@@ -1734,12 +1749,10 @@ export default function TableDetail() {
                   <Text style={styles.freeOptBtnText}>Collect / mark as paid</Text>
                 </TouchableOpacity>
 
-                {isAdmin && (
-                  <TouchableOpacity style={styles.freeOptBtn} onPress={() => setFreeStep('waive')} activeOpacity={0.85} disabled={freeing}>
-                    <Ionicons name="remove-circle-outline" size={18} color={QuinckleColors.textSecondary} />
-                    <Text style={styles.freeOptBtnText}>Write off (waive)</Text>
-                  </TouchableOpacity>
-                )}
+                <TouchableOpacity style={styles.freeOptBtn} onPress={() => setFreeStep('waive')} activeOpacity={0.85} disabled={freeing}>
+                  <Ionicons name="remove-circle-outline" size={18} color={QuinckleColors.textSecondary} />
+                  <Text style={styles.freeOptBtnText}>Write off (waive)</Text>
+                </TouchableOpacity>
 
                 <TouchableOpacity style={[styles.freeOptBtn, styles.freeOptDanger]} onPress={handleFreeWithoutCollecting} activeOpacity={0.85} disabled={freeing}>
                   {freeing ? <ActivityIndicator color="#fca5a5" size="small" /> : (
