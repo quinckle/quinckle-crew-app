@@ -1,4 +1,5 @@
 import { API_BASE_URL } from '../constants/env';
+import type { CancelReason } from '../constants/cancelReasons';
 
 let _crewToken: string | null = null;
 let _on401: (() => void) | null = null;
@@ -316,7 +317,7 @@ export const crewMenu = {
 
 // ── Crew Sessions (STEWARD/ADMIN) ─────────────────────────────────────────────
 
-export interface BillOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done' | 'cancelled'; served: boolean; modifiers_summary?: string | null; }
+export interface BillOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done' | 'cancelled'; served: boolean; served_qty?: number; modifiers_summary?: string | null; }
 export interface BillOrder { order_id: string; placed_at: string; status: 'received' | 'preparing' | 'ready' | 'served'; items: BillOrderItem[]; order_total: number; }
 /**
  * Canonical bill breakdown — same shape returned by /dine/cart/preview and
@@ -331,6 +332,8 @@ export interface BillBreakdown {
   taxRate:      number;
   taxAmount:    number;
   tip:          number;
+  /** Optional — absent on responses from before round-off shipped. */
+  roundOff?:    number;
   total:        number;
   currency:     'INR';
 }
@@ -371,6 +374,9 @@ export interface SessionBill {
   service_charge_total?: number;
   discount_total?: number;
   tip_total?: number;
+  /** Signed rupee rounding reconciling the paise-precision GST to the whole-rupee
+   *  total. Absent (→ 0) on backends/bills from before round-off shipped. */
+  round_off?: number;
   total_payable?: number;
   /** Canonical breakdown — render from this when present. */
   breakdown?: BillBreakdown;
@@ -594,7 +600,7 @@ export const crewMemberships = {
 
 // ── Crew Orders (STEWARD/ADMIN) ───────────────────────────────────────────────
 
-export interface ActiveOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; }
+export interface ActiveOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; served_qty?: number; }
 export interface ActiveOrder { order_id: string; table_number: number; channel?: 'DINE_IN' | 'TAKEAWAY'; pickup_token?: string | null; session_id: string; status: 'received' | 'preparing' | 'ready' | 'served'; placed_at: string; served_at?: string; items: ActiveOrderItem[]; }
 
 export interface TakeawayOrder {
@@ -609,6 +615,8 @@ export interface TakeawayOrder {
   discount: number;
   tax: number;
   serviceCharge: number;
+  /** Signed rupee round-off. Absent on orders written before it shipped. */
+  roundOff?: number;
   total: number;
   paymentStatus: string;
   paymentMethod: string | null;
@@ -656,21 +664,32 @@ export const crewOrders = {
   // Backend's Fastify schema requires `{ served: true }` in the body — sending
   // no body fails validation and the optimistic UI flip reverts when the
   // PATCH rejects. Pass the literal `true` here.
-  serveItem: (orderId: string, itemId: string) =>
-    request<unknown>('PATCH', `/api/crew/orders/${orderId}/items/${itemId}/serve`, { served: true }, true),
+  //
+  // `servedQty` is an ABSOLUTE target ("this line now stands at 2 of 4"), not a
+  // delta, so a retry or a second steward's tap converges instead of
+  // double-counting. Omit it to serve the whole line.
+  serveItem: (orderId: string, itemId: string, servedQty?: number) =>
+    request<{ item_id: string; served: boolean; served_qty: number; qty: number }>(
+      'PATCH',
+      `/api/crew/orders/${orderId}/items/${itemId}/serve`,
+      servedQty == null ? { served: true } : { served: true, served_qty: servedQty },
+      true,
+    ),
 
   // Cancel a whole item line before payment is settled. Recomputes the order
   // total server-side; returns the new total + whether the order is now empty.
-  cancelItem: (orderId: string, itemId: string) =>
+  // `reason` is optional on the wire so older builds keep working; the picker
+  // always supplies one. An unknown code is rejected 400 INVALID_REASON.
+  cancelItem: (orderId: string, itemId: string, reason?: CancelReason) =>
     request<{ success: boolean; order_id: string; session_id: string; item_id: string; new_order_total: number; order_cancelled: boolean }>(
-      'PATCH', `/api/crew/orders/${orderId}/items/${itemId}/cancel`, undefined, true,
+      'PATCH', `/api/crew/orders/${orderId}/items/${itemId}/cancel`, reason, true,
     ),
 
   // Delete a whole order (all lines) before payment is settled — takeaway
   // "delete order". Marks the order CANCELLED server-side; it drops off the list.
-  cancelOrder: (orderId: string) =>
+  cancelOrder: (orderId: string, reason?: CancelReason) =>
     request<{ success: boolean; order_id: string; session_id: string; intent_voided: boolean; reverted_order_ids: string[] }>(
-      'PATCH', `/api/crew/orders/${orderId}/cancel`, undefined, true,
+      'PATCH', `/api/crew/orders/${orderId}/cancel`, reason, true,
     ),
 
   // Write off an uncollected order (walkout / comp). ADMIN-only on the backend.

@@ -19,6 +19,8 @@ import { PrintOptionsSheet, type InvoiceBuyer } from '../../components/ui/PrintO
 import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintProgressOverlay';
 import { BillDetailsSheet, BillBreakdownContent } from '../../components/ui/BillDetailsSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
+import { CancelReasonSheet } from '../../components/ui/CancelReasonSheet';
+import type { CancelReason } from '../../constants/cancelReasons';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { useResponsive } from '../../hooks/useResponsive';
 
@@ -35,6 +37,8 @@ type FlatItem = {
   price: number;
   orderedAt: string;
   qty: number;
+  /** Units of `qty` already handed over. status === 'served' iff servedQty >= qty. */
+  servedQty: number;
 };
 
 // In DUAL_CHANNEL mode the kitchen's per-item "done" marking surfaces to the
@@ -139,6 +143,7 @@ export default function TableDetail() {
   const [serviceChargeTotal, setServiceChargeTotal] = useState(0);
   const [discountTotal, setDiscountTotal] = useState(0);
   const [tipTotal, setTipTotal] = useState(0);
+  const [roundOffTotal, setRoundOffTotal] = useState(0);
   const [payableTotal, setPayableTotal] = useState(0);
   const [sessionStatus, setSessionStatus] = useState<'active' | 'paid' | 'closed'>('active');
   const [since, setSince] = useState(() => {
@@ -286,11 +291,14 @@ export default function TableDetail() {
       const tipV    = bd?.tip ?? bill.tip_total ?? 0;
       const explicitDisc = bd?.discount ?? bill.discount_total ?? 0;
       const explicitGrand = bd?.total ?? bill.total_payable;
+      // Rupee round-off. 0 on older backends and on legacy bills, where the tax
+      // was already whole rupees and nothing needed rounding.
+      const roundV  = bd?.roundOff ?? bill.round_off ?? 0;
       const inferredDisc = explicitDisc > 0 || explicitGrand == null
         ? explicitDisc
-        : Math.max(0, Math.round((subt + tax + charges + tipV - explicitGrand) * 100) / 100);
+        : Math.max(0, Math.round((subt + tax + charges + tipV + roundV - explicitGrand) * 100) / 100);
       const disc    = inferredDisc;
-      const grand   = explicitGrand ?? (subt + tax + charges + tipV - disc);
+      const grand   = explicitGrand ?? (subt + tax + charges + tipV - disc + roundV);
       setOrders(bill.orders);
       setSessionTotal(subt);
       setBillTaxRate(rate);
@@ -298,6 +306,7 @@ export default function TableDetail() {
       setServiceChargeTotal(charges);
       setDiscountTotal(disc);
       setTipTotal(tipV);
+      setRoundOffTotal(roundV);
       setPayableTotal(grand);
       setSessionStatus(bill.status);
       setSessionRef(bill.session_ref ?? '');
@@ -387,6 +396,9 @@ export default function TableDetail() {
       subscribeChannel(`waiter:${restaurantId}`, 'order_served',      refetch),
       subscribeChannel(`waiter:${restaurantId}`, 'item_bumped',       refetch),
       subscribeChannel(`waiter:${restaurantId}`, 'item_ready',        refetch),
+      // Partial serve ticks — order_served only fires once a whole order is
+      // out, so without this a second steward's device sits on a stale count.
+      subscribeChannel(`waiter:${restaurantId}`, 'item_served',       refetch),
       subscribeChannel(`waiter:${restaurantId}`, 'new_order',         refetch),
       subscribeChannel(`waiter:${restaurantId}`, 'payment_confirmed', refetch),
       // If this session ends from another device (or via diner/partner),
@@ -419,12 +431,15 @@ export default function TableDetail() {
         price: item.price * item.qty,
         orderedAt: formatTime(order.placed_at),
         qty: item.qty,
+        // Fall back for a backend that predates partial ticking.
+        servedQty: item.served_qty ?? (item.served ? item.qty : 0),
       }))
     ), [orders, dinerStatusMode]);
 
-  // Cancelled items don't count toward serve progress.
-  const servedCount = flatItems.filter(i => !i.cancelled && i.status === 'served').length;
-  const totalCount = flatItems.filter(i => !i.cancelled).length;
+  // Cancelled items don't count toward serve progress. Counted in UNITS, not
+  // lines — a half-served 4× line should move the bar halfway, not not at all.
+  const servedCount = flatItems.reduce((n, i) => n + (i.cancelled ? 0 : Math.min(i.qty, i.servedQty)), 0);
+  const totalCount = flatItems.reduce((n, i) => n + (i.cancelled ? 0 : i.qty), 0);
   const serviceProgress = totalCount > 0 ? servedCount / totalCount : 0;
   const progressAnim = React.useRef(new Animated.Value(serviceProgress)).current;
   const billableFlatItems = useMemo(() => flatItems.filter(item => !item.cancelled), [flatItems]);
@@ -464,21 +479,29 @@ export default function TableDetail() {
     }
   };
 
-  const handleServe = async (item: FlatItem) => {
+  // `nextQty` is the ABSOLUTE served count the line should stand at. A tap
+  // hands over one more unit; a hold on the button hands over the rest.
+  const handleServe = async (item: FlatItem, nextQty: number) => {
     if (item.status === 'served') return; // already served, no-op
+    const target = Math.max(0, Math.min(item.qty, nextQty));
+    const previousQty = item.servedQty;
     // Optimistic update
     setOrders(prev => prev.map(o => {
       if (o.order_id !== item.order_id) return o;
-      return { ...o, items: o.items.map(i => i.item_id === item.item_id ? { ...i, served: true } : i) };
+      return { ...o, items: o.items.map(i => i.item_id === item.item_id
+        ? { ...i, served_qty: target, served: target >= i.qty }
+        : i) };
     }));
     try {
-      await crewOrders.serveItem(item.order_id, item.item_id);
+      await crewOrders.serveItem(item.order_id, item.item_id, target);
       await loadBill(); // refresh from server — same pattern as kitchen
     } catch {
       // Revert on failure
       setOrders(prev => prev.map(o => {
         if (o.order_id !== item.order_id) return o;
-        return { ...o, items: o.items.map(i => i.item_id === item.item_id ? { ...i, served: false } : i) };
+        return { ...o, items: o.items.map(i => i.item_id === item.item_id
+          ? { ...i, served_qty: previousQty, served: previousQty >= i.qty }
+          : i) };
       }));
     }
   };
@@ -487,11 +510,11 @@ export default function TableDetail() {
   const [cancelTarget, setCancelTarget] = useState<FlatItem | null>(null);
   const [cancelling, setCancelling] = useState(false);
 
-  const handleCancelItem = async () => {
+  const handleCancelItem = async (reason: CancelReason) => {
     if (!cancelTarget || cancelling) return;
     setCancelling(true);
     try {
-      const res = await crewOrders.cancelItem(cancelTarget.order_id, cancelTarget.item_id);
+      const res = await crewOrders.cancelItem(cancelTarget.order_id, cancelTarget.item_id, reason);
       if (!res?.success) {
         setCancelTarget(null);
         showDialog('Could not cancel', 'This item could not be cancelled. The order may already be paid.', [{ label: 'OK', onPress: () => {} }]);
@@ -728,6 +751,7 @@ export default function TableDetail() {
         taxDisplayMode: invoiceMeta?.displayMode,
         taxLines: sessionTaxLines,
         pricesIncludeTax: invoiceMeta?.pricesIncludeTax,
+        roundOff: roundOffTotal,
         grandTotal,
         isPaid,
         paymentMethod: billPaymentMethod,
@@ -1016,6 +1040,10 @@ export default function TableDetail() {
         }
         renderItem={({ item }) => {
           const isServed = item.status === 'served';
+          const servedQty = Math.max(0, Math.min(item.qty, item.servedQty));
+          const isPartial = !isServed && servedQty > 0;
+          // Hold-to-serve-the-rest only earns its place when there IS a rest.
+          const holdable = !isServed && item.qty - servedQty > 1;
           if (item.cancelled) {
             return (
               <View style={[styles.orderItemRow, { opacity: 0.5 }]}>
@@ -1047,6 +1075,9 @@ export default function TableDetail() {
                   {item.modifiersSummary ? (
                     <Text style={styles.itemModifiers} numberOfLines={1}>{item.modifiersSummary}</Text>
                   ) : null}
+                  {isPartial ? (
+                    <Text style={styles.itemPartialServed}>{servedQty} of {item.qty} served</Text>
+                  ) : null}
                   <View style={styles.itemMetaRow}>
                     <Text style={styles.itemPrice}>₹{item.price.toFixed(0)}</Text>
                     <Text style={styles.itemDot}>·</Text>
@@ -1075,12 +1106,21 @@ export default function TableDetail() {
                       </View>
                     )
                   ) : null}
+                  {/* The row's long-press is already cancel-item, so partial
+                      serving lives on the button: tap = one more unit,
+                      hold = hand over the rest. */}
                   <TouchableOpacity
                     style={styles.markServedBtn}
-                    onPress={() => void handleServe(item)}
+                    onPress={() => void handleServe(item, servedQty + 1)}
+                    onLongPress={holdable ? () => void handleServe(item, item.qty) : undefined}
+                    delayLongPress={350}
                     activeOpacity={0.75}
                   >
-                    <Text style={styles.markServedText}>Mark served</Text>
+                    <Text style={styles.markServedText}>
+                      {item.qty > 1
+                        ? (holdable ? `Serve 1 · hold for ${item.qty - servedQty}` : 'Serve last one')
+                        : 'Mark served'}
+                    </Text>
                   </TouchableOpacity>
                 </View>
               )}
@@ -1350,7 +1390,8 @@ export default function TableDetail() {
               </View>
               <View style={styles.totalValueContainer}>
                 <Text style={styles.totalValue}>₹{grandTotal.toFixed(0)}</Text>
-                <Ionicons name="restaurant-outline" size={18} color={QuinckleColors.textTertiary} style={{ marginLeft: Spacing.sm }} />
+                {/* Chevron signals the row expands the bill breakdown sheet. */}
+                <Ionicons name="chevron-up" size={18} color={QuinckleColors.textTertiary} style={{ marginLeft: Spacing.sm }} />
               </View>
             </TouchableOpacity>
           )}
@@ -1407,44 +1448,17 @@ export default function TableDetail() {
         onClose={() => setQrSheet(null)}
       />
 
-      {/* ── Item cancel bottom sheet ── */}
-      <BottomSheet
+      {/* ── Item cancel bottom sheet (confirm + reason in one step) ── */}
+      <CancelReasonSheet
         visible={!!cancelTarget}
-        onClose={() => { if (!cancelling) setCancelTarget(null); }}
-      >
-        <View style={styles.cancelSheetBody}>
-          <View style={styles.cancelSheetIcon}>
-            <Ionicons name="trash-outline" size={22} color={QuinckleColors.danger} />
-          </View>
-          <Text style={styles.cancelSheetTitle}>Cancel this item?</Text>
-          <Text style={styles.cancelSheetItem}>{cancelTarget?.name}</Text>
-          <Text style={styles.cancelSheetSub}>
-            ₹{(cancelTarget?.price ?? 0).toFixed(0)} will be removed from the bill. This can&apos;t be undone.
-          </Text>
-          <View style={styles.cancelSheetActions}>
-            <TouchableOpacity
-              style={styles.cancelSheetKeep}
-              onPress={() => { if (!cancelling) setCancelTarget(null); }}
-              activeOpacity={0.8}
-              disabled={cancelling}
-            >
-              <Text style={styles.cancelSheetKeepText}>Keep item</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.cancelSheetConfirm, cancelling && { opacity: 0.6 }]}
-              onPress={() => void handleCancelItem()}
-              activeOpacity={0.85}
-              disabled={cancelling}
-            >
-              {cancelling ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Text style={styles.cancelSheetConfirmText}>Cancel item</Text>
-              )}
-            </TouchableOpacity>
-          </View>
-        </View>
-      </BottomSheet>
+        title="Cancel this item?"
+        subject={cancelTarget?.name}
+        note={`₹${(cancelTarget?.price ?? 0).toFixed(0)} will be removed from the bill. This can't be undone.`}
+        confirmLabel="Cancel item"
+        busy={cancelling}
+        onConfirm={(reason) => void handleCancelItem(reason)}
+        onClose={() => setCancelTarget(null)}
+      />
 
       {/* ── UPI QR modal ── */}
       <Modal visible={showUpiModal} transparent animationType="fade" onRequestClose={() => setShowUpiModal(false)}>
@@ -2115,6 +2129,7 @@ const styles = StyleSheet.create({
   itemName: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '600' },
   itemNameServed: { textDecorationLine: 'line-through', color: QuinckleColors.textTertiary },
   itemModifiers: { color: QuinckleColors.textTertiary, fontSize: 12, marginTop: 1, fontStyle: 'italic' },
+  itemPartialServed: { color: QuinckleColors.success, fontSize: 12, fontWeight: '600', marginTop: 2 },
   itemMetaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 3, gap: 6 },
   itemPrice: { color: QuinckleColors.textTertiary, fontSize: 12, fontWeight: '500' },
   itemDot: { color: QuinckleColors.textMuted, fontSize: 11 },
@@ -2135,16 +2150,6 @@ const styles = StyleSheet.create({
   cancelledBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, backgroundColor: 'rgba(239,68,68,0.12)' },
   cancelledBadgeText: { color: QuinckleColors.danger, fontSize: 11, fontWeight: '700' },
   // ── Item cancel bottom sheet (content inside the shared BottomSheet) ──
-  cancelSheetBody: { paddingHorizontal: 22, paddingTop: 4, paddingBottom: 8, alignItems: 'center' },
-  cancelSheetIcon: { width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(239,68,68,0.12)', marginBottom: 14 },
-  cancelSheetTitle: { fontSize: 17, fontWeight: '800', color: QuinckleColors.textPrimary, marginBottom: 6 },
-  cancelSheetItem: { fontSize: 15, fontWeight: '600', color: QuinckleColors.textPrimary, textAlign: 'center', marginBottom: 4 },
-  cancelSheetSub: { fontSize: 13, color: QuinckleColors.textSecondary, textAlign: 'center', lineHeight: 19, marginBottom: 22, paddingHorizontal: 6 },
-  cancelSheetActions: { flexDirection: 'row', gap: 12, alignSelf: 'stretch' },
-  cancelSheetKeep: { flex: 1, paddingVertical: 14, borderRadius: 12, borderWidth: 1, borderColor: QuinckleColors.border, alignItems: 'center', justifyContent: 'center' },
-  cancelSheetKeepText: { fontSize: 14, fontWeight: '700', color: QuinckleColors.textSecondary },
-  cancelSheetConfirm: { flex: 1, paddingVertical: 14, borderRadius: 12, backgroundColor: QuinckleColors.danger, alignItems: 'center', justifyContent: 'center' },
-  cancelSheetConfirmText: { fontSize: 14, fontWeight: '800', color: '#fff' },
   emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: Spacing.huge, gap: Spacing.md },
   emptyText: { color: QuinckleColors.textTertiary, fontSize: 14 },
   bottomBar: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: Spacing.xl, paddingBottom: Spacing.xxl, paddingTop: Spacing.lg, backgroundColor: QuinckleColors.surface, borderTopWidth: 1, borderTopColor: QuinckleColors.border },

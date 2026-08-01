@@ -3,12 +3,17 @@
  * Visually mirrors the table "Manage Table" sheet (flat rows, icon chips,
  * subtle dividers).
  *
- * Two modes:
+ * Three modes:
  *   • choose — "Remove an item" (→ items mode) or "Delete whole order"
- *              (closes + confirms via the parent's ThemedDialog, like "Free table").
- *   • items  — each line has a trash icon at the right; tapping it plays a
- *              strike-through animation, then the row collapses away (siblings
- *              glide up) before the delete is persisted.
+ *              (closes + confirms via the parent's reason sheet, like "Free table").
+ *   • items  — each line has a trash icon at the right.
+ *   • reason — why the line is going. Rendered inline as a mode rather than as
+ *              a second BottomSheet on top: stacked sheets would double the
+ *              backdrop and fight over the drag-to-dismiss gesture.
+ *
+ * Tapping a line's trash goes to `reason`; picking one returns to `items` and
+ * arms that row, which plays its strike-through, collapses away (siblings glide
+ * up), and only then persists the delete.
  *
  * Animations use RN's built-in Animated + LayoutAnimation (Reanimated is not
  * wired up in this project), so there is zero worklet/babel config risk.
@@ -29,7 +34,9 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { BottomSheet } from './BottomSheet';
+import { CancelReasonPicker } from './CancelReasonSheet';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
+import type { CancelReason } from '../../constants/cancelReasons';
 import type { TakeawayOrder } from '../../services/api';
 
 // LayoutAnimation needs this opt-in on old-arch Android; harmless no-op on Fabric.
@@ -50,7 +57,7 @@ interface Props {
   order: TakeawayOrder | null;
   onClose: () => void;
   /** Persist a single-line delete. Resolve on success, reject with {code,message} on failure. */
-  onDeleteItem: (itemId: string) => Promise<void>;
+  onDeleteItem: (itemId: string, reason: CancelReason) => Promise<void>;
   /** Ask the parent to close + confirm the whole-order delete (ThemedDialog flow). */
   onDeleteWholeOrder: () => void;
   /** Map a thrown API error to a crew-facing message. */
@@ -60,10 +67,15 @@ interface Props {
 // ── One deletable line: strike-through, then let the parent collapse it away ──
 function DeletableRow({
   item,
+  armed,
+  onRequestDelete,
   onStruck,
   disabled,
 }: {
   item: Item;
+  /** Flips true once the crew has picked a reason — plays the strike, then persists. */
+  armed: boolean;
+  onRequestDelete: (item: Item) => void;
   onStruck: (item: Item) => void;
   disabled: boolean;
 }) {
@@ -96,6 +108,22 @@ function DeletableRow({
     ]).start(() => onStruck(item));
   };
 
+  // The reason step runs before the animation now: tapping the trash asks the
+  // parent for a reason, and the row only strikes through once one is picked.
+  //
+  // Returning from the reason mode REMOUNTS this row already armed, so the
+  // effect can land before onLayout has measured the title. Striking to a
+  // titleW of 0 would play an invisible animation, so wait for the measurement
+  // — with a short fallback, because a row that never animates is a row that
+  // never deletes. runDelete's `busy` guard makes the double path harmless.
+  useEffect(() => {
+    if (!armed) return;
+    if (titleW > 0) { runDelete(); return; }
+    const t = setTimeout(runDelete, 120);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [armed, titleW]);
+
   return (
     <View style={styles.row}>
       <Animated.View style={[styles.rowTextWrap, { opacity: textOpacity }]}>
@@ -109,7 +137,7 @@ function DeletableRow({
         {item.modifiers ? <Text style={styles.rowSub} numberOfLines={1}>{item.modifiers}</Text> : null}
       </Animated.View>
       <TouchableOpacity
-        onPress={runDelete}
+        onPress={() => onRequestDelete(item)}
         disabled={busy || disabled}
         hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         activeOpacity={0.6}
@@ -124,15 +152,21 @@ function DeletableRow({
 }
 
 export function TakeawayManageSheet({ order, onClose, onDeleteItem, onDeleteWholeOrder, errorMessageFor }: Props) {
-  const [mode, setMode] = useState<'choose' | 'items'>('choose');
+  const [mode, setMode] = useState<'choose' | 'items' | 'reason'>('choose');
   const [items, setItems] = useState<Item[]>([]);
   const [error, setError] = useState<string | null>(null);
+  /** Line awaiting a reason (mode 'reason'). */
+  const [reasonFor, setReasonFor] = useState<Item | null>(null);
+  /** Line whose reason is picked — arms its row to strike through and persist. */
+  const [pending, setPending] = useState<{ item: Item; reason: CancelReason } | null>(null);
 
   // Reset the sheet's local state whenever a different order is opened.
   useEffect(() => {
     setMode('choose');
     setItems(order?.items ?? []);
     setError(null);
+    setReasonFor(null);
+    setPending(null);
   }, [order?.orderId, order?.items]);
 
   const title = useMemo(() => {
@@ -143,15 +177,20 @@ export function TakeawayManageSheet({ order, onClose, onDeleteItem, onDeleteWhol
   // Called once a row's strike-through finishes: collapse it out, then persist.
   const handleStruck = (item: Item) => {
     setError(null);
+    const reason = pending?.reason;
+    // Armed only ever follows a reason pick, so this should not happen; bail
+    // rather than send a reasonless void and quietly poison the ledger.
+    if (!reason) return;
     const idx = items.findIndex((i) => i.itemId === item.itemId);
     const wasLast = items.length <= 1;
 
     LayoutAnimation.configureNext(COLLAPSE_ANIM);
     setItems((prev) => prev.filter((i) => i.itemId !== item.itemId));
+    setPending(null);
 
     void (async () => {
       try {
-        await onDeleteItem(item.itemId);
+        await onDeleteItem(item.itemId, reason);
         // Removing the final line cancels the whole order server-side.
         if (wasLast) onClose();
       } catch (err: any) {
@@ -195,6 +234,21 @@ export function TakeawayManageSheet({ order, onClose, onDeleteItem, onDeleteWhol
               </View>
             </TouchableOpacity>
           </>
+        ) : mode === 'reason' ? (
+          <CancelReasonPicker
+            subject={reasonFor ? `${reasonFor.qty}× ${reasonFor.name}` : null}
+            note="This line will be removed and the total recalculated."
+            confirmLabel="Remove item"
+            cancelLabel="Back"
+            resetKey={reasonFor?.itemId ?? null}
+            onConfirm={(reason) => {
+              if (!reasonFor) return;
+              setPending({ item: reasonFor, reason });
+              setReasonFor(null);
+              setMode('items');
+            }}
+            onCancel={() => { setReasonFor(null); setMode('items'); }}
+          />
         ) : (
           <>
             <TouchableOpacity style={styles.backRow} onPress={() => setMode('choose')} activeOpacity={0.7}>
@@ -205,7 +259,13 @@ export function TakeawayManageSheet({ order, onClose, onDeleteItem, onDeleteWhol
             {items.map((it, i) => (
               <React.Fragment key={it.itemId}>
                 {i > 0 && <View style={styles.divider} />}
-                <DeletableRow item={it} onStruck={handleStruck} disabled={false} />
+                <DeletableRow
+                  item={it}
+                  armed={pending?.item.itemId === it.itemId}
+                  onRequestDelete={(item) => { setReasonFor(item); setMode('reason'); }}
+                  onStruck={handleStruck}
+                  disabled={false}
+                />
               </React.Fragment>
             ))}
             {items.length === 0 && <Text style={styles.emptyText}>No items left.</Text>}

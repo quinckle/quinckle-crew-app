@@ -44,14 +44,17 @@ import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { MergeTableSheet } from '../../components/ui/MergeTableSheet';
 import { GroupPickerSheet } from '../../components/ui/GroupPickerSheet';
 import { UndoSnackbar } from '../../components/ui/UndoSnackbar';
+// FreeTableOverlay (center "table cleared" modal) removed — every free now uses
+// the bottom UndoSnackbar so it never blocks the floor during a rush.
 import { addReady, pruneToActive, type ReadyNav } from '../../stores/itemReadyToast';
-import { FreeTableOverlay, type FreeJob } from '../../components/ui/FreeTableOverlay';
 import { ClearFlash } from '../../components/ui/ClearFlash';
 import { BottomNavbar } from '../../components/ui/BottomNavbar';
 import { PICKUP_LAYOUT_PRESET, PickupCard, PickupSegmented } from '../../components/ui/pickup';
 import { PrintOptionsSheet, type InvoiceBuyer } from '../../components/ui/PrintOptionsSheet';
 import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintProgressOverlay';
 import { TakeawayManageSheet } from '../../components/ui/TakeawayManageSheet';
+import { CancelReasonSheet } from '../../components/ui/CancelReasonSheet';
+import type { CancelReason } from '../../constants/cancelReasons';
 import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
 import { TableSkeleton } from '../../components/ui/TableSkeleton';
 import { MenuSkeleton } from '../../components/ui/MenuSkeleton';
@@ -165,7 +168,7 @@ type MenuRow = {
   modifierGroups?: MenuRowGroup[];
 };
 
-type PickupItem = { id: string; name: string; qty: number; orderedAt: string; isServed: boolean; isReady: boolean };
+type PickupItem = { id: string; name: string; qty: number; servedQty: number; orderedAt: string; isServed: boolean; isReady: boolean };
 type PickupOrder = { id: string; tableNo: string; items: PickupItem[]; completedAt?: string };
 
 function mapCompletedOrder(order: any): PickupOrder {
@@ -175,8 +178,11 @@ function mapCompletedOrder(order: any): PickupOrder {
     completedAt: order.served_at ?? order.placed_at,
     items: order.items.map((item: any) => ({
       id: item.item_id,
-      name: `${item.qty}× ${item.name}`,
+      // Bare name — PickupItemRow renders the quantity in its own column, so
+      // prefixing it here printed every line twice ("4× 4× Coffee").
+      name: item.name,
       qty: item.qty,
+      servedQty: item.qty,
       orderedAt: (() => {
         const d = new Date(order.placed_at);
         return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
@@ -230,12 +236,9 @@ export default function StaffDashboard() {
   const tablesRef = useRef<Table[]>([]);
   tablesRef.current = tables;
   const [isLoadingTables, setIsLoadingTables] = useState(true);
-  // Freeing UX:
-  //  · freeOverlay — the celebratory "table cleared" modal for a single free.
-  //  · undo        — the snackbar (group + batch frees), holds sessions to reopen.
-  // Both carry a busy flag while their reopen request is inflight.
-  const [freeOverlay, setFreeOverlay] = useState<FreeJob | null>(null);
-  const [overlayBusy, setOverlayBusy] = useState(false);
+  // Freeing UX: every free path (single, group, batch) raises the same bottom
+  // Undo snackbar, which holds the closed sessions to reopen and a busy flag
+  // while the reopen request is inflight.
   const [undo, setUndo] = useState<{ message: string; sessions: ClosedSessionInfo[] } | null>(null);
   const [undoBusy, setUndoBusy] = useState(false);
   // Ids of cards that just cleared in a batch — drives a brief in-card sweep.
@@ -511,6 +514,7 @@ export default function StaffDashboard() {
         taxRate: meta?.taxRate ?? undefined,
         taxDisplayMode: meta?.displayMode,
         pricesIncludeTax: meta?.pricesIncludeTax,
+        roundOff: order.roundOff ?? 0,
         grandTotal: order.total,
         isPaid,
         paymentMethod: order.paymentMethod ?? undefined,
@@ -605,41 +609,41 @@ export default function StaffDashboard() {
   // Thin persistence callbacks handed to the sheet. They talk to the API and
   // reconcile local state; the sheet owns the delete animation + error display,
   // so these just resolve on success and re-throw on failure.
-  const deleteTakeawayItem = async (orderId: string, itemId: string) => {
-    await crewOrders.cancelItem(orderId, itemId);
+  const deleteTakeawayItem = async (orderId: string, itemId: string, reason: CancelReason) => {
+    await crewOrders.cancelItem(orderId, itemId, reason);
     void loadTakeawayOrders();
   };
 
-  // Whole-order delete mirrors the table sheet's "Free table": close the sheet,
-  // then confirm via the standard ThemedDialog before hitting the API.
+  // Whole-order delete mirrors the table sheet's "Free table": close the manage
+  // sheet, then confirm — and capture why — in the reason sheet. This used to be
+  // a plain ThemedDialog; it needs the reason now that whole-order deletes land
+  // on the adjustments ledger alongside item cancels.
+  const [deleteWholeTarget, setDeleteWholeTarget] = useState<TakeawayOrder | null>(null);
+  const [deletingWhole, setDeletingWhole] = useState(false);
+
   const requestDeleteWholeTakeaway = () => {
     const o = manageOrder;
     setManageOrder(null);
     if (!o) return;
-    setTimeout(() => {
-      showDialog(
-        'Delete order?',
-        `Delete this entire takeaway order${o.pickupToken ? ` (${o.pickupToken})` : ''}? This cannot be undone.`,
-        [
-          { label: 'Cancel', onPress: () => {} },
-          {
-            label: 'Delete',
-            variant: 'danger',
-            onPress: () => {
-              void (async () => {
-                try {
-                  await crewOrders.cancelOrder(o.orderId);
-                  setTakeawayOrders((prev) => prev.filter((x) => x.orderId !== o.orderId));
-                } catch (err: any) {
-                  showDialog('Could not delete', takeawayCancelMessage(err), [{ label: 'OK', onPress: () => {} }]);
-                  void loadTakeawayOrders();
-                }
-              })();
-            },
-          },
-        ],
-      );
-    }, 220);
+    // Let the manage sheet finish closing first, or the two backdrops overlap.
+    setTimeout(() => setDeleteWholeTarget(o), 220);
+  };
+
+  const confirmDeleteWholeTakeaway = async (reason: CancelReason) => {
+    const o = deleteWholeTarget;
+    if (!o || deletingWhole) return;
+    setDeletingWhole(true);
+    try {
+      await crewOrders.cancelOrder(o.orderId, reason);
+      setTakeawayOrders((prev) => prev.filter((x) => x.orderId !== o.orderId));
+      setDeleteWholeTarget(null);
+    } catch (err: any) {
+      setDeleteWholeTarget(null);
+      showDialog('Could not delete', takeawayCancelMessage(err), [{ label: 'OK', onPress: () => {} }]);
+      void loadTakeawayOrders();
+    } finally {
+      setDeletingWhole(false);
+    }
   };
 
   // KOT auto-print toggle — loaded from server and retained in a ref so
@@ -672,21 +676,28 @@ export default function StaffDashboard() {
   // reprints) with this device's sink identity, and prints anything that
   // slipped through. The auto-print toggle reaches it via setSinkContext.
 
-  const togglePickupItem = (orderId: string, itemId: string) => {
+  // `nextQty` is the ABSOLUTE served count the line should stand at — one tap
+  // sends servedQty + 1, a hold sends the full qty. The card only celebrates
+  // once every unit of every line is out.
+  const togglePickupItem = (orderId: string, itemId: string, nextQty: number) => {
     Haptics.selectionAsync().catch(() => {});
 
-    // Optimistic update — mark served immediately. If this was the last
-    // pending item, flag the card as "completing" so PickupCard runs its
-    // calm in-place celebration. completedAt stays unset during the
+    // Optimistic update — advance the line immediately. If that finished the
+    // last outstanding unit, flag the card as "completing" so PickupCard runs
+    // its calm in-place celebration. completedAt stays unset during the
     // celebration; handleCompletionFinished sets it (as ISO) when the
     // animation finishes, which is what moves the card to the Completed list.
     let triggersCompletion = false;
+    let previousQty = 0;
     setPickupOrders((prev) =>
       prev.map((order) => {
         if (order.id !== orderId) return order;
-        const items = order.items.map((it) =>
-          it.id === itemId ? { ...it, isServed: true } : it,
-        );
+        const items = order.items.map((it) => {
+          if (it.id !== itemId) return it;
+          previousQty = it.servedQty;
+          const servedQty = Math.max(0, Math.min(it.qty, nextQty));
+          return { ...it, servedQty, isServed: servedQty >= it.qty };
+        });
         if (!order.completedAt && items.every((it) => it.isServed)) {
           triggersCompletion = true;
         }
@@ -701,7 +712,7 @@ export default function StaffDashboard() {
     // Fire-and-forget — realtime `order_served` event drives the refresh.
     // Awaiting loadPickupOrders here used to snap the list mid-animation.
     void crewOrders
-      .serveItem(orderId, itemId)
+      .serveItem(orderId, itemId, nextQty)
       .catch(() => {
         // Revert on failure
         setPickupOrders((prev) =>
@@ -709,7 +720,9 @@ export default function StaffDashboard() {
             o.id !== orderId ? o : {
               ...o,
               items: o.items.map((it) =>
-                it.id === itemId ? { ...it, isServed: false } : it,
+                it.id === itemId
+                  ? { ...it, servedQty: previousQty, isServed: previousQty >= it.qty }
+                  : it,
               ),
             }
           ),
@@ -994,8 +1007,12 @@ export default function StaffDashboard() {
         tableNo: order.channel === 'TAKEAWAY' ? (order.pickup_token ?? 'TK') : `T${order.table_number}`,
         items: order.items.map(item => ({
           id: item.item_id,
-          name: `${item.qty}× ${item.name}`,
+          // Bare name — PickupItemRow renders the quantity in its own column, so
+          // prefixing it here printed every line twice ("4× 4× Coffee").
+          name: item.name,
           qty: item.qty,
+          // Fall back for a backend that predates partial ticking.
+          servedQty: item.served_qty ?? (item.served ? item.qty : 0),
           orderedAt: (() => {
             const d = new Date(order.placed_at);
             return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
@@ -1290,6 +1307,13 @@ export default function StaffDashboard() {
       refetchTakeaway(); // takeaway tab: keep status live now that the 10s poll is gone
     });
 
+    // Every serve tick, partial ones included. order_served only fires once a
+    // whole order is out, so without this a second steward's device would sit
+    // on a stale "0 of 4" until someone pulled to refresh.
+    const off7c = subscribeChannel(`waiter:${restaurantId}`, 'item_served', () => {
+      refetchPickup();
+    });
+
     const off8 = subscribeChannel(`waiter:${restaurantId}`, 'cash_collection_requested', (data: any) => {
       const tableNumber = data?.tableNumber as number | undefined;
       const amount = data?.amount as number | undefined;
@@ -1369,7 +1393,7 @@ export default function StaffDashboard() {
 
     return () => {
       Object.values(timers).forEach(clearTimeout);
-      off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off6d(); off7(); off7b(); off8(); off9(); offReprint(); offAutoPrint(); offPrinterPaired(); offPrinterUnpaired();
+      off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off6d(); off7(); off7b(); off7c(); off8(); off9(); offReprint(); offAutoPrint(); offPrinterPaired(); offPrinterUnpaired();
     };
   }, [
     staffInfo?.restaurantId,
@@ -1414,9 +1438,9 @@ export default function StaffDashboard() {
   // them to /reopen. Uncollected money always moves to Outstanding server-side.
 
   // Free EVERY party on a table in one tap. Used by the grid swipe, the manage
-  // sheet, and the group picker's "Free whole table". A single free gets the
-  // celebratory "table cleared" overlay (Undo lives on it); the snackbar is
-  // reserved for the group + batch paths.
+  // sheet, and the group picker's "Free whole table". Every free path — single,
+  // group, and batch — raises the same sleek bottom Undo snackbar; a center
+  // modal stole the whole screen mid-rush, so it's gone.
   const freeWholeTable = async (table: { id: string; number: number }) => {
     setTables(prev => prev.map(t =>
       t.id === table.id ? { ...t, status: 'available' as TableStatus, sessionId: undefined, groups: undefined } : t));
@@ -1424,7 +1448,7 @@ export default function StaffDashboard() {
       const res = await crewTables.free(table.id);
       const sessions = res.data.closed_sessions ?? [];
       if (sessions.length > 0) {
-        setFreeOverlay({ tableNumber: table.number, sessions });
+        setUndo({ message: `Table T${String(table.number).padStart(2, '0')} cleared`, sessions });
       }
     } catch {
       // ignore — resync below regardless
@@ -1488,21 +1512,6 @@ export default function StaffDashboard() {
     } finally {
       setUndo(null);
       setUndoBusy(false);
-      void loadTables();
-    }
-  };
-
-  // Undo from the "table cleared" overlay (single whole-table free).
-  const undoOverlayFree = async () => {
-    if (!freeOverlay || overlayBusy) return;
-    setOverlayBusy(true);
-    try {
-      await reopenAndReport(freeOverlay.sessions);
-    } catch {
-      showDialog('Couldn’t undo', 'Please try again.', [{ label: 'OK', onPress: () => {} }]);
-    } finally {
-      setFreeOverlay(null);
-      setOverlayBusy(false);
       void loadTables();
     }
   };
@@ -2364,7 +2373,7 @@ export default function StaffDashboard() {
               <PickupCard
                 order={item}
                 isCompleting={completingIds.includes(item.id)}
-                onToggleItem={(itemId) => togglePickupItem(item.id, itemId)}
+                onToggleItem={(itemId, nextQty) => togglePickupItem(item.id, itemId, nextQty)}
                 onCompletionFinished={() => handleCompletionFinished(item.id)}
                 onReopen={undefined}
               />
@@ -2614,21 +2623,13 @@ export default function StaffDashboard() {
       {/* DUAL_CHANNEL "item ready" cards render in the staff _layout, above the
           whole Stack, so they stay visible on every staff screen. */}
 
-      {/* Undo snackbar — reverses a group or batch free. */}
+      {/* Undo snackbar — reverses every free (single, group, or batch). */}
       <UndoSnackbar
         visible={!!undo}
         message={undo?.message ?? ''}
         busy={undoBusy}
         onUndo={() => { void undoLastFree(); }}
         onDismiss={() => setUndo(null)}
-      />
-
-      {/* "Table cleared" overlay — celebratory confirmation for a single free. */}
-      <FreeTableOverlay
-        job={freeOverlay}
-        busy={overlayBusy}
-        onUndo={() => { void undoOverlayFree(); }}
-        onDismiss={() => setFreeOverlay(null)}
       />
 
       <BottomNavbar
@@ -2772,9 +2773,20 @@ export default function StaffDashboard() {
       <TakeawayManageSheet
         order={manageOrder}
         onClose={() => setManageOrder(null)}
-        onDeleteItem={(itemId) => deleteTakeawayItem(manageOrder!.orderId, itemId)}
+        onDeleteItem={(itemId, reason) => deleteTakeawayItem(manageOrder!.orderId, itemId, reason)}
         onDeleteWholeOrder={requestDeleteWholeTakeaway}
         errorMessageFor={takeawayCancelMessage}
+      />
+
+      <CancelReasonSheet
+        visible={!!deleteWholeTarget}
+        title="Delete this order?"
+        subject={deleteWholeTarget?.pickupToken ? `Order ${deleteWholeTarget.pickupToken}` : null}
+        note="Every item in this order will be cancelled. This can't be undone."
+        confirmLabel="Delete order"
+        busy={deletingWhole}
+        onConfirm={(reason) => void confirmDeleteWholeTakeaway(reason)}
+        onClose={() => setDeleteWholeTarget(null)}
       />
 
       <QrChoiceSheet
