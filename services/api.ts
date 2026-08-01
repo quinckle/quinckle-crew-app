@@ -518,11 +518,19 @@ export const crewSessions = {
     ),
 
   /** Crew custom discount across the session's unpaid orders. value=0 clears it. */
-  applyDiscount: (sessionId: string, type: 'PERCENT' | 'FLAT', value: number, note?: string | null) =>
+  applyDiscount: (
+    sessionId: string,
+    type: 'PERCENT' | 'FLAT',
+    value: number,
+    note?: string | null,
+    // A discount that zeroes the whole bill is an EXEMPTION: ADMIN-only on the
+    // backend (403 ADMIN_REQUIRED) and recorded on the adjustments ledger.
+    coded?: CancelReason,
+  ) =>
     request<{ success: boolean; data: { sessionId: string; tableNumber: number; manualDiscountTotal: number; sessionTotal: number } }>(
       'POST',
       `/api/crew/sessions/${sessionId}/discount`,
-      { type, value, note: note ?? null },
+      { type, value, note: note ?? null, ...(coded ?? {}) },
       true,
     ),
 

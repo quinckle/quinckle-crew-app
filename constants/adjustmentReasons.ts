@@ -49,6 +49,25 @@ export const WAIVE_REASONS = [
   { code: 'OTHER', label: 'Other', icon: 'ellipsis-horizontal' },
 ] as const satisfies readonly ReasonOption[];
 
+/**
+ * Reasons for a full-session EXEMPTION (a discount that zeroes the whole bill).
+ * WAIVE_REASONS minus WALKOUT: a walkout is discovered after the fact, not a
+ * decision someone makes at the table.
+ */
+export const EXEMPTION_REASONS = WAIVE_REASONS.filter((r) => r.code !== 'WALKOUT');
+
+/**
+ * Would this discount absorb the entire bill? Mirrors the backend's
+ * `zeroesTheBill`, which is authoritative — this is only to decide whether to
+ * ask for a reason. Under-detecting is safe (the server answers 403
+ * ADMIN_REQUIRED, which the UI surfaces); over-detecting only asks for a reason
+ * that the server then ignores on a partial discount.
+ */
+export function wouldZeroBill(type: 'PERCENT' | 'FLAT', value: number, subtotal: number): boolean {
+  if (!Number.isFinite(value) || value <= 0) return false;
+  return type === 'PERCENT' ? value >= 100 : subtotal > 0 && value >= subtotal;
+}
+
 export type CancelReasonCode = (typeof CANCEL_REASONS)[number]['code'];
 export type WaiveReasonCode = (typeof WAIVE_REASONS)[number]['code'];
 export type ReasonCode = CancelReasonCode | WaiveReasonCode;

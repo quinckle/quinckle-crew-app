@@ -20,7 +20,7 @@ import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintPr
 import { BillDetailsSheet, BillBreakdownContent } from '../../components/ui/BillDetailsSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { ReasonSheet, ReasonChips } from '../../components/ui/ReasonSheet';
-import { WAIVE_REASONS, isReasonComplete, toReasonPayload, type CancelReason } from '../../constants/adjustmentReasons';
+import { WAIVE_REASONS, EXEMPTION_REASONS, isReasonComplete, toReasonPayload, wouldZeroBill, type CancelReason } from '../../constants/adjustmentReasons';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { useResponsive } from '../../hooks/useResponsive';
 
@@ -190,6 +190,8 @@ export default function TableDetail() {
   const [discountModalOpen, setDiscountModalOpen] = useState(false);
   const [discountType, setDiscountType] = useState<'PERCENT' | 'FLAT'>('PERCENT');
   const [discountValue, setDiscountValue] = useState('');
+  const [exemptCode, setExemptCode] = useState<string | null>(null);
+  const [exemptText, setExemptText] = useState('');
   const [discountNote, setDiscountNote] = useState('');
   const [applyingDiscount, setApplyingDiscount] = useState(false);
   // Free-table (structured close) modal
@@ -462,23 +464,40 @@ export default function TableDetail() {
       showDialog('Invalid percentage', 'Percentage cannot exceed 100%.', [{ label: 'OK', onPress: () => {} }]);
       return;
     }
+    // A discount that zeroes the bill is an exemption, not a discount: the
+    // backend gates it on ADMIN and records it on the adjustments ledger.
+    const zeroing = wouldZeroBill(discountType, v, sessionTotal);
+    if (zeroing && !isReasonComplete(exemptCode, exemptText)) return;
+    const coded = zeroing ? toReasonPayload(exemptCode!, exemptText) : undefined;
+
     setApplyingDiscount(true);
     try {
-      await crewSessions.applyDiscount(sessionId, discountType, v, discountNote.trim() || null);
+      await crewSessions.applyDiscount(sessionId, discountType, v, discountNote.trim() || null, coded);
       setDiscountModalOpen(false);
       setDiscountValue('');
       setDiscountNote('');
+      setExemptCode(null);
+      setExemptText('');
       await loadBill();
     } catch (e: any) {
       const code = e?.code as string | undefined;
       const msg = code === 'NO_DISCOUNTABLE_ORDERS'
         ? 'Everything on this table is already paid — nothing to discount.'
+        : code === 'ADMIN_REQUIRED'
+        ? 'Only an admin can write the whole bill off. Ask an admin to apply a full discount.'
         : (typeof e?.message === 'string' && e.message) || 'Please try again.';
       showDialog('Could not apply discount', msg, [{ label: 'OK', onPress: () => {} }]);
     } finally {
       setApplyingDiscount(false);
     }
   };
+
+  // A zeroing discount is an exemption: admin-only, and it must carry a reason.
+  const discountZeroesBill = wouldZeroBill(discountType, Number(discountValue), sessionTotal);
+  const canApplyDiscount =
+    parseFloat(discountValue) > 0 &&
+    !applyingDiscount &&
+    (!discountZeroesBill || (isAdmin && isReasonComplete(exemptCode, exemptText)));
 
   // `nextQty` is the ABSOLUTE served count the line should stand at. A tap
   // hands over one more unit; a hold on the button hands over the rest.
@@ -1663,14 +1682,34 @@ export default function TableDetail() {
               />
             </View>
 
+            {/* Zeroing the bill is an exemption, not a discount — say why, and
+                only an admin may do it. */}
+            {discountZeroesBill && (
+              isAdmin ? (
+                <ReasonChips
+                  reasons={EXEMPTION_REASONS}
+                  prompt="This clears the whole bill. Why?"
+                  code={exemptCode}
+                  text={exemptText}
+                  onPickCode={setExemptCode}
+                  onChangeText={setExemptText}
+                  disabled={applyingDiscount}
+                />
+              ) : (
+                <Text style={styles.discountAdminNote}>
+                  Clearing the whole bill is an admin action. Ask an admin, or lower the discount.
+                </Text>
+              )
+            )}
+
             <View style={styles.swapFooter}>
               <TouchableOpacity style={styles.swapCancel} onPress={() => setDiscountModalOpen(false)} activeOpacity={0.8} disabled={applyingDiscount}>
                 <Text style={styles.swapCancelText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.swapConfirm, (!(parseFloat(discountValue) > 0) || applyingDiscount) && { opacity: 0.4 }]}
+                style={[styles.swapConfirm, !canApplyDiscount && { opacity: 0.4 }]}
                 onPress={handleApplyDiscount}
-                disabled={!(parseFloat(discountValue) > 0) || applyingDiscount}
+                disabled={!canApplyDiscount}
                 activeOpacity={0.85}
               >
                 {applyingDiscount ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.swapConfirmText}>Apply</Text>}
@@ -1922,6 +1961,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     paddingVertical: 10,
   },
+  discountAdminNote: { fontSize: 12, color: QuinckleColors.warning, textAlign: 'center', marginTop: 12, lineHeight: 17 },
   swapConfirmText: {
     color: '#fff',
     fontSize: 13,
