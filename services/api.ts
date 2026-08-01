@@ -78,8 +78,11 @@ async function request<T>(
 
   if (!res.ok) {
     const msg = json.message ?? json.error?.message ?? json.error ?? `API error ${res.status}`;
-    const err = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg)) as Error & { code?: string };
+    const err = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg)) as Error & { code?: string; refundable?: number };
     err.code = json.code ?? undefined;
+    // The refund endpoint reports how much is actually left; without carrying it
+    // the crew is told "too much" and never told what the real ceiling is.
+    if (typeof json.refundable === 'number') err.refundable = json.refundable;
     throw err;
   }
   return json as T;
@@ -432,6 +435,8 @@ export interface LedgerOrder {
   discount: number;
   tip: number;
   subtotal: number;
+  /** Payable total (tax + charges). `subtotal` is food-only. */
+  total?: number;
   paymentSummary?: {
     methods: string[];
     collectedBy: string | null;
@@ -715,6 +720,21 @@ export const crewOrders = {
   cancelOrder: (orderId: string, reason?: CancelReason) =>
     request<{ success: boolean; order_id: string; session_id: string; intent_voided: boolean; reverted_order_ids: string[] }>(
       'PATCH', `/api/crew/orders/${orderId}/cancel`, reason, true,
+    ),
+
+  /**
+   * Record a refund against a settled order. ADMIN, or any crew member with a
+   * manager-PIN grant. `amount` omitted = refund everything still refundable.
+   */
+  refund: (
+    orderId: string,
+    body: { amount?: number | null; method: 'CASH' | 'UPI_DIRECT' },
+    coded?: CancelReason,
+    grantId?: string | null,
+  ) =>
+    request<{ success: boolean; data: { adjustmentId: string; amount: number; refundedTotal: number; refundable: number } }>(
+      'POST', `/api/crew/orders/${orderId}/refund`,
+      { ...body, ...(coded ?? {}), ...(grantId ? { grantId } : {}) }, true,
     ),
 
   // Write off an uncollected order (walkout / comp). ADMIN-only on the backend.

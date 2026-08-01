@@ -68,6 +68,20 @@ export function wouldZeroBill(type: 'PERCENT' | 'FLAT', value: number, subtotal:
   return type === 'PERCENT' ? value >= 100 : subtotal > 0 && value >= subtotal;
 }
 
+/**
+ * Reasons for a REFUND (money already collected, going back).
+ * No "out of stock" or "changed mind": the bill was already settled, so what
+ * happened is that something was wrong with what was served, or they were
+ * charged twice.
+ */
+export const REFUND_REASONS = [
+  { code: 'WRONG_ITEM', label: 'Wrong item', icon: 'swap-horizontal-outline' },
+  { code: 'KITCHEN_ERROR', label: 'Kitchen error', icon: 'flame-outline' },
+  { code: 'SERVICE_RECOVERY', label: 'Service recovery', icon: 'heart-outline' },
+  { code: 'DUPLICATE', label: 'Charged twice', icon: 'copy-outline' },
+  { code: 'OTHER', label: 'Other', icon: 'ellipsis-horizontal' },
+] as const satisfies readonly ReasonOption[];
+
 export type CancelReasonCode = (typeof CANCEL_REASONS)[number]['code'];
 export type WaiveReasonCode = (typeof WAIVE_REASONS)[number]['code'];
 export type ReasonCode = CancelReasonCode | WaiveReasonCode;

@@ -10,12 +10,14 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
-import { crewSessions, restaurantApi, type LedgerSession, type LedgerOrder } from '../../services/api';
+import { crewSessions, crewOrders, restaurantApi, type LedgerSession, type LedgerOrder } from '../../services/api';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { printBill, getStatus as getPrinterStatus } from '../../services/printer';
 import type { InvoiceBill, InvoiceItem } from '../../services/invoiceTemplate';
 import { useAuth } from '../../context/AuthContext';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
+import { RefundSheet } from '../../components/ui/RefundSheet';
+import { useManagerApproval } from '../../components/ui/ManagerPinSheet';
 import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintProgressOverlay';
 
 // ── Formatters ────────────────────────────────────────────────────────────────
@@ -44,6 +46,11 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
   CASH_PENDING: { label: 'Cash Pending', color: QuinckleColors.warning },
   CANCELLED:    { label: 'Cancelled',    color: QuinckleColors.danger },
   CLOSED:       { label: 'Closed',       color: QuinckleColors.textTertiary },
+  // Without these the chip would print the raw enum name at the crew.
+  REFUNDED:           { label: 'Refunded',      color: QuinckleColors.info ?? QuinckleColors.textSecondary },
+  PARTIALLY_REFUNDED: { label: 'Part refunded', color: QuinckleColors.info ?? QuinckleColors.textSecondary },
+  COMPED:             { label: 'Written off',   color: QuinckleColors.warning },
+  EXEMPT:             { label: 'Exempted',      color: QuinckleColors.warning },
 };
 
 function statusMeta(s: LedgerSession) {
@@ -67,8 +74,13 @@ function TotalRow({ label, value, strong, accent }: { label: string; value: stri
 }
 
 // ── Order card ────────────────────────────────────────────────────────────────
-function OrderCard({ order }: { order: LedgerOrder }) {
+function OrderCard({ order, onRefund }: { order: LedgerOrder; onRefund?: (o: LedgerOrder) => void }) {
   const methods = order.paymentSummary?.methods ?? [];
+  // Only settled money can come back. Gateway refunds need webhook
+  // reconciliation that does not exist yet, so they are not offered here.
+  const refundable =
+    !!onRefund &&
+    ['PAID_CASH', 'PAID_UPI_DIRECT', 'PAID_MIXED'].includes(String(order.paymentStatus ?? ''));
   return (
     <View style={styles.orderCard}>
       <View style={styles.orderHeader}>
@@ -133,6 +145,13 @@ function OrderCard({ order }: { order: LedgerOrder }) {
           {order.paymentSummary.confirmedAt ? ` · ${fmtDateTime(order.paymentSummary.confirmedAt)}` : ''}
         </Text>
       )}
+
+      {refundable && (
+        <TouchableOpacity style={styles.refundBtn} onPress={() => onRefund!(order)} activeOpacity={0.8}>
+          <Ionicons name="arrow-undo-outline" size={14} color={QuinckleColors.textSecondary} />
+          <Text style={styles.refundBtnText}>Record a refund</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
@@ -165,6 +184,56 @@ export default function OrderDetail() {
 
   // ── Reprint invoice ─────────────────────────────────────────────────────────
   const { staffInfo } = useAuth();
+  const [refundTarget, setRefundTarget] = useState<LedgerOrder | null>(null);
+  const [refundCeiling, setRefundCeiling] = useState(0);
+  const [refunding, setRefunding] = useState(false);
+  const { sheet: managerPinSheet, runWithApproval } = useManagerApproval();
+  const submitRefund = async (input: { amount: number; method: 'CASH' | 'UPI_DIRECT'; coded: any }) => {
+    const order = refundTarget;
+    if (!order || refunding) return;
+    setRefunding(true);
+    try {
+      await runWithApproval({ action: 'REFUND', amount: input.amount }, async (mint) => {
+        const grantId = mint ? await mint(order.id, input.amount) : undefined;
+        await crewOrders.refund(order.id, { amount: input.amount, method: input.method }, input.coded, grantId);
+        setRefundTarget(null);
+        await load();
+      });
+    } catch (e: any) {
+      const code = String(e?.code ?? '');
+      // The server knows the true remaining figure; show it rather than a bare
+      // rejection, and reopen the sheet at the corrected ceiling.
+      if ((code === 'AMOUNT_EXCEEDS_REFUNDABLE' || code === 'ALREADY_FULLY_REFUNDED') && typeof e?.refundable === 'number') {
+        setRefundCeiling(e.refundable);
+        setDialog({
+          visible: true,
+          title: 'Amount too high',
+          message: e.refundable > 0
+            ? `Only ₹${e.refundable.toFixed(0)} is left to refund on this order.`
+            : 'This order has already been fully refunded.',
+          actions: [{ label: 'OK', onPress: () => {} }],
+        });
+        if (!(e.refundable > 0)) setRefundTarget(null);
+      } else {
+        setRefundTarget(null);
+        setDialog({
+          visible: true,
+          title: 'Could not record refund',
+          // REFUND_NOT_RECORDED means nothing was written down — the crew must
+          // NOT hand money over on the strength of a failed save.
+          message: code === 'REFUND_NOT_RECORDED'
+            ? 'The refund was not saved. Do not hand over the money — try again.'
+            : code === 'GATEWAY_REFUND_UNSUPPORTED'
+            ? 'Online payments must be refunded from the payment provider.'
+            : (typeof e?.message === 'string' && e.message) || 'Please try again.',
+          actions: [{ label: 'OK', onPress: () => {} }],
+        });
+      }
+    } finally {
+      setRefunding(false);
+    }
+  };
+
   const [printing, setPrinting] = useState(false);
   // Tap-to-paper progress overlay; null = hidden.
   const [printJob, setPrintJob] = useState<PrintJob | null>(null);
@@ -326,7 +395,19 @@ export default function OrderDetail() {
 
           {/* Orders */}
           <Text style={styles.sectionLabel}>Orders ({session.orders?.length ?? 0})</Text>
-          {(session.orders ?? []).map((o) => <OrderCard key={o.id} order={o} />)}
+          {(session.orders ?? []).map((o) => (
+            <OrderCard
+              key={o.id}
+              order={o}
+              onRefund={(order) => {
+                // The ledger does not carry per-order refunds, so the order
+                // total is the opening ceiling; the server is authoritative and
+                // reports the real figure if this is a second refund.
+                setRefundCeiling(Number(order.total ?? order.subtotal ?? 0));
+                setRefundTarget(order);
+              }}
+            />
+          ))}
 
           {/* Totals */}
           <View style={styles.totalsCard}>
@@ -371,6 +452,17 @@ export default function OrderDetail() {
       />
 
       {/* Tap-to-paper print progress */}
+      <RefundSheet
+        visible={!!refundTarget}
+        refundable={refundCeiling}
+        orderLabel={refundTarget ? `#${refundTarget.shortId}` : null}
+        busy={refunding}
+        onClose={() => setRefundTarget(null)}
+        onSubmit={(input) => void submitRefund(input)}
+      />
+
+      {managerPinSheet}
+
       <PrintProgressOverlay job={printJob} onDismiss={() => setPrintJob(null)} />
     </View>
   );
@@ -459,6 +551,13 @@ const styles = StyleSheet.create({
   totalValue: { color: QuinckleColors.textSecondary, fontSize: 13 },
   totalValueStrong: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '800' },
   totalsDivider: { height: 1, backgroundColor: QuinckleColors.border, marginVertical: Spacing.sm },
+
+  refundBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    marginTop: Spacing.md, paddingVertical: 9, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: QuinckleColors.border,
+  },
+  refundBtnText: { color: QuinckleColors.textSecondary, fontSize: 12.5, fontWeight: '700' },
 
   reprintBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,
