@@ -43,7 +43,7 @@ const METHOD_LABEL: Record<string, string> = {
 const STATUS_META: Record<string, { label: string; color: string }> = {
   PAID:         { label: 'Paid',         color: QuinckleColors.success },
   OPEN:         { label: 'Open',         color: QuinckleColors.warning },
-  CASH_PENDING: { label: 'Cash Pending', color: QuinckleColors.warning },
+  CASH_PENDING: { label: 'Payment Pending', color: QuinckleColors.warning },
   CANCELLED:    { label: 'Cancelled',    color: QuinckleColors.danger },
   CLOSED:       { label: 'Closed',       color: QuinckleColors.textTertiary },
   // Without these the chip would print the raw enum name at the crew.

@@ -66,14 +66,23 @@ async function request<T>(
   });
 
   if (res.status === 401) {
-    // Only auto-logout on 401 for authenticated requests (expired crew token).
-    // For unauthenticated requests (OTP verify etc.), the 401 means wrong code — show the error.
-    if (useAuth) {
+    // Auto-logout ONLY on a genuine crew-token/session failure. A 401 that
+    // carries some OTHER application code is a domain rejection of THIS request
+    // (e.g. a nested manager-PIN check that returned 401) — not the crew's own
+    // session expiring. Blanket-logging-out on any 401 is what booted stewards
+    // to the login screen when they mistyped an approval PIN; surface those as
+    // normal errors instead. A bare 401 with no code (proxy/gateway) is treated
+    // as a session failure, since staying on a dead token is worse.
+    const code: string | undefined = json?.error?.code ?? json?.code;
+    const TOKEN_FAILURES = ['INVALID_ACCESS_TOKEN', 'INVALID_SESSION_TOKEN', 'SESSION_NOT_FOUND', 'UNAUTHORIZED'];
+    if (useAuth && (!code || TOKEN_FAILURES.includes(code))) {
       _on401?.();
       throw new Error('SESSION_EXPIRED');
     }
-    const msg = json.error ?? json.message ?? 'Invalid OTP';
-    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+    const rawMsg = json?.error?.message ?? json?.error ?? json?.message ?? 'Invalid OTP';
+    const err = new Error(typeof rawMsg === 'string' ? rawMsg : JSON.stringify(rawMsg)) as Error & { code?: string };
+    if (code) err.code = code;
+    throw err;
   }
 
   if (!res.ok) {

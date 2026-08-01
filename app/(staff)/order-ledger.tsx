@@ -50,7 +50,7 @@ const STATUS_FILTERS = [
   { key: 'all',          label: 'All' },
   { key: 'paid',         label: 'Paid' },
   { key: 'open',         label: 'Open' },
-  { key: 'cash_pending', label: 'Cash Pending' },
+  { key: 'cash_pending', label: 'Payment Pending' },
   { key: 'cancelled',    label: 'Cancelled' },
   { key: 'closed',       label: 'Closed' },
 ];
@@ -99,7 +99,7 @@ function sessionStatusMeta(s: LedgerSession): { label: string; color: string } {
   switch (v) {
     case 'PAID':         return { label: 'Paid',         color: QuinckleColors.success };
     case 'OPEN':         return { label: 'Open',         color: QuinckleColors.warning };
-    case 'CASH_PENDING': return { label: 'Cash Pending', color: QuinckleColors.warning };
+    case 'CASH_PENDING': return { label: 'Payment Pending', color: QuinckleColors.warning };
     case 'CANCELLED':    return { label: 'Cancelled',    color: QuinckleColors.danger };
     default:             return { label: 'Closed',       color: QuinckleColors.textTertiary };
   }
