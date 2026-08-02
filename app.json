@@ -67,6 +67,7 @@
       ],
       "./plugins/withAllowNativeHeapPointerTagging",
       "./plugins/withKotForegroundService",
+      "./plugins/withUsbPrinter",
       "expo-secure-store"
     ],
     "experiments": {

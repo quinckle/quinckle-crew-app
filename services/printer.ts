@@ -20,6 +20,14 @@ import { buildZReportText } from './zReportTemplate';
 import type { ZReport } from './api';
 import { profileFromWidth, DEFAULT_PAPER_WIDTH, type PaperProfile } from './paperProfile';
 import { printerApi } from './api';
+import {
+  isUsbSupported,
+  listUsbPrinters,
+  printUsb as printOverUsb,
+  type UsbPrinterDevice,
+} from './usbPrinter';
+
+export { isUsbSupported, listUsbPrinters, type UsbPrinterDevice };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
@@ -46,17 +54,20 @@ export interface BluetoothDevice {
 export type PrinterStatus = 'connected' | 'disconnected' | 'unpaired' | 'error';
 
 /** How this device reaches the printer. */
-export type TransportKind = 'bluetooth' | 'network';
+export type TransportKind = 'bluetooth' | 'network' | 'usb';
 
 export interface PrinterConfig {
   /** Reach method. Defaults to 'bluetooth' for pre-existing (pre-network) pairings. */
   transport: TransportKind;
-  /** Bluetooth MAC address (transport === 'bluetooth'). Empty for network. */
+  /** Bluetooth MAC address (transport === 'bluetooth'). Empty for network/USB. */
   address: string;
   /** Network printer host (transport === 'network'). */
   ip?: string;
   /** Network printer port. Defaults to 9100 (raw ESC/POS). */
   port?: number;
+  /** USB device identity (transport === 'usb'). Survives re-plugging. */
+  usbVendorId?: number;
+  usbProductId?: number;
   name: string;
   /** Nominal roll width in mm — 58/72/80/112 or a custom value. */
   paperWidth: number;
@@ -270,6 +281,31 @@ export async function pairNetwork(
   _status = 'connected';
 }
 
+// ── pairUsb ─────────────────────────────────────────────────────────────────
+// Pair a printer attached over USB/OTG. Stored by vendor/product id rather than
+// by the kernel device path, so unplugging and re-plugging the same printer
+// keeps the pairing valid.
+
+export async function pairUsb(
+  device: UsbPrinterDevice,
+  paperWidth: number = DEFAULT_PAPER_WIDTH,
+  opts: { dpi?: number } = {},
+): Promise<void> {
+  if (!isUsbSupported()) throw new Error('PRINTER_USB_UNSUPPORTED');
+  _config = {
+    transport: 'usb',
+    address: '',
+    usbVendorId: device.vendorId,
+    usbProductId: device.productId,
+    name: device.deviceName || 'USB printer',
+    paperWidth,
+    dpi: opts.dpi,
+    pairedAt: new Date().toISOString(),
+  };
+  await AsyncStorage.setItem(KEY_CONFIG, JSON.stringify(_config));
+  _status = 'connected';
+}
+
 // ── unpair ────────────────────────────────────────────────────────────────────
 
 export async function unpair(): Promise<void> {
@@ -318,6 +354,16 @@ async function printRaw(text: string): Promise<void> {
   if (_config.transport === 'network') {
     if (!_config.ip) throw new Error('PRINTER_NO_IP');
     await ThermalPrinter.printTcp({ ip: _config.ip, port: _config.port ?? 9100, ...common });
+  } else if (_config.transport === 'usb') {
+    // A USB pairing can outlive the build that created it — an OTA rollback to
+    // a pre-USB APK would leave the config pointing at a bridge method that no
+    // longer exists. Fail with a clear code instead of a native crash.
+    if (!isUsbSupported()) throw new Error('PRINTER_USB_UNSUPPORTED');
+    await printOverUsb({
+      vendorId: _config.usbVendorId ?? 0,
+      productId: _config.usbProductId ?? 0,
+      ...common,
+    });
   } else {
     await ThermalPrinter.printBluetooth({ macAddress: _config.address, ...common });
   }

@@ -26,18 +26,29 @@ import {
   scan,
   pair,
   pairNetwork,
+  pairUsb,
   unpair,
   printTest,
   getStatus,
   getConfig,
   isUpiQrEnabled,
   setUpiQrEnabled,
+  isUsbSupported,
+  listUsbPrinters,
   type BluetoothDevice,
   type PrinterStatus,
+  type UsbPrinterDevice,
 } from '../services/printer';
 import { printerApi } from '../services/api';
 import { getPrintDeviceId } from '../services/printDevice';
 import { useAuth } from '../context/AuthContext';
+
+/** Suffix shown after the paper width on the status card. Bluetooth is the
+ *  historical default and stays unlabelled. */
+const TRANSPORT_LABEL: Record<string, string> = {
+  network: ' · Network',
+  usb: ' · USB',
+};
 
 export default function PrinterScreen() {
   const insets = useSafeAreaInsets();
@@ -70,6 +81,14 @@ export default function PrinterScreen() {
   const [showNetworkForm, setShowNetworkForm] = useState(false);
   const [networkIp, setNetworkIp] = useState('');
   const [networkPort, setNetworkPort] = useState('9100');
+
+  // USB (OTG) printers. `usbAvailable` is false on builds without the native
+  // patch — devices on an older APK still receive this JS over OTA, so the
+  // whole USB section must stay hidden there rather than crash on print.
+  const usbAvailable = isUsbSupported();
+  const [usbDevices, setUsbDevices] = useState<UsbPrinterDevice[]>([]);
+  const [isUsbScanning, setIsUsbScanning] = useState(false);
+  const [selectedUsb, setSelectedUsb] = useState<UsbPrinterDevice | null>(null);
 
   const handleUpiQrToggle = useCallback((next: boolean) => {
     setUpiQr(next);
@@ -130,6 +149,9 @@ export default function PrinterScreen() {
     setIsScanning(true);
     setDevices([]);
     setShowScanView(true);
+    // USB enumeration is instant and permission-free, so fold it into the same
+    // gesture — the crew opens one screen and sees every reachable printer.
+    void refreshUsbDevices();
     try {
       const found = await scan();
       setDevices(found);
@@ -243,6 +265,53 @@ export default function PrinterScreen() {
     }
   }
 
+  // ── Pair (USB / OTG) ─────────────────────────────────────────────────────────
+
+  const refreshUsbDevices = useCallback(async () => {
+    if (!usbAvailable) return;
+    setIsUsbScanning(true);
+    try {
+      setUsbDevices(await listUsbPrinters());
+    } finally {
+      setIsUsbScanning(false);
+    }
+  }, [usbAvailable]);
+
+  function handlePairUsb(device: UsbPrinterDevice) {
+    chooseWidth((width) => void doPairUsb(device, width));
+  }
+
+  async function doPairUsb(device: UsbPrinterDevice, width: number) {
+    if (!staffInfo?.id) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setSelectedUsb(device);
+    setIsPairing(true);
+    try {
+      await pairUsb(device, width);
+      await printerApi.setPairing({
+        pairedTo: staffInfo.id,
+        name: device.deviceName,
+        // Mirrors the tcp:// convention so the server keeps one address column
+        // that encodes the transport.
+        address: `usb://${device.vendorId}:${device.productId}`,
+        paperWidth: width,
+        deviceId: await getPrintDeviceId(),
+      });
+      setLocalStatus(getStatus());
+      setConfig(getConfig());
+      await loadServerStatus();
+      setShowScanView(false);
+      showToast(`Paired with ${device.deviceName} · ${width}mm`, true);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch {
+      showToast(`Failed to pair with ${device.deviceName}`, false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    } finally {
+      setIsPairing(false);
+      setSelectedUsb(null);
+    }
+  }
+
   // ── Unpair ─────────────────────────────────────────────────────────────────
 
   function confirmUnpair() {
@@ -331,7 +400,7 @@ export default function PrinterScreen() {
                   <Text style={styles.statusName}>{config.name}</Text>
                   <Text style={styles.statusSub}>
                     {localStatus === 'connected'
-                      ? `Connected · ${config.paperWidth}mm${config.transport === 'network' ? ' · Network' : ''}`
+                      ? `Connected · ${config.paperWidth}mm${TRANSPORT_LABEL[config.transport] ?? ''}`
                       : 'Disconnected — tap re-pair to reconnect'}
                   </Text>
                 </>
@@ -475,6 +544,59 @@ export default function PrinterScreen() {
                 <Ionicons name="refresh-outline" size={15} color={QuinckleColors.primary} />
                 <Text style={styles.rescanText}>Scan again</Text>
               </TouchableOpacity>
+            )}
+
+            {/* USB / OTG printers — hidden entirely on builds without the
+                native USB bridge (see usbAvailable). */}
+            {usbAvailable && (
+              <>
+                <View style={styles.netDivider} />
+                <View style={styles.scanHeader}>
+                  <Text style={styles.sectionLabel}>USB PRINTERS</Text>
+                  {isUsbScanning && <ActivityIndicator size="small" color={QuinckleColors.primary} />}
+                </View>
+
+                {usbDevices.length === 0 && !isUsbScanning && (
+                  <Text style={styles.emptyText}>
+                    No USB printer detected. Connect it with an OTG cable and make sure it is powered on.
+                  </Text>
+                )}
+
+                {usbDevices.map((device) => (
+                  <TouchableOpacity
+                    key={`${device.vendorId}:${device.productId}`}
+                    style={[
+                      styles.deviceRow,
+                      isPairing
+                        && selectedUsb?.vendorId === device.vendorId
+                        && selectedUsb?.productId === device.productId
+                        && styles.deviceRowLoading,
+                    ]}
+                    onPress={() => handlePairUsb(device)}
+                    disabled={isPairing}
+                    activeOpacity={0.75}
+                  >
+                    <Ionicons name="hardware-chip-outline" size={20} color={QuinckleColors.textSecondary} />
+                    <View style={{ flex: 1, marginLeft: Spacing.sm }}>
+                      <Text style={styles.deviceName}>{device.deviceName}</Text>
+                      <Text style={styles.deviceAddress}>USB · {device.vendorId}:{device.productId}</Text>
+                    </View>
+                    {isPairing
+                      && selectedUsb?.vendorId === device.vendorId
+                      && selectedUsb?.productId === device.productId
+                      ? <ActivityIndicator size="small" color={QuinckleColors.primary} />
+                      : <Ionicons name="chevron-forward" size={16} color={QuinckleColors.textTertiary} />
+                    }
+                  </TouchableOpacity>
+                ))}
+
+                {!isUsbScanning && (
+                  <TouchableOpacity style={styles.rescanBtn} onPress={() => void refreshUsbDevices()} activeOpacity={0.7}>
+                    <Ionicons name="refresh-outline" size={15} color={QuinckleColors.primary} />
+                    <Text style={styles.rescanText}>Check for USB printers</Text>
+                  </TouchableOpacity>
+                )}
+              </>
             )}
 
             {/* Network / WiFi printer entry */}
