@@ -22,7 +22,6 @@ import QRCode from 'react-native-qrcode-svg';
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
 import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewTakeaway, restaurantApi, printerApi, type ClosedSessionInfo } from '../../services/api';
-import { Swipeable } from 'react-native-gesture-handler';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { invalidateCache } from '../../services/dataCache';
 import { printKot, printBill, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
@@ -1437,8 +1436,8 @@ export default function StaffDashboard() {
   // raises a single Undo snackbar carrying the closed sessions. Undo replays
   // them to /reopen. Uncollected money always moves to Outstanding server-side.
 
-  // Free EVERY party on a table in one tap. Used by the grid swipe, the manage
-  // sheet, and the group picker's "Free whole table". Every free path — single,
+  // Free EVERY party on a table in one tap. Used by the manage sheet and the
+  // group picker's "Free whole table". Every free path — single,
   // group, and batch — raises the same sleek bottom Undo snackbar; a center
   // modal stole the whole screen mid-rush, so it's gone.
   const freeWholeTable = async (table: { id: string; number: number }) => {
@@ -2153,24 +2152,14 @@ export default function StaffDashboard() {
                         </View>
                       </TouchableOpacity>
                     );
+                    // Freeing is deliberately NOT a swipe on the grid. A stray
+                    // horizontal drag while scanning the floor was clearing
+                    // occupied tables outright — an Undo snackbar the crew
+                    // never saw mid-rush is not a safety net. Free now lives
+                    // behind long-press → Manage → Free table.
                     return (
-                      <View key={item.id} style={[styles.swipeCell, { width: tableCellWidth }]}>
-                        {isOccupied && !selectMode ? (
-                          <Swipeable
-                            friction={2}
-                            rightThreshold={40}
-                            overshootRight={false}
-                            renderRightActions={() => (
-                              <View style={styles.cardFreeAction}>
-                                <Ionicons name="exit-outline" size={20} color="#fff" />
-                                <Text style={styles.cardFreeActionText}>Free</Text>
-                              </View>
-                            )}
-                            onSwipeableOpen={() => { void freeWholeTable({ id: item.id, number: item.number }); }}
-                          >
-                            {cardInner}
-                          </Swipeable>
-                        ) : cardInner}
+                      <View key={item.id} style={[styles.gridCell, { width: tableCellWidth }]}>
+                        {cardInner}
                       </View>
                     );
                   })}
@@ -3155,9 +3144,8 @@ const styles = StyleSheet.create({
     color: QuinckleColors.textTertiary,
     fontVariant: ['tabular-nums'],
   },
-  // The grid cell owns the 2-column width; the card fills it. This lets an
-  // occupied card be wrapped in a Swipeable without breaking the grid layout.
-  swipeCell: {
+  // The grid cell owns the 2-column width; the card fills it.
+  gridCell: {
     width: '48.5%',
     marginBottom: Spacing.md,
   },
@@ -3167,21 +3155,6 @@ const styles = StyleSheet.create({
     borderRadius: Radius.lg + 1.5,
     padding: 1.5,
     overflow: 'hidden',
-  },
-  // Red "Free" panel revealed by swiping an occupied card left.
-  cardFreeAction: {
-    backgroundColor: QuinckleColors.danger,
-    borderRadius: Radius.lg + 1.5,
-    justifyContent: 'center',
-    alignItems: 'center',
-    width: 92,
-    marginLeft: Spacing.sm,
-    gap: 3,
-  },
-  cardFreeActionText: {
-    ...Typography.caption,
-    color: '#fff',
-    fontWeight: '700',
   },
   // Multi-select overlays.
   selectDim: { opacity: 0.35 },
