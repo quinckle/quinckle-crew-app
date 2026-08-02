@@ -867,12 +867,16 @@ export default function OrderMenuScreen() {
         return;
       }
 
-      // Show a short-lived "Order placed" confirmation, then replace order-menu
-      // in the stack. Dine-in returns to [tableId] with the bill breakdown
-      // forced open — so the crew reviews exactly what was ordered before
-      // doing anything else — instead of jumping straight to payment
-      // collection. Takeaway has no table screen to return to, so it still
-      // goes to payment-collect directly.
+      // Show a short-lived "Order placed" confirmation, then leave order-menu.
+      // Dine-in returns to [tableId] with the bill breakdown forced open — so
+      // the crew reviews exactly what was ordered before doing anything else —
+      // instead of jumping straight to payment collection. Takeaway has no
+      // table screen to return to, so it still goes to payment-collect directly.
+      //
+      // dismissTo (not replace) pops back to the [tableId] instance already in
+      // the stack — the one we were pushed from — updating its params. Using
+      // replace here mounted a *second* [tableId] on top of the original, which
+      // is why the crew had to hit Back twice to reach the table floor.
       setPlaced({ amount: orderTotal });
       navTimerRef.current = setTimeout(() => {
         if (isTakeaway) {
@@ -889,7 +893,7 @@ export default function OrderMenuScreen() {
             },
           });
         } else {
-          router.replace({
+          router.dismissTo({
             pathname: '/(staff)/[tableId]',
             params: {
               tableId: String(tableId ?? 0),

@@ -13,7 +13,7 @@ import React from 'react';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { BottomSheet } from './BottomSheet';
-import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
+import { QuinckleColors, Spacing } from '../../constants/Colors';
 
 export interface BillLineItem {
   key: string;
@@ -49,7 +49,13 @@ export interface BillBreakdownProps {
   variant?: 'sheet' | 'receipt';
 }
 
-/** Item list (scrolls) + summary rows + grand total (pinned below it). */
+/**
+ * Receipt-style breakdown. The item list scrolls in its own region while the
+ * summary rows + grand total stay pinned to the bottom of the available space
+ * — so the total sits flush at the foot of the sheet (or the tablet rail)
+ * whether there are 2 items or 20. Amounts are set in tabular monospace so
+ * the ₹ column lines up like a printed bill.
+ */
 export function BillBreakdownContent({
   items,
   subtotal,
@@ -64,18 +70,20 @@ export function BillBreakdownContent({
   showItems = true,
   variant = 'sheet',
 }: BillBreakdownProps) {
-  const receipt = variant === 'receipt';
+  // The sheet floats free of the screen edges, so its content needs its own
+  // horizontal padding; the tablet rail ('receipt') already pads its wrapper.
+  const hPad = variant === 'receipt' ? 0 : Spacing.xl;
   return (
-    // No item list to anchor to the top → sink the summary to the bottom of
-    // the available space instead of leaving it stranded up top with a big
-    // empty gap below (that's the "stuck to bottom" receipt look).
-    <View style={[{ flex: 1 }, !showItems && styles.pinBottom]}>
+    <View style={{ flex: 1 }}>
       {showItems && (
         <>
-          <Text style={styles.itemCount}>{items.length} item{items.length !== 1 ? 's' : ''}</Text>
+          <View style={[styles.itemsHeader, { paddingHorizontal: hPad }]}>
+            <Text style={styles.itemsHeaderLabel}>Bill</Text>
+            <Text style={styles.itemsHeaderCount}>{items.length} item{items.length !== 1 ? 's' : ''}</Text>
+          </View>
 
           <ScrollView
-            style={[styles.itemsScroll, receipt && styles.itemsScrollReceipt]}
+            style={[styles.itemsScroll, { paddingHorizontal: hPad }]}
             showsVerticalScrollIndicator
             contentContainerStyle={{ paddingBottom: Spacing.sm }}
           >
@@ -94,36 +102,36 @@ export function BillBreakdownContent({
         </>
       )}
 
-      {receipt && <Text style={styles.receiptLabel}>Bill</Text>}
-      <View style={[styles.summarySection, receipt && styles.summarySectionReceipt]}>
-        <View style={[styles.summaryRow, receipt && styles.summaryRowReceipt]}>
+      {/* Pinned to the bottom of the available space. */}
+      <View style={[styles.summarySection, { paddingHorizontal: hPad }, !showItems && styles.pinBottom]}>
+        <View style={styles.summaryRow}>
           <Text style={styles.summaryLabel}>Subtotal</Text>
-          <Text style={[styles.summaryValue, receipt && styles.summaryValueReceipt]}>₹{subtotal.toFixed(0)}</Text>
+          <Text style={styles.summaryValue}>₹{subtotal.toFixed(0)}</Text>
         </View>
         {discountTotal > 0 && (
-          <View style={[styles.summaryRow, receipt && styles.summaryRowReceipt]}>
+          <View style={styles.summaryRow}>
             <Text style={styles.summaryLabel}>Discount</Text>
-            <Text style={[styles.summaryValue, receipt && styles.summaryValueReceipt, styles.creditValue]}>−₹{discountTotal.toFixed(0)}</Text>
+            <Text style={[styles.summaryValue, styles.creditValue]}>−₹{discountTotal.toFixed(0)}</Text>
           </View>
         )}
         {serviceChargeTotal !== 0 && (
-          <View style={[styles.summaryRow, receipt && styles.summaryRowReceipt]}>
+          <View style={styles.summaryRow}>
             <Text style={styles.summaryLabel}>{serviceChargeTotal > 0 ? 'Service charge' : 'Adjustment'}</Text>
-            <Text style={[styles.summaryValue, receipt && styles.summaryValueReceipt, serviceChargeTotal < 0 && styles.creditValue]}>
+            <Text style={[styles.summaryValue, serviceChargeTotal < 0 && styles.creditValue]}>
               {serviceChargeTotal < 0 ? '−' : ''}₹{Math.abs(serviceChargeTotal).toFixed(0)}
             </Text>
           </View>
         )}
         {tax > 0 && (
-          <View style={[styles.summaryRow, receipt && styles.summaryRowReceipt]}>
+          <View style={styles.summaryRow}>
             <Text style={styles.summaryLabel}>{taxRate > 0 ? `GST (${taxRate}%)` : 'Tax'}</Text>
-            <Text style={[styles.summaryValue, receipt && styles.summaryValueReceipt]}>₹{tax.toFixed(2)}</Text>
+            <Text style={styles.summaryValue}>₹{tax.toFixed(2)}</Text>
           </View>
         )}
         {tipTotal > 0 && (
-          <View style={[styles.summaryRow, receipt && styles.summaryRowReceipt]}>
+          <View style={styles.summaryRow}>
             <Text style={styles.summaryLabel}>Tip</Text>
-            <Text style={[styles.summaryValue, receipt && styles.summaryValueReceipt]}>₹{tipTotal.toFixed(0)}</Text>
+            <Text style={styles.summaryValue}>₹{tipTotal.toFixed(0)}</Text>
           </View>
         )}
 
@@ -134,11 +142,11 @@ export function BillBreakdownContent({
           </TouchableOpacity>
         )}
 
-        {receipt && <View style={styles.receiptDashedRule} />}
+        <View style={styles.dashedRule} />
 
-        <View style={[styles.grandTotalCard, receipt && styles.grandTotalCardReceipt]}>
+        <View style={styles.grandTotalRow}>
           <Text style={styles.grandTotalLabel}>Grand total</Text>
-          <Text style={[styles.grandTotalValue, receipt && styles.summaryValueReceipt]}>₹{grandTotal.toFixed(2)}</Text>
+          <Text style={styles.grandTotalValue}>₹{grandTotal.toFixed(2)}</Text>
         </View>
       </View>
     </View>
@@ -164,56 +172,56 @@ export function BillDetailsSheet({ visible, onClose, ...breakdown }: SheetProps)
   );
 }
 
+// Tabular monospace so every ₹ amount aligns in a clean right-hand column,
+// the way a printed receipt reads.
+const MONO = { fontFamily: 'monospace' as const, letterSpacing: 0.3 };
+
 const styles = StyleSheet.create({
   pinBottom: { justifyContent: 'flex-end' },
-  receiptLabel: {
+
+  itemsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'baseline',
+    marginBottom: Spacing.md,
+  },
+  itemsHeaderLabel: {
     fontSize: 11,
     fontWeight: '700',
     color: QuinckleColors.textSecondary,
     textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: Spacing.sm,
+    letterSpacing: 1.5,
   },
-  itemCount: {
-    ...Typography.micro,
+  itemsHeaderCount: {
+    fontSize: 11,
+    fontWeight: '600',
     color: QuinckleColors.textTertiary,
-    paddingHorizontal: Spacing.xl,
-    marginBottom: Spacing.sm,
-  },
-  itemsScroll: {
-    flexGrow: 0,
-    // (receipt variant overrides flexGrow so the list fills and the summary
-    // pins to the bottom of the rail — see itemsScrollReceipt.)
-    borderTopWidth: 1,
-    borderTopColor: QuinckleColors.borderSubtle,
-    borderBottomWidth: 1,
-    borderBottomColor: QuinckleColors.borderSubtle,
-    paddingHorizontal: Spacing.xl,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
   },
   // Fill the available height so the summary + grand total sit flush at the
   // bottom of the pane (uniform whether 2 items or 20).
-  itemsScrollReceipt: { flex: 1, flexGrow: 1 },
+  itemsScroll: { flex: 1 },
   itemRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    paddingVertical: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: QuinckleColors.borderSubtle,
+    paddingVertical: Spacing.sm,
   },
-  itemName: { color: QuinckleColors.textPrimary, fontSize: 13, fontWeight: '500' },
+  itemName: { color: QuinckleColors.textPrimary, fontSize: 13.5, fontWeight: '500' },
   itemModifiers: { color: QuinckleColors.textTertiary, fontSize: 11, marginTop: 2, fontStyle: 'italic' },
-  itemPrice: { color: QuinckleColors.textSecondary, fontSize: 13, fontWeight: '500' },
+  itemPrice: { ...MONO, color: QuinckleColors.textSecondary, fontSize: 13.5, fontWeight: '500' },
 
-  summarySection: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.md },
-  summarySectionReceipt: { paddingHorizontal: 0, paddingTop: 0 },
-  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 },
-  summaryRowReceipt: { paddingVertical: 2 },
+  summarySection: {
+    paddingTop: Spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: QuinckleColors.borderSubtle,
+  },
+  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2.5 },
   summaryLabel: { color: QuinckleColors.textSecondary, fontSize: 12, fontWeight: '500' },
-  summaryValue: { color: QuinckleColors.textPrimary, fontSize: 12, fontWeight: '600' },
-  summaryValueReceipt: { fontFamily: 'monospace', letterSpacing: 0.3 },
+  summaryValue: { ...MONO, color: QuinckleColors.textPrimary, fontSize: 12, fontWeight: '600' },
   creditValue: { color: '#86efac' },
-  receiptDashedRule: {
+  dashedRule: {
     borderTopWidth: 1,
     borderStyle: 'dashed',
     borderColor: QuinckleColors.borderStrong,
@@ -229,27 +237,14 @@ const styles = StyleSheet.create({
   },
   discountBtnText: { color: QuinckleColors.primary, fontSize: 12, fontWeight: '700' },
 
-  grandTotalCard: {
+  // Flat row on the dashed rule instead of a filled card — the rule + bold
+  // text carry the weight, matching a thermal-printed receipt.
+  grandTotalRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: QuinckleColors.primarySoft,
-    borderRadius: Radius.md,
+    alignItems: 'baseline',
     marginTop: Spacing.md,
-    marginBottom: Spacing.sm,
-    paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.lg,
-  },
-  // Receipt variant: flat row on the dashed rule instead of a filled card —
-  // the rule + bold text already carry enough weight.
-  grandTotalCardReceipt: {
-    backgroundColor: 'transparent',
-    borderRadius: 0,
-    paddingHorizontal: 0,
-    paddingVertical: 0,
-    marginTop: Spacing.sm,
-    marginBottom: 0,
   },
   grandTotalLabel: { color: QuinckleColors.textPrimary, fontSize: 14, fontWeight: '600' },
-  grandTotalValue: { color: QuinckleColors.primary, fontSize: 17, fontWeight: '700' },
+  grandTotalValue: { ...MONO, color: QuinckleColors.primary, fontSize: 19, fontWeight: '700' },
 });
