@@ -56,6 +56,10 @@ export interface InvoiceBill {
   /** When true, menu prices already include GST — a note clarifies the tax is
    *  shown for information and not added on top (Phase 4). */
   pricesIncludeTax?: boolean;
+  /** Signed rupee rounding that reconciles the paise-precision GST lines to the
+   *  whole-rupee `grandTotal` (e.g. -0.30). Printed as its own line when non-zero
+   *  — without it the bill visibly doesn't add up. */
+  roundOff?: number;
   grandTotal: number;
   isPaid: boolean;
   paymentMethod?: 'cash' | 'upi_direct' | 'mixed' | string | null;
@@ -114,6 +118,16 @@ function leftRight(left: string, right: string, width: number): string {
 
 function fmt(amount: number): string {
   return `Rs.${amount.toFixed(0)}`;
+}
+
+/**
+ * Paise-precision money. Used ONLY for the GST lines and the round-off, which
+ * legally must show the exact amount charged — everything else on the bill is
+ * whole rupees. A tax line printed at 0dp is what forced the old bill to split
+ * ₹5 into an invalid CGST 3 / SGST 2.
+ */
+function fmt2(amount: number): string {
+  return `Rs.${amount.toFixed(2)}`;
 }
 
 /**
@@ -245,14 +259,16 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   if (rateLines.length > 0) {
     for (const l of rateLines) {
       if (bill.taxDisplayMode === 'split') {
-        lines.push(`[L]${leftRight(`CGST (${half(l.rate)}%)`, fmt(l.cgst), W)}`);
-        lines.push(`[L]${leftRight(`SGST (${half(l.rate)}%)`, fmt(l.sgst), W)}`);
+        lines.push(`[L]${leftRight(`CGST (${half(l.rate)}%)`, fmt2(l.cgst), W)}`);
+        lines.push(`[L]${leftRight(`SGST (${half(l.rate)}%)`, fmt2(l.sgst), W)}`);
       } else {
-        lines.push(`[L]${leftRight(`GST (${l.rate}%)`, fmt(l.amount), W)}`);
+        lines.push(`[L]${leftRight(`GST (${l.rate}%)`, fmt2(l.amount), W)}`);
       }
     }
   } else if (bill.tax > 0) {
     if (bill.gstRegistered && bill.taxDisplayMode === 'split' && bill.taxRate) {
+      // Legacy bills (whole-rupee stored tax, no rate lines) keep the old
+      // round-then-halve split so a reprint matches the paper the diner got.
       const cgst = Math.round(bill.tax / 2);
       lines.push(`[L]${leftRight(`CGST (${half(bill.taxRate)}%)`, fmt(cgst), W)}`);
       lines.push(`[L]${leftRight(`SGST (${half(bill.taxRate)}%)`, fmt(bill.tax - cgst), W)}`);
@@ -262,6 +278,13 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
         : 'Tax';
       lines.push(`[L]${leftRight(taxLabel, fmt(bill.tax), W)}`);
     }
+  }
+  // Rupee rounding — printed between GST and TOTAL so the column adds up on
+  // paper. Rendered with an explicit sign; it is usually negative.
+  const roundOff = Number(bill.roundOff ?? 0);
+  if (Math.abs(roundOff) >= 0.005) {
+    const shown = roundOff < 0 ? `-${fmt2(Math.abs(roundOff))}` : `+${fmt2(roundOff)}`;
+    lines.push(`[L]${leftRight('Round off', shown, W)}`);
   }
   // Inclusive pricing: the GST above is embedded in the prices, not added — say
   // so, otherwise the unchanged TOTAL reads like a mistake (Phase 4).
