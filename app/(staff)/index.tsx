@@ -165,7 +165,42 @@ type MenuRow = {
   available: boolean;
   image?: string;
   modifierGroups?: MenuRowGroup[];
+  /** ISO instant a temporary 86 expires; null = off until someone turns it on. */
+  unavailableUntil?: string | null;
 };
+
+/**
+ * "Back at" presets for a temporary 86 (availability slotting). Deliberately
+ * three fixed choices and no custom time picker: a datetime picker would mean a
+ * new native dependency, which cannot ship over the air, and a busy floor wants
+ * one tap rather than a spinner. All instants are computed in IST, which is the
+ * only timezone the product runs in.
+ */
+const IST_OFFSET_MIN = 330;
+
+/** The UTC instant of `hour`:00 IST, `dayOffset` days from now. */
+function istInstantFromNow(dayOffset: number, hour: number): string {
+  const shifted = new Date(Date.now() + IST_OFFSET_MIN * 60_000);
+  shifted.setUTCHours(0, 0, 0, 0);
+  const istMidnightUtcMs = shifted.getTime() - IST_OFFSET_MIN * 60_000;
+  return new Date(istMidnightUtcMs + ((dayOffset * 24 + hour) * 60) * 60_000).toISOString();
+}
+
+const EIGHTY_SIX_PRESETS: { key: string; label: string; hint: string; until: () => string | null }[] = [
+  { key: 'tomorrow', label: 'Back tomorrow morning', hint: 'Returns at 6:00 AM', until: () => istInstantFromNow(1, 6) },
+  { key: 'tonight',  label: 'Rest of today',          hint: 'Returns at midnight',  until: () => istInstantFromNow(1, 0) },
+  { key: 'manual',   label: "Until I turn it back on", hint: 'No automatic return',  until: () => null },
+];
+
+/** "6:00 AM" / "12:00 AM" for a stored expiry, read on the IST clock. */
+function formatBackAt(iso: string): string {
+  const shifted = new Date(new Date(iso).getTime() + IST_OFFSET_MIN * 60_000);
+  const h24 = shifted.getUTCHours();
+  const m = shifted.getUTCMinutes();
+  const suffix = h24 >= 12 ? 'PM' : 'AM';
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return m === 0 ? `${h12} ${suffix}` : `${h12}:${String(m).padStart(2, '0')} ${suffix}`;
+}
 
 type PickupItem = { id: string; name: string; qty: number; servedQty: number; orderedAt: string; isServed: boolean; isReady: boolean };
 type PickupOrder = { id: string; tableNo: string; items: PickupItem[]; completedAt?: string };
@@ -251,6 +286,8 @@ export default function StaffDashboard() {
   const [isLoadingMenu, setIsLoadingMenu] = useState(true);
   const [menuData, setMenuData] = useState<MenuRow[]>(MENU_DATA_INITIAL);
   const [expandedMenuItem, setExpandedMenuItem] = useState<string | null>(null);
+  // Item awaiting a "when does it come back?" answer before being 86'd.
+  const [eightySixTarget, setEightySixTarget] = useState<MenuRow | null>(null);
   const [menuCategories, setMenuCategories] = useState<string[]>(['All', 'Appetizers', 'Mains', 'Beverages', 'Desserts']);
   const [combos, setCombos] = useState<any[]>([]);
   const [highlightedSection, setHighlightedSection] = useState<{ title: string; subtitle?: string; itemIds: string[] } | null>(null);
@@ -894,6 +931,7 @@ export default function StaffDashboard() {
             id: item.id, name: item.name,
             price: parseFloat(item.price), category: item.category,
             available: item.isAvailable, image: item.imageUrl ?? undefined,
+            unavailableUntil: item.unavailableUntil ?? null,
             modifierGroups: (item.modifierGroups ?? [])
               .map((g: any) => ({
                 id: g.id,
@@ -1560,16 +1598,31 @@ export default function StaffDashboard() {
 
   // Toggle a menu item's availability. Persists server-side (same endpoint
   // effect as the partner dashboard) so the item leaves the diner menu.
-  const toggleMenuItemAvailability = async (itemId: string, next: boolean) => {
-    setMenuData(prev => prev.map(m => m.id === itemId ? { ...m, available: next } : m)); // optimistic
+  //
+  // `backAt` makes the 86 temporary — the item returns on its own — which is the
+  // difference between "we're out of paneer tonight" and a dish quietly missing
+  // from the menu for a week because nobody remembered to switch it back.
+  const toggleMenuItemAvailability = async (itemId: string, next: boolean, backAt?: string | null) => {
+    const until = next ? null : (backAt ?? null);
+    const before = menuData.find(m => m.id === itemId);
+    setMenuData(prev => prev.map(m => m.id === itemId ? { ...m, available: next, unavailableUntil: until } : m)); // optimistic
     try {
-      await crewMenu.setAvailability(itemId, next);
+      await crewMenu.setAvailability(itemId, next, until);
       // Drop the order-menu screen's cached copy so the 86 shows on next open.
       invalidateCache('crew-order-menu:');
     } catch {
       // Revert on failure so the UI never lies about the real state.
-      setMenuData(prev => prev.map(m => m.id === itemId ? { ...m, available: !next } : m));
+      setMenuData(prev => prev.map(m => m.id === itemId
+        ? { ...m, available: !next, unavailableUntil: before?.unavailableUntil ?? null }
+        : m));
     }
+  };
+
+  // Turning an item OFF asks when it should come back; turning it ON is
+  // immediate (and clears any pending return).
+  const onToggleMenuItemPress = (item: MenuRow) => {
+    if (item.available) setEightySixTarget(item);
+    else void toggleMenuItemAvailability(item.id, true);
   };
 
   // Toggle a single modifier option / variant (86 one flavor) without taking
@@ -1880,6 +1933,27 @@ export default function StaffDashboard() {
       </TouchableOpacity>
     );
   });
+
+  // "Back at" choices shown when an item is 86'd. Picking one fires the toggle
+  // and closes the sheet; the preset's instant is computed at tap time so it is
+  // always relative to now, not to when the screen mounted.
+  const eightySixOptionRows = EIGHTY_SIX_PRESETS.map((preset) => (
+    <TouchableOpacity
+      key={preset.key}
+      style={styles.sheetOptionRow}
+      onPress={() => {
+        const target = eightySixTarget;
+        setEightySixTarget(null);
+        if (target) void toggleMenuItemAvailability(target.id, false, preset.until());
+      }}
+      activeOpacity={0.7}
+    >
+      <Text style={styles.sheetOptionText}>{preset.label}</Text>
+      <View style={styles.sheetOptionRight}>
+        <Text style={styles.sheetOptionCount}>{preset.hint}</Text>
+      </View>
+    </TouchableOpacity>
+  ));
 
   // Search + refresh + select + filter cluster for the Tables tab. On tablet
   // it sits inline in the top bar beside the burger icon; on phone it keeps
@@ -2299,8 +2373,14 @@ export default function StaffDashboard() {
                           </View>
                         )}
                       </TouchableOpacity>
+                      {!item.available && item.unavailableUntil && (
+                        <View style={styles.backAtBadge}>
+                          <Ionicons name="time-outline" size={11} color={QuinckleColors.textSecondary} />
+                          <Text style={styles.backAtBadgeText}>{formatBackAt(item.unavailableUntil)}</Text>
+                        </View>
+                      )}
                       <TouchableOpacity
-                        onPress={() => void toggleMenuItemAvailability(item.id, !item.available)}
+                        onPress={() => onToggleMenuItemPress(item)}
                         style={[styles.toggleBase, item.available ? styles.toggleOn : styles.toggleOff]}
                       >
                         <View style={[styles.toggleCircle, item.available ? styles.toggleCircleOn : styles.toggleCircleOff]} />
@@ -2643,6 +2723,26 @@ export default function StaffDashboard() {
         </BottomSheet>
       )}
 
+      {/* "When does it come back?" — asked every time an item is 86'd, so a
+          dish is never lost to the menu because nobody remembered it. */}
+      {isWide ? (
+        <CenteredModal
+          visible={!!eightySixTarget}
+          onClose={() => setEightySixTarget(null)}
+          title={eightySixTarget ? `86 ${eightySixTarget.name}` : '86 item'}
+        >
+          <View style={styles.sheetBody}>{eightySixOptionRows}</View>
+        </CenteredModal>
+      ) : (
+        <BottomSheet
+          visible={!!eightySixTarget}
+          onClose={() => setEightySixTarget(null)}
+          title={eightySixTarget ? `86 ${eightySixTarget.name}` : '86 item'}
+        >
+          <View style={styles.sheetBody}>{eightySixOptionRows}</View>
+        </BottomSheet>
+      )}
+
       {/* Tapping a free table starts the session immediately (see
           handleTablePress) — this overlay is the only feedback while it's
           in flight, no confirm step. */}
@@ -2828,6 +2928,18 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
   },
   sheetOptionRowActive: { backgroundColor: QuinckleColors.surfaceMutedHover },
+  // "Back 6 AM" pill on a temporarily-86'd item row.
+  backAtBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: Radius.sm,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    marginRight: Spacing.sm,
+  },
+  backAtBadgeText: { color: QuinckleColors.textSecondary, fontSize: 11, fontWeight: '600' },
   sheetOptionText: { color: QuinckleColors.textSecondary, fontSize: 15, fontWeight: '500' },
   sheetOptionTextActive: { color: QuinckleColors.textPrimary, fontWeight: '700' },
   sheetOptionRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
