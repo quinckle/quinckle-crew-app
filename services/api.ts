@@ -20,13 +20,25 @@ export interface StaffInfo {
   restaurantId: string;
   restaurantName: string;
   photoUrl?: string | null;
+  /**
+   * Effective capabilities, resolved server-side. Drives which modules this
+   * staffer sees. UX ONLY — the backend enforces independently, so a stale or
+   * spoofed list here grants nothing.
+   *
+   * Optional because a build newer than the backend (or a restored session from
+   * before this rollout) may not have it; callers must treat `undefined` as
+   * "unknown", not "none" — see hasCapability in constants/capabilities.ts.
+   */
+  capabilities?: string[];
+  /** Job title label ("Steward", "Bar Lead"). Display only. */
+  designation?: string | null;
 }
 
 interface RawVerifyOtpResponse {
   success: boolean;
   data: {
     token: string;
-    user: { id: string; name: string; phone: string; role: StaffRole; restaurant_id: string; restaurant_name: string; photo_url: string | null };
+    user: { id: string; name: string; phone: string; role: StaffRole; restaurant_id: string; restaurant_name: string; photo_url: string | null; capabilities?: string[]; designation?: string | null };
   };
 }
 
@@ -108,12 +120,12 @@ export const crewAuth = {
     const d = raw.data;
     return {
       crewToken: d.token,
-      staff: { id: d.user.id, name: d.user.name, phone: d.user.phone, role: d.user.role, restaurantId: d.user.restaurant_id, restaurantName: d.user.restaurant_name, photoUrl: d.user.photo_url },
+      staff: { id: d.user.id, name: d.user.name, phone: d.user.phone, role: d.user.role, restaurantId: d.user.restaurant_id, restaurantName: d.user.restaurant_name, photoUrl: d.user.photo_url, capabilities: d.user.capabilities, designation: d.user.designation },
     };
   },
 
   getProfile: () =>
-    request<{ success: boolean; data: { id: string; name: string; phone: string; role: StaffRole; photoUrl: string | null; restaurantId: string; restaurantName: string; joinedAt: string } }>(
+    request<{ success: boolean; data: { id: string; name: string; phone: string; role: StaffRole; photoUrl: string | null; restaurantId: string; restaurantName: string; joinedAt: string; capabilities?: string[]; designation?: string | null } }>(
       'GET', '/api/crew/auth/profile', undefined, true
     ),
 
@@ -322,12 +334,16 @@ export const crewMenu = {
   /**
    * Toggle item availability ("86" an item). Persists server-side and removes it
    * from the diner menu — same effect as the partner dashboard toggle.
+   *
+   * `unavailableUntil` (ISO instant) makes the 86 temporary: the item returns on
+   * its own once that moment passes, so nobody has to remember to switch it back
+   * on. Omit it for the old behaviour — off until someone flips it.
    */
-  setAvailability: (itemId: string, isAvailable: boolean) =>
-    request<{ success: true; data: { id: string; isAvailable: boolean } }>(
+  setAvailability: (itemId: string, isAvailable: boolean, unavailableUntil?: string | null) =>
+    request<{ success: true; data: { id: string; isAvailable: boolean; unavailableUntil: string | null } }>(
       'PATCH',
       `/api/crew/menu/items/${itemId}/availability`,
-      { isAvailable },
+      { isAvailable, ...(unavailableUntil ? { unavailableUntil } : {}) },
       true,
     ),
   /**

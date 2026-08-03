@@ -16,6 +16,7 @@ import * as Haptics from 'expo-haptics';
 import { QuinckleColors, Radius, Spacing, Typography } from '../constants/Colors';
 import { useAuth } from '../context/AuthContext';
 import { crewAuth } from '../services/api';
+import { landingStackFor } from '../constants/capabilities';
 import { useResponsive } from '../hooks/useResponsive';
 import { AuthSplit } from '../components/auth/AuthSplit';
 import { AuthStack } from '../components/auth/AuthStack';
@@ -170,7 +171,10 @@ export default function LoginScreen() {
     try {
       const res = await crewAuth.verifyOtp(`+91${phone}`, otp);
       const { crewToken, staff } = res;
-      const role = staff.role === 'STEWARD' ? 'staff' : 'cook';
+      // Capabilities decide the landing stack (plan §5). The old
+      // `role === 'STEWARD' ? 'staff' : 'cook'` sent ADMINs and CASHIERs to the
+      // kitchen purely because they weren't STEWARD.
+      const role = landingStackFor(staff.capabilities, staff.role);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       login(role, crewToken, staff);
       router.replace(role === 'staff' ? '/(staff)' : '/(cook)');

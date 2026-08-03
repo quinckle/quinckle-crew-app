@@ -10,12 +10,13 @@ import {
   StatusBar 
 } from 'react-native';
 import { useAuth } from '../context/AuthContext';
+import { landingStackFor } from '../constants/capabilities';
 import { QuinckleColors } from '../constants/Colors';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function Index() {
-  const { role, isRestoring } = useAuth();
+  const { role, isRestoring, staffInfo } = useAuth();
   const rootNavigationState = useRootNavigationState();
   const [isSplashReady, setIsSplashReady] = useState(false);
   
@@ -60,10 +61,17 @@ export default function Index() {
   useEffect(() => {
     if (!isReady || hasRedirected.current) return;
     hasRedirected.current = true;
-    if (role === null) router.replace('/login');
-    else if (role === 'staff') router.replace('/(staff)');
-    else router.replace('/(cook)');
-  }, [isReady, role]);
+    if (role === null) {
+      router.replace('/login');
+      return;
+    }
+    // A restored session carries the stack chosen at its last login, which may
+    // predate a capability change (e.g. a chef who has since been given floor
+    // duties). Re-derive from capabilities; falls back to the stored role when
+    // they're unknown, so nothing changes against an older backend.
+    const stack = landingStackFor(staffInfo?.capabilities, staffInfo?.role) ?? role;
+    router.replace(stack === 'cook' ? '/(cook)' : '/(staff)');
+  }, [isReady, role, staffInfo?.capabilities, staffInfo?.role]);
 
   return (
     <View style={styles.container}>
