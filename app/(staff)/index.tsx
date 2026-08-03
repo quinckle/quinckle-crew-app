@@ -945,8 +945,12 @@ export default function StaffDashboard() {
               }))
               .filter((g: MenuRowGroup) => g.options.length > 0),
           })));
-          setMenuCategories(['All', ...categories.map((c: any) => c.name).filter(Boolean)]);
-          setMenuFilter('All');
+          const catNames: string[] = categories.map((c: any) => c.name).filter(Boolean);
+          setMenuCategories(['All', ...catNames]);
+          // Land on the first category, not "All". A 435-item menu rendered every
+          // row into a plain ScrollView (no virtualisation), which is what made
+          // this tab crawl. "All" is still one tap away for anyone who wants it.
+          setMenuFilter(prev => (prev === 'All' && catNames.length > 0 ? catNames[0]! : prev));
         }
       } else {
         console.error('[menu] menu error:', menuRes.reason);
@@ -2343,7 +2347,14 @@ export default function StaffDashboard() {
 
               {/* Menu Items */}
               {menuData
-                .filter(item => (menuFilter === 'All' || item.category === menuFilter) && item.name.toLowerCase().includes(searchText.toLowerCase()))
+                .filter(item => {
+                  const q = searchText.trim().toLowerCase();
+                  // A search spans the WHOLE menu. Now that the tab opens on one
+                  // category instead of "All", scoping search to that category
+                  // would quietly hide matches sitting in the others.
+                  if (q) return item.name.toLowerCase().includes(q);
+                  return menuFilter === 'All' || item.category === menuFilter;
+                })
                 .map(item => {
                   const hasMods = !!item.modifierGroups?.length;
                   const expanded = expandedMenuItem === item.id;
