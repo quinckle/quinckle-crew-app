@@ -23,7 +23,6 @@ export const CAP = {
   ATTENDANCE_STATION: 'ATTENDANCE_STATION',
   WRITE_OFF: 'WRITE_OFF',
   ADJUSTMENTS: 'ADJUSTMENTS',
-  ANALYTICS: 'ANALYTICS',
 } as const;
 
 export type Capability = (typeof CAP)[keyof typeof CAP];
@@ -45,7 +44,6 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   ATTENDANCE_STATION: 'Attendance station',
   WRITE_OFF: 'Write off bills',
   ADJUSTMENTS: 'Voids, comps & refunds',
-  ANALYTICS: 'Business insights',
 };
 
 /**
