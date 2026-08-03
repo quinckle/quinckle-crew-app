@@ -32,13 +32,15 @@ export interface StaffInfo {
   capabilities?: string[];
   /** Job title label ("Steward", "Bar Lead"). Display only. */
   designation?: string | null;
+  /** Banner colour behind the profile photo, from their role. Null = grey. */
+  designationColor?: string | null;
 }
 
 interface RawVerifyOtpResponse {
   success: boolean;
   data: {
     token: string;
-    user: { id: string; name: string; phone: string; role: StaffRole; restaurant_id: string; restaurant_name: string; photo_url: string | null; capabilities?: string[]; designation?: string | null };
+    user: { id: string; name: string; phone: string; role: StaffRole; restaurant_id: string; restaurant_name: string; photo_url: string | null; capabilities?: string[]; designation?: string | null; designationColor?: string | null };
   };
 }
 
@@ -120,12 +122,12 @@ export const crewAuth = {
     const d = raw.data;
     return {
       crewToken: d.token,
-      staff: { id: d.user.id, name: d.user.name, phone: d.user.phone, role: d.user.role, restaurantId: d.user.restaurant_id, restaurantName: d.user.restaurant_name, photoUrl: d.user.photo_url, capabilities: d.user.capabilities, designation: d.user.designation },
+      staff: { id: d.user.id, name: d.user.name, phone: d.user.phone, role: d.user.role, restaurantId: d.user.restaurant_id, restaurantName: d.user.restaurant_name, photoUrl: d.user.photo_url, capabilities: d.user.capabilities, designation: d.user.designation, designationColor: d.user.designationColor },
     };
   },
 
   getProfile: () =>
-    request<{ success: boolean; data: { id: string; name: string; phone: string; role: StaffRole; photoUrl: string | null; restaurantId: string; restaurantName: string; joinedAt: string; capabilities?: string[]; designation?: string | null } }>(
+    request<{ success: boolean; data: { id: string; name: string; phone: string; role: StaffRole; photoUrl: string | null; restaurantId: string; restaurantName: string; joinedAt: string; capabilities?: string[]; designation?: string | null; designationColor?: string | null } }>(
       'GET', '/api/crew/auth/profile', undefined, true
     ),
 

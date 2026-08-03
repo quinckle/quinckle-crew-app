@@ -58,7 +58,6 @@ import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
 import { TableSkeleton } from '../../components/ui/TableSkeleton';
 import { MenuSkeleton } from '../../components/ui/MenuSkeleton';
 import { TakeawaySkeleton } from '../../components/ui/TakeawaySkeleton';
-import { SideDrawer } from '../../components/ui/SideDrawer';
 import { useResponsive } from '../../hooks/useResponsive';
 
 async function playSound(file: any) {
@@ -303,7 +302,6 @@ export default function StaffDashboard() {
     try { await loadMenuFromApi(); } finally { setRefreshingMenu(false); }
   };
   const [realtimeOk, setRealtimeOk] = useState(true);
-  const [drawerOpen, setDrawerOpen] = useState(false);
   // Pending cash-collection requests across the whole restaurant. Drives the
   // red-dot badge on the cash icon in the header. Updated from:
   //  - initial fetch on mount
@@ -2024,7 +2022,7 @@ export default function StaffDashboard() {
         <View style={styles.topBarLeft}>
           <TouchableOpacity
             style={styles.burgerBtn}
-            onPress={() => setDrawerOpen(true)}
+            onPress={() => router.push('/(staff)/more')}
             activeOpacity={0.7}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
@@ -2056,21 +2054,8 @@ export default function StaffDashboard() {
             )}
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.avatarBtn}
-            onPress={() => router.push('/(staff)/profile')}
-            activeOpacity={0.7}
-          >
-            {staffInfo?.photoUrl ? (
-              <Image source={{ uri: staffInfo.photoUrl }} style={styles.avatarImage} />
-            ) : (
-              <View style={[styles.avatarImage, { backgroundColor: '#F35D3B', alignItems: 'center', justifyContent: 'center' }]}>
-                <Text style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>
-                  {(staffInfo?.name ?? 'S').split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase()}
-                </Text>
-              </View>
-            )}
-          </TouchableOpacity>
+          {/* Profile now lives behind the burger → Menu → Profile, so the
+              header carries one nav affordance instead of two. */}
         </View>
       </View>
 
@@ -2899,13 +2884,6 @@ export default function StaffDashboard() {
           if (run) run(mode === 'static');
         }}
         onClose={() => setQrSheet(null)}
-      />
-
-      <SideDrawer
-        visible={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-        venueName={staffInfo?.restaurantName}
-        realtimeOk={realtimeOk}
       />
 
       {/* Takeaway self-order QR — show to a customer who wants to order themselves */}

@@ -219,7 +219,12 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             prev.capabilities.length === next.length &&
             prev.capabilities.every(c => next.includes(c));
           if (same) return prev;
-          const updated = { ...prev, capabilities: next, designation: profile.designation ?? prev.designation };
+          const updated = {
+            ...prev,
+            capabilities: next,
+            designation: profile.designation ?? prev.designation,
+            designationColor: profile.designationColor ?? prev.designationColor,
+          };
           void AsyncStorage.setItem(STAFF_KEY, JSON.stringify({ role, staffInfo: updated })).catch(() => {});
           return updated;
         });

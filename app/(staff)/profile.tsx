@@ -5,7 +5,6 @@ import {
   Text,
   View,
   TouchableOpacity,
-  Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,11 +13,10 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
-import { CAP, CAPABILITY_LABELS } from '../../constants/capabilities';
+import { CAPABILITY_LABELS, ROLE_COLOR_FALLBACK } from '../../constants/capabilities';
 import { crewAuth } from '../../services/api';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
-import UpdateStatus from '../../components/ui/UpdateStatus';
 import ProfileHeader from '../../components/ui/ProfileHeader';
 
 const STAFF_BADGE_COLORS = {
@@ -38,7 +36,7 @@ function formatPhone(raw?: string | null): string {
 
 export default function StaffProfile() {
   const insets = useSafeAreaInsets();
-  const { logout, staffInfo, setPhotoUrl, can, capabilities } = useAuth();
+  const { logout, staffInfo, setPhotoUrl, capabilities } = useAuth();
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [joinedAt, setJoinedAt] = useState<string | null>(null);
 
@@ -193,187 +191,19 @@ export default function StaffProfile() {
         <ProfileHeader
           photoUrl={staffInfo?.photoUrl}
           name={staffInfo?.name ?? 'Staff Member'}
-          roleLabel={staffRole}
+          roleLabel={staffInfo?.designation ?? staffRole}
           badgeColors={STAFF_BADGE_COLORS}
           restaurantName={staffInfo?.restaurantName}
           phone={formatPhone(staffInfo?.phone) || null}
           onChangePhoto={handlePhotoButtonPress}
           isUploadingPhoto={isUploadingPhoto}
+          bannerColor={staffInfo?.designationColor ?? ROLE_COLOR_FALLBACK}
         />
 
-        {/* ─── KOT PRINTER ─── */}
-        {/* ─── CASH DRAWER ─── */}
-        {can(CAP.CASH_DRAWER) && (
-        <View style={styles.section}>
-          <TouchableOpacity
-            style={styles.sectionRow}
-            onPress={() => router.push('/(staff)/cash-drawer')}
-            activeOpacity={0.6}
-          >
-            <View style={styles.sectionRowLeft}>
-              <View style={[styles.sectionIconWrap]}>
-                <Ionicons name="file-tray-full-outline" size={18} color='white' />
-              </View>
-              <View style={styles.sectionTextGroup}>
-                <Text style={styles.sectionTitle}>Cash Drawer</Text>
-                <Text style={styles.sectionSubtitle}>Open float, cash in/out, close & count</Text>
-              </View>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
-          </TouchableOpacity>
-        </View>
-        )}
-
-        {/* ─── DAY-END REPORT (Z) ─── */}
-        {can(CAP.CASH_DRAWER) && (
-        <View style={styles.section}>
-          <TouchableOpacity
-            style={styles.sectionRow}
-            onPress={() => router.push('/(staff)/z-report')}
-            activeOpacity={0.6}
-          >
-            <View style={styles.sectionRowLeft}>
-              <View style={[styles.sectionIconWrap]}>
-                <Ionicons name="today-outline" size={18} color='white' />
-              </View>
-              <View style={styles.sectionTextGroup}>
-                <Text style={styles.sectionTitle}>Day-end Report</Text>
-                <Text style={styles.sectionSubtitle}>Sales, collections & cash summary · print/email</Text>
-              </View>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
-          </TouchableOpacity>
-        </View>
-        )}
-
-        {/* ─── STOCK ─── */}
-        {can(CAP.STOCK) && (
-        <View style={styles.section}>
-          <TouchableOpacity
-            style={styles.sectionRow}
-            onPress={() => router.push('/(staff)/stock')}
-            activeOpacity={0.6}
-          >
-            <View style={styles.sectionRowLeft}>
-              <View style={[styles.sectionIconWrap]}>
-                <Ionicons name="cube-outline" size={18} color='white' />
-              </View>
-              <View style={styles.sectionTextGroup}>
-                <Text style={styles.sectionTitle}>Stock</Text>
-                <Text style={styles.sectionSubtitle}>Levels, stock-take & wastage</Text>
-              </View>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
-          </TouchableOpacity>
-        </View>
-        )}
-
-        {/* ─── EXPENSES ─── */}
-        {can(CAP.EXPENSES) && (
-        <View style={styles.section}>
-          <TouchableOpacity
-            style={styles.sectionRow}
-            onPress={() => router.push('/(staff)/expenses')}
-            activeOpacity={0.6}
-          >
-            <View style={styles.sectionRowLeft}>
-              <View style={[styles.sectionIconWrap]}>
-                <Ionicons name="wallet-outline" size={18} color='white' />
-              </View>
-              <View style={styles.sectionTextGroup}>
-                <Text style={styles.sectionTitle}>Expenses</Text>
-                <Text style={styles.sectionSubtitle}>Log petty cash & supplier payments</Text>
-              </View>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
-          </TouchableOpacity>
-        </View>
-        )}
-
-        {/* ─── DUES (KHATA) ─── */}
-        {can(CAP.DUES) && (
-        <View style={styles.section}>
-          <TouchableOpacity
-            style={styles.sectionRow}
-            onPress={() => router.push('/(staff)/dues')}
-            activeOpacity={0.6}
-          >
-            <View style={styles.sectionRowLeft}>
-              <View style={[styles.sectionIconWrap]}>
-                <Ionicons name="book-outline" size={18} color='white' />
-              </View>
-              <View style={styles.sectionTextGroup}>
-                <Text style={styles.sectionTitle}>Dues (Khata)</Text>
-                <Text style={styles.sectionSubtitle}>Customer pay-later balances · collect</Text>
-              </View>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
-          </TouchableOpacity>
-        </View>
-        )}
-
-        {/* ─── ORDER LEDGER ─── */}
-        {can(CAP.ORDERS_LEDGER) && (
-        <View style={styles.section}>
-          <TouchableOpacity
-            style={styles.sectionRow}
-            onPress={() => router.push('/(staff)/order-ledger')}
-            activeOpacity={0.6}
-          >
-            <View style={styles.sectionRowLeft}>
-              <View style={[styles.sectionIconWrap]}>
-                <Ionicons name="receipt-outline" size={18} color='white' />
-              </View>
-              <View style={styles.sectionTextGroup}>
-                <Text style={styles.sectionTitle}>Order Ledger</Text>
-                <Text style={styles.sectionSubtitle}>All sessions & order history</Text>
-              </View>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
-          </TouchableOpacity>
-        </View>
-        )}
-
-        <View style={styles.section}>
-          <TouchableOpacity
-            style={styles.sectionRow}
-            onPress={() => router.push('/printer')}
-            activeOpacity={0.6}
-          >
-            <View style={styles.sectionRowLeft}>
-              <View style={[styles.sectionIconWrap]}>
-                <Ionicons name="print-outline" size={18} color='white' />
-              </View>
-              <View style={styles.sectionTextGroup}>
-                <Text style={styles.sectionTitle}>KOT Printer</Text>
-                <Text style={styles.sectionSubtitle}>Pair or manage Bluetooth printer</Text>
-              </View>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
-          </TouchableOpacity>
-        </View>
-
-        {/* ─── MEMBERSHIPS ─── */}
-        {can(CAP.MEMBERSHIPS) && (
-        <View style={styles.section}>
-          <TouchableOpacity
-            style={styles.sectionRow}
-            onPress={() => router.push('/memberships')}
-            activeOpacity={0.6}
-          >
-            <View style={styles.sectionRowLeft}>
-              <View style={[styles.sectionIconWrap]}>
-                <Ionicons name="ribbon-outline" size={18} color='white' />
-              </View>
-              <View style={styles.sectionTextGroup}>
-                <Text style={styles.sectionTitle}>Memberships</Text>
-                <Text style={styles.sectionSubtitle}>Enrol a customer by phone</Text>
-              </View>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
-          </TouchableOpacity>
-        </View>
-        )}
+                {/* Module rows and app utilities moved to the Menu screen
+            (app/(staff)/more.tsx). Profile is identity only, per plan §5 —
+            keeping launchers in two places meant filtering one and not the
+            other just relocated the modules instead of hiding them. */}
 
         {/* ─── YOUR ACCESS (read-only) ───
             Transparency, not a launcher: when a module disappears from this
@@ -404,46 +234,6 @@ export default function StaffProfile() {
             </View>
           </View>
         )}
-
-        {/* ─── HELP & POLICIES ─── */}
-        <View style={styles.section}>
-          <TouchableOpacity
-            style={styles.sectionRow}
-            onPress={() => Linking.openURL('https://quinckle.com/support')}
-            activeOpacity={0.6}
-          >
-            <View style={styles.sectionRowLeft}>
-              <View style={styles.sectionIconWrap}>
-                <Ionicons name="headset-outline" size={18} color="white" />
-              </View>
-              <View style={styles.sectionTextGroup}>
-                <Text style={styles.sectionTitle}>Help & Support</Text>
-                <Text style={styles.sectionSubtitle}>Get help or contact us</Text>
-              </View>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
-          </TouchableOpacity>
-          <View style={styles.sectionDivider} />
-          <TouchableOpacity
-            style={styles.sectionRow}
-            onPress={() => Linking.openURL('https://quinckle.com/policies/terms')}
-            activeOpacity={0.6}
-          >
-            <View style={styles.sectionRowLeft}>
-              <View style={styles.sectionIconWrap}>
-                <Ionicons name="document-text-outline" size={18} color="white" />
-              </View>
-              <View style={styles.sectionTextGroup}>
-                <Text style={styles.sectionTitle}>Policies</Text>
-                <Text style={styles.sectionSubtitle}>Terms and conditions</Text>
-              </View>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
-          </TouchableOpacity>
-        </View>
-
-        {/* ─── APP UPDATES (OTA status + installer) ─── */}
-        <UpdateStatus />
 
         {/* ─── LOGOUT ─── */}
         <TouchableOpacity

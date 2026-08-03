@@ -27,6 +27,9 @@ export const CAP = {
 
 export type Capability = (typeof CAP)[keyof typeof CAP];
 
+/** Banner colour when a role has none set. Mirrors ROLE_COLOR_FALLBACK on the backend. */
+export const ROLE_COLOR_FALLBACK = '#5F5E5A';
+
 /** Human labels for the read-only "Your access" list. */
 export const CAPABILITY_LABELS: Record<string, string> = {
   TABLES: 'Tables & floor',

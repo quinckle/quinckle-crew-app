@@ -14,6 +14,11 @@ type Props = {
   phone?: string | null;
   onChangePhoto: () => void;
   isUploadingPhoto: boolean;
+  /**
+   * Role colour behind the photo. Optional on purpose — the cook profile
+   * passes nothing and keeps the old plain card.
+   */
+  bannerColor?: string | null;
 };
 
 export default function ProfileHeader({
@@ -25,6 +30,7 @@ export default function ProfileHeader({
   phone,
   onChangePhoto,
   isUploadingPhoto,
+  bannerColor,
 }: Props) {
   const initials = name
     .split(' ')
@@ -35,8 +41,9 @@ export default function ProfileHeader({
     .toUpperCase();
 
   return (
-    <View style={styles.card}>
-      <View style={styles.avatarWrap}>
+    <View style={[styles.card, bannerColor ? styles.cardBanner : null]}>
+      {bannerColor ? <View style={[styles.banner, { backgroundColor: bannerColor }]} /> : null}
+      <View style={[styles.avatarWrap, bannerColor ? styles.avatarWrapBanner : null]}>
         {photoUrl ? (
           <Image source={{ uri: photoUrl }} style={styles.avatar} />
         ) : (
@@ -82,6 +89,23 @@ export default function ProfileHeader({
 }
 
 const styles = StyleSheet.create({
+  banner: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 92,
+  },
+  cardBanner: {
+    paddingTop: 0,
+    overflow: 'hidden',
+  },
+  avatarWrapBanner: {
+    marginTop: 92 - 38,
+    borderWidth: 3,
+    borderColor: QuinckleColors.surface,
+    borderRadius: 999,
+  },
   card: {
     alignItems: 'center',
     marginHorizontal: Spacing.lg,
