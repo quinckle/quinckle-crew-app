@@ -14,6 +14,7 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
+import { CAP, CAPABILITY_LABELS } from '../../constants/capabilities';
 import { crewAuth } from '../../services/api';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
@@ -37,7 +38,7 @@ function formatPhone(raw?: string | null): string {
 
 export default function StaffProfile() {
   const insets = useSafeAreaInsets();
-  const { logout, staffInfo, setPhotoUrl } = useAuth();
+  const { logout, staffInfo, setPhotoUrl, can, capabilities } = useAuth();
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [joinedAt, setJoinedAt] = useState<string | null>(null);
 
@@ -202,6 +203,7 @@ export default function StaffProfile() {
 
         {/* ─── KOT PRINTER ─── */}
         {/* ─── CASH DRAWER ─── */}
+        {can(CAP.CASH_DRAWER) && (
         <View style={styles.section}>
           <TouchableOpacity
             style={styles.sectionRow}
@@ -220,8 +222,10 @@ export default function StaffProfile() {
             <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
           </TouchableOpacity>
         </View>
+        )}
 
         {/* ─── DAY-END REPORT (Z) ─── */}
+        {can(CAP.CASH_DRAWER) && (
         <View style={styles.section}>
           <TouchableOpacity
             style={styles.sectionRow}
@@ -240,8 +244,10 @@ export default function StaffProfile() {
             <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
           </TouchableOpacity>
         </View>
+        )}
 
         {/* ─── STOCK ─── */}
+        {can(CAP.STOCK) && (
         <View style={styles.section}>
           <TouchableOpacity
             style={styles.sectionRow}
@@ -260,8 +266,10 @@ export default function StaffProfile() {
             <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
           </TouchableOpacity>
         </View>
+        )}
 
         {/* ─── EXPENSES ─── */}
+        {can(CAP.EXPENSES) && (
         <View style={styles.section}>
           <TouchableOpacity
             style={styles.sectionRow}
@@ -280,8 +288,10 @@ export default function StaffProfile() {
             <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
           </TouchableOpacity>
         </View>
+        )}
 
         {/* ─── DUES (KHATA) ─── */}
+        {can(CAP.DUES) && (
         <View style={styles.section}>
           <TouchableOpacity
             style={styles.sectionRow}
@@ -300,8 +310,10 @@ export default function StaffProfile() {
             <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
           </TouchableOpacity>
         </View>
+        )}
 
         {/* ─── ORDER LEDGER ─── */}
+        {can(CAP.ORDERS_LEDGER) && (
         <View style={styles.section}>
           <TouchableOpacity
             style={styles.sectionRow}
@@ -320,6 +332,7 @@ export default function StaffProfile() {
             <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
           </TouchableOpacity>
         </View>
+        )}
 
         <View style={styles.section}>
           <TouchableOpacity
@@ -341,6 +354,7 @@ export default function StaffProfile() {
         </View>
 
         {/* ─── MEMBERSHIPS ─── */}
+        {can(CAP.MEMBERSHIPS) && (
         <View style={styles.section}>
           <TouchableOpacity
             style={styles.sectionRow}
@@ -359,6 +373,37 @@ export default function StaffProfile() {
             <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textTertiary} />
           </TouchableOpacity>
         </View>
+        )}
+
+        {/* ─── YOUR ACCESS (read-only) ───
+            Transparency, not a launcher: when a module disappears from this
+            screen, this explains why rather than leaving the staffer to
+            wonder whether the app is broken. `capabilities` is undefined on an
+            older backend, in which case we show nothing at all. */}
+        {Array.isArray(capabilities) && (
+          <View style={styles.section}>
+            <View style={styles.sectionRow}>
+              <View style={styles.sectionRowLeft}>
+                <View style={styles.sectionIconWrap}>
+                  <Ionicons name="key-outline" size={18} color="white" />
+                </View>
+                <View style={styles.sectionTextGroup}>
+                  <Text style={styles.sectionTitle}>Your access</Text>
+                  <Text style={styles.sectionSubtitle}>
+                    {staffInfo?.designation
+                      ? `${staffInfo.designation} · ${capabilities.length} permissions`
+                      : `${capabilities.length} permissions`}
+                  </Text>
+                  <Text style={[styles.sectionSubtitle, { marginTop: 6, lineHeight: 18 }]}>
+                    {capabilities.length === 0
+                      ? 'No permissions yet — ask your manager.'
+                      : capabilities.map((c) => CAPABILITY_LABELS[c] ?? c).join(' · ')}
+                  </Text>
+                </View>
+              </View>
+            </View>
+          </View>
+        )}
 
         {/* ─── HELP & POLICIES ─── */}
         <View style={styles.section}>
