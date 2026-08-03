@@ -2729,7 +2729,7 @@ export default function StaffDashboard() {
         <CenteredModal
           visible={!!eightySixTarget}
           onClose={() => setEightySixTarget(null)}
-          title={eightySixTarget ? `86 ${eightySixTarget.name}` : '86 item'}
+          title={eightySixTarget ? `When does ${eightySixTarget.name} come back?` : 'When does it come back?'}
         >
           <View style={styles.sheetBody}>{eightySixOptionRows}</View>
         </CenteredModal>
@@ -2737,7 +2737,7 @@ export default function StaffDashboard() {
         <BottomSheet
           visible={!!eightySixTarget}
           onClose={() => setEightySixTarget(null)}
-          title={eightySixTarget ? `86 ${eightySixTarget.name}` : '86 item'}
+          title={eightySixTarget ? `When does ${eightySixTarget.name} come back?` : 'When does it come back?'}
         >
           <View style={styles.sheetBody}>{eightySixOptionRows}</View>
         </BottomSheet>
