@@ -1490,12 +1490,6 @@ export default function TableDetail() {
         </>
       )}
 
-      {sessionInfoSheetJsx}
-
-      {/* Phone keeps a docked total bar at the bottom; clear it so the hint
-          isn't half-hidden behind it. Tablet has no such bar. */}
-      <HintToast message={hint} onDismiss={() => setHint(null)} bottomOffset={isWide ? 24 : 96} />
-
       {/* Tablet-landscape: Grand Total is already always visible in the left
           pane's receipt, so repeating it here would be a second duplicate —
           show the bar only when there's an actual action to take. Phone
@@ -1586,6 +1580,16 @@ export default function TableDetail() {
       )}
 
       <ThemedDialog visible={dialog.visible} title={dialog.title} message={dialog.message} actions={dialog.actions} onClose={closeDialog} />
+
+      {/* ── Overlays ──────────────────────────────────────────────────────────
+          Everything below renders AFTER the docked bottom bar on purpose.
+          BottomSheet is an inline absolutely-positioned overlay, not a Modal /
+          portal, so paint order is JSX order — a sheet declared before the bar
+          comes out UNDERNEATH it, with the total and collect button sitting on
+          top of the sheet. Keep new sheets and toasts in this block. */}
+      {sessionInfoSheetJsx}
+
+      <HintToast message={hint} onDismiss={() => setHint(null)} bottomOffset={isWide ? 24 : 96} />
 
       <BillDetailsSheet
         visible={isExpanded}
