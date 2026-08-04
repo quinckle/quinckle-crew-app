@@ -59,6 +59,7 @@ import { TableSkeleton } from '../../components/ui/TableSkeleton';
 import { MenuSkeleton } from '../../components/ui/MenuSkeleton';
 import { TakeawaySkeleton } from '../../components/ui/TakeawaySkeleton';
 import { useResponsive } from '../../hooks/useResponsive';
+import { expiryLevel, expiryColor, expiryChipStyle, type ExpiryLevel } from '../../constants/sessionExpiry';
 
 async function playSound(file: any) {
   try {
@@ -74,15 +75,27 @@ async function playSound(file: any) {
 // Compact session countdown for the table card — time only, no "left" label.
 // Returns null when there's no expiry to show. `danger` flags the last 10
 // minutes (and an already-expired session) so the card can tint it red.
-function formatTimeLeft(expiresAt: string | null | undefined, now: number): { text: string; danger: boolean } | null {
+/**
+ * Remaining-time chip for a floor-grid card. `occupiedSince` lets the urgency
+ * scale to the venue's own turn time — see constants/sessionExpiry. It shares
+ * that helper with the table detail screen on purpose: the threshold used to be
+ * a 10-minute constant copy-pasted into both, and they had already drifted
+ * (this one treated an expired table as danger, the detail screen did not).
+ */
+function formatTimeLeft(
+  expiresAt: string | null | undefined,
+  now: number,
+  occupiedSince?: string | null,
+): { text: string; level: ExpiryLevel } | null {
   if (!expiresAt) return null;
   const msLeft = new Date(expiresAt).getTime() - now;
   if (Number.isNaN(msLeft)) return null;
-  if (msLeft <= 0) return { text: 'Expired', danger: true };
+  const level = expiryLevel(msLeft, expiresAt, occupiedSince);
+  if (msLeft <= 0) return { text: 'Expired', level };
   const h = Math.floor(msLeft / 3_600_000);
   const m = Math.floor((msLeft % 3_600_000) / 60_000);
   const text = h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m` : '<1m';
-  return { text, danger: msLeft < 10 * 60_000 };
+  return { text, level };
 }
 
 Notifications.setNotificationHandler({
@@ -2108,7 +2121,7 @@ export default function StaffDashboard() {
                     const showStatusIcons = item.status === 'occupied';
                     const allServed = showStatusIcons && total > 0 && (item.itemsServed ?? 0) >= total;
                     const paid = showStatusIcons && item.paymentSettled === true;
-                    const timeLeft = item.status === 'occupied' ? formatTimeLeft(item.expiresAt, now) : null;
+                    const timeLeft = item.status === 'occupied' ? formatTimeLeft(item.expiresAt, now, item.occupiedSince) : null;
                     const isOccupied = item.status === 'occupied';
                     const selected = selectedIds.has(item.id);
                     // In select mode only occupied cards are actionable; others dim.
@@ -2189,14 +2202,14 @@ export default function StaffDashboard() {
                                   </Text>
                                 </View>
                                 {timeLeft && (
-                                  <View style={styles.cardTimer}>
+                                  <View style={[styles.cardTimer, expiryChipStyle(timeLeft.level)]}>
                                     <Ionicons
-                                      name="time-outline"
+                                      name={timeLeft.level === 'overdue' ? 'alert-circle-outline' : 'time-outline'}
                                       size={12}
-                                      color={timeLeft.danger ? QuinckleColors.danger : QuinckleColors.textSecondary}
+                                      color={expiryColor(timeLeft.level)}
                                     />
                                     <Text
-                                      style={[styles.cardTimerText, timeLeft.danger && { color: QuinckleColors.danger }]}
+                                      style={[styles.cardTimerText, { color: expiryColor(timeLeft.level) }]}
                                     >
                                       {timeLeft.text}
                                     </Text>
@@ -3366,11 +3379,17 @@ const styles = StyleSheet.create({
   occupiedBottomLeft: {
     flex: 1,
   },
+  // A real chip, not a bare row: expiryChipStyle supplies fill + border colour,
+  // which need geometry to land on. Kept tight so a grid of cards doesn't bloat.
   cardTimer: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 3,
     marginLeft: Spacing.sm,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
   },
   cardTimerText: {
     color: QuinckleColors.textSecondary,

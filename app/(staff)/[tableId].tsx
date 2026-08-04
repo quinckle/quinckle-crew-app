@@ -2,7 +2,7 @@ import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, FlatList, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QuinckleColors, Radius, Spacing , Typography } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
@@ -12,6 +12,7 @@ import { printBill, printKot, getStatus as getPrinterStatus, isUpiQrEnabled, set
 import type { InvoiceBill } from '../../services/invoiceTemplate';
 import { useAuth } from '../../context/AuthContext';
 import { useCountdown } from '../../hooks/useCountdown';
+import { expiryLevel, expiryColor, expiryChipStyle } from '../../constants/sessionExpiry';
 import { subscribeChannel } from '../../services/realtime';
 import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
@@ -19,6 +20,7 @@ import { PrintOptionsSheet, type InvoiceBuyer } from '../../components/ui/PrintO
 import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintProgressOverlay';
 import { BillDetailsSheet, BillBreakdownContent } from '../../components/ui/BillDetailsSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
+import { HintToast } from '../../components/ui/HintToast';
 import { ReasonSheet, ReasonChips } from '../../components/ui/ReasonSheet';
 import { useManagerApproval } from '../../components/ui/ManagerPinSheet';
 import { WAIVE_REASONS, EXEMPTION_REASONS, isReasonComplete, toReasonPayload, wouldZeroBill, type CancelReason } from '../../constants/adjustmentReasons';
@@ -67,6 +69,26 @@ function toSessionRef(sessionId: string | null | undefined): string {
 
 export default function TableDetail() {
   const insets = useSafeAreaInsets();
+  /**
+   * Bottom padding for the docked total/collect bar.
+   *
+   * `edgeToEdgeEnabled` is on, so Android draws this app UNDER the system
+   * navigation bar. The bar used to hardcode 24px, which happens to clear a
+   * gesture-nav pill (~16-24px) but NOT the 3-button nav bar (~48px) — on those
+   * devices the system buttons sat on top of "Send to Payment Collection".
+   *
+   * The Math.max floor keeps the old 24px on any device that reports no inset,
+   * so nothing regresses where it already looked right.
+   */
+  const bottomBarPad = Math.max(insets.bottom, Spacing.md) + Spacing.md;
+  /**
+   * The docked bar is absolutely positioned OVER the order list, so the list
+   * reserves clearance for it (`listContent.paddingBottom`, tuned by eye when
+   * the bar was a fixed 24px tall at the base). Growing the bar without growing
+   * that clearance would just move the problem — the nav bar stops covering the
+   * button and starts covering the last order line instead.
+   */
+  const listBottomPad = 290 + Math.max(0, bottomBarPad - Spacing.xxl);
   // Tablet-landscape: session details + a permanently-visible bill breakdown
   // sit in a left pane, ordered items alone fill the right pane. Phone and
   // tablet-portrait keep the original single-column stack.
@@ -97,7 +119,13 @@ export default function TableDetail() {
   const qrRunRef = useRef<((omitAmount: boolean) => void) | null>(null);
   const [expiresAt, setExpiresAt] = useState<string | null>(paramExpiresAt || null);
   const countdown = useCountdown(expiresAt);
-  const isNearExpiry = countdown.totalMs > 0 && countdown.totalMs < 10 * 60_000;
+  // Urgency scales with the venue's own turn time — see constants/sessionExpiry.
+  // `overdue` is included deliberately: the old fixed-threshold check required
+  // totalMs > 0, so a table that had actually run out went from red back to a
+  // calm grey "Expired" — relaxing at the moment it should escalate.
+  const expiry = expiresAt ? expiryLevel(countdown.totalMs, expiresAt, occupiedSince) : 'normal';
+  const isNearExpiry = expiry === 'danger' || expiry === 'overdue';
+  const expiryFg = expiryColor(expiry);
   const countdownStr = countdown.totalMs > 0
     ? countdown.h > 0
       ? `${countdown.h}h ${String(countdown.m).padStart(2, '0')}m`
@@ -207,6 +235,12 @@ export default function TableDetail() {
   // Action menu + swap-table state for the 3-dot header
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [printMenuOpen, setPrintMenuOpen] = useState(false);
+  // Session reference data (ref, guest, phone, opened) lives behind a tap — it's
+  // consulted once a service, not continuously, so it doesn't earn a permanent
+  // block above the order list.
+  const [sessionInfoOpen, setSessionInfoOpen] = useState(false);
+  // Why a disabled action card is disabled, shown when someone taps it.
+  const [hint, setHint] = useState<string | null>(null);
   // Tap-to-paper progress overlay; null = hidden. Phases track the real await
   // boundaries in the print handlers below.
   const [printJob, setPrintJob] = useState<PrintJob | null>(null);
@@ -968,7 +1002,7 @@ export default function TableDetail() {
         ))}
 
         {/* ── Bottom bar skeleton ── */}
-        <View style={[styles.bottomBar, { position: 'absolute', bottom: 0, left: 0, right: 0 }]}>
+        <View style={[styles.bottomBar, { paddingBottom: bottomBarPad }]}>
           <View style={styles.totalRow}>
             <View style={{ gap: 8 }}>
               <Skeleton width={80} height={10} radius={4} />
@@ -982,11 +1016,11 @@ export default function TableDetail() {
     );
   }
 
-  // Shared between the tablet-landscape two-pane layout and the phone/
-  // tablet-portrait single-column stack below.
-  const sessionSectionJsx = (
-    <>
-      <Text style={styles.sessionSectionLabel}>Session</Text>
+  // Session reference data, behind the header's ⓘ. Everything here is static for
+  // the life of the session — the one field that moves (the timer) is promoted
+  // to the header, where it's always visible.
+  const sessionInfoSheetJsx = (
+    <BottomSheet visible={sessionInfoOpen} onClose={() => setSessionInfoOpen(false)} title="Session details">
       <View style={styles.sessionGroup}>
         <View style={styles.sessionInfoRow}>
           <Text style={styles.sessionInfoLabel}>Ref</Text>
@@ -1031,19 +1065,99 @@ export default function TableDetail() {
             <View style={styles.sessionInfoSep} />
             <View style={styles.sessionInfoRow}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                <Ionicons name="timer-outline" size={13} color={isNearExpiry ? QuinckleColors.danger : QuinckleColors.textSecondary} />
-                <Text style={[styles.sessionInfoLabel, isNearExpiry && { color: QuinckleColors.danger }]}>
-                  {countdownStr ? 'Time left' : 'Active for'}
+                <Ionicons
+                  name={expiry === 'overdue' ? 'alert-circle-outline' : 'timer-outline'}
+                  size={13}
+                  color={countdownStr ? expiryFg : QuinckleColors.textSecondary}
+                />
+                <Text style={[styles.sessionInfoLabel, countdownStr ? { color: expiryFg } : null]}>
+                  {!countdownStr ? 'Active for' : expiry === 'overdue' ? 'Over by' : 'Time left'}
                 </Text>
               </View>
-              <Text style={[styles.sessionInfoValueStrong, { fontVariant: ['tabular-nums'] as any }, isNearExpiry && { color: QuinckleColors.danger }]}>
+              <Text style={[styles.sessionInfoValueStrong, { fontVariant: ['tabular-nums'] as any }, countdownStr ? { color: expiryFg } : null]}>
                 {countdownStr ?? elapsed}
               </Text>
             </View>
           </>
         ) : null}
       </View>
-    </>
+    </BottomSheet>
+  );
+
+  // ── Primary actions, as fixed slots ────────────────────────────────────────
+  // Always three cards in the same order and the same positions. A card whose
+  // action isn't available right now renders disabled rather than disappearing,
+  // so the row never reflows and muscle memory holds: "print is the third one"
+  // stays true whether or not the venue has a UPI ID or the session is closed.
+  // Why a card is dim, in the words of the person who'd ask. A greyed control
+  // that does nothing on tap reads as a broken app; saying why turns it into
+  // information. Null means the action is available — these strings ARE the
+  // enabled/disabled state, so the two can never drift apart.
+  const addItemsReason = !sessionId
+    ? 'No open session on this table. Seat a guest first, then add items.'
+    : sessionStatus === 'closed'
+      ? 'This session is closed. Reopen the table to add more items.'
+      : null;
+  const upiQrReason = upiId
+    ? null
+    : 'No UPI ID set for this venue, so there is no payment QR to show. Add one in the partner dashboard under Settings.';
+
+  /**
+   * A disabled card stays TAPPABLE so it can explain itself — only the action is
+   * withheld. Screen readers get the reason via accessibilityHint and still hear
+   * "disabled", so they never need the toast at all.
+   */
+  const actionCard = (
+    key: string,
+    icon: React.ComponentProps<typeof Ionicons>['name'],
+    label: string,
+    onPress: () => void,
+    disabledReason: string | null,
+  ) => {
+    const enabled = !disabledReason;
+    return (
+      <TouchableOpacity
+        key={key}
+        style={[styles.actionCard, !enabled && styles.actionCardDisabled]}
+        onPress={enabled ? onPress : () => setHint(disabledReason)}
+        activeOpacity={enabled ? 0.75 : 0.9}
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        accessibilityHint={disabledReason ?? undefined}
+        accessibilityState={{ disabled: !enabled }}
+      >
+        <Ionicons
+          name={icon}
+          size={20}
+          color={enabled ? QuinckleColors.textPrimary : QuinckleColors.textTertiary}
+        />
+        <Text style={[styles.actionCardLabel, !enabled && styles.actionCardLabelDisabled]} numberOfLines={1}>
+          {label}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const actionRowJsx = (
+    <View style={styles.actionRow}>
+      {actionCard('add', 'add-circle-outline', 'Add items', () => router.push({
+        pathname: '/(staff)/order-menu',
+        params: {
+          tableId: String(tableId),
+          tableNum,
+          tableDbId: tableDbId ?? '',
+          sessionId,
+          customerPhone: sessionCustomerPhone ?? '',
+          customerName: sessionCustomerName ?? '',
+        },
+      }), addItemsReason)}
+      {actionCard('qr', 'qr-code-outline', 'UPI QR', () => {
+        setUpiAmount(''); setUpiUri(null); setShowUpiModal(true);
+      }, upiQrReason)}
+      {actionCard('print', 'print-outline', 'Print', () => {
+        setActionMenuOpen(false); setPrintMenuOpen(true);
+      }, null)}
+    </View>
   );
 
   const orderListJsx = (
@@ -1066,7 +1180,9 @@ export default function TableDetail() {
         style={isWide ? styles.wideFlatList : undefined}
         data={flatItems}
         keyExtractor={item => item.key}
-        contentContainerStyle={styles.listContent}
+        // Tablet's list is not overlaid by the docked bar — it lives in its own
+        // pane — so it keeps the base clearance.
+        contentContainerStyle={isWide ? styles.listContent : { paddingBottom: listBottomPad }}
         onRefresh={handleRefresh}
         refreshing={refreshing}
         ListEmptyComponent={
@@ -1175,55 +1291,49 @@ export default function TableDetail() {
           <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} activeOpacity={0.7}>
             <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
           </TouchableOpacity>
-          <View>
-            <Text style={styles.tableTitle}>T{tableNum}{groupLabel ? ` · ${groupLabel}` : ''}</Text>
-            {sessionRef ? <Text style={styles.sessionRefText}>{sessionRef}</Text> : null}
-          </View>
+          <Text style={styles.tableTitle} numberOfLines={1}>
+            T{tableNum}{groupLabel ? ` · ${groupLabel}` : ''}
+          </Text>
+
+          {/* Session identity moved into this sheet — the ref used to be printed
+              under the table number AND again as a "Ref" row, twice over. */}
+          <TouchableOpacity
+            onPress={() => setSessionInfoOpen(true)}
+            style={styles.infoBtn}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Session details"
+          >
+            <Ionicons name="information-circle-outline" size={18} color={QuinckleColors.textSecondary} />
+          </TouchableOpacity>
+
+          {/* Merged tables stay visible. Which sessions this table absorbed
+              changes how staff read the bill, so it must not hide in a sheet. */}
+          {mergedFrom.length > 0 ? (
+            <View style={styles.mergedBadge}>
+              <Ionicons name="git-merge-outline" size={11} color={QuinckleColors.warning} />
+              <Text style={styles.mergedBadgeText}>Merged</Text>
+            </View>
+          ) : null}
         </View>
         <View style={styles.headerRight}>
-          {/* ── Add items (manual order) icon ── */}
-          {/* Available for any open session — staff can add orders even after
-              prior items are paid (pay-first settles each order, but the diner
-              keeps ordering). Only hide once the session is fully closed. */}
-          {!!sessionId && sessionStatus !== 'closed' && (
-            <TouchableOpacity
-              onPress={() => router.push({
-                pathname: '/(staff)/order-menu',
-                params: {
-                  tableId: String(tableId),
-                  tableNum,
-                  tableDbId: tableDbId ?? '',
-                  sessionId,
-                  customerPhone: sessionCustomerPhone ?? '',
-                  customerName: sessionCustomerName ?? '',
-                },
-              })}
-              style={styles.iconBtn}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="add-circle-outline" size={20} color={QuinckleColors.textPrimary} />
-            </TouchableOpacity>
-          )}
+          {/* The one session field that changes and that staff act on. */}
+          {(countdownStr || elapsed) ? (
+            <View style={[styles.headerTimeChip, countdownStr ? expiryChipStyle(expiry) : null]}>
+              <Ionicons
+                name={expiry === 'overdue' ? 'alert-circle-outline' : 'timer-outline'}
+                size={12}
+                color={countdownStr ? expiryFg : QuinckleColors.textSecondary}
+              />
+              <Text style={[styles.headerTimeText, countdownStr ? { color: expiryFg } : null]}>
+                {countdownStr ?? elapsed}
+              </Text>
+            </View>
+          ) : null}
 
-          {/* ── UPI QR generator ── */}
-          {upiId && (
-            <TouchableOpacity
-              onPress={() => { setUpiAmount(''); setUpiUri(null); setShowUpiModal(true); }}
-              style={styles.iconBtn}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="qr-code-outline" size={18} color={QuinckleColors.textPrimary} />
-            </TouchableOpacity>
-          )}
-
-          {/* ── Print icon → bottom sheet ── */}
-          <TouchableOpacity
-            onPress={() => { setActionMenuOpen(false); setPrintMenuOpen(true); }}
-            style={styles.iconBtn}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="print-outline" size={18} color={QuinckleColors.textPrimary} />
-          </TouchableOpacity>
+          {/* Add items / UPI QR / Print now live as the action cards below —
+              bigger targets than 18px glyphs in the worst corner of the screen
+              for someone working one-handed. Only the overflow stays here. */}
 
           {/* ── Three-dot menu ── */}
           <View style={{ position: 'relative' }}>
@@ -1293,30 +1403,23 @@ export default function TableDetail() {
           </View>
 
           <View style={styles.railPane}>
-            {/* Compact session header (T{num} + ref already live in the screen
-                header, so the rail shows the guest + time context instead). */}
+            {/* Compact session header. T{num}, the ref and the timer all live in
+                the screen header now, so the rail carries only the guest
+                identity the bill is handed to. */}
             <View style={styles.railHeader}>
               <View style={styles.railHeaderTop}>
                 <Text style={styles.railGuest} numberOfLines={1}>
                   {sessionCustomerName?.trim() || 'Walk-in guest'}
                 </Text>
-                {(countdownStr || elapsed) ? (
-                  <View style={[styles.railTimeChip, isNearExpiry && styles.railTimeChipDanger]}>
-                    <Ionicons
-                      name="timer-outline"
-                      size={12}
-                      color={isNearExpiry ? QuinckleColors.danger : QuinckleColors.textSecondary}
-                    />
-                    <Text style={[styles.railTimeText, isNearExpiry && { color: QuinckleColors.danger }]}>
-                      {countdownStr ?? elapsed}
-                    </Text>
-                  </View>
-                ) : null}
               </View>
               {sessionCustomerPhone?.trim() ? (
                 <Text style={styles.railPhone}>{sessionCustomerPhone.trim()}</Text>
               ) : null}
             </View>
+
+            {/* Same three actions as the phone layout, so behaviour doesn't
+                diverge by form factor. */}
+            {actionRowJsx}
 
             <View style={styles.railBillWrap}>
               <BillBreakdownContent
@@ -1382,17 +1485,23 @@ export default function TableDetail() {
         </View>
       ) : (
         <>
-          {sessionSectionJsx}
+          {actionRowJsx}
           {orderListJsx}
         </>
       )}
+
+      {sessionInfoSheetJsx}
+
+      {/* Phone keeps a docked total bar at the bottom; clear it so the hint
+          isn't half-hidden behind it. Tablet has no such bar. */}
+      <HintToast message={hint} onDismiss={() => setHint(null)} bottomOffset={isWide ? 24 : 96} />
 
       {/* Tablet-landscape: Grand Total is already always visible in the left
           pane's receipt, so repeating it here would be a second duplicate —
           show the bar only when there's an actual action to take. Phone
           keeps the full total row since the breakdown lives behind a tap. */}
       {!isWide && (
-        <View style={styles.bottomBar}>
+        <View style={[styles.bottomBar, { paddingBottom: bottomBarPad }]}>
           {!isWide && (
             <TouchableOpacity style={styles.totalRow} activeOpacity={0.85} onPress={() => setIsExpanded(true)}>
               <View>
@@ -1426,6 +1535,26 @@ export default function TableDetail() {
                 </View>
               </View>
               <View style={styles.totalValueContainer}>
+                {/* Discount lives on the total, not inside the breakdown sheet —
+                    giving one shouldn't require opening a read-only explanation
+                    of the bill first. Nested inside the row's Touchable: the
+                    inner responder wins, so this does not also expand the sheet. */}
+                {!isPaid && orders.length > 0 && (
+                  <TouchableOpacity
+                    onPress={() => setDiscountModalOpen(true)}
+                    style={styles.totalDiscountBtn}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 8 }}
+                    activeOpacity={0.7}
+                    accessibilityRole="button"
+                    accessibilityLabel={discountTotal > 0 ? 'Edit discount' : 'Give discount'}
+                  >
+                    <MaterialCommunityIcons
+                      name="percent-box-outline"
+                      size={20}
+                      color={discountTotal > 0 ? QuinckleColors.primary : QuinckleColors.textSecondary}
+                    />
+                  </TouchableOpacity>
+                )}
                 <Text style={styles.totalValue}>₹{grandTotal.toFixed(0)}</Text>
                 {/* Chevron signals the row expands the bill breakdown sheet. */}
                 <Ionicons name="chevron-up" size={18} color={QuinckleColors.textTertiary} style={{ marginLeft: Spacing.sm }} />
@@ -2085,14 +2214,6 @@ const styles = StyleSheet.create({
   railHeaderTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.sm },
   railGuest: { ...Typography.subtitle, color: QuinckleColors.textPrimary, flex: 1 },
   railPhone: { ...Typography.caption, color: QuinckleColors.textSecondary, marginTop: 2 },
-  railTimeChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: QuinckleColors.surfaceMuted, borderRadius: Radius.pill,
-    paddingHorizontal: Spacing.sm, paddingVertical: 4,
-    borderWidth: 1, borderColor: QuinckleColors.border,
-  },
-  railTimeChipDanger: { borderColor: QuinckleColors.danger },
-  railTimeText: { fontSize: 12, fontWeight: '700', color: QuinckleColors.textSecondary, fontVariant: ['tabular-nums'] as any },
   railBillWrap: {
     flex: 1,
     paddingHorizontal: Spacing.lg,
@@ -2112,31 +2233,56 @@ const styles = StyleSheet.create({
   railPaidText: { fontSize: 14, fontWeight: '700' },
   railEmptyHint: { ...Typography.caption, color: QuinckleColors.textMuted, textAlign: 'center', paddingVertical: 12 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.xl },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
-  headerRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  // flex + minWidth:0 so a long groupLabel truncates the table title instead of
+  // pushing the timer and overflow menu off the right edge.
+  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, flex: 1, minWidth: 0 },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, flexShrink: 0 },
   iconBtn: { width: 40, height: 40, borderRadius: Radius.md, backgroundColor: QuinckleColors.surfaceMuted, borderWidth: 1, borderColor: QuinckleColors.border, alignItems: 'center', justifyContent: 'center' },
-  tableTitle: { fontSize: 22, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.4 },
-  sessionRefText: {
-    marginTop: 2,
-    color: QuinckleColors.textSecondary,
-    fontSize: 11,
-    fontWeight: '600',
-    letterSpacing: 0.4,
-  },
+  tableTitle: { fontSize: 22, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.4, flexShrink: 1 },
   sinceText: { fontSize: 11, color: QuinckleColors.textTertiary, fontWeight: '500', marginTop: 1 },
-  sessionSectionLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: QuinckleColors.textSecondary,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: Spacing.sm,
+
+  // ── Header: session info affordance, merged badge, live timer ──────────────
+  infoBtn: { padding: 4, marginLeft: -2 },
+  mergedBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: QuinckleColors.surfaceMuted, borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.sm, paddingVertical: 3,
+    borderWidth: 1, borderColor: QuinckleColors.warning,
   },
+  mergedBadgeText: { fontSize: 10, fontWeight: '700', color: QuinckleColors.warning, letterSpacing: 0.3 },
+  headerTimeChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: QuinckleColors.surfaceMuted, borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.sm, paddingVertical: 5,
+    borderWidth: 1, borderColor: QuinckleColors.border,
+  },
+  headerTimeChipDanger: { borderColor: QuinckleColors.danger },
+  headerTimeText: { fontSize: 12, fontWeight: '700', color: QuinckleColors.textSecondary, fontVariant: ['tabular-nums'] as any },
+
+  // ── Primary action cards ───────────────────────────────────────────────────
+  // Three equal fixed slots. `flex: 1` on every card keeps the widths identical
+  // whether or not an action is currently available, so a disabled card holds
+  // its place instead of letting the row reflow.
+  actionRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.lg },
+  actionCard: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: Spacing.md,
+    backgroundColor: QuinckleColors.surface,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+  },
+  actionCardDisabled: { opacity: 0.4, borderColor: QuinckleColors.borderSubtle },
+  actionCardLabel: { fontSize: 12, fontWeight: '600', color: QuinckleColors.textPrimary },
+  actionCardLabelDisabled: { color: QuinckleColors.textTertiary },
+
   sessionGroup: {
     backgroundColor: QuinckleColors.surface,
     borderRadius: Radius.lg,
     overflow: 'hidden',
-    marginBottom: Spacing.xl,
   },
   sessionInfoRow: {
     flexDirection: 'row',
@@ -2208,13 +2354,17 @@ const styles = StyleSheet.create({
   // ── Item cancel bottom sheet (content inside the shared BottomSheet) ──
   emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: Spacing.huge, gap: Spacing.md },
   emptyText: { color: QuinckleColors.textTertiary, fontSize: 14 },
-  bottomBar: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: Spacing.xl, paddingBottom: Spacing.xxl, paddingTop: Spacing.lg, backgroundColor: QuinckleColors.surface, borderTopWidth: 1, borderTopColor: QuinckleColors.border },
+  // paddingBottom is applied inline from `bottomBarPad` — it depends on the
+  // device's navigation-bar inset and cannot be a static value under
+  // edge-to-edge. See the comment on bottomBarPad.
+  bottomBar: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: Spacing.xl, paddingTop: Spacing.lg, backgroundColor: QuinckleColors.surface, borderTopWidth: 1, borderTopColor: QuinckleColors.border },
   // Constrained to the right pane's width so it never overlaps the left
   // pane's always-visible receipt at the bottom.
   bottomBarWide: { left: Spacing.lg + 360 + Spacing.lg + 1 },
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   totalLabel: { color: QuinckleColors.textTertiary, fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 },
   totalValueContainer: { flexDirection: 'row', alignItems: 'center' },
+  totalDiscountBtn: { padding: 2, marginRight: Spacing.md },
   totalValue: { color: QuinckleColors.textPrimary, fontSize: 26, fontWeight: '700', letterSpacing: -0.5 },
   paidBadge: { alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 2, borderRadius: Radius.sm, marginTop: 6, borderWidth: 1 },
   paidBadgeActive: { backgroundColor: QuinckleColors.successSoft, borderColor: QuinckleColors.successBorder },

@@ -11,7 +11,7 @@
 
 import React from 'react';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { BottomSheet } from './BottomSheet';
 import { QuinckleColors, Spacing } from '../../constants/Colors';
 
@@ -70,6 +70,9 @@ export function BillBreakdownContent({
   showItems = true,
   variant = 'sheet',
 }: BillBreakdownProps) {
+  // Only the always-visible receipt (tablet rail) carries the action; the modal
+  // is a read-only explanation and the phone renders its own on the total bar.
+  const showDiscountAction = canGiveDiscount && variant === 'receipt';
   // The sheet floats free of the screen edges, so its content needs its own
   // horizontal padding; the tablet rail ('receipt') already pads its wrapper.
   const hPad = variant === 'receipt' ? 0 : Spacing.xl;
@@ -135,18 +138,34 @@ export function BillBreakdownContent({
           </View>
         )}
 
-        {canGiveDiscount && (
-          <TouchableOpacity style={styles.discountBtn} onPress={onGiveDiscount} activeOpacity={0.8}>
-            <Ionicons name="pricetag-outline" size={14} color={QuinckleColors.primary} />
-            <Text style={styles.discountBtnText}>{discountTotal > 0 ? 'Edit discount' : 'Give discount'}</Text>
-          </TouchableOpacity>
-        )}
-
         <View style={styles.dashedRule} />
 
-        <View style={styles.grandTotalRow}>
+        {/* Discount sits on the total, not inside the breakdown.
+            The bottom sheet is a read-only explanation of how the bill was
+            reached — reaching an ACTION meant opening it first. The affordance
+            now lives beside the amount at every place the total is shown, so
+            `variant === 'sheet'` (the modal) deliberately renders nothing. */}
+        <View style={[styles.grandTotalRow, showDiscountAction && styles.grandTotalRowWithAction]}>
           <Text style={styles.grandTotalLabel}>Grand total</Text>
-          <Text style={styles.grandTotalValue}>₹{grandTotal.toFixed(2)}</Text>
+          <View style={styles.grandTotalValueWrap}>
+            {showDiscountAction && (
+              <TouchableOpacity
+                onPress={onGiveDiscount}
+                style={styles.discountIconBtn}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel={discountTotal > 0 ? 'Edit discount' : 'Give discount'}
+              >
+                <MaterialCommunityIcons
+                  name="percent-box-outline"
+                  size={19}
+                  color={discountTotal > 0 ? QuinckleColors.primary : QuinckleColors.textSecondary}
+                />
+              </TouchableOpacity>
+            )}
+            <Text style={styles.grandTotalValue}>₹{grandTotal.toFixed(2)}</Text>
+          </View>
         </View>
       </View>
     </View>
@@ -228,15 +247,6 @@ const styles = StyleSheet.create({
     marginTop: Spacing.md,
   },
 
-  discountBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    alignSelf: 'flex-start',
-    marginTop: Spacing.sm,
-  },
-  discountBtnText: { color: QuinckleColors.primary, fontSize: 12, fontWeight: '700' },
-
   // Flat row on the dashed rule instead of a filled card — the rule + bold
   // text carry the weight, matching a thermal-printed receipt.
   grandTotalRow: {
@@ -245,6 +255,12 @@ const styles = StyleSheet.create({
     alignItems: 'baseline',
     marginTop: Spacing.md,
   },
+  // An icon has no text baseline, so a baseline-aligned row would hang it off
+  // the amount's underline. Only switch to centre when the icon is present, so
+  // the modal's existing typography is untouched.
+  grandTotalRowWithAction: { alignItems: 'center' },
+  grandTotalValueWrap: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  discountIconBtn: { padding: 2 },
   grandTotalLabel: { color: QuinckleColors.textPrimary, fontSize: 14, fontWeight: '600' },
   grandTotalValue: { ...MONO, color: QuinckleColors.primary, fontSize: 19, fontWeight: '700' },
 });
