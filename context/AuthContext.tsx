@@ -214,11 +214,18 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         if (!Array.isArray(next)) return;
         setStaffInfo(prev => {
           if (!prev) return prev;
-          const same =
+          // Compare EVERY field this refresh can change, not just capabilities.
+          // Checking capabilities alone meant a staffer whose permissions hadn't
+          // moved kept a stale designation and banner colour forever — which is
+          // exactly the common case, since the migration backfilled capabilities
+          // to what they already had. The colour only appeared on a fresh login.
+          const capsSame =
             Array.isArray(prev.capabilities) &&
             prev.capabilities.length === next.length &&
             prev.capabilities.every(c => next.includes(c));
-          if (same) return prev;
+          const designationSame = (profile.designation ?? null) === (prev.designation ?? null);
+          const colorSame = (profile.designationColor ?? null) === (prev.designationColor ?? null);
+          if (capsSame && designationSame && colorSame) return prev;
           const updated = {
             ...prev,
             capabilities: next,
