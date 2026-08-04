@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   Animated,
   Dimensions,
-  Image,
   RefreshControl,
   StyleSheet,
   Text,
@@ -14,9 +13,9 @@ import {
 import { Stack, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useAuth } from '../../context/AuthContext';
-import { crewPayments, restaurantApi, type PendingCashRequest, type CollectedCashRecord } from '../../services/api';
+import { crewPayments, restaurantApi, type PendingCashRequest, type CollectedCashRecord, type OutstandingGroup } from '../../services/api';
+import { CAP } from '../../constants/capabilities';
 import { subscribeChannel } from '../../services/realtime';
 import { playPaymentSuccess } from '../../services/sound';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
@@ -27,8 +26,9 @@ type Row =
   | { kind: 'groupHeader'; title: string; subtitle: string }
   | { kind: 'pending'; data: PendingCashRequest }
   | { kind: 'collected'; data: CollectedCashRecord }
+  | { kind: 'outstanding'; data: OutstandingGroup }
   | { kind: 'empty'; message: string };
-type TabKey = 'active' | 'confirmed';
+type TabKey = 'active' | 'confirmed' | 'outstanding';
 
 function timeAgo(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -87,7 +87,7 @@ function buildConfirmedRows(collected: CollectedCashRecord[]): Row[] {
 export default function CashCollectionScreen() {
   const router  = useRouter();
   const insets  = useSafeAreaInsets();
-  const { staffInfo } = useAuth();
+  const { staffInfo, can } = useAuth();
 
   const [pending, setPending]             = useState<PendingCashRequest[]>([]);
   const [todayCollected, setTodayCollected] = useState<CollectedCashRecord[]>([]);
@@ -96,6 +96,11 @@ export default function CashCollectionScreen() {
   const [collectingIds, setCollectingIds] = useState<Set<string>>(new Set());
   const [intentBusyIds, setIntentBusyIds] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab]         = useState<TabKey>('active');
+  // Outstanding has its own endpoint and its own capability, so it loads lazily
+  // — opening this screen shouldn't pull the venue's whole exposure.
+  const [outstanding, setOutstanding]     = useState<OutstandingGroup[]>([]);
+  const [outstandingDue, setOutstandingDue] = useState(0);
+  const [outstandingLoaded, setOutstandingLoaded] = useState(false);
   const [openMenuOrderId, setOpenMenuOrderId] = useState<string | null>(null);
   const [upiSuccessingOrderId, setUpiSuccessingOrderId] = useState<string | null>(null);
   // Restaurant's configured UPI VPA — fallback for the Collection Sheet QR when
@@ -280,55 +285,65 @@ export default function CashCollectionScreen() {
 
   const totalDue = pending.reduce((s, p) => s + p.amount, 0);
 
-  const renderHero = () => (
-    <View style={s.heroWrap}>
-      <Image
-        source={require('../../assets/images/hero banner/cash collection screen/hero banner.webp')}
-        style={s.heroImage}
-        resizeMode="cover"
-      />
-      <LinearGradient
-        colors={['rgba(10,10,11,0.05)', 'rgba(10,10,11,0.75)', QuinckleColors.background]}
-        locations={[0, 0.75, 1]}
-        style={StyleSheet.absoluteFillObject}
-      />
-      <View style={s.heroContent}>
-        <Text style={s.heroTitle}>Payment Collection</Text>
-        {pending.length > 0 ? (
-          <Text style={s.heroSub}>{pending.length} pending · ₹{totalDue.toLocaleString('en-IN')} due</Text>
-        ) : (
-          <Text style={s.heroSub}>All caught up</Text>
-        )}
-      </View>
-    </View>
-  );
+  const loadOutstanding = useCallback(async () => {
+    try {
+      const res = await crewPayments.getOutstanding();
+      setOutstanding(res.groups);
+      setOutstandingDue(res.totalDue);
+    } catch (err) {
+      // A staffer without OUTSTANDING gets 403 here. The tab is hidden for them
+      // anyway, so fail quietly rather than blocking the whole screen.
+      console.warn('[cash-collection] outstanding load failed', err);
+    } finally {
+      setOutstandingLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'outstanding' && !outstandingLoaded) void loadOutstanding();
+  }, [activeTab, outstandingLoaded, loadOutstanding]);
+
+  const tabs: { key: TabKey; label: string }[] = [
+    { key: 'active', label: 'Active' },
+    { key: 'confirmed', label: 'Confirmed' },
+    // OUTSTANDING is a sensitive capability — it shows the venue's whole
+    // exposure, not just this staffer's collections. Server enforces too.
+    ...(can(CAP.OUTSTANDING) ? [{ key: 'outstanding' as TabKey, label: 'Outstanding' }] : []),
+  ];
 
   const renderTabBar = () => (
     <View style={s.tabBarWrap}>
       <View style={s.tabBar}>
-        <TouchableOpacity
-          style={[s.tabBtn, activeTab === 'active' && s.tabBtnActive]}
-          onPress={() => setActiveTab('active')}
-          activeOpacity={0.8}
-        >
-          <Text style={[s.tabBtnText, activeTab === 'active' && s.tabBtnTextActive]}>
-            Active Requests
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[s.tabBtn, activeTab === 'confirmed' && s.tabBtnActive]}
-          onPress={() => setActiveTab('confirmed')}
-          activeOpacity={0.8}
-        >
-          <Text style={[s.tabBtnText, activeTab === 'confirmed' && s.tabBtnTextActive]}>
-            Confirmed Paid
-          </Text>
-        </TouchableOpacity>
+        {tabs.map(t => (
+          <TouchableOpacity
+            key={t.key}
+            style={[s.tabBtn, activeTab === t.key && s.tabBtnActive]}
+            onPress={() => setActiveTab(t.key)}
+            activeOpacity={0.8}
+          >
+            <Text style={[s.tabBtnText, activeTab === t.key && s.tabBtnTextActive]}>{t.label}</Text>
+          </TouchableOpacity>
+        ))}
       </View>
     </View>
   );
 
-  const rows: Row[] = activeTab === 'active'
+  const outstandingRows: Row[] = [
+    {
+      kind: 'sectionHeader',
+      title: 'Outstanding',
+      subtitle: outstanding.length === 0
+        ? (outstandingLoaded ? 'Nothing uncollected' : 'Loading…')
+        : `${outstanding.length} · ₹${outstandingDue.toLocaleString('en-IN')} due`,
+    },
+    ...(outstanding.length === 0
+      ? [{ kind: 'empty' as const, message: outstandingLoaded ? 'No uncollected money.' : 'Loading…' }]
+      : outstanding.map(g => ({ kind: 'outstanding' as const, data: g }))),
+  ];
+
+  const rows: Row[] = activeTab === 'outstanding'
+    ? outstandingRows
+    : activeTab === 'active'
     ? [
         { kind: 'sectionHeader', title: 'Active Requests', subtitle: pending.length === 0 ? 'None' : `${pending.length} · ₹${totalDue.toLocaleString('en-IN')} due` },
         ...(pending.length === 0
@@ -341,29 +356,28 @@ export default function CashCollectionScreen() {
     <View style={s.root}>
       <Stack.Screen options={{ headerShown: false }} />
 
-      {/* Sticky overlay header — fades in as user scrolls past hero */}
-      <View style={[s.stickyHeader, { paddingTop: insets.top }]} pointerEvents="box-none">
-        <Animated.View style={[s.stickyBg, {
-          opacity: scrollY.interpolate({ inputRange: [80, 160], outputRange: [0, 1], extrapolate: 'clamp' }),
-        }]} />
-        <View style={s.stickyRow}>
+      {/* Header — static, not a fade-in overlay. The title, the pending/due
+          summary and the tabs should all be readable without scrolling first;
+          the old hero image pushed them below the fold. Outstanding moved from
+          a header icon into a tab, so nothing here is a hidden destination. */}
+      <View style={[s.header, { paddingTop: insets.top + Spacing.sm }]}>
+        <View style={s.headerRow}>
           <TouchableOpacity onPress={() => router.back()} activeOpacity={0.6} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Ionicons name="chevron-back" size={24} color={QuinckleColors.textPrimary} />
           </TouchableOpacity>
-          <Animated.Text style={[s.stickyTitle, {
-            opacity: scrollY.interpolate({ inputRange: [120, 180], outputRange: [0, 1], extrapolate: 'clamp' }),
-          }]}>
-            Payment Collection
-          </Animated.Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
-            <TouchableOpacity onPress={() => router.push('/(staff)/outstanding')} activeOpacity={0.6} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-              <Ionicons name="alert-circle-outline" size={21} color={QuinckleColors.textSecondary} />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={handleRefresh} activeOpacity={0.6} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-              <Ionicons name="refresh-outline" size={20} color={QuinckleColors.textSecondary} />
-            </TouchableOpacity>
-          </View>
+          <Text style={s.headerTitle} numberOfLines={1}>Payment collection</Text>
+          <TouchableOpacity onPress={handleRefresh} activeOpacity={0.6} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+            <Ionicons name="refresh-outline" size={21} color={QuinckleColors.textSecondary} />
+          </TouchableOpacity>
         </View>
+
+        <Text style={s.headerSummary}>
+          {pending.length > 0
+            ? `${pending.length} pending · ₹${totalDue.toLocaleString('en-IN')} due`
+            : 'All caught up'}
+        </Text>
+
+        {renderTabBar()}
       </View>
 
       {isLoading ? (
@@ -372,8 +386,6 @@ export default function CashCollectionScreen() {
           scrollEventThrottle={16}
           contentContainerStyle={{ paddingBottom: insets.bottom + 88 }}
         >
-          {renderHero()}
-          {renderTabBar()}
           <CashCollectionSkeleton />
         </Animated.ScrollView>
       ) : (
@@ -384,12 +396,11 @@ export default function CashCollectionScreen() {
             if (row.kind === 'collected')    return `c-${row.data.orderId}-${row.data.method}`;
             if (row.kind === 'sectionHeader') return `h-${row.title}`;
             if (row.kind === 'groupHeader')  return `g-${row.title}`;
+            if (row.kind === 'outstanding')  return `o-${row.data.sessionId}`;
             return `e-${i}`;
           }}
           ListHeaderComponent={() => (
             <View>
-              {renderHero()}
-              {renderTabBar()}
             </View>
           )}
           onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
@@ -410,6 +421,33 @@ export default function CashCollectionScreen() {
                   <Text style={s.groupTitle}>{item.title}</Text>
                   <Text style={s.groupSubtotal}>{item.subtitle}</Text>
                 </View>
+              );
+            }
+
+            if (item.kind === 'outstanding') {
+              const g = item.data;
+              const label = g.channel === 'TAKEAWAY'
+                ? `Takeaway${g.pickupToken ? ` · ${g.pickupToken}` : ''}`
+                : `Table ${g.tableNumber || '—'}`;
+              return (
+                <TouchableOpacity
+                  style={s.outstandingRow}
+                  activeOpacity={0.7}
+                  // The waive flow (reason codes, confirmation) already lives on
+                  // the Outstanding screen — routing there beats duplicating it.
+                  onPress={() => router.push('/(staff)/outstanding')}
+                >
+                  <View style={s.outstandingLeft}>
+                    <Text style={s.outstandingTitle}>{label}</Text>
+                    <Text style={s.outstandingSub}>
+                      {g.orderCount} order{g.orderCount === 1 ? '' : 's'}
+                      {g.sessionClosed ? ' · table freed' : ''}
+                      {g.customerName ? ` · ${g.customerName}` : ''}
+                    </Text>
+                  </View>
+                  <Text style={s.outstandingAmount}>{inr(g.amount)}</Text>
+                  <Ionicons name="chevron-forward" size={16} color={QuinckleColors.textTertiary} />
+                </TouchableOpacity>
               );
             }
 
@@ -604,23 +642,58 @@ const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: QuinckleColors.background },
 
   // Sticky overlay header
-  stickyHeader: {
-    position: 'absolute', top: 0, left: 0, right: 0, zIndex: 100,
-  },
-  stickyBg: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: QuinckleColors.background,
+  header: {
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.sm,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: QuinckleColors.border,
   },
-  stickyRow: {
-    height: 52,
+  headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: Spacing.lg,
+    gap: Spacing.md,
   },
-  stickyTitle: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '600' },
+  headerTitle: {
+    flex: 1,
+    color: QuinckleColors.textPrimary,
+    fontSize: 17,
+    fontWeight: '700',
+    letterSpacing: -0.3,
+  },
+  headerSummary: {
+    color: QuinckleColors.textSecondary,
+    fontSize: 13,
+    fontWeight: '500',
+    marginTop: 6,
+    marginLeft: 32,
+  },
+  outstandingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: QuinckleColors.border,
+  },
+  outstandingLeft: { flex: 1, minWidth: 0 },
+  outstandingTitle: {
+    color: QuinckleColors.textPrimary,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  outstandingSub: {
+    color: QuinckleColors.textTertiary,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  outstandingAmount: {
+    color: QuinckleColors.warning,
+    fontSize: 15,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
   tabBarWrap: {
     paddingHorizontal: Spacing.lg,
     paddingTop: Spacing.md,
@@ -645,19 +718,6 @@ const s = StyleSheet.create({
   tabBtnTextActive: { color: QuinckleColors.primary },
 
   // Hero banner
-  heroWrap: { height: 220, width: '100%', overflow: 'hidden' },
-  heroImage: { width: '100%', height: '100%' },
-  heroContent: {
-    position: 'absolute', bottom: Spacing.xl, left: Spacing.xl, right: Spacing.xl,
-  },
-  heroTitle: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 26,
-    fontWeight: '700',
-    letterSpacing: -0.5,
-    marginBottom: 4,
-  },
-  heroSub: { color: QuinckleColors.textSecondary, fontSize: 14, fontWeight: '500' },
 
   sectionHeader: {
     flexDirection: 'row',
