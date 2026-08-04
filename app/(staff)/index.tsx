@@ -561,6 +561,10 @@ export default function StaffDashboard() {
         taxRate: meta?.taxRate ?? undefined,
         taxDisplayMode: meta?.displayMode,
         pricesIncludeTax: meta?.pricesIncludeTax,
+        // Without this the template re-derives the split from the flat `tax` at
+        // 0dp, so an 18.50 GST prints as CGST 9 / SGST 10. Dine-in has always
+        // passed it; takeaway did not.
+        taxLines: order.taxLines,
         roundOff: order.roundOff ?? 0,
         grandTotal: order.total,
         isPaid,

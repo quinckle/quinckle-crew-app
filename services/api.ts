@@ -672,6 +672,9 @@ export interface TakeawayOrder {
   discount: number;
   tax: number;
   serviceCharge: number;
+  /** Rate-wise GST snapshot. Empty for pre-round-off orders, which fall back to
+   *  the legacy round-then-halve split so their reprints stay byte-identical. */
+  taxLines?: Array<{ rate: number; taxableValue: number; cgst: number; sgst: number; amount: number }>;
   /** Signed rupee round-off. Absent on orders written before it shipped. */
   roundOff?: number;
   total: number;
