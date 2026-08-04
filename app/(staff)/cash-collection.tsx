@@ -14,7 +14,7 @@ import { Stack, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
-import { crewPayments, restaurantApi, type PendingCashRequest, type CollectedCashRecord, type OutstandingGroup } from '../../services/api';
+import { crewPayments, restaurantApi, type PendingCashRequest, type CollectedCashRecord } from '../../services/api';
 import { CAP } from '../../constants/capabilities';
 import { subscribeChannel } from '../../services/realtime';
 import { playPaymentSuccess } from '../../services/sound';
@@ -26,9 +26,8 @@ type Row =
   | { kind: 'groupHeader'; title: string; subtitle: string }
   | { kind: 'pending'; data: PendingCashRequest }
   | { kind: 'collected'; data: CollectedCashRecord }
-  | { kind: 'outstanding'; data: OutstandingGroup }
   | { kind: 'empty'; message: string };
-type TabKey = 'active' | 'confirmed' | 'outstanding';
+type TabKey = 'active' | 'confirmed';
 
 function timeAgo(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -96,11 +95,6 @@ export default function CashCollectionScreen() {
   const [collectingIds, setCollectingIds] = useState<Set<string>>(new Set());
   const [intentBusyIds, setIntentBusyIds] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab]         = useState<TabKey>('active');
-  // Outstanding has its own endpoint and its own capability, so it loads lazily
-  // — opening this screen shouldn't pull the venue's whole exposure.
-  const [outstanding, setOutstanding]     = useState<OutstandingGroup[]>([]);
-  const [outstandingDue, setOutstandingDue] = useState(0);
-  const [outstandingLoaded, setOutstandingLoaded] = useState(false);
   const [openMenuOrderId, setOpenMenuOrderId] = useState<string | null>(null);
   const [upiSuccessingOrderId, setUpiSuccessingOrderId] = useState<string | null>(null);
   // Restaurant's configured UPI VPA — fallback for the Collection Sheet QR when
@@ -285,65 +279,42 @@ export default function CashCollectionScreen() {
 
   const totalDue = pending.reduce((s, p) => s + p.amount, 0);
 
-  const loadOutstanding = useCallback(async () => {
-    try {
-      const res = await crewPayments.getOutstanding();
-      setOutstanding(res.groups);
-      setOutstandingDue(res.totalDue);
-    } catch (err) {
-      // A staffer without OUTSTANDING gets 403 here. The tab is hidden for them
-      // anyway, so fail quietly rather than blocking the whole screen.
-      console.warn('[cash-collection] outstanding load failed', err);
-    } finally {
-      setOutstandingLoaded(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (activeTab === 'outstanding' && !outstandingLoaded) void loadOutstanding();
-  }, [activeTab, outstandingLoaded, loadOutstanding]);
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: 'active', label: 'Active' },
     { key: 'confirmed', label: 'Confirmed' },
-    // OUTSTANDING is a sensitive capability — it shows the venue's whole
-    // exposure, not just this staffer's collections. Server enforces too.
-    ...(can(CAP.OUTSTANDING) ? [{ key: 'outstanding' as TabKey, label: 'Outstanding' }] : []),
   ];
 
+  /**
+   * Underline tabs. Each tab takes an equal share of the width and centres its
+   * own label, with the rule sized to the text rather than the full column —
+   * so the labels sit centred and the underline sits centred beneath them.
+   *
+   * Replaces a segmented control whose active state was a BLUE fill under
+   * ORANGE text; the two never belonged together, and a filled block competed
+   * with the outlined cards below it.
+   */
   const renderTabBar = () => (
     <View style={s.tabBarWrap}>
-      <View style={s.tabBar}>
-        {tabs.map(t => (
+      {tabs.map(t => {
+        const isActive = activeTab === t.key;
+        return (
           <TouchableOpacity
             key={t.key}
-            style={[s.tabBtn, activeTab === t.key && s.tabBtnActive]}
+            style={s.tabBtn}
             onPress={() => setActiveTab(t.key)}
-            activeOpacity={0.8}
+            activeOpacity={0.7}
           >
-            <Text style={[s.tabBtnText, activeTab === t.key && s.tabBtnTextActive]}>{t.label}</Text>
+            <View style={[s.tabUnderline, isActive && s.tabUnderlineActive]}>
+              <Text style={[s.tabBtnText, isActive && s.tabBtnTextActive]}>{t.label}</Text>
+            </View>
           </TouchableOpacity>
-        ))}
-      </View>
+        );
+      })}
     </View>
   );
 
-  const outstandingRows: Row[] = [
-    {
-      kind: 'sectionHeader',
-      title: 'Outstanding',
-      subtitle: outstanding.length === 0
-        ? (outstandingLoaded ? 'Nothing uncollected' : 'Loading…')
-        : `${outstanding.length} · ₹${outstandingDue.toLocaleString('en-IN')} due`,
-    },
-    ...(outstanding.length === 0
-      ? [{ kind: 'empty' as const, message: outstandingLoaded ? 'No uncollected money.' : 'Loading…' }]
-      : outstanding.map(g => ({ kind: 'outstanding' as const, data: g }))),
-  ];
-
-  const rows: Row[] = activeTab === 'outstanding'
-    ? outstandingRows
-    : activeTab === 'active'
+  const rows: Row[] = activeTab === 'active'
     ? [
         { kind: 'sectionHeader', title: 'Active Requests', subtitle: pending.length === 0 ? 'None' : `${pending.length} · ₹${totalDue.toLocaleString('en-IN')} due` },
         ...(pending.length === 0
@@ -356,27 +327,30 @@ export default function CashCollectionScreen() {
     <View style={s.root}>
       <Stack.Screen options={{ headerShown: false }} />
 
-      {/* Header — static, not a fade-in overlay. The title, the pending/due
-          summary and the tabs should all be readable without scrolling first;
-          the old hero image pushed them below the fold. Outstanding moved from
-          a header icon into a tab, so nothing here is a hidden destination. */}
+      {/* Header — static, not a fade-in overlay. The title, the actions and the
+          tabs should all be readable without scrolling first; the old hero
+          image pushed them below the fold. */}
       <View style={[s.header, { paddingTop: insets.top + Spacing.sm }]}>
         <View style={s.headerRow}>
           <TouchableOpacity onPress={() => router.back()} activeOpacity={0.6} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Ionicons name="chevron-back" size={24} color={QuinckleColors.textPrimary} />
           </TouchableOpacity>
           <Text style={s.headerTitle} numberOfLines={1}>Payment collection</Text>
+          {/* Outstanding is its own screen, not a tab: it answers a different
+              question (what's uncollected across the venue) and owns the waive
+              flow. Capability-gated — the server enforces it too. */}
+          {can(CAP.OUTSTANDING) && (
+            <TouchableOpacity onPress={() => router.push('/(staff)/outstanding')} activeOpacity={0.6} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <Ionicons name="alert-circle-outline" size={21} color={QuinckleColors.textSecondary} />
+            </TouchableOpacity>
+          )}
           <TouchableOpacity onPress={handleRefresh} activeOpacity={0.6} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Ionicons name="refresh-outline" size={21} color={QuinckleColors.textSecondary} />
           </TouchableOpacity>
         </View>
 
-        <Text style={s.headerSummary}>
-          {pending.length > 0
-            ? `${pending.length} pending · ₹${totalDue.toLocaleString('en-IN')} due`
-            : 'All caught up'}
-        </Text>
-
+        {/* No summary line here — the section header below already renders
+            "ACTIVE REQUESTS" against "N · ₹X due". */}
         {renderTabBar()}
       </View>
 
@@ -396,7 +370,6 @@ export default function CashCollectionScreen() {
             if (row.kind === 'collected')    return `c-${row.data.orderId}-${row.data.method}`;
             if (row.kind === 'sectionHeader') return `h-${row.title}`;
             if (row.kind === 'groupHeader')  return `g-${row.title}`;
-            if (row.kind === 'outstanding')  return `o-${row.data.sessionId}`;
             return `e-${i}`;
           }}
           ListHeaderComponent={() => (
@@ -421,33 +394,6 @@ export default function CashCollectionScreen() {
                   <Text style={s.groupTitle}>{item.title}</Text>
                   <Text style={s.groupSubtotal}>{item.subtitle}</Text>
                 </View>
-              );
-            }
-
-            if (item.kind === 'outstanding') {
-              const g = item.data;
-              const label = g.channel === 'TAKEAWAY'
-                ? `Takeaway${g.pickupToken ? ` · ${g.pickupToken}` : ''}`
-                : `Table ${g.tableNumber || '—'}`;
-              return (
-                <TouchableOpacity
-                  style={s.outstandingRow}
-                  activeOpacity={0.7}
-                  // The waive flow (reason codes, confirmation) already lives on
-                  // the Outstanding screen — routing there beats duplicating it.
-                  onPress={() => router.push('/(staff)/outstanding')}
-                >
-                  <View style={s.outstandingLeft}>
-                    <Text style={s.outstandingTitle}>{label}</Text>
-                    <Text style={s.outstandingSub}>
-                      {g.orderCount} order{g.orderCount === 1 ? '' : 's'}
-                      {g.sessionClosed ? ' · table freed' : ''}
-                      {g.customerName ? ` · ${g.customerName}` : ''}
-                    </Text>
-                  </View>
-                  <Text style={s.outstandingAmount}>{inr(g.amount)}</Text>
-                  <Ionicons name="chevron-forward" size={16} color={QuinckleColors.textTertiary} />
-                </TouchableOpacity>
               );
             }
 
@@ -661,60 +607,26 @@ const s = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: -0.3,
   },
-  headerSummary: {
-    color: QuinckleColors.textSecondary,
-    fontSize: 13,
-    fontWeight: '500',
-    marginTop: 6,
-    marginLeft: 32,
-  },
-  outstandingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.lg,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: QuinckleColors.border,
-  },
-  outstandingLeft: { flex: 1, minWidth: 0 },
-  outstandingTitle: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  outstandingSub: {
-    color: QuinckleColors.textTertiary,
-    fontSize: 12,
-    marginTop: 2,
-  },
-  outstandingAmount: {
-    color: QuinckleColors.warning,
-    fontSize: 15,
-    fontWeight: '700',
-    fontVariant: ['tabular-nums'],
-  },
   tabBarWrap: {
+    flexDirection: 'row',
     paddingHorizontal: Spacing.lg,
     paddingTop: Spacing.md,
-    paddingBottom: Spacing.sm,
   },
-  tabBar: {
-    flexDirection: 'row',
-    borderRadius: Radius.md,
-    backgroundColor: QuinckleColors.surface,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
-    overflow: 'hidden',
-  },
+  // Equal share of the width so the two labels sit symmetrically…
   tabBtn: {
     flex: 1,
     alignItems: 'center',
-    justifyContent: 'center',
-    height: 42,
   },
-  tabBtnActive: { backgroundColor: 'rgba(81,136,255,0.16)' },
-  tabBtnText: { color: QuinckleColors.textTertiary, fontSize: 13, fontWeight: '600' },
+  // …and the rule hugs the label rather than spanning the whole column, so it
+  // reads as centred under the word. Transparent when inactive keeps both tabs
+  // the same height, so nothing shifts on switch.
+  tabUnderline: {
+    paddingBottom: 8,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  tabUnderlineActive: { borderBottomColor: QuinckleColors.primary },
+  tabBtnText: { color: QuinckleColors.textTertiary, fontSize: 14, fontWeight: '600' },
   tabBtnTextActive: { color: QuinckleColors.primary },
 
   // Hero banner
