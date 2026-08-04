@@ -47,7 +47,7 @@ export default function ProfileHeader({
         {photoUrl ? (
           <Image source={{ uri: photoUrl }} style={styles.avatar} />
         ) : (
-          <View style={[styles.avatar, styles.avatarFallback]}>
+          <View style={[styles.avatar, styles.avatarFallback, bannerColor ? styles.avatarFallbackBanner : null]}>
             <Text style={styles.avatarInitials}>{initials}</Text>
           </View>
         )}
@@ -100,11 +100,25 @@ const styles = StyleSheet.create({
     paddingTop: 0,
     overflow: 'hidden',
   },
+  /**
+   * Ring around the avatar where it overlaps the banner.
+   *
+   * Drawn with padding + background, NOT borderWidth: React Native subtracts a
+   * border from a fixed width/height, so `borderWidth: 3` on the 104x104 wrap
+   * left a 98x98 content box with a 104x104 avatar spilling out of it — the
+   * ring never hugged the photo and read as a stray dark outline.
+   *
+   * Geometry: 104 avatar + 3 ring each side = 110 box, radius 55. Sitting the
+   * wrap's centre on the banner's bottom edge means top = 92 - 55 = 37, so the
+   * avatar straddles the edge exactly half and half.
+   */
   avatarWrapBanner: {
-    marginTop: 92 - 38,
-    borderWidth: 3,
-    borderColor: QuinckleColors.surface,
-    borderRadius: 999,
+    width: 104 + 3 * 2,
+    height: 104 + 3 * 2,
+    marginTop: 92 - (104 + 3 * 2) / 2,
+    padding: 3,
+    borderRadius: (104 + 3 * 2) / 2,
+    backgroundColor: QuinckleColors.surface,
   },
   card: {
     alignItems: 'center',
@@ -139,6 +153,15 @@ const styles = StyleSheet.create({
   avatarFallback: {
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  /**
+   * The default avatar background is surfaceMuted — rgba(255,255,255,0.04),
+   * i.e. almost transparent. That was invisible on the old flat card, but with
+   * a coloured banner behind it the disc showed banner through its top half and
+   * card through its bottom, reading as half a circle. Needs to be OPAQUE.
+   */
+  avatarFallbackBanner: {
+    backgroundColor: QuinckleColors.surfaceElevated,
   },
   avatarInitials: {
     color: 'rgba(255,255,255,0.55)',
