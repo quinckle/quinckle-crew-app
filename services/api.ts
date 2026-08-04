@@ -418,6 +418,9 @@ export interface SessionBill {
   tax_rate?: number;
   tax_total?: number;
   service_charge_total?: number;
+  /** Itemised charges with the partner's own names. Print from these so a
+   *  packaging fee isn't labelled "Service charge". */
+  charge_lines?: { id: string; name: string; amount: number }[];
   discount_total?: number;
   tip_total?: number;
   /** Signed rupee rounding reconciling the paise-precision GST to the whole-rupee
@@ -511,7 +514,16 @@ export interface LedgerSession {
   /** Gross value of everything voided in this session (struck original amount). */
   cancelledValue?: number;
   totalDiscount: number;
+  /** Charges AND GST fused into one number. Kept for the ledger summary row;
+   *  never print it on a tax invoice's tax line — use `taxTotal`. */
   chargesGstTotal: number;
+  /** Charges only, from the stored per-order columns. */
+  chargesTotal?: number;
+  /** GST only, from the stored per-order columns. */
+  taxTotal?: number;
+  roundOffTotal?: number;
+  /** Itemised charges with the partner's own names, for printing. */
+  chargeLines?: { id: string; name: string; amount: number }[];
   totalTip: number;
   billTotal: number;
   grandTotal: number;
@@ -672,6 +684,9 @@ export interface TakeawayOrder {
   discount: number;
   tax: number;
   serviceCharge: number;
+  /** Itemised charges with the partner's own names. Empty on orders written
+   *  before charge names were snapshotted. */
+  chargeLines?: { id: string; name: string; amount: number }[];
   /** Rate-wise GST snapshot. Empty for pre-round-off orders, which fall back to
    *  the legacy round-then-halve split so their reprints stay byte-identical. */
   taxLines?: Array<{ rate: number; taxableValue: number; cgst: number; sgst: number; amount: number }>;

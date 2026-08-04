@@ -312,8 +312,21 @@ export default function OrderDetail() {
         items,
         subtotal: session.foodSubtotal,
         discount: session.totalDiscount,
-        charges: session.totalTip > 0 ? session.totalTip : undefined,
-        tax: session.chargesGstTotal,
+        // These three used to be wrong in a way that survived because the grand
+        // total (which comes straight from billTotal) still looked right:
+        // the TIP was passed as `charges`, so a ₹50 tip printed as
+        // "Service charge ₹50"; and `chargesGstTotal` — which fuses charges AND
+        // GST into one number — was printed on the tax line, overstating GST on
+        // a document that is a tax invoice. The ledger now returns them
+        // separated, from the stored per-order columns.
+        // Degrade safely against a backend that predates the separated fields:
+        // charges fall to 0 and tax falls back to the fused figure, i.e. exactly
+        // the old output, rather than a blank or doubled line.
+        charges: session.chargesTotal ?? 0,
+        chargeLines: session.chargeLines,
+        tax: session.taxTotal ?? Math.max(0, session.chargesGstTotal - (session.chargesTotal ?? 0)),
+        tip: session.totalTip > 0 ? session.totalTip : undefined,
+        roundOff: session.roundOffTotal ?? 0,
         grandTotal: session.billTotal,
         isPaid: session.statusView === 'PAID',
         paymentMethod,

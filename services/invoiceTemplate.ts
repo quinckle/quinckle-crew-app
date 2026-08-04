@@ -43,8 +43,14 @@ export interface InvoiceBill {
   subtotal: number;
   /** Discount total applied before charges/tax. Printed as its own negative line. */
   discount?: number;
-  /** Service / packaging / cover charges total. Printed as its own line. */
+  /** Service / packaging / cover charges total. Printed as its own line only
+   *  when `chargeLines` is absent (legacy payloads and negative adjustments). */
   charges?: number;
+  /** Itemised charges carrying the partner's own names, e.g.
+   *  [{ name: 'Packaging', amount: 20 }]. Preferred over the collapsed
+   *  `charges` total, which cannot tell a parcel charge from a service charge
+   *  and so printed everything as "Service charge". */
+  chargeLines?: { name: string; amount: number }[];
   tax: number;
   /** GST rate as a percentage integer (5, 12, or 18). Used for the label. */
   taxRate?: number;
@@ -60,6 +66,10 @@ export interface InvoiceBill {
    *  whole-rupee `grandTotal` (e.g. -0.30). Printed as its own line when non-zero
    *  — without it the bill visibly doesn't add up. */
   roundOff?: number;
+  /** Tip, added after tax and never charged or taxed. It has its own line
+   *  because callers previously smuggled it through `charges`, which printed a
+   *  customer's tip as "Service charge". */
+  tip?: number;
   grandTotal: number;
   isPaid: boolean;
   paymentMethod?: 'cash' | 'upi_direct' | 'mixed' | string | null;
@@ -245,7 +255,19 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   if ((bill.discount ?? 0) > 0) {
     lines.push(`[L]${leftRight('Discount', `-${fmt(bill.discount!)}`, W)}`);
   }
-  if ((bill.charges ?? 0) !== 0) {
+  // Print each charge under the name the partner gave it. Falling back to the
+  // collapsed total labelled "Service charge" is only correct for bills written
+  // before charge names were snapshotted — and under CCPA 2022 a service charge
+  // is specifically the optional one, so labelling a mandatory packaging fee as
+  // one misrepresents it on the customer's only physical record.
+  const namedCharges = (bill.chargeLines ?? []).filter((c) => Number(c.amount) !== 0);
+  if (namedCharges.length > 0) {
+    for (const c of namedCharges) {
+      const amt = Number(c.amount);
+      const value = amt < 0 ? `-${fmt(Math.abs(amt))}` : fmt(amt);
+      lines.push(`[L]${leftRight(c.name, value, W)}`);
+    }
+  } else if ((bill.charges ?? 0) !== 0) {
     const chargeAmount = Number(bill.charges ?? 0);
     const chargeLabel = chargeAmount > 0 ? 'Service charge' : 'Adjustment';
     const chargeValue = chargeAmount < 0 ? `-${fmt(Math.abs(chargeAmount))}` : fmt(chargeAmount);
@@ -278,6 +300,10 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
         : 'Tax';
       lines.push(`[L]${leftRight(taxLabel, fmt(bill.tax), W)}`);
     }
+  }
+  // Tip sits after tax: it is never taxed and never charged on.
+  if ((bill.tip ?? 0) > 0) {
+    lines.push(`[L]${leftRight('Tip', fmt(bill.tip!), W)}`);
   }
   // Rupee rounding — printed between GST and TOTAL so the column adds up on
   // paper. Rendered with an explicit sign; it is usually negative.

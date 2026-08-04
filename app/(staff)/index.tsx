@@ -557,6 +557,7 @@ export default function StaffDashboard() {
         subtotal: order.subtotal,
         discount: order.discount,
         charges: order.serviceCharge,
+        chargeLines: order.chargeLines,
         tax: order.tax,
         taxRate: meta?.taxRate ?? undefined,
         taxDisplayMode: meta?.displayMode,
