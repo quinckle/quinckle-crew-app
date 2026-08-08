@@ -1530,15 +1530,19 @@ export const crewAttendance = {
  * it as a failure would strand someone at the door over bad lighting.
  */
 export type FaceClockOutcome =
-  | { matched: true; score: number; clock: AttendanceClockResult }
-  | { matched: false; score: number };
+  | { matched: true; score: number; margin: number | null; clock: AttendanceClockResult }
+  | { matched: false; score: number; margin: number | null };
 
 // ── Face enrollment (ATTENDANCE_STATION + FACE_ATTENDANCE + the env switch) ───
 
 export interface FaceStatus {
   enabled: boolean;
   enrolledCount: number;
+  /** Absolute cosine a match must clear. */
   matchThreshold: number;
+  /** How far it must also beat the runner-up. Both are PROVISIONAL until
+   *  calibrated against real faces — see MATCH_MARGIN on the server. */
+  matchMargin: number;
 }
 
 export const crewFace = {
