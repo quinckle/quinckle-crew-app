@@ -58,6 +58,7 @@ import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
 import { TableSkeleton } from '../../components/ui/TableSkeleton';
 import { MenuSkeleton } from '../../components/ui/MenuSkeleton';
 import { TakeawaySkeleton } from '../../components/ui/TakeawaySkeleton';
+import { GiveDiscountModal } from '../../components/ui/GiveDiscountModal';
 import { useResponsive } from '../../hooks/useResponsive';
 import { expiryLevel, expiryColor, expiryChipStyle, type ExpiryLevel } from '../../constants/sessionExpiry';
 
@@ -380,11 +381,21 @@ export default function StaffDashboard() {
     void loadTakeawayOrders();
   };
 
+  // Crew discount on a takeaway order. Session-scoped like the table screen's,
+  // so it needs the order's sessionId — absent when the app is running ahead of
+  // the backend that started sending it, in which case the action stays hidden.
+  const [discountOrder, setDiscountOrder] = useState<TakeawayOrder | null>(null);
+
   const isTakeawayPaid = (order: TakeawayOrder) =>
     ['PAID_CASH', 'PAID_UPI_DIRECT', 'PAID_ONLINE', 'PAID_MIXED', 'WAIVED'].includes(String(order.paymentStatus ?? '').toUpperCase());
 
   const isTakeawayPendingCollection = (order: TakeawayOrder) =>
     ['PENDING_STAFF_COLLECTION', 'PENDING_CASH', 'PENDING_UPI_DIRECT', 'UNPAID'].includes(String(order.paymentStatus ?? '').toUpperCase());
+
+  // Discountable while the money is still collectible — the same states the
+  // backend's session-discount service treats as COLLECTIBLE.
+  const canDiscountTakeaway = (order: TakeawayOrder) =>
+    !!order.sessionId && order.status !== 'SERVED' && isTakeawayPendingCollection(order);
 
   // Deletable only before money is settled — mirrors the backend guard so we
   // never show a delete that would just 409 (paid, or a diner UPI-direct
@@ -2637,6 +2648,26 @@ export default function StaffDashboard() {
                 ))}
                 {item.status !== 'SERVED' && (
                   <View style={styles.takeawayActionRow}>
+                    {canDiscountTakeaway(item) && (
+                      <TouchableOpacity
+                        style={styles.discountTakeawayBtn}
+                        onPress={() => setDiscountOrder(item)}
+                        activeOpacity={0.8}
+                        accessibilityLabel={
+                          (item.manualDiscount ?? 0) > 0 ? 'Edit discount' : 'Give discount'
+                        }
+                      >
+                        <Ionicons
+                          name="pricetag-outline"
+                          size={15}
+                          color={
+                            (item.manualDiscount ?? 0) > 0
+                              ? QuinckleColors.primary
+                              : QuinckleColors.textSecondary
+                          }
+                        />
+                      </TouchableOpacity>
+                    )}
                     {isTakeawayPendingCollection(item) && (
                       <TouchableOpacity
                         style={styles.collectTakeawayBtn}
@@ -2872,6 +2903,27 @@ export default function StaffDashboard() {
 
       {/* Tap-to-paper print progress */}
       <PrintProgressOverlay job={printJob} onDismiss={() => setPrintJob(null)} />
+
+      {discountOrder?.sessionId && (
+        <GiveDiscountModal
+          visible
+          onClose={() => setDiscountOrder(null)}
+          sessionId={discountOrder.sessionId}
+          currentTotal={discountOrder.total ?? 0}
+          currentManualDiscount={discountOrder.manualDiscount ?? 0}
+          currentNote={discountOrder.manualDiscountNote ?? null}
+          isAdmin={staffInfo?.role === 'ADMIN'}
+          subtitle={
+            discountOrder.pickupToken
+              ? `Order ${discountOrder.pickupToken} · applies to the unpaid amount.`
+              : "Applies to this order's unpaid amount."
+          }
+          onApplied={() => { void loadTakeawayOrders(); }}
+          onError={(title, message) =>
+            showDialog(title, message, [{ label: 'OK', onPress: () => {} }])
+          }
+        />
+      )}
 
       <TakeawayManageSheet
         order={manageOrder}
@@ -4163,6 +4215,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: Spacing.sm,
     marginTop: Spacing.md,
+  },
+  // Icon-only so it never crowds out "Collect Payment", which is the action the
+  // counter reaches for on almost every order.
+  discountTakeawayBtn: {
+    width: 42,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    borderRadius: Radius.sm,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   collectTakeawayBtn: {
     flex: 1,

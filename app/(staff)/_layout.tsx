@@ -40,6 +40,16 @@ export default function StaffLayout() {
         <Stack.Screen name="order-menu" />
         <Stack.Screen name="payment-collect" />
         <Stack.Screen name="menu" options={{ presentation: 'card' }} />
+        <Stack.Screen
+          name="more"
+          options={{
+            presentation: 'modal',
+            animation: 'slide_from_bottom',
+            animationDuration: 220,
+            gestureDirection: 'vertical',
+            contentStyle: { backgroundColor: QuinckleColors.background },
+          }}
+        />
         <Stack.Screen name="profile" />
         <Stack.Screen name="cash-ledger" />
         <Stack.Screen name="order-ledger" />

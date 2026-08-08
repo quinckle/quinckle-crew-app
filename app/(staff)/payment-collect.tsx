@@ -40,7 +40,28 @@ function normalizeOptionalText(value: unknown): string | null {
 }
 
 type Mode = 'normal' | 'split' | 'khata';
-type Step = 'choose' | 'confirm_cash';
+/**
+ * Every path that settles money passes through 'confirm'.
+ *
+ * Cash used to be the only method that asked, while UPI submitted on the first
+ * tap — so the method where nobody had verified the transfer landed was the one
+ * with LESS friction. There is no undo: the crew payment API exposes only
+ * collect / collect-session / intent confirm+reject, and the sole reversal is
+ * `POST /orders/:id/refund`, which needs a manager PIN and records a refund
+ * adjustment rather than erasing the collection. One deliberate tap is cheap
+ * next to unwinding that.
+ */
+type Step = 'choose' | 'confirm';
+
+/** What a confirmed tap will submit, held between 'choose' and 'confirm'. */
+type PendingPayment = {
+  splits: { method: CollectSplitMethod; amount: number }[];
+  dueOptions?: CollectDueOptions | null;
+  /** Reads after "Confirm" — e.g. "₹1,200 received in cash?" */
+  question: string;
+  /** Styles the confirm button to match the method being confirmed. */
+  tone: 'cash' | 'upi' | 'split' | 'khata';
+};
 type SuccessInfo = {
   tableNumber: number;
   locationLabel: string;
@@ -274,6 +295,7 @@ export default function PaymentCollectScreen() {
 
   const [mode, setMode]           = useState<Mode>('normal');
   const [step, setStep]           = useState<Step>('choose');
+  const [pending, setPending]     = useState<PendingPayment | null>(null);
   const [cashInput, setCashInput] = useState('');
   const [loading, setLoading]     = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
@@ -419,16 +441,41 @@ export default function PaymentCollectScreen() {
     }
   };
 
-  const handleUpiPay      = () => { void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); void submit([{ method: 'UPI_DIRECT', amount: resolvedTotal }]); };
-  const handleCashTap     = () => { void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); setStep('confirm_cash'); };
-  const handleCashConfirm = () => { void submit([{ method: 'CASH', amount: resolvedTotal }]); };
-  const handleSplitPaid   = () => { if (!splitValid) return; void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); void submit([{ method: 'CASH', amount: cashNum }, { method: 'UPI_DIRECT', amount: upiNum }]); };
+  const rupees = (n: number) => `₹${n.toLocaleString('en-IN')}`;
+
+  /** Stage a payment for confirmation. Nothing is sent until `confirmPending`. */
+  const stage = (p: PendingPayment) => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setPending(p);
+    setStep('confirm');
+  };
+  const cancelPending  = () => { setPending(null); setStep('choose'); };
+  const confirmPending = () => { if (pending) void submit(pending.splits, pending.dueOptions ?? null); };
+
+  const handleUpiPay      = () => stage({
+    splits: [{ method: 'UPI_DIRECT', amount: resolvedTotal }],
+    question: `${rupees(resolvedTotal)} received via UPI?`,
+    tone: 'upi',
+  });
+  const handleCashTap     = () => stage({
+    splits: [{ method: 'CASH', amount: resolvedTotal }],
+    question: `${rupees(resolvedTotal)} received in cash?`,
+    tone: 'cash',
+  });
+  const handleSplitPaid   = () => {
+    if (!splitValid) return;
+    stage({
+      splits: [{ method: 'CASH', amount: cashNum }, { method: 'UPI_DIRECT', amount: upiNum }],
+      question: `${rupees(cashNum)} in cash and ${rupees(upiNum)} via UPI received?`,
+      tone: 'split',
+    });
+  };
   const enterSplitMode    = () => {
     if (intentId) return;
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setMode('split'); setStep('choose'); setCashInput('');
+    setMode('split'); setStep('choose'); setPending(null); setCashInput('');
   };
-  const exitSplitMode     = () => { setMode('normal'); setStep('choose'); setCashInput(''); setKhataPaidInput(''); Keyboard.dismiss(); };
+  const exitSplitMode     = () => { setMode('normal'); setStep('choose'); setPending(null); setCashInput(''); setKhataPaidInput(''); Keyboard.dismiss(); };
 
   // ── Khata (due) mode ─────────────────────────────────────────────────────
   const enterKhataMode = () => {
@@ -436,6 +483,7 @@ export default function PaymentCollectScreen() {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setMode('khata');
     setStep('choose');
+    setPending(null);
     setKhataPaidInput('');
     setKhataPaidMethod('CASH');
     // Prefill from the session's known customer; staff can overwrite.
@@ -450,11 +498,20 @@ export default function PaymentCollectScreen() {
 
   const handleKhataConfirm = () => {
     if (!khataValid || loading) return;
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     const splits: { method: CollectSplitMethod; amount: number }[] = [];
     if (khataPaidNum > 0) splits.push({ method: khataPaidMethod, amount: khataPaidNum });
     splits.push({ method: 'DUE', amount: khataDueAmount });
-    void submit(splits, { customerPhone: khataPhone, customerName: khataName.trim() || null });
+    // Khata is credit extended to a named person, not money in the drawer, so
+    // the question names who is on the hook rather than what was received.
+    const who = khataName.trim() || khataPhone;
+    stage({
+      splits,
+      dueOptions: { customerPhone: khataPhone, customerName: khataName.trim() || null },
+      question: khataPaidNum > 0
+        ? `${rupees(khataPaidNum)} received now and ${rupees(khataDueAmount)} on ${who}'s khata?`
+        : `${rupees(khataDueAmount)} on ${who}'s khata?`,
+      tone: 'khata',
+    });
   };
 
   const splitHint =
@@ -544,7 +601,7 @@ export default function PaymentCollectScreen() {
         )}
 
         {/* Split mode */}
-        {mode === 'split' && (
+        {step === 'choose' && mode === 'split' && (
           <View style={s.splitSection}>
             <Text style={s.splitTitle}>Split payment</Text>
             <Text style={s.splitSub}>Enter the cash amount — UPI is calculated automatically.</Text>
@@ -598,7 +655,7 @@ export default function PaymentCollectScreen() {
         )}
 
         {/* Khata (due) mode */}
-        {mode === 'khata' && (
+        {step === 'choose' && mode === 'khata' && (
           <View style={s.splitSection}>
             <Text style={s.splitTitle}>Add to khata</Text>
             <Text style={s.splitSub}>The unpaid amount is recorded against the customer&apos;s phone — collect it later from the Dues screen.</Text>
@@ -695,7 +752,7 @@ export default function PaymentCollectScreen() {
       {/* Bottom actions */}
       <View style={[s.bottom, { paddingBottom: insets.bottom + 16 }]}>
 
-        {mode === 'normal' && step === 'choose' && (
+        {step === 'choose' && mode === 'normal' && (
           <View style={s.btnRow}>
             {intentMethod !== 'UPI_DIRECT' && (
               <TouchableOpacity style={s.btnCash} onPress={handleCashTap} disabled={loading} activeOpacity={0.8}>
@@ -710,7 +767,7 @@ export default function PaymentCollectScreen() {
             >
               {loading
                 ? <ActivityIndicator color="#fff" size="small" />
-                : <Text style={s.btnLabel}>{intentId ? 'Confirm Paid' : 'UPI'}</Text>}
+                : <Text style={s.btnLabel}>{intentId ? 'Mark as Paid' : 'UPI'}</Text>}
             </TouchableOpacity>
           </View>
         )}
@@ -723,8 +780,11 @@ export default function PaymentCollectScreen() {
             disabled={loading || !paymentReady}
             activeOpacity={0.8}
           >
-            <Ionicons name="book-outline" size={15} color={QuinckleColors.warning} />
-            <Text style={s.khataEntryText}>Add to khata (pay later)</Text>
+            <Ionicons name="book-outline" size={17} color={QuinckleColors.warning} />
+            {/* "(pay later)" glossed a term the staff already use every shift.
+                If anyone needs the gloss it belongs on the khata screen, not
+                permanently on the button. */}
+            <Text style={s.khataEntryText}>Put on khata</Text>
           </TouchableOpacity>
         )}
 
@@ -741,14 +801,29 @@ export default function PaymentCollectScreen() {
           </TouchableOpacity>
         )}
 
-        {mode === 'normal' && step === 'confirm_cash' && (
+        {/* One confirmation for every method — cash, UPI, split and khata all
+            land here. The button keeps the colour of the method being
+            confirmed, so the second tap still feels like the one you chose. */}
+        {step === 'confirm' && pending && (
           <View style={s.confirmWrap}>
-            <Text style={s.confirmMsg}>Confirm ₹{resolvedTotal.toLocaleString('en-IN')} cash received?</Text>
+            <Text style={s.confirmMsg}>{pending.question}</Text>
             <View style={s.btnRow}>
-              <TouchableOpacity style={s.btnGhost} onPress={() => setStep('choose')} disabled={loading} activeOpacity={0.7}>
+              <TouchableOpacity style={s.btnGhost} onPress={cancelPending} disabled={loading} activeOpacity={0.7}>
                 <Text style={s.btnGhostLabel}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[s.btnCash, { flex: 2 }, (loading || isLoadingPaymentContext || !paymentReady) && { opacity: 0.5 }]} onPress={handleCashConfirm} disabled={loading || isLoadingPaymentContext || !paymentReady} activeOpacity={0.8}>
+              <TouchableOpacity
+                style={[
+                  pending.tone === 'cash' ? s.btnCash
+                    : pending.tone === 'upi' ? s.btnUpi
+                    : pending.tone === 'khata' ? s.btnKhata
+                    : s.btnPrimary,
+                  { flex: 2 },
+                  (loading || isLoadingPaymentContext || !paymentReady) && { opacity: 0.5 },
+                ]}
+                onPress={confirmPending}
+                disabled={loading || isLoadingPaymentContext || !paymentReady}
+                activeOpacity={0.8}
+              >
                 {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>Confirm</Text>}
               </TouchableOpacity>
             </View>
@@ -888,19 +963,26 @@ const s = StyleSheet.create({
   confirmMsg: { color: QuinckleColors.textSecondary, fontSize: 14, textAlign: 'center' },
 
   // Khata (due) mode
+  // Khata read as "odd" because it differed from Cash/UPI on four axes at once —
+  // 44 vs 52 tall, 13px vs 16px label, outlined vs filled, plus an icon. It
+  // SHOULD stay subordinate: it isn't a payment method, it's the decision not to
+  // collect, and it's the only path needing a phone number because it's credit
+  // tied to a person. But subordinate is one deliberate difference, not four.
+  // Same height, radius and type size as its neighbours; outlined instead of
+  // filled is the single thing that sets it apart.
   khataEntryBtn: {
-    marginTop: Spacing.sm,
+    marginTop: Spacing.md,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    height: 44,
+    gap: 8,
+    height: 52,
     borderRadius: Radius.lg,
     borderWidth: 1,
     borderColor: QuinckleColors.warningBorder,
     backgroundColor: QuinckleColors.warningSoft,
   },
-  khataEntryText: { color: QuinckleColors.warning, fontSize: 13, fontWeight: '700' },
+  khataEntryText: { color: QuinckleColors.warning, fontSize: 16, fontWeight: '600' },
   btnKhata: {
     height: 52, borderRadius: Radius.lg,
     backgroundColor: '#b45309',

@@ -674,6 +674,10 @@ export interface ActiveOrder { order_id: string; table_number: number; channel?:
 
 export interface TakeawayOrder {
   orderId: string;
+  /** Session the order hangs off — the crew discount endpoint is session-scoped.
+   *  Optional because an app build can outrun the backend that started sending
+   *  it; the board hides "Give discount" until it is present. */
+  sessionId?: string;
   pickupToken: string | null;
   sessionRef: string | null;
   customerName: string | null;
@@ -682,6 +686,10 @@ export interface TakeawayOrder {
   status: string;
   subtotal: number;
   discount: number;
+  /** Crew-given portion of `discount` (the rest is an offer). Absent on older
+   *  backends — treat as 0. */
+  manualDiscount?: number;
+  manualDiscountNote?: string | null;
   tax: number;
   serviceCharge: number;
   /** Itemised charges with the partner's own names. Empty on orders written

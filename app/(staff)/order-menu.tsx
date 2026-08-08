@@ -423,7 +423,7 @@ export default function OrderMenuScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { staffInfo } = useAuth();
-  const { isWide, width, contentMaxWidth } = useResponsive();
+  const { isWide, width, height, contentMaxWidth } = useResponsive();
 
   // Grid columns for the wide POS layout — target ~200dp per card in the space
   // left of the category rail, clamped so cards never get comically wide/thin.
@@ -1371,28 +1371,53 @@ export default function OrderMenuScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* ── Category dropdown modal ── */}
+      {/* ── Category dropdown modal ──
+          A venue can have 40+ categories, so the sheet is capped at 70% of the
+          window and the list scrolls inside it. The backdrop sits behind the
+          menu (rather than wrapping it) so taps on the menu's own padding
+          don't dismiss it and the list keeps its scroll gestures. */}
       <Modal visible={catDropOpen} transparent animationType="fade" onRequestClose={() => setCatDropOpen(false)}>
-        <TouchableOpacity style={styles.dropBackdrop} activeOpacity={1} onPress={() => setCatDropOpen(false)}>
-          <View style={styles.dropMenu}>
-            <Text style={styles.dropTitle}>Category</Text>
-            {menuCategories.map(cat => (
-              <TouchableOpacity
-                key={cat}
-                style={[styles.dropItem, activeCategory === cat && styles.dropItemActive]}
-                onPress={() => { setActiveCategory(cat); setCatDropOpen(false); }}
-                activeOpacity={0.75}
-              >
-                <Text style={[styles.dropItemText, activeCategory === cat && styles.dropItemTextActive]}>
-                  {cat}
-                </Text>
-                {activeCategory === cat && (
-                  <Ionicons name="checkmark" size={15} color={QuinckleColors.primary} />
-                )}
+        <View style={styles.dropBackdrop}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            activeOpacity={1}
+            onPress={() => setCatDropOpen(false)}
+          />
+          <View style={[styles.dropMenu, { maxHeight: Math.max(240, height * 0.7) }]}>
+            <View style={styles.dropHeader}>
+              <Text style={styles.dropTitle}>Category</Text>
+              <TouchableOpacity onPress={() => setCatDropOpen(false)} hitSlop={10}>
+                <Ionicons name="close" size={18} color={QuinckleColors.textMuted} />
               </TouchableOpacity>
-            ))}
+            </View>
+            <ScrollView
+              style={styles.dropScroll}
+              contentContainerStyle={styles.dropScrollContent}
+              showsVerticalScrollIndicator
+              bounces={false}
+              keyboardShouldPersistTaps="handled"
+            >
+              {menuCategories.map(cat => (
+                <TouchableOpacity
+                  key={cat}
+                  style={[styles.dropItem, activeCategory === cat && styles.dropItemActive]}
+                  onPress={() => { setActiveCategory(cat); setCatDropOpen(false); }}
+                  activeOpacity={0.75}
+                >
+                  <Text
+                    style={[styles.dropItemText, activeCategory === cat && styles.dropItemTextActive]}
+                    numberOfLines={2}
+                  >
+                    {cat}
+                  </Text>
+                  {activeCategory === cat && (
+                    <Ionicons name="checkmark" size={15} color={QuinckleColors.primary} />
+                  )}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
           </View>
-        </TouchableOpacity>
+        </View>
       </Modal>
 
       {/* ── List (KeyboardAvoidingView keeps footer visible when keyboard opens) ── */}
@@ -1502,11 +1527,16 @@ const styles = StyleSheet.create({
 
   // Category dropdown
   dropBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: Spacing.xl },
-  dropMenu: { width: '85%', backgroundColor: QuinckleColors.surface, borderRadius: Radius.xl, paddingVertical: Spacing.sm, borderWidth: 1, borderColor: QuinckleColors.border },
-  dropTitle: { ...Typography.label, color: QuinckleColors.textMuted, paddingHorizontal: Spacing.xl, paddingVertical: Spacing.md },
-  dropItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: Spacing.xl, paddingVertical: Spacing.md, borderRadius: Radius.md, marginHorizontal: Spacing.sm },
+  dropMenu: { width: '85%', maxWidth: 460, backgroundColor: QuinckleColors.surface, borderRadius: Radius.xl, borderWidth: 1, borderColor: QuinckleColors.border, overflow: 'hidden' },
+  dropHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: Spacing.xl, paddingVertical: Spacing.md, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: QuinckleColors.borderSubtle },
+  dropTitle: { ...Typography.label, color: QuinckleColors.textMuted },
+  // flexShrink lets the list give way to the menu's maxHeight instead of
+  // overflowing it (RN children don't shrink by default).
+  dropScroll: { flexGrow: 0, flexShrink: 1 },
+  dropScrollContent: { paddingVertical: Spacing.sm },
+  dropItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.sm, paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md, borderRadius: Radius.md, marginHorizontal: Spacing.sm },
   dropItemActive: { backgroundColor: QuinckleColors.primarySoft },
-  dropItemText: { ...Typography.body, color: QuinckleColors.textSecondary },
+  dropItemText: { ...Typography.body, color: QuinckleColors.textSecondary, flexShrink: 1 },
   dropItemTextActive: { color: QuinckleColors.primary, fontWeight: '600' },
 
   // Item row
