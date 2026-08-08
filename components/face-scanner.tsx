@@ -76,21 +76,27 @@ export default function FaceScanner({
         skipProcessing: false,
         shutterSound: false,
       });
-      if (!photo?.uri) {
+      if (!photo?.uri || !photo.width || !photo.height) {
         setHint('Could not take the photo. Try again.');
         return;
       }
 
-      const res = await embedFace(photo.uri);
+      const res = await embedFace(photo);
       if (!res.ok) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+        // The stage and its detail go to the log, never to the person queuing —
+        // they get the actionable sentence. `adb logcat -s ReactNativeJS` is
+        // what turns "it didn't work" into a specific failing stage.
+        if (res.detail) console.warn(`[face] ${res.error}: ${res.detail}`);
+        else console.warn(`[face] ${res.error}`);
         setHint(FACE_ERROR_TEXT[res.error]);
         return;
       }
 
       Haptics.selectionAsync().catch(() => {});
       onEmbedding(res.embedding, res.quality);
-    } catch {
+    } catch (e: any) {
+      console.warn('[face] capture threw:', String(e?.message ?? e));
       setHint('Could not read that. Use your PIN instead.');
     } finally {
       setWorking(false);

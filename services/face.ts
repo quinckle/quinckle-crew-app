@@ -73,16 +73,27 @@ export async function loadFaceModel(): Promise<TensorflowModel> {
   return loading;
 }
 
+/**
+ * Split by STAGE, not lumped into one "it failed".
+ *
+ * The first version had a single MODEL_FAILED covering crop, decode and
+ * inference. When it fired on a real device there was no way to tell which of
+ * the three had gone wrong, and every guess costs a rebuild — so each stage now
+ * names itself and carries the underlying message.
+ */
 export type FaceError =
   | 'NO_FACE'
   | 'MANY_FACES'
   | 'TOO_SMALL'
   | 'EYES_CLOSED'
-  | 'MODEL_FAILED';
+  | 'BOX_OUT_OF_FRAME'
+  | 'CROP_FAILED'
+  | 'DECODE_FAILED'
+  | 'INFERENCE_FAILED';
 
 export type EmbedResult =
   | { ok: true; embedding: number[]; quality: number }
-  | { ok: false; error: FaceError };
+  | { ok: false; error: FaceError; detail?: string };
 
 /** Human-facing copy. Every one of these tells the person what to DO. */
 export const FACE_ERROR_TEXT: Record<FaceError, string> = {
@@ -90,7 +101,10 @@ export const FACE_ERROR_TEXT: Record<FaceError, string> = {
   MANY_FACES: 'More than one face in view — step up on your own',
   TOO_SMALL: 'Move a little closer to the screen',
   EYES_CLOSED: 'Keep your eyes open and try again',
-  MODEL_FAILED: 'Could not read that. Use your PIN instead.',
+  BOX_OUT_OF_FRAME: 'Centre your face in the circle and try again',
+  CROP_FAILED: 'Could not frame that. Use your PIN instead.',
+  DECODE_FAILED: 'Could not read that. Use your PIN instead.',
+  INFERENCE_FAILED: 'Face check unavailable. Use your PIN instead.',
 };
 
 /**
@@ -100,8 +114,12 @@ export const FACE_ERROR_TEXT: Record<FaceError, string> = {
  * cases ends the same way — show a hint, offer the PIN — and an exception would
  * make callers work harder to reach that outcome.
  */
-export async function embedFace(photoUri: string): Promise<EmbedResult> {
-  const faces = await FaceDetection.detect(photoUri, {
+export async function embedFace(photo: {
+  uri: string;
+  width: number;
+  height: number;
+}): Promise<EmbedResult> {
+  const faces = await FaceDetection.detect(photo.uri, {
     performanceMode: 'accurate',
     landmarkMode: 'all',
     classificationMode: 'all',
@@ -122,19 +140,40 @@ export async function embedFace(photoUri: string): Promise<EmbedResult> {
 
   if (eyesClosed(face)) return { ok: false, error: 'EYES_CLOSED' };
 
+  const imgW = photo.width;
+  const imgH = photo.height;
+
+  // A box that sits largely outside the photo means MLKit and the manipulator
+  // disagree about the coordinate space — the usual cause is EXIF rotation
+  // being applied to one and not the other. Worth its own error: it is a bug in
+  // us, not something the person standing there can fix by trying again.
+  if (left >= imgW || top >= imgH || left + width <= 0 || top + height <= 0) {
+    return {
+      ok: false,
+      error: 'BOX_OUT_OF_FRAME',
+      detail: `face ${Math.round(left)},${Math.round(top)} ${Math.round(width)}x${Math.round(height)} vs image ${imgW}x${imgH}`,
+    };
+  }
+
+  // Clamp EVERY edge to the image. The previous version floored the origin at
+  // zero but left width/height alone, so a face near any edge produced a rect
+  // running off the picture and the manipulator threw — which is exactly what
+  // a front camera at kiosk distance produces most of the time.
   const marginX = width * CROP_MARGIN;
   const marginY = height * CROP_MARGIN;
+  const x0 = Math.max(0, Math.round(left - marginX));
+  const y0 = Math.max(0, Math.round(top - marginY));
+  const x1 = Math.min(imgW, Math.round(left + width + marginX));
+  const y1 = Math.min(imgH, Math.round(top + height + marginY));
 
-  const crop = {
-    originX: Math.max(0, Math.round(left - marginX)),
-    originY: Math.max(0, Math.round(top - marginY)),
-    width: Math.round(width + marginX * 2),
-    height: Math.round(height + marginY * 2),
-  };
+  const crop = { originX: x0, originY: y0, width: x1 - x0, height: y1 - y0 };
+  if (crop.width < 2 || crop.height < 2) {
+    return { ok: false, error: 'BOX_OUT_OF_FRAME', detail: `degenerate crop ${crop.width}x${crop.height}` };
+  }
 
   let base64: string | undefined;
   try {
-    const ctx = ImageManipulator.manipulate(photoUri);
+    const ctx = ImageManipulator.manipulate(photo.uri);
     ctx.crop(crop);
     ctx.resize({ width: INPUT_SIZE, height: INPUT_SIZE });
     const ref = await ctx.renderAsync();
@@ -146,32 +185,47 @@ export async function embedFace(photoUri: string): Promise<EmbedResult> {
       compress: 1,
     });
     base64 = saved.base64;
-  } catch {
-    return { ok: false, error: 'MODEL_FAILED' };
+  } catch (e: any) {
+    return { ok: false, error: 'CROP_FAILED', detail: describe(e, crop, imgW, imgH) };
   }
 
-  if (!base64) return { ok: false, error: 'MODEL_FAILED' };
+  if (!base64) return { ok: false, error: 'CROP_FAILED', detail: 'no base64 returned' };
+
+  let input: Float32Array;
+  try {
+    input = toModelInput(base64);
+  } catch (e: any) {
+    return { ok: false, error: 'DECODE_FAILED', detail: String(e?.message ?? e) };
+  }
 
   try {
-    const input = toModelInput(base64);
     const m = await loadFaceModel();
     // The interpreter speaks raw buffers in both directions; the float view is
     // ours to put back on.
     const outputs = m.runSync([input.buffer as ArrayBuffer]);
     const raw = outputs[0];
-    if (!raw || raw.byteLength === 0) return { ok: false, error: 'MODEL_FAILED' };
+    if (!raw || raw.byteLength === 0) {
+      return { ok: false, error: 'INFERENCE_FAILED', detail: 'empty output tensor' };
+    }
 
     // Output is [2,192]; both rows are the same face, so keep the first.
     const all = new Float32Array(raw);
     const embedding = Array.from(all.subarray(0, EMBEDDING_DIM));
-    if (embedding.length !== EMBEDDING_DIM || !embedding.every(Number.isFinite)) {
-      return { ok: false, error: 'MODEL_FAILED' };
+    if (embedding.length !== EMBEDDING_DIM) {
+      return { ok: false, error: 'INFERENCE_FAILED', detail: `got ${all.length} floats, want ${EMBEDDING_DIM}` };
+    }
+    if (!embedding.every(Number.isFinite)) {
+      return { ok: false, error: 'INFERENCE_FAILED', detail: 'non-finite values in embedding' };
     }
 
     return { ok: true, embedding, quality: qualityOf(face) };
-  } catch {
-    return { ok: false, error: 'MODEL_FAILED' };
+  } catch (e: any) {
+    return { ok: false, error: 'INFERENCE_FAILED', detail: String(e?.message ?? e) };
   }
+}
+
+function describe(e: any, crop: object, w: number, h: number): string {
+  return `${String(e?.message ?? e)} | crop ${JSON.stringify(crop)} image ${w}x${h}`;
 }
 
 /**
@@ -208,10 +262,36 @@ function toModelInput(base64: string): Float32Array {
   return out;
 }
 
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+/**
+ * Self-contained base64 → bytes.
+ *
+ * Deliberately does not use `atob` or `Buffer`. Neither is guaranteed under
+ * Hermes: `Buffer` is a Node global that React Native does not ship, and `atob`
+ * has moved in and out of the runtime across versions. A missing global throws
+ * a ReferenceError that the caller can only report as a generic failure, and
+ * chasing that down costs a native rebuild — so the twenty lines are cheaper.
+ */
 function base64ToBytes(b64: string): Uint8Array {
-  const bin = global.atob ? global.atob(b64) : Buffer.from(b64, 'base64').toString('binary');
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  // `=` is stripped along with whitespace, so the padding is already gone by
+  // the time the length is computed — subtracting it again here underflows and
+  // throws on short inputs.
+  const clean = b64.replace(/[^A-Za-z0-9+/]/g, '');
+  const out = new Uint8Array(Math.floor((clean.length * 3) / 4));
+
+  let o = 0;
+  for (let i = 0; i < clean.length; i += 4) {
+    const c0 = B64.indexOf(clean[i]!);
+    const c1 = B64.indexOf(clean[i + 1]!);
+    const c2 = B64.indexOf(clean[i + 2]!);
+    const c3 = B64.indexOf(clean[i + 3]!);
+
+    const n = (c0 << 18) | (c1 << 12) | ((c2 & 63) << 6) | (c3 & 63);
+    if (o < out.length) out[o++] = (n >> 16) & 0xff;
+    if (o < out.length) out[o++] = (n >> 8) & 0xff;
+    if (o < out.length) out[o++] = n & 0xff;
+  }
   return out;
 }
 
