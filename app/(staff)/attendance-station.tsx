@@ -31,14 +31,16 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Stack, useFocusEffect } from 'expo-router';
+import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
-import { crewAttendance, type AttendanceRosterEntry } from '../../services/api';
+import { crewAttendance, crewFace, type AttendanceRosterEntry } from '../../services/api';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ROLE_COLOR_FALLBACK } from '../../constants/capabilities';
+import FaceScanner from '../../components/face-scanner';
+import { MODEL_VERSION } from '../../services/face';
 
 const PIN_MAX = 8;
 const PIN_MIN = 4;
@@ -52,6 +54,7 @@ type Mode = 'in' | 'out';
 
 export default function AttendanceStationScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const [roster, setRoster] = useState<AttendanceRosterEntry[]>([]);
   const [date, setDate] = useState<string>('');
   const [loading, setLoading] = useState(true);
@@ -64,6 +67,17 @@ export default function AttendanceStationScreen() {
   const [pinError, setPinError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+
+  // Face is additive: the name-and-PIN grid below is always there, and every
+  // face path falls back to it. If any of this errors the station keeps working.
+  // Two separate facts. `faceOn` is whether the venue may use face at all;
+  // `faceReady` is whether anyone is enrolled yet. Gating enrollment on
+  // faceReady would make the FIRST enrollment impossible — the button that
+  // creates enrollments would only appear once one existed.
+  const [faceOn, setFaceOn] = useState(false);
+  const [faceReady, setFaceReady] = useState(false);
+  const [faceMode, setFaceMode] = useState<Mode | null>(null);
+  const [faceBusy, setFaceBusy] = useState(false);
 
   const load = useCallback(async (isRefresh = false) => {
     try {
@@ -78,6 +92,29 @@ export default function AttendanceStationScreen() {
       setLoading(false);
       setRefreshing(false);
     }
+  }, []);
+
+  // Separate from the roster load on purpose — a 404 here is the NORMAL answer
+  // at a venue where face is off, and it must never surface as a station error.
+  // No enrollments yet also means no button: a scanner that can only ever fail
+  // is worse than no scanner.
+  useEffect(() => {
+    let alive = true;
+    crewFace
+      .status()
+      .then((res) => {
+        if (!alive) return;
+        setFaceOn(res.data.enabled);
+        setFaceReady(res.data.enabled && res.data.enrolledCount > 0);
+      })
+      .catch(() => {
+        if (!alive) return;
+        setFaceOn(false);
+        setFaceReady(false);
+      });
+    return () => {
+      alive = false;
+    };
   }, []);
 
   useFocusEffect(
@@ -157,6 +194,46 @@ export default function AttendanceStationScreen() {
     }
   };
 
+  /**
+   * A face was captured. Send the vector and let the SERVER say who it is.
+   *
+   * A non-match comes back as a 200 with `matched: false` — it is not an error
+   * and must not be shown as one. The person is told to use their name and PIN,
+   * which is the whole reason face is allowed to be optional: nobody is ever
+   * stuck at the door because the light was bad or they grew a beard.
+   */
+  const onFaceCaptured = async (embedding: number[]) => {
+    if (!faceMode || faceBusy) return;
+    setFaceBusy(true);
+    try {
+      const call = faceMode === 'in' ? crewAttendance.checkInFace : crewAttendance.checkOutFace;
+      const res = await call(embedding, MODEL_VERSION);
+
+      if (!res.data.matched) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+        setFaceMode(null);
+        flash('Not recognised — tap your name and use your PIN');
+        return;
+      }
+
+      const { name, alreadyRecorded } = res.data.clock;
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      setFaceMode(null);
+      flash(
+        alreadyRecorded
+          ? `${name} was already clocked ${faceMode === 'in' ? 'in' : 'out'}`
+          : `${name} clocked ${faceMode === 'in' ? 'in' : 'out'}`,
+      );
+      load();
+    } catch {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+      setFaceMode(null);
+      flash('Face check unavailable — tap your name and use your PIN');
+    } finally {
+      setFaceBusy(false);
+    }
+  };
+
   const present = useMemo(
     () => roster.filter((r) => r.checkInAt && !r.checkOutAt).length,
     [roster],
@@ -174,13 +251,39 @@ export default function AttendanceStationScreen() {
             {present} on shift
           </Text>
         </View>
+        {faceOn && (
+          <TouchableOpacity
+            style={styles.enrollBtn}
+            onPress={() => router.push('/(staff)/face-enroll')}
+            accessibilityLabel="Face enrollment"
+          >
+            <Ionicons name="person-add-outline" size={15} color={QuinckleColors.textSecondary} />
+          </TouchableOpacity>
+        )}
         <View style={styles.kioskBadge}>
           <Ionicons name="tablet-portrait-outline" size={13} color={QuinckleColors.textSecondary} />
           <Text style={styles.kioskBadgeText}>Station</Text>
         </View>
       </View>
 
-      <Text style={styles.hint}>Tap your name, then enter your PIN.</Text>
+      {faceReady && (
+        <View style={styles.faceBar}>
+          <TouchableOpacity style={styles.faceBtn} onPress={() => setFaceMode('in')}>
+            <Ionicons name="scan-outline" size={16} color={QuinckleColors.primary} />
+            <Text style={styles.faceBtnText}>Clock in with face</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.faceBtn} onPress={() => setFaceMode('out')}>
+            <Ionicons name="exit-outline" size={16} color={QuinckleColors.textSecondary} />
+            <Text style={[styles.faceBtnText, styles.faceBtnTextMuted]}>Clock out</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      <Text style={styles.hint}>
+        {faceReady
+          ? 'Scan your face, or tap your name and enter your PIN.'
+          : 'Tap your name, then enter your PIN.'}
+      </Text>
 
       {loading ? (
         <View style={styles.center}>
@@ -222,6 +325,16 @@ export default function AttendanceStationScreen() {
           <Text style={styles.toastText}>{toast}</Text>
         </View>
       )}
+
+      <FaceScanner
+        visible={!!faceMode}
+        title={faceMode === 'out' ? 'Clock out' : 'Clock in'}
+        subtitle="Look at the camera. If it doesn't recognise you, use your PIN."
+        actionLabel={faceMode === 'out' ? 'Clock out' : 'Clock in'}
+        busy={faceBusy}
+        onClose={() => setFaceMode(null)}
+        onEmbedding={onFaceCaptured}
+      />
 
       <Modal visible={!!selected} transparent animationType="fade" onRequestClose={closePad}>
         <Pressable style={styles.backdrop} onPress={closePad}>
@@ -362,6 +475,17 @@ const styles = StyleSheet.create({
     backgroundColor: QuinckleColors.surfaceMuted,
   },
   kioskBadgeText: { fontSize: 11.5, fontWeight: '600', color: QuinckleColors.textSecondary },
+  enrollBtn: {
+    width: 34,
+    height: 34,
+    marginRight: Spacing.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surfaceMuted,
+  },
   hint: {
     paddingHorizontal: Spacing.lg,
     paddingTop: Spacing.sm,
@@ -369,6 +493,27 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: QuinckleColors.textTertiary,
   },
+
+  faceBar: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
+  },
+  faceBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    height: 46,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surface,
+  },
+  faceBtnText: { fontSize: 13.5, fontWeight: '600', color: QuinckleColors.primary },
+  faceBtnTextMuted: { color: QuinckleColors.textSecondary },
 
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.md, padding: Spacing.xl },
   emptyText: { fontSize: 13.5, color: QuinckleColors.textSecondary, textAlign: 'center' },

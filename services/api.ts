@@ -1508,4 +1508,54 @@ export const crewAttendance = {
     request<{ success: boolean; data: AttendanceClockResult }>(
       'POST', '/api/crew/attendance/check-out', { staffMemberId, pin }, true,
     ),
+
+  // Face clock-in. Note what is NOT sent: a staffMemberId. We hand over an
+  // embedding and the server decides who it belongs to — the device does not
+  // get a vote, because a device that could name the person could clock anyone
+  // in as anyone.
+  checkInFace: (embedding: number[], modelVersion: string) =>
+    request<{ success: boolean; data: FaceClockOutcome }>(
+      'POST', '/api/crew/attendance/check-in-face', { embedding, modelVersion }, true,
+    ),
+
+  checkOutFace: (embedding: number[], modelVersion: string) =>
+    request<{ success: boolean; data: FaceClockOutcome }>(
+      'POST', '/api/crew/attendance/check-out-face', { embedding, modelVersion }, true,
+    ),
+};
+
+/**
+ * `matched: false` arrives as a 200, not an error — it means "that wasn't a
+ * confident match", and the only correct response is to offer the PIN. Treating
+ * it as a failure would strand someone at the door over bad lighting.
+ */
+export type FaceClockOutcome =
+  | { matched: true; score: number; clock: AttendanceClockResult }
+  | { matched: false; score: number };
+
+// ── Face enrollment (ATTENDANCE_STATION + FACE_ATTENDANCE + the env switch) ───
+
+export interface FaceStatus {
+  enabled: boolean;
+  enrolledCount: number;
+  matchThreshold: number;
+}
+
+export const crewFace = {
+  /** Cheap "should this kiosk show a camera at all?" check. */
+  status: () =>
+    request<{ success: boolean; data: FaceStatus }>(
+      'GET', '/api/crew/face/status', undefined, true,
+    ),
+
+  /** Refused server-side unless the staffer has signed a biometric consent. */
+  enroll: (staffMemberId: string, embedding: number[], modelVersion: string, quality?: number) =>
+    request<{ success: boolean; data: unknown }>(
+      'POST', '/api/crew/face/enroll', { staffMemberId, embedding, modelVersion, quality }, true,
+    ),
+
+  unenroll: (staffMemberId: string) =>
+    request<{ success: boolean; data: unknown }>(
+      'DELETE', `/api/crew/face/${staffMemberId}`, undefined, true,
+    ),
 };
