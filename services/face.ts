@@ -25,6 +25,7 @@
 import FaceDetection, { type Face } from '@react-native-ml-kit/face-detection';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { loadTensorflowModel, type TensorflowModel } from 'react-native-fast-tflite';
+import { Asset } from 'expo-asset';
 import { decode as decodeJpeg } from 'jpeg-js';
 
 /**
@@ -35,13 +36,10 @@ import { decode as decodeJpeg } from 'jpeg-js';
  */
 export const MODEL_VERSION = 'mobilefacenet-192-v1';
 
+/** Fallback only — the real geometry is read from the graph at load. */
 const INPUT_SIZE = 112;
 const IMAGE_MEAN = 127.5;
 const IMAGE_STD = 128;
-
-/** Baked into the graph — see toModelInput. Not a tuneable. */
-const BATCH = 2;
-const EMBEDDING_DIM = 192;
 
 /** Widens MLKit's box before cropping. */
 const CROP_MARGIN = 0.25;
@@ -50,27 +48,76 @@ let model: TensorflowModel | null = null;
 let loading: Promise<TensorflowModel> | null = null;
 
 /**
+ * The input geometry READ FROM THE MODEL at load, not assumed.
+ *
+ * This file previously hard-coded batch 2 from an offline inspection of the
+ * file. That was right, but it was a fact living in a comment — if the model is
+ * ever swapped the constant silently stops matching the graph and the tensor is
+ * mis-filled rather than rejected. Now the graph is the source of truth.
+ */
+let shape: { batch: number; height: number; width: number; channels: number } | null = null;
+
+/** Last load/inspect summary, surfaced in error details so a device can say what it has. */
+let modelInfo = 'model not loaded';
+
+export function faceModelInfo(): string {
+  return modelInfo;
+}
+
+/**
  * Load once and keep it. A cold load is ~100ms and the kiosk will do this on
  * every person who walks up, so paying it once at screen mount keeps the queue
  * moving.
  */
 export async function loadFaceModel(): Promise<TensorflowModel> {
   if (model) return model;
-  if (!loading) {
-    // No delegates — plain CPU. GPU/NNAPI delegates are the classic source of
-    // "works on my device" on Android: they fall back silently, vary by chipset,
-    // and can return subtly different floats, which for an embedding means
-    // enrollments that no longer match. A 5MB model on a 112×112 input is
-    // already well under a second on the CPU, and a kiosk has time.
-    loading = loadTensorflowModel(
-      require('../assets/models/MobileFaceNet.tflite'),
-      [],
-    ).then((m) => {
-      model = m;
-      return m;
-    });
+  if (!loading) loading = openModel();
+  try {
+    return await loading;
+  } catch (e) {
+    // Clear the cached promise. Without this a single failed load is cached
+    // FOREVER — every later attempt re-awaits the same rejection, so a
+    // transient miss becomes permanent until the app restarts.
+    loading = null;
+    throw e;
   }
-  return loading;
+}
+
+async function openModel(): Promise<TensorflowModel> {
+  // Resolved through expo-asset rather than handed to loadTensorflowModel as a
+  // bare require(). Internally that path calls Image.resolveAssetSource, which
+  // is dependable for IMAGES bundled by Metro and much less so for other asset
+  // types in an Android RELEASE build — the shape of bug that works perfectly
+  // against the dev server and fails only in the APK. expo-asset resolves a
+  // real file:// URI on both.
+  const asset = Asset.fromModule(require('../assets/models/MobileFaceNet.tflite'));
+  if (!asset.downloaded) await asset.downloadAsync();
+  const uri = asset.localUri ?? asset.uri;
+  console.log(`[face] model asset → ${uri}`);
+  if (!uri) throw new Error('model asset resolved to no uri (is tflite in metro assetExts?)');
+
+  // No delegates — plain CPU. GPU/NNAPI delegates are the classic source of
+  // "works on my device" on Android: they fall back silently, vary by chipset,
+  // and can return subtly different floats, which for an embedding means
+  // enrollments that no longer match. A 5MB model on a 112×112 input is
+  // already well under a second on the CPU, and a kiosk has time.
+  const m = await loadTensorflowModel({ url: uri }, []);
+
+  const inp = m.inputs[0];
+  const out = m.outputs[0];
+  if (!inp || inp.shape.length !== 4) {
+    throw new Error(`unexpected input shape ${JSON.stringify(inp?.shape)}`);
+  }
+  const [batch, height, width, channels] = inp.shape as [number, number, number, number];
+  shape = { batch, height, width, channels };
+
+  modelInfo = `in ${JSON.stringify(inp.shape)} ${inp.dataType} → out ${JSON.stringify(out?.shape)} ${out?.dataType}`;
+  console.log(`[face] model loaded: ${modelInfo}`);
+
+  if (channels !== 3) throw new Error(`expected 3 channels, model wants ${channels}`);
+
+  model = m;
+  return m;
 }
 
 /**
@@ -171,11 +218,22 @@ export async function embedFace(photo: {
     return { ok: false, error: 'BOX_OUT_OF_FRAME', detail: `degenerate crop ${crop.width}x${crop.height}` };
   }
 
+  // Loaded before the resize so the target size comes from the graph rather
+  // than a constant that has to be kept in sync with it by hand.
+  let m: TensorflowModel;
+  try {
+    m = await loadFaceModel();
+  } catch (e: any) {
+    return { ok: false, error: 'INFERENCE_FAILED', detail: `load: ${String(e?.message ?? e)}` };
+  }
+  const inW = shape?.width ?? INPUT_SIZE;
+  const inH = shape?.height ?? INPUT_SIZE;
+
   let base64: string | undefined;
   try {
     const ctx = ImageManipulator.manipulate(photo.uri);
     ctx.crop(crop);
-    ctx.resize({ width: INPUT_SIZE, height: INPUT_SIZE });
+    ctx.resize({ width: inW, height: inH });
     const ref = await ctx.renderAsync();
     // compress: 1 — JPEG at max quality. The crop is 112×112, so the file is a
     // few KB either way and there is no reason to trade accuracy for bytes.
@@ -199,20 +257,23 @@ export async function embedFace(photo: {
   }
 
   try {
-    const m = await loadFaceModel();
     // The interpreter speaks raw buffers in both directions; the float view is
     // ours to put back on.
     const outputs = m.runSync([input.buffer as ArrayBuffer]);
     const raw = outputs[0];
     if (!raw || raw.byteLength === 0) {
-      return { ok: false, error: 'INFERENCE_FAILED', detail: 'empty output tensor' };
+      return { ok: false, error: 'INFERENCE_FAILED', detail: `empty output tensor | ${modelInfo}` };
     }
 
-    // Output is [2,192]; both rows are the same face, so keep the first.
+    // Output is [batch, dim]; every row is the same face, so keep the first.
     const all = new Float32Array(raw);
-    const embedding = Array.from(all.subarray(0, EMBEDDING_DIM));
-    if (embedding.length !== EMBEDDING_DIM) {
-      return { ok: false, error: 'INFERENCE_FAILED', detail: `got ${all.length} floats, want ${EMBEDDING_DIM}` };
+    const batch = shape?.batch ?? 1;
+    const dim = Math.floor(all.length / batch);
+    const embedding = Array.from(all.subarray(0, dim));
+    if (dim < 64 || dim > 1024) {
+      // Mirrors the server's isValidEmbedding bounds — better to say so here
+      // than to have the request rejected as BAD_EMBEDDING after a round trip.
+      return { ok: false, error: 'INFERENCE_FAILED', detail: `embedding dim ${dim} out of 64..1024 | ${modelInfo}` };
     }
     if (!embedding.every(Number.isFinite)) {
       return { ok: false, error: 'INFERENCE_FAILED', detail: 'non-finite values in embedding' };
@@ -220,7 +281,7 @@ export async function embedFace(photo: {
 
     return { ok: true, embedding, quality: qualityOf(face) };
   } catch (e: any) {
-    return { ok: false, error: 'INFERENCE_FAILED', detail: String(e?.message ?? e) };
+    return { ok: false, error: 'INFERENCE_FAILED', detail: `${String(e?.message ?? e)} | ${modelInfo}` };
   }
 }
 
@@ -238,17 +299,22 @@ function describe(e: any, crop: object, w: number, h: number): string {
  * is a genuinely nasty thing to debug in a queue at 9am.
  */
 function toModelInput(base64: string): Float32Array {
+  if (!shape) throw new Error('model geometry unknown — load the model first');
+  const { batch, height: H, width: W } = shape;
+
   const bytes = base64ToBytes(base64);
   const { data, width, height } = decodeJpeg(bytes, { useTArray: true });
 
-  const plane = INPUT_SIZE * INPUT_SIZE * 3;
-  // The graph's input is [2,112,112,3], not [1,...] — this model was exported
-  // to compare two faces in one pass, and the batch dimension is baked in. We
-  // only ever have one face, so it goes in BOTH slots and we read the first
-  // output row. Verified: with identical slots the two output rows are
-  // identical. Feeding a single plane here does not error, it silently
-  // under-fills the tensor and embeds half a face against uninitialised memory.
-  const out = new Float32Array(plane * BATCH);
+  // Cheap, and it converts a whole class of silent corruption into a clear
+  // message: a wrong-sized decode would otherwise under-fill the tensor and
+  // embed uninitialised memory rather than failing.
+  if (width !== W || height !== H) {
+    throw new Error(`decoded ${width}x${height} but model wants ${W}x${H}`);
+  }
+
+  const plane = W * H * 3;
+  const out = new Float32Array(plane * batch);
+
   let o = 0;
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -258,7 +324,12 @@ function toModelInput(base64: string): Float32Array {
       out[o++] = (data[i + 2]! - IMAGE_MEAN) / IMAGE_STD;
     }
   }
-  out.copyWithin(plane, 0, plane);
+
+  // This model's graph declares batch 2 — it was exported to compare two faces
+  // in one pass. We only ever have one, so it is replicated across every slot
+  // and we read the first output row. Driven off the declared batch rather than
+  // a constant, so swapping in a batch-1 model needs no code change.
+  for (let b = 1; b < batch; b++) out.copyWithin(plane * b, 0, plane);
   return out;
 }
 
