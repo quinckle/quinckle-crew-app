@@ -58,6 +58,10 @@ const GROUPS: Group[] = [
     rows: [
       { label: 'Expenses', sub: 'Petty cash & supplier payments', icon: 'wallet-outline', route: '/(staff)/expenses', cap: CAP.EXPENSES },
       { label: 'Memberships', sub: 'Enrol a customer by phone', icon: 'ribbon-outline', route: '/memberships', cap: CAP.MEMBERSHIPS },
+      // Only the designated station device holds ATTENDANCE_STATION, so this row
+      // is invisible on every other phone — which is the point: attendance is
+      // recorded in one place, not from whoever happens to be holding a device.
+      { label: 'Attendance station', sub: 'Staff clock in & out here', icon: 'time-outline', route: '/(staff)/attendance-station', cap: CAP.ATTENDANCE_STATION },
     ],
   },
   {

@@ -1453,3 +1453,51 @@ export const crewDues = {
       true,
     ),
 };
+
+// ── Attendance station (ATTENDANCE_STATION) ───────────────────────────────────
+//
+// The station is a DEVICE mode, not a person. This device is signed in as the
+// operator; the people clocking in are other staff, identified by the PIN they
+// type. So every call sends a staffMemberId that is NOT the logged-in user —
+// that is the whole point, not a bug.
+
+export interface AttendanceRosterEntry {
+  staffMemberId: string;
+  name: string;
+  designation: string | null;
+  designationColor: string | null;
+  photoUrl: string | null;
+  /** False ⇒ no PIN set; the owner has to mark them manually. */
+  canSelfCheckIn: boolean;
+  checkInAt: string | null;
+  checkOutAt: string | null;
+  status: string | null;
+  flaggedForReview: boolean;
+}
+
+export interface AttendanceClockResult {
+  staffMemberId: string;
+  name: string;
+  checkInAt: string | null;
+  checkOutAt: string | null;
+  /** True when the tap changed nothing because it was already recorded. */
+  alreadyRecorded: boolean;
+  flaggedForReview: boolean;
+}
+
+export const crewAttendance = {
+  roster: () =>
+    request<{ success: boolean; data: { date: string; staff: AttendanceRosterEntry[] } }>(
+      'GET', '/api/crew/attendance/roster', undefined, true,
+    ),
+
+  checkIn: (staffMemberId: string, pin: string) =>
+    request<{ success: boolean; data: AttendanceClockResult }>(
+      'POST', '/api/crew/attendance/check-in', { staffMemberId, pin }, true,
+    ),
+
+  checkOut: (staffMemberId: string, pin: string) =>
+    request<{ success: boolean; data: AttendanceClockResult }>(
+      'POST', '/api/crew/attendance/check-out', { staffMemberId, pin }, true,
+    ),
+};
