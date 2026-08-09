@@ -35,10 +35,15 @@ import { MODEL_VERSION } from '../../services/face';
  * Captures taken per person.
  *
  * The server keeps several templates and matches on the best of them, so this is
- * where the variation gets collected: three slightly different angles beat one
+ * where the variation gets collected: five slightly different angles beat one
  * perfect one, because a clock-in never reproduces the enrollment pose exactly.
+ *
+ * The cap is 10, deliberately double this — so a SECOND session, run in the
+ * venue's evening light, sits alongside the first rather than evicting it.
+ * Lighting is the variation that actually breaks recognition, and five captures
+ * taken in one sitting are five views of a single lighting condition.
  */
-const ENROLL_SHOTS = 3;
+const ENROLL_SHOTS = 5;
 
 /** Below this the head is turned too far to be worth storing. See onEmbedding. */
 const MIN_ENROLL_QUALITY = 0.6;

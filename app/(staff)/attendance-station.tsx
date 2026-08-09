@@ -329,7 +329,8 @@ export default function AttendanceStationScreen() {
       <FaceScanner
         visible={!!faceMode}
         title={faceMode === 'out' ? 'Clock out' : 'Clock in'}
-        subtitle="Look at the camera. If it doesn't recognise you, use your PIN."
+        subtitle="Look at the camera — it will recognise you on its own."
+        auto
         actionLabel={faceMode === 'out' ? 'Clock out' : 'Clock in'}
         busy={faceBusy}
         onClose={() => setFaceMode(null)}
