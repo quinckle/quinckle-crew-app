@@ -26,7 +26,10 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { QuinckleColors, Radius, Spacing } from '../constants/Colors';
-import { embedFace, loadFaceModel, FACE_ERROR_TEXT } from '../services/face';
+import { embedFace, loadFaceModel, FACE_ERROR_TEXT, type FaceError } from '../services/face';
+
+/** Frames tried per tap before giving up. See the note in `capture`. */
+const ATTEMPTS = 3;
 
 interface Props {
   visible: boolean;
@@ -70,31 +73,50 @@ export default function FaceScanner({
     if (!cameraRef.current || working || busy) return;
     setWorking(true);
     setHint(null);
-    try {
-      const photo = await cameraRef.current.takePictureAsync({
-        quality: 1,
-        skipProcessing: false,
-        shutterSound: false,
-      });
-      if (!photo?.uri || !photo.width || !photo.height) {
-        setHint('Could not take the photo. Try again.');
-        return;
-      }
 
-      const res = await embedFace(photo);
-      if (!res.ok) {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+    // Up to three shots, keeping the FIRST that works.
+    //
+    // A single frame is a lottery: a blink, a half-turn, or the small shake from
+    // tapping the button all fail an otherwise fine attempt, and the person is
+    // told to try again for something they did nothing wrong in. Retrying inside
+    // one tap absorbs those, and costs nothing in the common case because the
+    // first frame usually succeeds and the loop stops there.
+    let lastError: FaceError | null = null;
+    let best: { embedding: number[]; quality: number } | null = null;
+
+    try {
+      for (let attempt = 0; attempt < ATTEMPTS && !best; attempt++) {
+        const photo = await cameraRef.current.takePictureAsync({
+          quality: 1,
+          skipProcessing: false,
+          shutterSound: false,
+        });
+        if (!photo?.uri || !photo.width || !photo.height) continue;
+
+        const res = await embedFace(photo);
+        if (res.ok) {
+          best = { embedding: res.embedding, quality: res.quality };
+          break;
+        }
+
+        lastError = res.error;
         // The stage and its detail go to the log, never to the person queuing —
         // they get the actionable sentence. `adb logcat -s ReactNativeJS` is
         // what turns "it didn't work" into a specific failing stage.
-        if (res.detail) console.warn(`[face] ${res.error}: ${res.detail}`);
-        else console.warn(`[face] ${res.error}`);
-        setHint(FACE_ERROR_TEXT[res.error]);
+        console.warn(`[face] attempt ${attempt + 1}: ${res.error}${res.detail ? `: ${res.detail}` : ''}`);
+
+        // No point re-shooting what a second frame cannot change.
+        if (res.error === 'INFERENCE_FAILED' || res.error === 'DECODE_FAILED') break;
+      }
+
+      if (!best) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+        setHint(lastError ? FACE_ERROR_TEXT[lastError] : 'Could not read that. Use your PIN instead.');
         return;
       }
 
       Haptics.selectionAsync().catch(() => {});
-      onEmbedding(res.embedding, res.quality);
+      onEmbedding(best.embedding, best.quality);
     } catch (e: any) {
       console.warn('[face] capture threw:', String(e?.message ?? e));
       setHint('Could not read that. Use your PIN instead.');

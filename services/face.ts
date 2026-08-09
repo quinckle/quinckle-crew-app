@@ -44,6 +44,16 @@ const IMAGE_STD = 128;
 /** Widens MLKit's box before cropping. */
 const CROP_MARGIN = 0.25;
 
+/**
+ * Laplacian-variance floor for a usable capture.
+ *
+ * PROVISIONAL, like the match thresholds — it wants fitting against real
+ * captures from the actual kiosk tablet, whose camera and lighting decide what
+ * "sharp" looks like. Set low deliberately: a false REJECT costs one retry, a
+ * false ACCEPT can poison an enrollment.
+ */
+const MIN_SHARPNESS = 12;
+
 let model: TensorflowModel | null = null;
 let loading: Promise<TensorflowModel> | null = null;
 
@@ -134,6 +144,7 @@ export type FaceError =
   | 'TOO_SMALL'
   | 'EYES_CLOSED'
   | 'BOX_OUT_OF_FRAME'
+  | 'TOO_BLURRY'
   | 'CROP_FAILED'
   | 'DECODE_FAILED'
   | 'INFERENCE_FAILED';
@@ -149,6 +160,7 @@ export const FACE_ERROR_TEXT: Record<FaceError, string> = {
   TOO_SMALL: 'Move a little closer to the screen',
   EYES_CLOSED: 'Keep your eyes open and try again',
   BOX_OUT_OF_FRAME: 'Centre your face in the circle and try again',
+  TOO_BLURRY: 'Hold still for a moment and try again',
   CROP_FAILED: 'Could not frame that. Use your PIN instead.',
   DECODE_FAILED: 'Could not read that. Use your PIN instead.',
   INFERENCE_FAILED: 'Face check unavailable. Use your PIN instead.',
@@ -229,20 +241,76 @@ export async function embedFace(photo: {
   const inW = shape?.width ?? INPUT_SIZE;
   const inH = shape?.height ?? INPUT_SIZE;
 
+  // ── Alignment ───────────────────────────────────────────────────────────────
+  //
+  // Straighten the head before cropping, when we can. Two passes:
+  //
+  //   1. cut a generous square CENTRED on the face, then rotate it flat
+  //   2. centre-crop that square down to the face, and resize
+  //
+  // Centring in pass 1 is what makes pass 2 trivial: rotation is about the
+  // image's own centre, so the face stays at the centre no matter how the
+  // library chooses to expand the canvas. We read the rotated dimensions back
+  // off the ref rather than predicting them.
+  //
+  // The generous square has to fit entirely inside the photo, or the clamp would
+  // shift the face off-centre and pass 2 would cut the wrong region. When it
+  // doesn't fit we simply skip alignment — it is an improvement, not a
+  // precondition, and a slightly tilted face still matches better than a
+  // mis-cropped one.
+  const roll = rollDegrees(face);
+  const faceSize = Math.max(width, height);
+  const cx = left + width / 2;
+  const cy = top + height / 2;
+  const outer = faceSize * 2;
+  const canAlign =
+    roll !== null &&
+    Math.abs(roll) > 1.5 &&
+    cx - outer / 2 >= 0 &&
+    cy - outer / 2 >= 0 &&
+    cx + outer / 2 <= imgW &&
+    cy + outer / 2 <= imgH;
+
   let base64: string | undefined;
   try {
-    const ctx = ImageManipulator.manipulate(photo.uri);
-    ctx.crop(crop);
-    ctx.resize({ width: inW, height: inH });
-    const ref = await ctx.renderAsync();
-    // compress: 1 — JPEG at max quality. The crop is 112×112, so the file is a
-    // few KB either way and there is no reason to trade accuracy for bytes.
-    const saved = await ref.saveAsync({
-      base64: true,
-      format: SaveFormat.JPEG,
-      compress: 1,
-    });
-    base64 = saved.base64;
+    if (canAlign) {
+      const pass1 = ImageManipulator.manipulate(photo.uri);
+      pass1.crop({
+        originX: Math.round(cx - outer / 2),
+        originY: Math.round(cy - outer / 2),
+        width: Math.round(outer),
+        height: Math.round(outer),
+      });
+      pass1.rotate(-roll!);
+      const rotated = await pass1.renderAsync();
+
+      // The face is at the centre of `rotated`; take the tight box from there.
+      const inner = Math.min(
+        Math.round(faceSize * (1 + CROP_MARGIN * 2)),
+        rotated.width,
+        rotated.height,
+      );
+      const pass2 = ImageManipulator.manipulate(rotated);
+      pass2.crop({
+        originX: Math.round((rotated.width - inner) / 2),
+        originY: Math.round((rotated.height - inner) / 2),
+        width: inner,
+        height: inner,
+      });
+      pass2.resize({ width: inW, height: inH });
+      const ref = await pass2.renderAsync();
+      const saved = await ref.saveAsync({ base64: true, format: SaveFormat.JPEG, compress: 1 });
+      base64 = saved.base64;
+    } else {
+      const ctx = ImageManipulator.manipulate(photo.uri);
+      ctx.crop(crop);
+      ctx.resize({ width: inW, height: inH });
+      const ref = await ctx.renderAsync();
+      // compress: 1 — JPEG at max quality. The crop is small, so the file is a
+      // few KB either way and there is no reason to trade accuracy for bytes.
+      const saved = await ref.saveAsync({ base64: true, format: SaveFormat.JPEG, compress: 1 });
+      base64 = saved.base64;
+    }
   } catch (e: any) {
     return { ok: false, error: 'CROP_FAILED', detail: describe(e, crop, imgW, imgH) };
   }
@@ -250,10 +318,21 @@ export async function embedFace(photo: {
   if (!base64) return { ok: false, error: 'CROP_FAILED', detail: 'no base64 returned' };
 
   let input: Float32Array;
+  let sharp: number;
   try {
-    input = toModelInput(base64);
+    const prepared = toModelInput(base64);
+    input = prepared.input;
+    sharp = prepared.sharp;
   } catch (e: any) {
     return { ok: false, error: 'DECODE_FAILED', detail: String(e?.message ?? e) };
+  }
+
+  // Reject blur BEFORE embedding. A smeared face still produces a confident
+  // vector — just the wrong one — and a wrong vector can match the wrong person
+  // or, enrolled, quietly poison every later comparison. Refusing is strictly
+  // better than guessing here.
+  if (sharp < MIN_SHARPNESS) {
+    return { ok: false, error: 'TOO_BLURRY', detail: `sharpness ${sharp.toFixed(1)} < ${MIN_SHARPNESS}` };
   }
 
   try {
@@ -298,7 +377,7 @@ function describe(e: any, crop: object, w: number, h: number): string {
  * produces a well-formed embedding of nonsense that simply never matches, which
  * is a genuinely nasty thing to debug in a queue at 9am.
  */
-function toModelInput(base64: string): Float32Array {
+function toModelInput(base64: string): { input: Float32Array; sharp: number } {
   if (!shape) throw new Error('model geometry unknown — load the model first');
   const { batch, height: H, width: W } = shape;
 
@@ -314,14 +393,20 @@ function toModelInput(base64: string): Float32Array {
 
   const plane = W * H * 3;
   const out = new Float32Array(plane * batch);
+  const gray = new Float32Array(W * H);
 
   let o = 0;
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const i = (y * width + x) * 4;
-      out[o++] = (data[i]! - IMAGE_MEAN) / IMAGE_STD;
-      out[o++] = (data[i + 1]! - IMAGE_MEAN) / IMAGE_STD;
-      out[o++] = (data[i + 2]! - IMAGE_MEAN) / IMAGE_STD;
+      const r = data[i]!;
+      const g = data[i + 1]!;
+      const b = data[i + 2]!;
+      out[o++] = (r - IMAGE_MEAN) / IMAGE_STD;
+      out[o++] = (g - IMAGE_MEAN) / IMAGE_STD;
+      out[o++] = (b - IMAGE_MEAN) / IMAGE_STD;
+      // Rec. 601 luma, for the sharpness measure only — never fed to the model.
+      gray[y * width + x] = 0.299 * r + 0.587 * g + 0.114 * b;
     }
   }
 
@@ -330,7 +415,7 @@ function toModelInput(base64: string): Float32Array {
   // and we read the first output row. Driven off the declared batch rather than
   // a constant, so swapping in a batch-1 model needs no code change.
   for (let b = 1; b < batch; b++) out.copyWithin(plane * b, 0, plane);
-  return out;
+  return { input: out, sharp: sharpness(gray, W, H) };
 }
 
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -364,6 +449,60 @@ function base64ToBytes(b64: string): Uint8Array {
     if (o < out.length) out[o++] = n & 0xff;
   }
   return out;
+}
+
+/**
+ * Roll angle in degrees, from the eye landmarks, or null if we don't have them.
+ *
+ * MobileFaceNet is trained on ALIGNED faces — eyes on a horizontal line at
+ * canonical positions. Feeding it a tilted face rotates every feature inside the
+ * crop and moves the embedding a long way, which is felt as "it recognises me
+ * sometimes". MLKit already returns these landmarks (we ask for
+ * `landmarkMode: 'all'`); until now we asked for them and threw them away.
+ *
+ * Sign: image Y grows downward, so a positive atan2 means the right eye sits
+ * lower on screen and the head is tilted clockwise — we rotate back by -angle.
+ */
+function rollDegrees(face: Face): number | null {
+  const l = face.landmarks?.leftEye?.position;
+  const r = face.landmarks?.rightEye?.position;
+  if (!l || !r) return null;
+
+  const dx = r.x - l.x;
+  const dy = r.y - l.y;
+  if (dx === 0 && dy === 0) return null;
+
+  return (Math.atan2(dy, dx) * 180) / Math.PI;
+}
+
+/**
+ * Sharpness, as the variance of a Laplacian over the crop's luminance.
+ *
+ * A motion-blurred capture still yields a confident-looking embedding — it is
+ * simply the wrong one, which is worse than a refusal because it can match the
+ * wrong person. The reference implementation for this model gates on the same
+ * measure. Computed on the 112×112 crop, so it is ~12k pixels of work.
+ */
+function sharpness(gray: Float32Array, w: number, h: number): number {
+  let sum = 0;
+  let sumSq = 0;
+  let n = 0;
+
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      // 4-neighbour Laplacian kernel.
+      const lap =
+        4 * gray[i]! - gray[i - 1]! - gray[i + 1]! - gray[i - w]! - gray[i + w]!;
+      sum += lap;
+      sumSq += lap * lap;
+      n++;
+    }
+  }
+
+  if (n === 0) return 0;
+  const mean = sum / n;
+  return sumSq / n - mean * mean;
 }
 
 /**

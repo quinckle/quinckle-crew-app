@@ -31,6 +31,18 @@ import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import FaceScanner from '../../components/face-scanner';
 import { MODEL_VERSION } from '../../services/face';
 
+/**
+ * Captures taken per person.
+ *
+ * The server keeps several templates and matches on the best of them, so this is
+ * where the variation gets collected: three slightly different angles beat one
+ * perfect one, because a clock-in never reproduces the enrollment pose exactly.
+ */
+const ENROLL_SHOTS = 3;
+
+/** Below this the head is turned too far to be worth storing. See onEmbedding. */
+const MIN_ENROLL_QUALITY = 0.6;
+
 /** The server's refusals, said in a way that names the next action. */
 const ENROLL_ERROR: Record<string, string> = {
   NO_CONSENT: 'They need to sign the biometric consent in the dashboard first',
@@ -47,6 +59,7 @@ export default function FaceEnrollScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [target, setTarget] = useState<AttendanceRosterEntry | null>(null);
   const [busy, setBusy] = useState(false);
+  const [shots, setShots] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
 
   const load = useCallback(async (isRefresh = false) => {
@@ -75,20 +88,38 @@ export default function FaceEnrollScreen() {
 
   const onEmbedding = async (embedding: number[], quality: number) => {
     if (!target || busy) return;
+
+    // A poor capture is REFUSED at enrollment, not merely warned about.
+    //
+    // Everywhere else in this flow the bias is to accept and let the person get
+    // on with their shift. Enrollment is the exception: an off-angle template is
+    // compared against every future clock-in for that person, so one careless
+    // capture degrades them permanently and reads afterwards as "face
+    // recognition is unreliable". Cheaper to ask them to stand straight now.
+    if (quality < MIN_ENROLL_QUALITY) {
+      flash('Face the camera straight on — that one was at too much of an angle');
+      return;
+    }
+
     setBusy(true);
     try {
       await crewFace.enroll(target.staffMemberId, embedding, MODEL_VERSION, quality);
-      const name = target.name;
-      setTarget(null);
-      flash(`${name} enrolled`);
-      if (quality < 0.6) {
-        // Enrolling off-angle poisons every later comparison, so say so now
-        // rather than let it read as "face recognition is unreliable".
-        setTimeout(() => flash('Tip: re-enroll face-on for a stronger match'), 3400);
+      const done = shots + 1;
+      setShots(done);
+
+      if (done >= ENROLL_SHOTS) {
+        const name = target.name;
+        setTarget(null);
+        setShots(0);
+        flash(`${name} enrolled with ${ENROLL_SHOTS} captures`);
+        load();
+      } else {
+        flash(`Capture ${done} of ${ENROLL_SHOTS} saved — change your angle slightly`);
       }
     } catch (e: any) {
       const code = e?.code ?? e?.error ?? '';
       setTarget(null);
+      setShots(0);
       flash(ENROLL_ERROR[code] ?? e?.message ?? 'Could not enroll that face');
     } finally {
       setBusy(false);
@@ -102,8 +133,8 @@ export default function FaceEnrollScreen() {
       <View style={styles.header}>
         <Text style={styles.title}>Face enrollment</Text>
         <Text style={styles.subtitle}>
-          Tap a staff member to capture their face. They must have signed the
-          biometric consent first.
+          Tap a staff member and take {ENROLL_SHOTS} captures at slightly
+          different angles. They must have signed the biometric consent first.
         </Text>
       </View>
 
@@ -126,7 +157,10 @@ export default function FaceEnrollScreen() {
             <TouchableOpacity
               key={entry.staffMemberId}
               style={styles.row}
-              onPress={() => setTarget(entry)}
+              onPress={() => {
+                setShots(0);
+                setTarget(entry);
+              }}
               activeOpacity={0.75}
             >
               <View style={{ flex: 1 }}>
@@ -150,10 +184,13 @@ export default function FaceEnrollScreen() {
       <FaceScanner
         visible={!!target}
         title={target ? `Enroll ${target.name}` : 'Enroll'}
-        subtitle="Face the camera straight on, in good light."
-        actionLabel="Capture"
+        subtitle={`Capture ${Math.min(shots + 1, ENROLL_SHOTS)} of ${ENROLL_SHOTS} — face the camera straight on, in good light.`}
+        actionLabel={shots === 0 ? 'Capture' : `Capture ${shots + 1}`}
         busy={busy}
-        onClose={() => setTarget(null)}
+        onClose={() => {
+          setTarget(null);
+          setShots(0);
+        }}
         onEmbedding={onEmbedding}
       />
     </View>
