@@ -40,7 +40,8 @@ import { crewAttendance, crewFace, type AttendanceRosterEntry } from '../../serv
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ROLE_COLOR_FALLBACK } from '../../constants/capabilities';
 import FaceScanner from '../../components/face-scanner';
-import { MODEL_VERSION } from '../../services/face';
+import { MODEL_VERSION } from '../../constants/face';
+import { faceRuntimeAvailable } from '../../services/face';
 
 const PIN_MAX = 8;
 const PIN_MIN = 4;
@@ -104,8 +105,13 @@ export default function AttendanceStationScreen() {
       .status()
       .then((res) => {
         if (!alive) return;
-        setFaceOn(res.data.enabled);
-        setFaceReady(res.data.enabled && res.data.enrolledCount > 0);
+        // THREE conditions, not two. The venue may have face switched on while
+        // THIS device is running native code that predates it — an OTA can put
+        // new JS on an old binary. Offering a scanner it cannot run would be a
+        // crash dressed up as a feature.
+        const usable = res.data.enabled && faceRuntimeAvailable();
+        setFaceOn(usable);
+        setFaceReady(usable && res.data.enrolledCount > 0);
       })
       .catch(() => {
         if (!alive) return;

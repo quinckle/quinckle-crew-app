@@ -22,19 +22,62 @@
  * app despite what CLAUDE.md says.
  */
 
-import FaceDetection, { type Face } from '@react-native-ml-kit/face-detection';
+import type { Face } from '@react-native-ml-kit/face-detection';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
-import { loadTensorflowModel, type TensorflowModel } from 'react-native-fast-tflite';
+import type { TensorflowModel } from 'react-native-fast-tflite';
 import { Asset } from 'expo-asset';
 import { decode as decodeJpeg } from 'jpeg-js';
 
+export { MODEL_VERSION } from '../constants/face';
+
+// ── Native modules, loaded LAZILY and defensively ────────────────────────────
+//
+// These are `require`d inside a guard rather than imported at the top, because
+// an OTA update can reach a binary that was built before they existed. The
+// sharp edge is `react-native-fast-tflite`: it calls
+// `NitroModules.createHybridObject(...)` at MODULE SCOPE, so a plain import
+// throws on such a binary at load time — taking the whole screen with it,
+// before any feature flag or capability check could have said "not here".
+//
+// Deferring it turns that crash into a clean, reportable "face unavailable".
+// The type imports above are erased at compile time and cost nothing.
+
+type Detector = typeof import('@react-native-ml-kit/face-detection').default;
+type Tflite = typeof import('react-native-fast-tflite');
+
+let detector: Detector | null = null;
+let tflite: Tflite | null = null;
+let nativeError: string | null = null;
+
+function native(): { detector: Detector; tflite: Tflite } | null {
+  if (detector && tflite) return { detector, tflite };
+  if (nativeError) return null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    detector = require('@react-native-ml-kit/face-detection').default;
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    tflite = require('react-native-fast-tflite');
+    if (!detector || !tflite) throw new Error('module resolved empty');
+    return { detector, tflite };
+  } catch (e: any) {
+    nativeError = String(e?.message ?? e);
+    console.warn(`[face] native modules unavailable: ${nativeError}`);
+    detector = null;
+    tflite = null;
+    return null;
+  }
+}
+
 /**
- * Identifies which model produced a vector. The server only ever compares
- * embeddings sharing this string, so changing it silently invalidates every
- * enrollment at the venue — bump it ONLY alongside a real model change, and
- * expect everyone to re-enroll when you do.
+ * Can this BINARY do face at all?
+ *
+ * Distinct from whether the venue has the feature switched on. Callers should
+ * check this before showing any face affordance, so a device running older
+ * native code simply does not offer what it cannot deliver.
  */
-export const MODEL_VERSION = 'mobilefacenet-192-v1';
+export function faceRuntimeAvailable(): boolean {
+  return native() !== null;
+}
 
 /** Fallback only — the real geometry is read from the graph at load. */
 const INPUT_SIZE = 112;
@@ -111,7 +154,9 @@ async function openModel(): Promise<TensorflowModel> {
   // and can return subtly different floats, which for an embedding means
   // enrollments that no longer match. A 5MB model on a 112×112 input is
   // already well under a second on the CPU, and a kiosk has time.
-  const m = await loadTensorflowModel({ url: uri }, []);
+  const n = native();
+  if (!n) throw new Error(`native modules unavailable: ${nativeError}`);
+  const m = await n.tflite.loadTensorflowModel({ url: uri }, []);
 
   const inp = m.inputs[0];
   const out = m.outputs[0];
@@ -143,6 +188,7 @@ export type FaceError =
   | 'MANY_FACES'
   | 'TOO_SMALL'
   | 'EYES_CLOSED'
+  | 'NATIVE_MISSING'
   | 'BOX_OUT_OF_FRAME'
   | 'TOO_BLURRY'
   | 'CROP_FAILED'
@@ -159,6 +205,7 @@ export const FACE_ERROR_TEXT: Record<FaceError, string> = {
   MANY_FACES: 'More than one face in view — step up on your own',
   TOO_SMALL: 'Move a little closer to the screen',
   EYES_CLOSED: 'Keep your eyes open and try again',
+  NATIVE_MISSING: 'This device needs the latest app update for face check-in',
   BOX_OUT_OF_FRAME: 'Centre your face in the circle and try again',
   TOO_BLURRY: 'Hold still for a moment and try again',
   CROP_FAILED: 'Could not frame that. Use your PIN instead.',
@@ -178,7 +225,10 @@ export async function embedFace(photo: {
   width: number;
   height: number;
 }): Promise<EmbedResult> {
-  const faces = await FaceDetection.detect(photo.uri, {
+  const n = native();
+  if (!n) return { ok: false, error: 'NATIVE_MISSING', detail: nativeError ?? 'unknown' };
+
+  const faces = await n.detector.detect(photo.uri, {
     performanceMode: 'accurate',
     landmarkMode: 'all',
     classificationMode: 'all',

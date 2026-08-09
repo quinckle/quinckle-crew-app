@@ -34,7 +34,7 @@ import {
 } from '../../services/api';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import FaceScanner from '../../components/face-scanner';
-import { MODEL_VERSION } from '../../services/face';
+import { MODEL_VERSION } from '../../constants/face';
 
 /**
  * Captures taken per person.
