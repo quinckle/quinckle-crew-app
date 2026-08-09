@@ -97,6 +97,20 @@ const CROP_MARGIN = 0.25;
  */
 const MIN_SHARPNESS = 12;
 
+/**
+ * Straighten the head before cropping.
+ *
+ * OFF. It is theoretically right — MobileFaceNet wants the eyes level — but it
+ * was shipped alongside three other changes and recognition got worse, and with
+ * four variables moving at once "theoretically right" is not evidence. Turn it
+ * back on ALONE, with scores from the logs either side of the change.
+ *
+ * The framing bug it travelled with is fixed regardless (see squareAround): both
+ * paths now produce the identical square crop, so enabling this changes only
+ * the rotation, not the framing.
+ */
+const ALIGN_ENABLED = false;
+
 let model: TensorflowModel | null = null;
 let loading: Promise<TensorflowModel> | null = null;
 
@@ -264,18 +278,18 @@ export async function embedFace(photo: {
     };
   }
 
-  // Clamp EVERY edge to the image. The previous version floored the origin at
-  // zero but left width/height alone, so a face near any edge produced a rect
-  // running off the picture and the manipulator threw — which is exactly what
-  // a front camera at kiosk distance produces most of the time.
-  const marginX = width * CROP_MARGIN;
-  const marginY = height * CROP_MARGIN;
-  const x0 = Math.max(0, Math.round(left - marginX));
-  const y0 = Math.max(0, Math.round(top - marginY));
-  const x1 = Math.min(imgW, Math.round(left + width + marginX));
-  const y1 = Math.min(imgH, Math.round(top + height + marginY));
-
-  const crop = { originX: x0, originY: y0, width: x1 - x0, height: y1 - y0 };
+  // ONE crop shape, always: a square centred on the face.
+  //
+  // This previously used MLKit's raw bounding box plus a margin, which is not
+  // square — and resizing a non-square region to 112x112 STRETCHES the face.
+  // Worse, the aligned path used a square while this one did not, so the same
+  // person produced two differently-distorted images depending on how far their
+  // head happened to be tilted. Embeddings are only comparable if the framing is
+  // identical, so the framing is now identical by construction.
+  const faceSize = Math.max(width, height);
+  const cx = left + width / 2;
+  const cy = top + height / 2;
+  const crop = squareAround(cx, cy, faceSize * (1 + CROP_MARGIN * 2), imgW, imgH);
   if (crop.width < 2 || crop.height < 2) {
     return { ok: false, error: 'BOX_OUT_OF_FRAME', detail: `degenerate crop ${crop.width}x${crop.height}` };
   }
@@ -309,11 +323,9 @@ export async function embedFace(photo: {
   // precondition, and a slightly tilted face still matches better than a
   // mis-cropped one.
   const roll = rollDegrees(face);
-  const faceSize = Math.max(width, height);
-  const cx = left + width / 2;
-  const cy = top + height / 2;
   const outer = faceSize * 2;
   const canAlign =
+    ALIGN_ENABLED &&
     roll !== null &&
     Math.abs(roll) > 1.5 &&
     cx - outer / 2 >= 0 &&
@@ -412,6 +424,21 @@ export async function embedFace(photo: {
   } catch (e: any) {
     return { ok: false, error: 'INFERENCE_FAILED', detail: `${String(e?.message ?? e)} | ${modelInfo}` };
   }
+}
+
+/**
+ * A SQUARE of `side` centred on (cx, cy), kept inside the image by SHIFTING it
+ * rather than shrinking it.
+ *
+ * Shrinking would make the rect non-square and the resize would distort the
+ * face; shifting keeps the geometry constant and merely off-centres a face that
+ * is near the edge. Constant geometry is what makes two embeddings comparable.
+ */
+function squareAround(cx: number, cy: number, side: number, imgW: number, imgH: number) {
+  const s = Math.round(Math.min(side, imgW, imgH));
+  const x = Math.max(0, Math.min(Math.round(cx - s / 2), imgW - s));
+  const y = Math.max(0, Math.min(Math.round(cy - s / 2), imgH - s));
+  return { originX: x, originY: y, width: s, height: s };
 }
 
 function describe(e: any, crop: object, w: number, h: number): string {
