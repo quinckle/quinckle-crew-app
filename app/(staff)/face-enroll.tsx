@@ -26,7 +26,12 @@ import {
 import { Stack, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { crewAttendance, crewFace, type AttendanceRosterEntry } from '../../services/api';
+import {
+  crewAttendance,
+  crewFace,
+  type AttendanceRosterEntry,
+  type FaceEnrollmentSummary,
+} from '../../services/api';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import FaceScanner from '../../components/face-scanner';
 import { MODEL_VERSION } from '../../services/face';
@@ -65,13 +70,22 @@ export default function FaceEnrollScreen() {
   const [target, setTarget] = useState<AttendanceRosterEntry | null>(null);
   const [busy, setBusy] = useState(false);
   const [shots, setShots] = useState(0);
+  /** staffMemberId -> what is already on file. Empty until the first load. */
+  const [enrolled, setEnrolled] = useState<Record<string, FaceEnrollmentSummary>>({});
   const [toast, setToast] = useState<string | null>(null);
 
   const load = useCallback(async (isRefresh = false) => {
     try {
       if (isRefresh) setRefreshing(true);
-      const res = await crewAttendance.roster();
-      setRoster(res.data.staff);
+      const [rosterRes, faceRes] = await Promise.all([
+        crewAttendance.roster(),
+        // Tolerated separately: a venue with face off still gets a usable list.
+        crewFace.enrollments(MODEL_VERSION).catch(() => null),
+      ]);
+      setRoster(rosterRes.data.staff);
+      if (faceRes) {
+        setEnrolled(Object.fromEntries(faceRes.data.staff.map((e) => [e.staffMemberId, e])));
+      }
     } catch {
       // The roster failing is not worth an error state here — pull to retry.
     } finally {
@@ -131,6 +145,26 @@ export default function FaceEnrollScreen() {
     }
   };
 
+  /**
+   * Wipe someone's captures.
+   *
+   * Deliberately available here: a set enrolled in bad light makes that person
+   * harder to recognise than having none at all, and without this the only
+   * remedy is adding MORE captures on top of the bad ones. Erasure is also the
+   * operation consent withdrawal depends on, so it must not be dashboard-only.
+   */
+  const remove = async (entry: AttendanceRosterEntry) => {
+    try {
+      await crewFace.unenroll(entry.staffMemberId);
+      flash(`${entry.name}'s face data removed`);
+      load();
+    } catch (e: any) {
+      flash(e?.message ?? 'Could not remove that');
+    }
+  };
+
+  const doneCount = Object.keys(enrolled).length;
+
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
       <Stack.Screen options={{ title: 'Face enrollment' }} />
@@ -141,6 +175,11 @@ export default function FaceEnrollScreen() {
           Tap a staff member and take {ENROLL_SHOTS} captures at slightly
           different angles. They must have signed the biometric consent first.
         </Text>
+        {!loading ? (
+          <Text style={styles.tally}>
+            {doneCount} of {roster.length} enrolled
+          </Text>
+        ) : null}
       </View>
 
       {loading ? (
@@ -170,10 +209,17 @@ export default function FaceEnrollScreen() {
             >
               <View style={{ flex: 1 }}>
                 <Text style={styles.rowName}>{entry.name}</Text>
-                {entry.designation ? (
-                  <Text style={styles.rowRole}>{entry.designation}</Text>
-                ) : null}
+                <EnrollmentState summary={enrolled[entry.staffMemberId]} />
               </View>
+              {enrolled[entry.staffMemberId] ? (
+                <TouchableOpacity
+                  style={styles.clearBtn}
+                  onPress={() => remove(entry)}
+                  hitSlop={8}
+                >
+                  <Ionicons name="trash-outline" size={15} color={QuinckleColors.textTertiary} />
+                </TouchableOpacity>
+              ) : null}
               <Ionicons name="scan-outline" size={18} color={QuinckleColors.textTertiary} />
             </TouchableOpacity>
           ))}
@@ -202,6 +248,42 @@ export default function FaceEnrollScreen() {
   );
 }
 
+/**
+ * What is on file, said plainly.
+ *
+ * Shows the COUNT rather than a tick, because "enrolled" is not binary here —
+ * one capture and five behave very differently, and an operator deciding who to
+ * redo needs to see which is which.
+ */
+function EnrollmentState({ summary }: { summary?: FaceEnrollmentSummary }) {
+  if (!summary) {
+    return <Text style={styles.rowNotDone}>Not enrolled</Text>;
+  }
+
+  const when = summary.lastEnrolledAt
+    ? new Date(summary.lastEnrolledAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
+    : null;
+  // A thin set still works but is the first thing to top up, so it is flagged
+  // rather than shown as simply "done".
+  const thin = summary.templates < ENROLL_SHOTS;
+
+  return (
+    <View style={styles.badgeRow}>
+      <View style={[styles.badge, thin ? styles.badgeThin : styles.badgeGood]}>
+        <Ionicons
+          name={thin ? 'alert-circle' : 'checkmark-circle'}
+          size={11}
+          color={thin ? QuinckleColors.warning : QuinckleColors.success}
+        />
+        <Text style={[styles.badgeText, { color: thin ? QuinckleColors.warning : QuinckleColors.success }]}>
+          {summary.templates} capture{summary.templates === 1 ? '' : 's'}
+        </Text>
+      </View>
+      {when ? <Text style={styles.rowMeta}>last {when}</Text> : null}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: QuinckleColors.background },
   header: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.md, paddingBottom: Spacing.sm },
@@ -221,6 +303,23 @@ const styles = StyleSheet.create({
     backgroundColor: QuinckleColors.surface,
   },
   rowName: { fontSize: 14.5, fontWeight: '600', color: QuinckleColors.textPrimary },
+  rowNotDone: { marginTop: 2, fontSize: 11.5, color: QuinckleColors.textTertiary },
+  rowMeta: { fontSize: 11, color: QuinckleColors.textTertiary },
+  badgeRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginTop: 3 },
+  badge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 2,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+  },
+  badgeGood: { borderColor: QuinckleColors.successBorder, backgroundColor: QuinckleColors.successSoft },
+  badgeThin: { borderColor: QuinckleColors.border, backgroundColor: QuinckleColors.surfaceMuted },
+  badgeText: { fontSize: 11, fontWeight: '700' },
+  clearBtn: { padding: Spacing.sm },
+  tally: { marginTop: Spacing.sm, fontSize: 12, fontWeight: '600', color: QuinckleColors.textSecondary },
   rowRole: { marginTop: 1, fontSize: 11.5, color: QuinckleColors.textSecondary },
   toast: {
     position: 'absolute',

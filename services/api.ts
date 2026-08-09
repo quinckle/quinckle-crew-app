@@ -1545,6 +1545,14 @@ export interface FaceStatus {
   matchMargin: number;
 }
 
+export interface FaceEnrollmentSummary {
+  staffMemberId: string;
+  name: string;
+  templates: number;
+  lastEnrolledAt: string | null;
+  avgQuality: number | null;
+}
+
 export const crewFace = {
   /** Cheap "should this kiosk show a camera at all?" check. */
   status: () =>
@@ -1556,6 +1564,12 @@ export const crewFace = {
   enroll: (staffMemberId: string, embedding: number[], modelVersion: string, quality?: number) =>
     request<{ success: boolean; data: unknown }>(
       'POST', '/api/crew/face/enroll', { staffMemberId, embedding, modelVersion, quality }, true,
+    ),
+
+  /** Counts only — who is enrolled and how thoroughly. Never returns vectors. */
+  enrollments: (modelVersion: string) =>
+    request<{ success: boolean; data: { modelVersion: string; staff: FaceEnrollmentSummary[] } }>(
+      'GET', `/api/crew/face/enrollments?modelVersion=${encodeURIComponent(modelVersion)}`, undefined, true,
     ),
 
   unenroll: (staffMemberId: string) =>
