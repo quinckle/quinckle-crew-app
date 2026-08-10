@@ -51,7 +51,39 @@ const fmtTime = (iso: string | null) =>
     ? new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true })
     : null;
 
+const fmtHm = (minutes: number) => {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h === 0) return `${m}m`;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+};
+
+/** Minutes elapsed since an instant, floored at zero. */
+const minutesSince = (iso: string) =>
+  Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60_000));
+
 type Mode = 'in' | 'out';
+
+/**
+ * Whether this person is on the floor RIGHT NOW.
+ *
+ * `checkOutAt` is null while a segment is open, so this is exactly the
+ * open-segment test — and it stays correct across a split shift, where someone
+ * has both a check-in and a check-out and is still coming back tonight.
+ */
+const isOnDuty = (e: AttendanceRosterEntry) => Boolean(e.checkInAt && !e.checkOutAt);
+
+/**
+ * What the next tap should DO for this person.
+ *
+ * Derived, never asked. Picking the wrong direction at the pad was the single
+ * largest source of junk data — someone hits "clock out" meaning "clock in",
+ * and now the day says the opposite of what happened.
+ */
+const nextAction = (e: AttendanceRosterEntry): Mode => (isOnDuty(e) ? 'out' : 'in');
+
+/** How long the Undo affordance stays on screen. Mirrors the server's window. */
+const UNDO_WINDOW_MS = 120_000;
 
 export default function AttendanceStationScreen() {
   const insets = useSafeAreaInsets();
@@ -68,6 +100,9 @@ export default function AttendanceStationScreen() {
   const [pinError, setPinError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  // Who the last punch belonged to, while it can still be taken back.
+  const [undo, setUndo] = useState<string | null>(null);
+  const [undoBusy, setUndoBusy] = useState(false);
 
   // Face is additive: the name-and-PIN grid below is always there, and every
   // face path falls back to it. If any of this errors the station keeps working.
@@ -145,21 +180,56 @@ export default function AttendanceStationScreen() {
   };
 
   const openPad = (entry: AttendanceRosterEntry) => {
-    // Already clocked out for the day — nothing left to do, and re-opening the
-    // pad would only invite a confusing "already recorded".
-    if (entry.checkOutAt) {
-      flash(`${entry.name} has already clocked out today`);
-      return;
-    }
+    // NOTE: having clocked out is NOT a reason to refuse. This screen used to
+    // stop here with "already clocked out today", which made a split shift
+    // impossible from the kiosk — someone finishing lunch service could never
+    // clock back in for dinner. A clock-out ends a SEGMENT, not the day.
     setSelected(entry);
-    setMode(entry.checkInAt ? 'out' : 'in');
+    setMode(nextAction(entry));
     setPin('');
     setPinError(null);
   };
 
   const flash = (msg: string) => {
+    setUndo(null);
     setToast(msg);
     setTimeout(() => setToast(null), 2600);
+  };
+
+  /**
+   * Show a confirmation that can be taken back.
+   *
+   * Kept on screen far longer than a plain toast: the value of Undo is that
+   * someone who tapped the wrong thing has time to notice and reach it. It
+   * disappears on its own when the server would refuse anyway.
+   */
+  const flashUndoable = (msg: string, staffMemberId: string) => {
+    setToast(msg);
+    setUndo(staffMemberId);
+    setTimeout(() => {
+      setToast((t) => (t === msg ? null : t));
+      setUndo((u) => (u === staffMemberId ? null : u));
+    }, UNDO_WINDOW_MS);
+  };
+
+  const runUndo = async () => {
+    if (!undo || undoBusy) return;
+    setUndoBusy(true);
+    try {
+      await crewAttendance.undo(undo);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      flash('Undone');
+      load();
+    } catch {
+      // A 409 here means the window closed or someone else already changed the
+      // record. Neither is worth an error state on a kiosk — just say so and
+      // refresh so the screen matches the server.
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      flash('Too late to undo that');
+      load();
+    } finally {
+      setUndoBusy(false);
+    }
   };
 
   const press = (digit: string) => {
@@ -182,14 +252,22 @@ export default function AttendanceStationScreen() {
     try {
       const call = mode === 'in' ? crewAttendance.checkIn : crewAttendance.checkOut;
       const res = await call(selected.staffMemberId, pin);
-      const { name, alreadyRecorded } = res.data;
+      const { name, alreadyRecorded, workedMinutes } = res.data;
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       closePad();
-      flash(
-        alreadyRecorded
-          ? `${name} was already clocked ${mode === 'in' ? 'in' : 'out'}`
-          : `${name} clocked ${mode === 'in' ? 'in' : 'out'}`,
-      );
+      if (alreadyRecorded) {
+        flash(`${name} was already clocked ${mode === 'in' ? 'in' : 'out'}`);
+      } else if (mode === 'out') {
+        // The number is the point of clocking out — say it back, so a wrong
+        // total is noticed by the person it belongs to, at the moment it is
+        // cheapest to fix.
+        flashUndoable(
+          workedMinutes > 0 ? `${name} clocked out · ${fmtHm(workedMinutes)} today` : `${name} clocked out`,
+          selected.staffMemberId,
+        );
+      } else {
+        flashUndoable(`${name} clocked in`, selected.staffMemberId);
+      }
       load();
     } catch (e: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
@@ -222,14 +300,19 @@ export default function AttendanceStationScreen() {
         return;
       }
 
-      const { name, alreadyRecorded } = res.data.clock;
+      const { name, alreadyRecorded, workedMinutes, staffMemberId } = res.data.clock;
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       setFaceMode(null);
-      flash(
-        alreadyRecorded
-          ? `${name} was already clocked ${faceMode === 'in' ? 'in' : 'out'}`
-          : `${name} clocked ${faceMode === 'in' ? 'in' : 'out'}`,
-      );
+      if (alreadyRecorded) {
+        flash(`${name} was already clocked ${faceMode === 'in' ? 'in' : 'out'}`);
+      } else if (faceMode === 'out') {
+        flashUndoable(
+          workedMinutes > 0 ? `${name} clocked out · ${fmtHm(workedMinutes)} today` : `${name} clocked out`,
+          staffMemberId,
+        );
+      } else {
+        flashUndoable(`${name} clocked in`, staffMemberId);
+      }
       load();
     } catch {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
@@ -240,10 +323,8 @@ export default function AttendanceStationScreen() {
     }
   };
 
-  const present = useMemo(
-    () => roster.filter((r) => r.checkInAt && !r.checkOutAt).length,
-    [roster],
-  );
+  const onDuty = useMemo(() => roster.filter(isOnDuty), [roster]);
+  const present = onDuty.length;
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
@@ -319,6 +400,25 @@ export default function AttendanceStationScreen() {
             />
           }
         >
+          {/* Who is actually on the floor, and for how long. This is the
+              question the owner walking past the kiosk is asking, so it goes
+              above the grid rather than being buried in a count. */}
+          {onDuty.length > 0 && (
+            <View style={styles.onDutyCard}>
+              <Text style={styles.onDutyHeading}>On shift now</Text>
+              {onDuty.map((e) => (
+                <View key={e.staffMemberId} style={styles.onDutyRow}>
+                  <View style={[styles.onDutyDot, { backgroundColor: e.designationColor ?? ROLE_COLOR_FALLBACK }]} />
+                  <Text style={styles.onDutyName} numberOfLines={1}>{e.name}</Text>
+                  <Text style={styles.onDutyTime}>
+                    {fmtHm(minutesSince(e.checkInAt!))}
+                    {e.segmentCount && e.segmentCount > 0 ? ' · back on' : ''}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          )}
+
           {roster.map((entry) => (
             <StaffTile key={entry.staffMemberId} entry={entry} onPress={() => openPad(entry)} />
           ))}
@@ -328,7 +428,21 @@ export default function AttendanceStationScreen() {
       {toast && (
         <View style={[styles.toast, { bottom: insets.bottom + Spacing.xl }]}>
           <Ionicons name="checkmark-circle" size={16} color={QuinckleColors.success} />
-          <Text style={styles.toastText}>{toast}</Text>
+          <Text style={styles.toastText} numberOfLines={2}>{toast}</Text>
+          {undo && (
+            <TouchableOpacity
+              style={styles.undoBtn}
+              onPress={runUndo}
+              disabled={undoBusy}
+              accessibilityLabel="Undo the last clock action"
+            >
+              {undoBusy ? (
+                <ActivityIndicator color={QuinckleColors.primary} size="small" />
+              ) : (
+                <Text style={styles.undoText}>Undo</Text>
+              )}
+            </TouchableOpacity>
+          )}
         </View>
       )}
 
@@ -347,10 +461,32 @@ export default function AttendanceStationScreen() {
         <Pressable style={styles.backdrop} onPress={closePad}>
           <Pressable style={styles.pad} onPress={(e) => e.stopPropagation()}>
             <Text style={styles.padName}>{selected?.name}</Text>
+            {/* The action is DERIVED and stated plainly, so nobody has to
+                notice a toggle. Clocking out also shows how long they have
+                been on — a wrong number is cheapest to catch here, from the
+                person it belongs to. */}
             <Text style={styles.padMode}>
               {mode === 'in' ? 'Clocking in' : 'Clocking out'}
-              {mode === 'out' && selected?.checkInAt ? ` · in at ${fmtTime(selected.checkInAt)}` : ''}
+              {mode === 'out' && selected?.checkInAt
+                ? ` · on since ${fmtTime(selected.checkInAt)} · ${fmtHm(minutesSince(selected.checkInAt))}`
+                : ''}
+              {mode === 'in' && selected?.checkOutAt ? ' again · back for another shift' : ''}
             </Text>
+
+            {/* An override, not the primary control. The derived action is
+                right almost always; this exists for the case where the record
+                is already wrong and someone needs to say so anyway. */}
+            {selected && (
+              <TouchableOpacity
+                style={styles.modeSwitch}
+                onPress={() => setMode((m) => (m === 'in' ? 'out' : 'in'))}
+              >
+                <Ionicons name="swap-horizontal" size={13} color={QuinckleColors.textTertiary} />
+                <Text style={styles.modeSwitchText}>
+                  {mode === 'in' ? 'Clock out instead' : 'Clock in instead'}
+                </Text>
+              </TouchableOpacity>
+            )}
 
             <View style={styles.dots}>
               {Array.from({ length: Math.max(PIN_MIN, pin.length) }).map((_, i) => (
@@ -398,11 +534,15 @@ function StaffTile({ entry, onPress }: { entry: AttendanceRosterEntry; onPress: 
   const inAt = fmtTime(entry.checkInAt);
   const outAt = fmtTime(entry.checkOutAt);
 
-  const state = entry.checkOutAt ? 'done' : entry.checkInAt ? 'in' : 'out';
+  // 'off' means "not on the floor right now" — which covers both "hasn't
+  // started" and "finished a segment and may well be back". It is NOT "done for
+  // the day"; only the business-day rollover decides that, and this tile must
+  // stay tappable either way.
+  const state = isOnDuty(entry) ? 'in' : entry.checkInAt ? 'off' : 'out';
 
   return (
     <TouchableOpacity
-      style={[styles.tile, state === 'in' && styles.tileIn, state === 'done' && styles.tileDone]}
+      style={[styles.tile, state === 'in' && styles.tileIn, state === 'off' && styles.tileDone]}
       onPress={onPress}
       activeOpacity={0.75}
     >
@@ -423,10 +563,15 @@ function StaffTile({ entry, onPress }: { entry: AttendanceRosterEntry; onPress: 
         // Shown, not hidden: the person still needs to know why they can't, and
         // the owner needs to see that a PIN is missing.
         <Text style={styles.tileNoPin}>No PIN set</Text>
-      ) : state === 'done' ? (
-        <Text style={styles.tileMeta}>{inAt} – {outAt}</Text>
+      ) : state === 'off' ? (
+        <Text style={styles.tileMeta}>
+          {inAt} – {outAt}
+          {entry.workedMinutes ? ` · ${fmtHm(entry.workedMinutes)}` : ''}
+        </Text>
       ) : state === 'in' ? (
-        <Text style={[styles.tileMeta, styles.tileMetaIn]}>In at {inAt}</Text>
+        <Text style={[styles.tileMeta, styles.tileMetaIn]}>
+          In at {inAt} · {fmtHm(minutesSince(entry.checkInAt!))}
+        </Text>
       ) : (
         <Text style={styles.tileMeta}>Tap to clock in</Text>
       )}
@@ -592,6 +737,49 @@ const styles = StyleSheet.create({
     backgroundColor: QuinckleColors.surfaceElevated,
   },
   toastText: { flex: 1, fontSize: 13.5, fontWeight: '600', color: QuinckleColors.textPrimary },
+  undoBtn: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    borderColor: QuinckleColors.primary,
+    minWidth: 56,
+    alignItems: 'center',
+  },
+  undoText: { fontSize: 12.5, fontWeight: '700', color: QuinckleColors.primary },
+
+  onDutyCard: {
+    width: '100%',
+    marginBottom: Spacing.md,
+    padding: Spacing.md,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surface,
+    gap: Spacing.xs,
+  },
+  onDutyHeading: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    color: QuinckleColors.textTertiary,
+    marginBottom: Spacing.xs,
+  },
+  onDutyRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  onDutyDot: { width: 7, height: 7, borderRadius: 4 },
+  onDutyName: { flex: 1, fontSize: 13.5, fontWeight: '600', color: QuinckleColors.textPrimary },
+  onDutyTime: { fontSize: 12.5, fontWeight: '600', color: QuinckleColors.textSecondary },
+
+  modeSwitch: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    marginTop: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    paddingHorizontal: Spacing.sm,
+  },
+  modeSwitchText: { fontSize: 11.5, fontWeight: '600', color: QuinckleColors.textTertiary },
 
   backdrop: {
     flex: 1,

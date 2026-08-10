@@ -1477,8 +1477,20 @@ export interface AttendanceRosterEntry {
   photoUrl: string | null;
   /** False ⇒ no PIN set; the owner has to mark them manually. */
   canSelfCheckIn: boolean;
+  /** First clock-in of the business day. */
   checkInAt: string | null;
+  /**
+   * Last clock-out — NULL while a segment is open.
+   *
+   * So `checkInAt && !checkOutAt` means "on duty right now", and
+   * `checkInAt && checkOutAt` means "worked earlier, currently off" — which is
+   * NOT the same as "done for the day". Someone who finished lunch service can
+   * come back for dinner, and the station must let them.
+   */
   checkOutAt: string | null;
+  /** Minutes across closed segments so far today. Null ⇒ never punched. */
+  workedMinutes: number | null;
+  segmentCount: number | null;
   status: string | null;
   flaggedForReview: boolean;
 }
@@ -1488,9 +1500,21 @@ export interface AttendanceClockResult {
   name: string;
   checkInAt: string | null;
   checkOutAt: string | null;
-  /** True when the tap changed nothing because it was already recorded. */
+  /** Set ⇒ on duty right now, since this instant. */
+  onDutySince: string | null;
+  workedMinutes: number;
+  segmentCount: number;
+  /** True when the tap changed nothing because that state already held. */
   alreadyRecorded: boolean;
   flaggedForReview: boolean;
+}
+
+export interface AttendanceUndoResult {
+  staffMemberId: string;
+  checkInAt: string | null;
+  checkOutAt: string | null;
+  onDutySince: string | null;
+  workedMinutes: number;
 }
 
 export const crewAttendance = {
@@ -1507,6 +1531,16 @@ export const crewAttendance = {
   checkOut: (staffMemberId: string, pin: string) =>
     request<{ success: boolean; data: AttendanceClockResult }>(
       'POST', '/api/crew/attendance/check-out', { staffMemberId, pin }, true,
+    ),
+
+  // Takes back the last punch, within a short server-side window. No PIN by
+  // design — the tap being undone happened seconds ago and the fix has to be
+  // faster than the mistake. A 409 means the window closed or there was
+  // nothing to undo; both are normal and neither is an error worth alarming
+  // anyone about.
+  undo: (staffMemberId: string) =>
+    request<{ success: boolean; data: AttendanceUndoResult }>(
+      'POST', '/api/crew/attendance/undo', { staffMemberId }, true,
     ),
 
   // Face clock-in. Note what is NOT sent: a staffMemberId. We hand over an
