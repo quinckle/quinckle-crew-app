@@ -217,8 +217,22 @@ export type FaceError =
    */
   | 'SPOOF_SUSPECTED';
 
+/**
+ * On-device liveness telemetry, carried out with the embedding.
+ *
+ * Absent when the check could not run at all. Sent to the server purely so the
+ * score reaches somewhere a human can read it — the verdict is enforced HERE,
+ * where the pixels are, and the server treats these as telemetry it must never
+ * gate on.
+ */
+export interface LivenessTelemetry {
+  score: number;
+  /** Which output head was read as the routing mask; null ⇒ could not tell. */
+  maskIndex: 0 | 1 | null;
+}
+
 export type EmbedResult =
-  | { ok: true; embedding: number[]; quality: number }
+  | { ok: true; embedding: number[]; quality: number; liveness?: LivenessTelemetry }
   | { ok: false; error: FaceError; detail?: string };
 
 /** Human-facing copy. Every one of these tells the person what to DO. */
@@ -424,14 +438,18 @@ export async function embedFace(photo: {
   // missing asset into an outage. The distinction is exactly why checkLiveness
   // separates `ok: false` from `live: false`.
   const spoof = await checkLiveness(n.tflite, photo, { cx, cy, size: faceSize });
+  let liveness: LivenessTelemetry | undefined;
   if (!spoof.ok) {
     console.warn(`[face] liveness unavailable, continuing: ${spoof.reason}`);
-  } else if (!spoof.live) {
-    return {
-      ok: false,
-      error: 'SPOOF_SUSPECTED',
-      detail: `liveness score ${spoof.score.toFixed(4)} > ${ATTACK_THRESHOLD}`,
-    };
+  } else {
+    liveness = { score: spoof.score, maskIndex: spoof.maskIndex };
+    if (!spoof.live) {
+      return {
+        ok: false,
+        error: 'SPOOF_SUSPECTED',
+        detail: `liveness score ${spoof.score.toFixed(4)} > ${ATTACK_THRESHOLD}`,
+      };
+    }
   }
 
   try {
@@ -457,7 +475,7 @@ export async function embedFace(photo: {
       return { ok: false, error: 'INFERENCE_FAILED', detail: 'non-finite values in embedding' };
     }
 
-    return { ok: true, embedding, quality: qualityOf(face) };
+    return { ok: true, embedding, quality: qualityOf(face), liveness };
   } catch (e: any) {
     return { ok: false, error: 'INFERENCE_FAILED', detail: `${String(e?.message ?? e)} | ${modelInfo}` };
   }

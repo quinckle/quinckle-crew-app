@@ -1,5 +1,6 @@
 import { API_BASE_URL } from '../constants/env';
 import type { CancelReason } from '../constants/adjustmentReasons';
+import type { LivenessTelemetry } from './face';
 
 let _crewToken: string | null = null;
 let _on401: (() => void) | null = null;
@@ -1517,6 +1518,23 @@ export interface AttendanceUndoResult {
   workedMinutes: number;
 }
 
+/**
+ * Omitted entirely when the check could not run, so an older server sees exactly
+ * the body it always saw.
+ *
+ * `livenessMask` is left OFF rather than sent as null when the mask could not be
+ * identified. The server validates with AJV in coerceTypes mode, where a null on
+ * an integer field can be rewritten to 0 — which would turn "could not tell"
+ * into "head 0", inverting the one signal worth reading. Absent is unambiguous.
+ */
+function livenessBody(l?: LivenessTelemetry) {
+  if (!l) return {};
+  return {
+    livenessScore: l.score,
+    ...(l.maskIndex === null ? {} : { livenessMask: l.maskIndex }),
+  };
+}
+
 export const crewAttendance = {
   roster: () =>
     request<{ success: boolean; data: { date: string; staff: AttendanceRosterEntry[] } }>(
@@ -1547,14 +1565,20 @@ export const crewAttendance = {
   // embedding and the server decides who it belongs to — the device does not
   // get a vote, because a device that could name the person could clock anyone
   // in as anyone.
-  checkInFace: (embedding: number[], modelVersion: string) =>
+  // `liveness` is on-device TELEMETRY, not a credential. The server logs it so
+  // the anti-spoofing threshold can be fitted from real check-ins instead of by
+  // walking a cable to the tablet; it must never gate anything, because a client
+  // asserts it. Enforcement happens on the device, where the pixels are.
+  checkInFace: (embedding: number[], modelVersion: string, liveness?: LivenessTelemetry) =>
     request<{ success: boolean; data: FaceClockOutcome }>(
-      'POST', '/api/crew/attendance/check-in-face', { embedding, modelVersion }, true,
+      'POST', '/api/crew/attendance/check-in-face',
+      { embedding, modelVersion, ...livenessBody(liveness) }, true,
     ),
 
-  checkOutFace: (embedding: number[], modelVersion: string) =>
+  checkOutFace: (embedding: number[], modelVersion: string, liveness?: LivenessTelemetry) =>
     request<{ success: boolean; data: FaceClockOutcome }>(
-      'POST', '/api/crew/attendance/check-out-face', { embedding, modelVersion }, true,
+      'POST', '/api/crew/attendance/check-out-face',
+      { embedding, modelVersion, ...livenessBody(liveness) }, true,
     ),
 };
 

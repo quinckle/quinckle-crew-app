@@ -41,7 +41,7 @@ import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ROLE_COLOR_FALLBACK } from '../../constants/capabilities';
 import FaceScanner from '../../components/face-scanner';
 import { MODEL_VERSION } from '../../constants/face';
-import { faceRuntimeAvailable } from '../../services/face';
+import { faceRuntimeAvailable, type LivenessTelemetry } from '../../services/face';
 
 const PIN_MAX = 8;
 const PIN_MIN = 4;
@@ -286,12 +286,12 @@ export default function AttendanceStationScreen() {
    * which is the whole reason face is allowed to be optional: nobody is ever
    * stuck at the door because the light was bad or they grew a beard.
    */
-  const onFaceCaptured = async (embedding: number[]) => {
+  const onFaceCaptured = async (embedding: number[], _quality: number, liveness?: LivenessTelemetry) => {
     if (!faceMode || faceBusy) return;
     setFaceBusy(true);
     try {
       const call = faceMode === 'in' ? crewAttendance.checkInFace : crewAttendance.checkOutFace;
-      const res = await call(embedding, MODEL_VERSION);
+      const res = await call(embedding, MODEL_VERSION, liveness);
 
       if (!res.data.matched) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});

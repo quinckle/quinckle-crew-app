@@ -92,9 +92,9 @@ export function livenessModelInfo(): string {
 }
 
 export type LivenessVerdict =
-  | { ok: true; live: true; score: number }
+  | { ok: true; live: true; score: number; maskIndex: 0 | 1 | null }
   /** Scored as an attack. Only ever returned when LIVENESS_ENFORCED. */
-  | { ok: true; live: false; score: number }
+  | { ok: true; live: false; score: number; maskIndex: 0 | 1 | null }
   /** The check could not run. NEVER treated as an attack — see checkLiveness. */
   | { ok: false; reason: string };
 
@@ -235,7 +235,7 @@ export async function checkLiveness(
     // Reported live when not enforcing, so an unfitted threshold cannot strand
     // anyone. The score is in the log either way, which is the whole point of
     // this stage.
-    return { ok: true, live: LIVENESS_ENFORCED ? !isAttack : true, score };
+    return { ok: true, live: LIVENESS_ENFORCED ? !isAttack : true, score, maskIndex };
   } catch (e: any) {
     return { ok: false, reason: `inference: ${String(e?.message ?? e)} | ${modelInfo}` };
   }

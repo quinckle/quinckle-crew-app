@@ -38,7 +38,13 @@ import * as Haptics from 'expo-haptics';
 import { Audio } from 'expo-av';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QuinckleColors, Radius, Spacing } from '../constants/Colors';
-import { embedFace, loadFaceModel, FACE_ERROR_TEXT, type FaceError } from '../services/face';
+import {
+  embedFace,
+  loadFaceModel,
+  FACE_ERROR_TEXT,
+  type FaceError,
+  type LivenessTelemetry,
+} from '../services/face';
 
 /** Frames tried per manual tap before giving up. */
 const ATTEMPTS = 3;
@@ -64,7 +70,12 @@ interface Props {
   auto?: boolean;
   busy?: boolean;
   onClose: () => void;
-  onEmbedding: (embedding: number[], quality: number) => void;
+  /**
+   * `liveness` is optional and absent when the check could not run — callers
+   * forward it to the server as telemetry and must not treat its absence as a
+   * failed capture.
+   */
+  onEmbedding: (embedding: number[], quality: number, liveness?: LivenessTelemetry) => void;
 }
 
 export default function FaceScanner({
@@ -110,7 +121,8 @@ export default function FaceScanner({
 
   /** One capture → embedding. Returns the failure so callers can guide. */
   const attempt = useCallback(async (): Promise<
-    { ok: true; embedding: number[]; quality: number } | { ok: false; error: FaceError | null }
+    | { ok: true; embedding: number[]; quality: number; liveness?: LivenessTelemetry }
+    | { ok: false; error: FaceError | null }
   > => {
     const cam = cameraRef.current;
     if (!cam) return { ok: false, error: null };
@@ -123,17 +135,19 @@ export default function FaceScanner({
     if (!photo?.uri || !photo.width || !photo.height) return { ok: false, error: null };
 
     const res = await embedFace(photo);
-    if (res.ok) return { ok: true, embedding: res.embedding, quality: res.quality };
+    if (res.ok) {
+      return { ok: true, embedding: res.embedding, quality: res.quality, liveness: res.liveness };
+    }
 
     console.warn(`[face] ${res.error}${res.detail ? `: ${res.detail}` : ''}`);
     return { ok: false, error: res.error };
   }, []);
 
   const succeed = useCallback(
-    (embedding: number[], quality: number) => {
+    (embedding: number[], quality: number, liveness?: LivenessTelemetry) => {
       playChime();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      onEmbedding(embedding, quality);
+      onEmbedding(embedding, quality, liveness);
     },
     [onEmbedding],
   );
@@ -164,7 +178,7 @@ export default function FaceScanner({
 
         if (res.ok) {
           setWorking(false);
-          succeed(res.embedding, res.quality);
+          succeed(res.embedding, res.quality, res.liveness);
           return;
         }
 
@@ -197,7 +211,7 @@ export default function FaceScanner({
       for (let i = 0; i < ATTEMPTS; i++) {
         const res = await attempt();
         if (res.ok) {
-          succeed(res.embedding, res.quality);
+          succeed(res.embedding, res.quality, res.liveness);
           return;
         }
         lastError = res.error;
