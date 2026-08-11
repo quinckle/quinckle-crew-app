@@ -27,8 +27,10 @@ import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import type { TensorflowModel } from 'react-native-fast-tflite';
 import { Asset } from 'expo-asset';
 import { decode as decodeJpeg } from 'jpeg-js';
+import { ATTACK_THRESHOLD, checkLiveness } from './liveness';
 
 export { MODEL_VERSION } from '../constants/face';
+export { LIVENESS_ENFORCED, livenessModelInfo } from './liveness';
 
 // ── Native modules, loaded LAZILY and defensively ────────────────────────────
 //
@@ -207,7 +209,13 @@ export type FaceError =
   | 'TOO_BLURRY'
   | 'CROP_FAILED'
   | 'DECODE_FAILED'
-  | 'INFERENCE_FAILED';
+  | 'INFERENCE_FAILED'
+  /**
+   * The capture looks like a presentation attack — a printed photo, or a phone
+   * held up to the camera. Only ever returned when liveness is ENFORCED; while
+   * the threshold is being fitted the check scores and logs but refuses nothing.
+   */
+  | 'SPOOF_SUSPECTED';
 
 export type EmbedResult =
   | { ok: true; embedding: number[]; quality: number }
@@ -225,6 +233,10 @@ export const FACE_ERROR_TEXT: Record<FaceError, string> = {
   CROP_FAILED: 'Could not frame that. Use your PIN instead.',
   DECODE_FAILED: 'Could not read that. Use your PIN instead.',
   INFERENCE_FAILED: 'Face check unavailable. Use your PIN instead.',
+  // Says what to DO, like every other message here, and does not accuse: the
+  // overwhelmingly likely cause is bad light or a reflective screen behind
+  // someone, not fraud. The PIN is right there either way.
+  SPOOF_SUSPECTED: 'Look straight at the camera yourself — a photo or screen will not pass. Or use your PIN.',
 };
 
 /**
@@ -395,6 +407,31 @@ export async function embedFace(photo: {
   // better than guessing here.
   if (sharp < MIN_SHARPNESS) {
     return { ok: false, error: 'TOO_BLURRY', detail: `sharpness ${sharp.toFixed(1)} < ${MIN_SHARPNESS}` };
+  }
+
+  // ── Liveness ────────────────────────────────────────────────────────────────
+  //
+  // AFTER the blur gate, because a smeared frame would score as nonsense here
+  // too, and BEFORE the embedding, so a rejected capture never becomes a vector
+  // that could match or — worse — be enrolled.
+  //
+  // Fails CLOSED on a verdict, which is the one place in this pipeline that
+  // does: a suspected attack refuses the face path. It still is not a hard
+  // denial, because the PIN remains, so Rule 1 holds.
+  //
+  // Fails OPEN on the check being unable to run. A model that failed to load
+  // must not lock the whole venue out of face check-in; that would turn a
+  // missing asset into an outage. The distinction is exactly why checkLiveness
+  // separates `ok: false` from `live: false`.
+  const spoof = await checkLiveness(n.tflite, photo, { cx, cy, size: faceSize });
+  if (!spoof.ok) {
+    console.warn(`[face] liveness unavailable, continuing: ${spoof.reason}`);
+  } else if (!spoof.live) {
+    return {
+      ok: false,
+      error: 'SPOOF_SUSPECTED',
+      detail: `liveness score ${spoof.score.toFixed(4)} > ${ATTACK_THRESHOLD}`,
+    };
   }
 
   try {
