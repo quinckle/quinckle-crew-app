@@ -26,6 +26,7 @@ import {
   type DeliveryFailureReasonOption,
 } from '../../services/api';
 import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
+import { useAuth } from '../../context/AuthContext';
 
 // ── Presentation for each lifecycle state ────────────────────────────────────
 const STATUS_META: Record<DeliveryStatus, { label: string; color: string; soft: string; border: string }> = {
@@ -63,6 +64,8 @@ const oneLineAddress = (d: DeliveryOrder) =>
 export default function DeliveryScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { staffInfo } = useAuth();
+  const myStaffId = staffInfo?.id ?? null;
 
   const [orders, setOrders] = useState<DeliveryOrder[]>([]);
   const [riders, setRiders] = useState<DeliveryRider[]>([]);
@@ -72,7 +75,10 @@ export default function DeliveryScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [notEnabled, setNotEnabled] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<'OPEN' | 'ALL' | DeliveryStatus>('OPEN');
+  // 'MINE' is the rider view (§Phase 3): the same board scoped to the orders
+  // this staffer is actually carrying. A separate screen would duplicate every
+  // lifecycle action for no behavioural difference.
+  const [filter, setFilter] = useState<'OPEN' | 'ALL' | 'MINE' | DeliveryStatus>('OPEN');
 
   const [action, setAction] = useState<DeliveryOrder | null>(null);
   const [showNew, setShowNew] = useState(false);
@@ -107,8 +113,25 @@ export default function DeliveryScreen() {
   const visible = useMemo(() => {
     if (filter === 'ALL') return orders;
     if (filter === 'OPEN') return orders.filter((o) => OPEN_STATUSES.includes(o.status));
+    if (filter === 'MINE') {
+      // Assigned to me and not yet handed back — a delivered order whose cash
+      // is still on me is very much still mine.
+      return orders.filter(
+        (o) => o.assigned_staff?.id === myStaffId &&
+          (OPEN_STATUSES.includes(o.status) || (o.status === 'DELIVERED' && !!o.cod_amount && !o.cod_settled_at)),
+      );
+    }
     return orders.filter((o) => o.status === filter);
-  }, [orders, filter]);
+  }, [orders, filter, myStaffId]);
+
+  // What THIS rider owes the counter, as opposed to the venue-wide float.
+  const myFloat = useMemo(
+    () => orders
+      .filter((o) => o.assigned_staff?.id === myStaffId && o.status === 'DELIVERED' && !!o.cod_amount && !o.cod_settled_at)
+      .reduce((sum, o) => sum + Number(o.cod_amount ?? 0), 0),
+    [orders, myStaffId],
+  );
+  const isRiderView = filter === 'MINE';
 
   const openCount = orders.filter((o) => OPEN_STATUSES.includes(o.status)).length;
   const unsettled = orders.filter((o) => o.status === 'DELIVERED' && o.cod_amount && !o.cod_settled_at);
@@ -155,17 +178,20 @@ export default function DeliveryScreen() {
           venue has earned that is not in the drawer. */}
       <View style={styles.summaryRow}>
         <View style={styles.summaryCell}>
-          <Text style={styles.summaryLabel}>Active</Text>
-          <Text style={styles.summaryValue}>{openCount}</Text>
+          <Text style={styles.summaryLabel}>{isRiderView ? 'On you' : 'Active'}</Text>
+          <Text style={styles.summaryValue}>{isRiderView ? visible.length : openCount}</Text>
         </View>
         <View style={styles.summaryDivider} />
         <View style={styles.summaryCell}>
-          <Text style={styles.summaryLabel}>Cash with riders</Text>
-          <Text style={[styles.summaryValue, riderFloat > 0 && { color: QuinckleColors.warning }]}>
-            {money(riderFloat)}
+          <Text style={styles.summaryLabel}>{isRiderView ? 'Cash on you' : 'Cash with riders'}</Text>
+          <Text style={[styles.summaryValue, (isRiderView ? myFloat : riderFloat) > 0 && { color: QuinckleColors.warning }]}>
+            {money(isRiderView ? myFloat : riderFloat)}
           </Text>
-          {unsettled.length > 0 && (
+          {!isRiderView && unsettled.length > 0 && (
             <Text style={styles.summarySub}>{unsettled.length} to collect</Text>
+          )}
+          {isRiderView && myFloat > 0 && (
+            <Text style={styles.summarySub}>hand over at the counter</Text>
           )}
         </View>
       </View>
@@ -176,7 +202,7 @@ export default function DeliveryScreen() {
         style={styles.chipRow}
         contentContainerStyle={{ paddingHorizontal: Spacing.lg, gap: Spacing.sm }}
       >
-        {([['OPEN', 'Active'], ['PENDING', 'New'], ['READY', 'Packed'], ['OUT_FOR_DELIVERY', 'On the way'], ['DELIVERED', 'Delivered'], ['ALL', 'All']] as const).map(
+        {([['OPEN', 'Active'], ['MINE', 'Mine'], ['PENDING', 'New'], ['READY', 'Packed'], ['OUT_FOR_DELIVERY', 'On the way'], ['DELIVERED', 'Delivered'], ['ALL', 'All']] as const).map(
           ([key, label]) => (
             <TouchableOpacity
               key={key}
@@ -364,21 +390,23 @@ function ActionSheet({
               <Ionicons name="call-outline" size={16} color={QuinckleColors.textPrimary} />
               <Text style={styles.quickText}>Call</Text>
             </TouchableOpacity>
-            {order.address.latitude != null && order.address.longitude != null && (
-              // Deep link to the real Maps app — live traffic and voice nav for
-              // free, and it ships OTA (no native map dependency).
-              <TouchableOpacity
-                style={styles.quickBtn}
-                onPress={() =>
-                  Linking.openURL(
-                    `https://www.google.com/maps/dir/?api=1&destination=${order.address.latitude},${order.address.longitude}`,
-                  )
-                }
-              >
-                <Ionicons name="navigate-outline" size={16} color={QuinckleColors.textPrimary} />
-                <Text style={styles.quickText}>Navigate</Text>
-              </TouchableOpacity>
-            )}
+            {/* Deep link to the real Maps app — live traffic, voice nav and
+                offline maps for free, and it ships OTA because there is no
+                native map dependency. Coordinates when the diner dropped a pin
+                (exact), otherwise the typed address a phone order carries. */}
+            <TouchableOpacity
+              style={styles.quickBtn}
+              onPress={() => {
+                const { latitude, longitude } = order.address;
+                const dest = latitude != null && longitude != null
+                  ? `${latitude},${longitude}`
+                  : encodeURIComponent(oneLineAddress(order));
+                Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${dest}`);
+              }}
+            >
+              <Ionicons name="navigate-outline" size={16} color={QuinckleColors.textPrimary} />
+              <Text style={styles.quickText}>Directions</Text>
+            </TouchableOpacity>
           </View>
 
           {busy && <ActivityIndicator color={QuinckleColors.primary} style={{ marginVertical: Spacing.md }} />}
