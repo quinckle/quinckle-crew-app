@@ -58,6 +58,12 @@ export function buildZReportText(z: ZReport, paper: PaperProfile | number = 58):
   if (z.drawer.state === 'CLOSED') {
     L.push(`[L]${leftRight('Opening float', fmt(z.drawer.openingFloat), W)}`);
     L.push(`[L]${leftRight('Cash sales', fmt(z.drawer.cashSales), W)}`);
+    // Between cash sales and expected, because it is what explains the gap:
+    // a delivered COD order counts as a cash sale but the money is still with
+    // the rider. Omitted at zero so a non-delivery venue's slip is unchanged.
+    if ((z.drawer.cashWithRiders ?? 0) > 0) {
+      L.push(`[L]${leftRight('Less: with riders', `-${fmt(z.drawer.cashWithRiders ?? 0)}`, W)}`);
+    }
     L.push(`[L]${leftRight('Expected', fmt(z.drawer.expected), W)}`);
     L.push(`[L]${leftRight('Counted', fmt(z.drawer.counted), W)}`);
     const v = z.drawer.variance;

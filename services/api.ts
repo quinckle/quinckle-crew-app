@@ -1074,12 +1074,18 @@ export interface OpenShift {
     id: string; openingFloat: string | number; openedAt: string; openingNote?: string | null;
     openedBy?: { id: string; name: string } | null; movements: CashMovement[];
   };
-  aggregates: { cashSales: number; payIns: number; payOuts: number; expectedCash: number };
+  // cashWithRiders / riderSettlementsIn are optional: a backend deployed before
+  // delivery does not send them, and the drawer must render exactly as before.
+  aggregates: {
+    cashSales: number; payIns: number; payOuts: number; expectedCash: number;
+    cashWithRiders?: number; riderSettlementsIn?: number;
+  };
 }
 export interface ShiftCloseResult {
   id: string; openingFloat: string | number; countedCash: string | number;
   expectedCash: number; cashSalesTotal: number; variance: number;
   cashSales: number; payIns: number; payOuts: number; openedAt: string; closedAt: string;
+  cashWithRiders?: number; riderSettlementsIn?: number;
 }
 
 export interface ZReport {
@@ -1088,7 +1094,7 @@ export interface ZReport {
   sales: { orders: number; sessions: number; grossSales: number; discounts: number; gstCollected: number; netSales: number };
   adjustments: { voidCount: number; voidAmount: number; compCount: number; compAmount: number };
   drawer:
-    | { state: 'CLOSED'; openingFloat: number; cashSales: number; expected: number; counted: number; variance: number; openedAt: string; closedAt: string }
+    | { state: 'CLOSED'; openingFloat: number; cashSales: number; cashWithRiders?: number; expected: number; counted: number; variance: number; openedAt: string; closedAt: string }
     | { state: 'OPEN'; openingFloat: number; openedAt: string }
     | { state: 'NONE' };
 }

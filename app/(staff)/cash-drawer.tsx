@@ -89,6 +89,9 @@ export default function CashDrawer() {
           {result && (
             <View style={[styles.card, { borderColor: QuinckleColors.successBorder, backgroundColor: QuinckleColors.successSoft, marginBottom: Spacing.lg }]}>
               <Text style={styles.cardTitle}>Drawer closed</Text>
+              {(result.cashWithRiders ?? 0) > 0 && (
+                <Row label="Less: cash with riders" value={`−${inr(result.cashWithRiders ?? 0)}`} tone="warning" />
+              )}
               <Row label="Expected in drawer" value={inr(result.expectedCash)} />
               <Row label="Counted" value={inr(result.countedCash)} />
               <View style={styles.divider} />
@@ -129,6 +132,14 @@ export default function CashDrawer() {
                 <Row label="Cash sales" value={inr(agg?.cashSales ?? 0)} />
                 <Row label="Cash in (pay-ins)" value={`+${inr(agg?.payIns ?? 0)}`} tone={(agg?.payIns ?? 0) > 0 ? 'success' : undefined} />
                 <Row label="Cash out (pay-outs)" value={`−${inr(agg?.payOuts ?? 0)}`} tone={(agg?.payOuts ?? 0) > 0 ? 'danger' : undefined} />
+                {/* Money that is earned but not in the till. Shown live so the
+                    counter knows what is still out before counting. */}
+                {(agg?.cashWithRiders ?? 0) > 0 && (
+                  <Row label="With riders (not in drawer)" value={`−${inr(agg?.cashWithRiders ?? 0)}`} tone="warning" />
+                )}
+                {(agg?.riderSettlementsIn ?? 0) > 0 && (
+                  <Row label="Riders settled in" value={`+${inr(agg?.riderSettlementsIn ?? 0)}`} tone="success" />
+                )}
               </View>
 
               <View style={styles.actionRow}>

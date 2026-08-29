@@ -100,6 +100,14 @@ export default function ZReportScreen() {
               <>
                 <Row label="Opening float" value={inr(d.openingFloat)} />
                 <Row label="Cash sales" value={inr(d.cashSales)} />
+                {/* Sits between cash sales and expected because it is exactly
+                    what explains the gap: a delivered COD order counts as a cash
+                    sale, but the money is still in a rider's pocket. Hidden at
+                    zero, so a venue without delivery sees the report it always
+                    saw. */}
+                {(d.cashWithRiders ?? 0) > 0 && (
+                  <Row label="Less: cash with riders" value={`−${inr(d.cashWithRiders ?? 0)}`} tone="warning" />
+                )}
                 <Row label="Expected" value={inr(d.expected)} />
                 <Row label="Counted" value={inr(d.counted)} />
                 <View style={styles.divider} />
