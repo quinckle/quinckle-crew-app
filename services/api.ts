@@ -1130,6 +1130,100 @@ export const crewStock = {
     request<{ success: true; data: { newQty: number } }>('POST', `/api/crew/stock/${id}/wastage`, { qty, reason }, true),
 };
 
+// ── Delivery (crew panel) ─────────────────────────────────────────────────────
+// Gated on the backend by BOTH the DELIVERY capability and the per-venue
+// DELIVERY feature flag, so every call here 404s for a venue that has not been
+// switched on. The screen treats that 404 as "not enabled", not as an error.
+
+export type DeliveryStatus =
+  | 'PENDING' | 'ACCEPTED' | 'READY' | 'ASSIGNED'
+  | 'OUT_FOR_DELIVERY' | 'DELIVERED' | 'FAILED' | 'CANCELLED';
+
+export interface DeliveryAddress {
+  house_no: string;
+  line: string;
+  landmark: string | null;
+  floor: string | null;
+  pincode: string | null;
+  label: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  geo_source: string | null;
+  distance_km: number | null;
+}
+
+export interface DeliveryOrder {
+  id: string;
+  session_id: string;
+  session_ref: string | null;
+  order_token: string | null;
+  status: DeliveryStatus;
+  recipient_name: string;
+  recipient_phone: string;
+  address: DeliveryAddress;
+  delivery_note: string | null;
+  assigned_staff: { id: string; name: string } | null;
+  assigned_at: string | null;
+  departed_at: string | null;
+  delivered_at: string | null;
+  failure_reason: string | null;
+  cod_amount: number | null;
+  cod_settled_at: string | null;
+  payment_status: string | null;
+  final_total: number | null;
+  created_at: string | null;
+}
+
+export interface DeliveryRider { id: string; name: string; role?: string }
+export interface DeliveryFailureReasonOption { code: string; label: string }
+
+export interface CreateDeliveryBody {
+  recipientName: string;
+  recipientPhone: string;
+  houseNo: string;
+  addressLine: string;
+  landmark?: string;
+  floor?: string;
+  pincode?: string;
+  deliveryNote?: string;
+  customerName?: string;
+  customerPhone?: string;
+}
+
+export const crewDelivery = {
+  meta: () =>
+    request<{ success: true; data: { statuses: DeliveryStatus[]; failure_reasons: DeliveryFailureReasonOption[]; riders: DeliveryRider[] } }>(
+      'GET', '/api/crew/delivery/meta', undefined, true),
+
+  list: (status?: DeliveryStatus | null) => {
+    const q = status ? `?status=${encodeURIComponent(status)}` : '';
+    return request<{ success: true; data: DeliveryOrder[] }>('GET', `/api/crew/delivery/orders${q}`, undefined, true);
+  },
+
+  cashWithRiders: () =>
+    request<{ success: true; data: { total: number; riders: { staffId: string | null; name: string; amount: number; count: number }[] } }>(
+      'GET', '/api/crew/delivery/cash-with-riders', undefined, true),
+
+  create: (body: CreateDeliveryBody) =>
+    request<{ success: true; data: { session_id: string; session_ref: string; order_token: string | null; delivery_id: string } }>(
+      'POST', '/api/crew/delivery/session', body, true),
+
+  /**
+   * One endpoint for every lifecycle move — the backend state machine decides
+   * what is legal, so the UI never has to encode the rules twice.
+   */
+  setStatus: (
+    id: string,
+    status: DeliveryStatus,
+    extra?: { assignedStaffId?: string; failureReason?: string; collectedCash?: number },
+  ) =>
+    request<{ success: true; data: DeliveryOrder }>(
+      'POST', `/api/crew/delivery/${id}/status`, { status, ...(extra ?? {}) }, true),
+
+  settleCod: (id: string) =>
+    request<{ success: true; data: DeliveryOrder }>('POST', `/api/crew/delivery/${id}/settle-cod`, {}, true),
+};
+
 // ── Restaurant / Menu (public) ────────────────────────────────────────────────
 
 export interface ModifierOption { id: string; name: string; priceAdjustment: string; isAvailable?: boolean; }
@@ -1182,7 +1276,7 @@ export const restaurantApi = {
   // `channel` scopes the menu. Pass 'CREW' from the order screen to include
   // crew-only special charges (birthday fees etc.) alongside the dine-in menu.
   // Omit for the default DINE_IN diner view.
-  getMenu: (restaurantId: string, channel?: 'DINE_IN' | 'TAKEAWAY' | 'CREW') =>
+  getMenu: (restaurantId: string, channel?: 'DINE_IN' | 'TAKEAWAY' | 'CREW' | 'DELIVERY') =>
     request<{ success: true; data: MenuCategory[] }>('GET', `/api/v1/dine/menu/${restaurantId}${channel ? `?channel=${channel}` : ''}`),
 
   // Branding includes everything the Collection Sheet needs to render the

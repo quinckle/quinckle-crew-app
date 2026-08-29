@@ -61,6 +61,7 @@ import { TakeawaySkeleton } from '../../components/ui/TakeawaySkeleton';
 import { GiveDiscountModal } from '../../components/ui/GiveDiscountModal';
 import { useResponsive } from '../../hooks/useResponsive';
 import { expiryLevel, expiryColor, expiryChipStyle, type ExpiryLevel } from '../../constants/sessionExpiry';
+import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
 
 async function playSound(file: any) {
   try {
@@ -221,7 +222,7 @@ type PickupOrder = { id: string; tableNo: string; items: PickupItem[]; completed
 function mapCompletedOrder(order: any): PickupOrder {
   return {
     id: order.order_id,
-    tableNo: order.channel === 'TAKEAWAY' ? (order.pickup_token ?? 'TK') : `T${order.table_number}`,
+    tableNo: channelLocationLabel(order.channel, { token: order.pickup_token ?? 'TK', tableNumber: order.table_number }),
     completedAt: order.served_at ?? order.placed_at,
     items: order.items.map((item: any) => ({
       id: item.item_id,
@@ -1005,9 +1006,11 @@ export default function StaffDashboard() {
 
       // Simplified flow: show any order that has unserved items, regardless of
       // order status. Serving is always open — no kitchen pipeline gate.
-      // Takeaway has its own dedicated tab — keep this list dine-in only.
+      // Takeaway and delivery each have their own surface — keep this list
+      // dine-in only. Before this used `!== 'TAKEAWAY'`, which let delivery
+      // orders in and rendered them as "Tnull".
       const serveableOrders = allOrders.filter(o =>
-        o.channel !== 'TAKEAWAY' && o.items.some(i => !i.served)
+        !isOffPremise(o.channel) && o.items.some(i => !i.served)
       );
 
       // Notify staff the moment a brand-new order lands on the floor — they
@@ -1019,7 +1022,7 @@ export default function StaffDashboard() {
         Notifications.scheduleNotificationAsync({
           content: {
             title: '🔔 New Order',
-            body: newOrders.map(o => o.channel === 'TAKEAWAY' ? (o.pickup_token ?? 'TK') : `T${o.table_number}`).join(', ') + ' — ready to serve',
+            body: newOrders.map(o => channelLocationLabel(o.channel, { token: o.pickup_token ?? 'TK', tableNumber: o.table_number })).join(', ') + ' — ready to serve',
             sound: true,
           },
           trigger: null,
@@ -1038,7 +1041,7 @@ export default function StaffDashboard() {
         // the layout, can navigate without the floor screen's local state.
         const navByTable = new Map<number, ReadyNav>();
         for (const o of serveableOrders) {
-          if (o.channel === 'TAKEAWAY' || o.table_number == null) continue;
+          if (isOffPremise(o.channel) || o.table_number == null) continue;
           for (const it of o.items) {
             if (it.item_status === 'done' && !it.served && prevStatus.get(it.item_id) === 'pending') {
               readyByTable.set(o.table_number, (readyByTable.get(o.table_number) ?? 0) + 1);
@@ -1072,7 +1075,7 @@ export default function StaffDashboard() {
 
       const refreshedActive = serveableOrders.map(order => ({
         id: order.order_id,
-        tableNo: order.channel === 'TAKEAWAY' ? (order.pickup_token ?? 'TK') : `T${order.table_number}`,
+        tableNo: channelLocationLabel(order.channel, { token: order.pickup_token ?? 'TK', tableNumber: order.table_number }),
         items: order.items.map(item => ({
           id: item.item_id,
           // Bare name — PickupItemRow renders the quantity in its own column, so
@@ -1102,7 +1105,7 @@ export default function StaffDashboard() {
     try {
       const res = await crewOrders.getServedToday(page, 30);
       // Takeaway has its own dedicated tab — keep this list dine-in only.
-      const served = (res.orders ?? []).filter((o: any) => o.channel !== 'TAKEAWAY');
+      const served = (res.orders ?? []).filter((o: any) => !isOffPremise(o.channel));
       const mapped = served.map(mapCompletedOrder);
       if (page === 1) {
         setCompletedPickupOrders(mapped);

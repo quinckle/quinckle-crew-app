@@ -27,6 +27,7 @@ import { crewOrders, crewPayments, restaurantApi, type BillBreakdown, type Colle
 import { BillBreakdownView } from '../../components/ui/BillBreakdownView';
 import { playPaymentSuccess } from '../../services/sound';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
+import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
 
 function buildUpiUri(vpa: string, merchantName: string, amount: number): string {
   const enc = (v: string | number) => encodeURIComponent(String(v));
@@ -277,8 +278,8 @@ export default function PaymentCollectScreen() {
   const tableNumber   = Number(params.tableNumber ?? 0);
   const channel       = params.channel ?? 'DINE_IN';
   const pickupToken   = params.pickupToken ?? null;
-  const locationLabel = channel === 'TAKEAWAY'
-    ? (pickupToken ?? 'Takeaway')
+  const locationLabel = isOffPremise(channel)
+    ? (pickupToken ?? channelLabel(channel))
     : `Table ${tableNumber}`;
   const total         = Number(params.amount ?? 0);
   const customerName  = params.customerName && params.customerName.length > 0 ? params.customerName : null;

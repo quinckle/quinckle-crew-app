@@ -18,6 +18,7 @@ import { crewSessions, type LedgerSession, type LedgerSummary, type LedgerRange 
 import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { RangeCalendar } from '../../components/ui/RangeCalendar';
+import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
 
 // ── Filter options (mirror the partner Order Ledger) ──────────────────────────
 const RANGES: { key: LedgerRange; label: string }[] = [
@@ -395,7 +396,7 @@ function SessionCard({ session, onPress }: { session: LedgerSession; onPress: ()
   const isCancelled = (session.statusView ?? session.status) === 'CANCELLED';
   // A fully-voided session has ₹0 payable — show the struck original instead of "—".
   const struckTotal = isCancelled ? (session.cancelledValue ?? 0) : 0;
-  const isTakeaway = session.channel === 'TAKEAWAY';
+  const isTakeaway = isOffPremise(session.channel);
   // Same shape for both channels: a generic label up top, the specific
   // identifier (pickup token / table id) down next to the duration — makes
   // takeaway and dine-in cards read as one uniform layout.

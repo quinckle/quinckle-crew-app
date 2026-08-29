@@ -10,6 +10,7 @@ import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { ReasonChips } from '../../components/ui/ReasonSheet';
 import { useManagerApproval } from '../../components/ui/ManagerPinSheet';
 import { WAIVE_REASONS, isReasonComplete, toReasonPayload } from '../../constants/adjustmentReasons';
+import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
 
 function timeAgo(iso: string): string {
   const mins = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
@@ -103,7 +104,7 @@ export default function OutstandingScreen() {
       <View style={s.cardTop}>
         <View style={s.titleRow}>
           <Text style={s.table}>
-            {g.channel === 'TAKEAWAY' ? (g.pickupToken ?? 'TK') : `T${g.tableNumber || '—'}`}
+            {channelLocationLabel(g.channel, { token: g.pickupToken ?? 'TK', tableNumber: g.tableNumber })}
           </Text>
           {g.sessionClosed && (
             <View style={s.freedBadge}><Text style={s.freedBadgeText}>FREED</Text></View>

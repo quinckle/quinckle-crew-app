@@ -20,6 +20,7 @@ import { subscribeChannel } from '../../services/realtime';
 import { playPaymentSuccess } from '../../services/sound';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { CashCollectionSkeleton } from '../../components/ui/CashCollectionSkeleton';
+import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
 
 type Row =
   | { kind: 'sectionHeader'; title: string; subtitle: string }
@@ -61,7 +62,7 @@ function buildConfirmedRows(collected: CollectedCashRecord[]): Row[] {
 
   const groups = new Map<string, CollectedCashRecord[]>();
   for (const c of collected) {
-    const key = c.channel === 'TAKEAWAY' ? '__takeaway__' : `t${c.tableNumber || 0}`;
+    const key = isOffPremise(c.channel) ? `__${String(c.channel).toLowerCase()}__` : `t${c.tableNumber || 0}`;
     const bucket = groups.get(key);
     if (bucket) bucket.push(c); else groups.set(key, [c]);
   }
@@ -74,7 +75,7 @@ function buildConfirmedRows(collected: CollectedCashRecord[]): Row[] {
   const rows: Row[] = [head];
   for (const recs of ordered) {
     const first = recs[0];
-    const title = first.channel === 'TAKEAWAY' ? 'Takeaway' : `Table ${first.tableNumber || '—'}`;
+    const title = isOffPremise(first.channel) ? channelLabel(first.channel) : `Table ${first.tableNumber || '—'}`;
     const subtotal = recs.reduce((s, c) => s + c.amount, 0);
     rows.push({ kind: 'groupHeader', title, subtitle: `${recs.length} · ${inr(subtotal)}` });
     for (const c of recs) rows.push({ kind: 'collected', data: c });
@@ -414,7 +415,7 @@ export default function CashCollectionScreen() {
               // VPA (so the Collection Sheet QR works), so presence of p.upi.vpa
               // no longer implies UPI Direct — staff-collect has it too.
               const isUpiDirect = methodRaw.includes('UPI');
-              const isTakeaway = p.channel === 'TAKEAWAY';
+              const isTakeaway = isOffPremise(p.channel);
               const intentBusy = !!(p.intentId && intentBusyIds.has(p.intentId));
               const orderBusy = collectingIds.has(p.orderId);
               const menuOpen = openMenuOrderId === p.orderId;
@@ -544,7 +545,7 @@ export default function CashCollectionScreen() {
             // collected row — grouped under its table/takeaway header, so the
             // row leads with the payment method (the table is in the header).
             const c = item.data;
-            const cIsTakeaway = c.channel === 'TAKEAWAY';
+            const cIsTakeaway = isOffPremise(c.channel);
             const cMethodLabel = String(c.method).toLowerCase() === 'upi_direct' ? 'UPI Direct' : 'Cash';
             const cLabel = cIsTakeaway
               ? `${c.pickupToken ?? 'Takeaway'} · ${cMethodLabel}`

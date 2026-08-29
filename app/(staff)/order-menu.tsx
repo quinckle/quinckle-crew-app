@@ -37,6 +37,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useResponsive } from '../../hooks/useResponsive';
 import { useAuth } from '../../context/AuthContext';
 import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
+import { normalizeChannel, isOffPremise, channelLabel } from '../../constants/channel';
 import {
   crewSessions, crewOrders, crewDiners, crewMemberships, restaurantApi, crewOffers,
 } from '../../services/api';
@@ -452,7 +453,12 @@ export default function OrderMenuScreen() {
     pickupToken: string;
   }>();
 
-  const isTakeaway = paramChannel === 'TAKEAWAY';
+  // Off-premise covers TAKEAWAY *and* DELIVERY — both are tableless and both
+  // take the packed-food price. `channel` is kept exact where it matters (the
+  // menu fetch below), because a delivery order must load the DELIVERY menu.
+  const channel = normalizeChannel(paramChannel);
+  const isTakeaway = isOffPremise(channel);
+  const orderLabel = channelLabel(channel);
   const pickupToken = paramPickupToken || null;
   const tableNum = paramTableNum ?? String(tableId ?? '').padStart(2, '0');
 
@@ -524,7 +530,10 @@ export default function OrderMenuScreen() {
   useEffect(() => {
     const rid = staffInfo?.restaurantId;
     if (!rid) return;
-    const channel = isTakeaway ? 'TAKEAWAY' : 'CREW';
+    // DINE_IN uses the CREW catalogue (dine-in items + staff special charges);
+    // off-premise channels use their own, so a delivery order gets exactly the
+    // items the owner marked deliverable.
+    const menuChannel = isTakeaway ? channel : 'CREW';
     let cancelled = false;
     let freshLanded = false;
 
@@ -538,7 +547,7 @@ export default function OrderMenuScreen() {
     };
 
     setIsMenuLoading(true);
-    readCache<any[]>(cacheKeys.crewOrderMenu(rid, channel)).then(cats => {
+    readCache<any[]>(cacheKeys.crewOrderMenu(rid, menuChannel)).then(cats => {
       if (!cancelled && !freshLanded && cats?.length) applyMenu(cats);
     });
 
@@ -546,10 +555,10 @@ export default function OrderMenuScreen() {
     // that diners never see but staff can add to a bill.
     // Takeaway sessions get the TAKEAWAY menu so per-channel availability is
     // respected (CREW-only special charges stay dine-in).
-    restaurantApi.getMenu(rid, channel)
+    restaurantApi.getMenu(rid, menuChannel)
       .then(res => {
         const cats: any[] = (res as any)?.data ?? [];
-        writeCache(cacheKeys.crewOrderMenu(rid, channel), cats);
+        writeCache(cacheKeys.crewOrderMenu(rid, menuChannel), cats);
         if (cancelled) return;
         freshLanded = true;
         applyMenu(cats);
@@ -572,7 +581,7 @@ export default function OrderMenuScreen() {
       .catch(() => {});
 
     return () => { cancelled = true; };
-  }, [staffInfo?.restaurantId, sessionId, isTakeaway]);
+  }, [staffInfo?.restaurantId, sessionId, isTakeaway, channel]);
 
   // ── Cart helpers — identity-stable so MenuItemRow's React.memo holds ───────
   const addToCart = useCallback((itemId: string, mods?: { groupId: string; optionId: string }[]) => {
@@ -885,7 +894,7 @@ export default function OrderMenuScreen() {
             params: {
               orderId,
               tableNumber: String(tableId ?? 0),
-              channel: 'TAKEAWAY',
+              channel,
               pickupToken: pickupToken ?? '',
               amount: String(orderTotal),
               customerName: guestName ?? '',
@@ -986,7 +995,7 @@ export default function OrderMenuScreen() {
               </Animated.View>
               <Text style={styles.placedTitle}>Order placed</Text>
               <Text style={styles.placedSub}>
-                {isTakeaway ? (pickupToken ?? 'Takeaway') : `Table T${tableNum}`} · ₹{placed.amount.toFixed(0)}
+                {isTakeaway ? (pickupToken ?? orderLabel) : `Table T${tableNum}`} · ₹{placed.amount.toFixed(0)}
               </Text>
               <Text style={styles.placedHint}>Opening payment collection…</Text>
             </Animated.View>
@@ -1238,9 +1247,9 @@ export default function OrderMenuScreen() {
         <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
       </TouchableOpacity>
       <View style={{ flex: 1 }}>
-        <Text style={styles.headerTitle}>{isTakeaway ? 'New Takeaway Order' : 'Add Items'}</Text>
+        <Text style={styles.headerTitle}>{isTakeaway ? `New ${orderLabel} Order` : 'Add Items'}</Text>
         <Text style={[styles.headerSub, isTakeaway && { color: QuinckleColors.primary, fontWeight: '700' }]}>
-          {isTakeaway ? `TAKEAWAY${pickupToken ? ` · ${pickupToken}` : ''}` : `Table T${tableNum}`}
+          {isTakeaway ? `${orderLabel.toUpperCase()}${pickupToken ? ` · ${pickupToken}` : ''}` : `Table T${tableNum}`}
         </Text>
       </View>
       {cartCount > 0 && (

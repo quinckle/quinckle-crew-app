@@ -54,6 +54,7 @@ export default function StaffLayout() {
         <Stack.Screen name="cash-ledger" />
         <Stack.Screen name="order-ledger" />
         <Stack.Screen name="order-detail" />
+        <Stack.Screen name="delivery" />
       </Stack>
 
       <ItemReadyToast

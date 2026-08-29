@@ -46,6 +46,17 @@ const GROUPS: Group[] = [
     ],
   },
   {
+    // Delivery is rolling out venue-by-venue behind a feature flag. This row is
+    // capability-gated only: a staffer at a venue without the flag who somehow
+    // holds DELIVERY sees the row and the screen explains it isn't switched on,
+    // which is friendlier than a silently missing menu item. Capability checks
+    // here are UX only anyway — the backend enforces both gates.
+    title: 'Delivery',
+    rows: [
+      { label: 'Deliveries', sub: 'Orders, riders & rider cash', icon: 'bicycle-outline', route: '/(staff)/delivery', cap: CAP.DELIVERY },
+    ],
+  },
+  {
     title: 'Menu & catalog',
     rows: [
       { label: 'Menu & combos', sub: 'Items, prices & combos', icon: 'restaurant-outline', route: '/(staff)/menu', cap: CAP.MENU_EDIT },
