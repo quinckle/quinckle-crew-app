@@ -1,6 +1,7 @@
 import { API_BASE_URL } from '../constants/env';
 import type { CancelReason } from '../constants/adjustmentReasons';
 import type { LivenessTelemetry } from './face';
+import type { Channel } from '../constants/channel';
 
 let _crewToken: string | null = null;
 let _on401: (() => void) | null = null;
@@ -187,7 +188,7 @@ export const devApi = {
 // ── Kitchen (CHEF) ────────────────────────────────────────────────────────────
 
 export interface KitchenTicketItem { item_id: string; name: string; qty: number; note: string | null; modifiers_summary?: string | null; item_status: 'pending' | 'done'; }
-export interface KitchenTicket { order_id: string; table_number: number; status: 'received' | 'preparing'; channel?: 'DINE_IN' | 'TAKEAWAY'; pickup_token?: string | null; session_ref?: string | null; placed_at: string; items: KitchenTicketItem[]; }
+export interface KitchenTicket { order_id: string; table_number: number; status: 'received' | 'preparing'; channel?: Channel; pickup_token?: string | null; session_ref?: string | null; placed_at: string; items: KitchenTicketItem[]; }
 export interface KitchenCompletedPage { tickets: KitchenTicket[]; page: number; limit: number; hasMore: boolean; }
 
 export const kitchen = {
@@ -498,7 +499,7 @@ export interface LedgerSession {
   sessionRef?: string;
   shortId: string;
   tableNumber: number | null;
-  channel?: 'DINE_IN' | 'TAKEAWAY';
+  channel?: Channel;
   pickupToken?: string | null;
   status: string;
   statusView?: 'PAID' | 'OPEN' | 'CASH_PENDING' | 'CLOSED' | 'CANCELLED';
@@ -606,7 +607,7 @@ export const crewSessions = {
     sessionRef?: string;
     status?: string;
     method?: string;
-    channel?: 'DINE_IN' | 'TAKEAWAY' | 'all';
+    channel?: Channel | 'all';
     page?: number;
     limit?: number;
   } = {}): Promise<LedgerResponse> => {
@@ -671,7 +672,7 @@ export const crewMemberships = {
 // ── Crew Orders (STEWARD/ADMIN) ───────────────────────────────────────────────
 
 export interface ActiveOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; served_qty?: number; }
-export interface ActiveOrder { order_id: string; table_number: number; channel?: 'DINE_IN' | 'TAKEAWAY'; pickup_token?: string | null; session_id: string; status: 'received' | 'preparing' | 'ready' | 'served'; placed_at: string; served_at?: string; items: ActiveOrderItem[]; }
+export interface ActiveOrder { order_id: string; table_number: number; channel?: Channel; pickup_token?: string | null; session_id: string; status: 'received' | 'preparing' | 'ready' | 'served'; placed_at: string; served_at?: string; items: ActiveOrderItem[]; }
 
 export interface TakeawayOrder {
   orderId: string;
@@ -864,7 +865,7 @@ export interface PendingCashRequest {
   intentMethod?: 'STAFF_COLLECT' | 'UPI_DIRECT';
   sessionId: string;
   tableNumber: number;
-  channel?: 'DINE_IN' | 'TAKEAWAY';
+  channel?: Channel;
   pickupToken?: string | null;
   amount: number;
   upi?: { vpa: string; displayName: string | null } | null;
@@ -883,7 +884,7 @@ export interface CollectedCashRecord {
   orderId: string;
   sessionId: string;
   tableNumber: number;
-  channel?: 'DINE_IN' | 'TAKEAWAY';
+  channel?: Channel;
   pickupToken?: string | null;
   amount: number;
   method: 'CASH' | 'UPI_DIRECT';
@@ -901,7 +902,7 @@ export interface CashRequestsResponse {
 export interface OutstandingGroup {
   sessionId: string;
   tableNumber: number;
-  channel?: 'DINE_IN' | 'TAKEAWAY';
+  channel?: Channel;
   pickupToken?: string | null;
   /** True when the table was already freed but money is still owed. */
   sessionClosed: boolean;
@@ -1383,7 +1384,7 @@ export const printerApi = {
       orderNumber?: string | number;
       sessionId: string;
       tableNumber: number;
-      channel?: 'DINE_IN' | 'TAKEAWAY';
+      channel?: Channel;
       pickupToken?: string | null;
       sessionRef?: string | null;
       partyGroupLabel?: string | null;

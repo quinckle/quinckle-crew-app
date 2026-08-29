@@ -10,6 +10,7 @@
  */
 
 import { profileFromWidth, type PaperProfile } from './paperProfile';
+import { isOffPremise, channelLabel } from '../constants/channel';
 
 export interface KotItem {
   name: string;
@@ -33,7 +34,7 @@ export interface KotOrder {
   items: KotItem[];
   isAddOn?: boolean;
   isUrgent?: boolean;
-  channel?: 'DINE_IN' | 'TAKEAWAY';
+  channel?: 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY';
   pickupToken?: string;
 }
 
@@ -84,9 +85,14 @@ export function buildKotText(order: KotOrder, paper: PaperProfile | number = 58)
   lines.push(`[C]${D}`);
 
   // ── Table / Takeaway + Order # ─────────────────────────────────────────────
-  if (order.channel === 'TAKEAWAY' && order.pickupToken) {
+  // Off-premise covers takeaway AND delivery. Before this, a delivery order fell
+  // into the dine-in branch and the kitchen got a ticket reading "Tundefined".
+  if (isOffPremise(order.channel) && order.pickupToken) {
     lines.push(`[C]<b><font size="big">${order.pickupToken}</font></b>`);
-    lines.push('[C]Takeaway');
+    lines.push(`[C]${channelLabel(order.channel)}`);
+  } else if (isOffPremise(order.channel)) {
+    // Tokenless off-premise order — still must not claim to be a table.
+    lines.push(`[C]<b><font size="big">${channelLabel(order.channel).toUpperCase()}</font></b>`);
   } else {
     lines.push(`[C]<b><font size="big">T${String(order.tableNumber).padStart(2, '0')}</font></b>`);
     lines.push('[C]Dine In');

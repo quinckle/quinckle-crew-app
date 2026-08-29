@@ -9,6 +9,7 @@
  */
 
 import { profileFromWidth, type PaperProfile } from './paperProfile';
+import { isOffPremise, channelLabel } from '../constants/channel';
 
 export interface InvoiceItem {
   name: string;
@@ -33,8 +34,9 @@ export interface InvoiceBill {
   /** Khata: the customer the pay-later amount is recorded under. */
   customerName?: string | null;
   tableNumber: number | string;
-  /** DINE_IN (default) prints "Table TNN"; TAKEAWAY prints the takeaway header + pickup token. */
-  channel?: 'DINE_IN' | 'TAKEAWAY';
+  /** DINE_IN (default) prints "Table TNN"; off-premise channels print their own
+   *  banner + order token. */
+  channel?: 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY';
   pickupToken?: string | null;
   /** Sequential tax-invoice number (e.g. "INV/2026-27/000123"). Printed in place of the internal session ref when present. */
   invoiceNumber?: string | null;
@@ -197,8 +199,8 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   lines.push(`[C]<b><font size="big">${bill.restaurantName}</font></b>`);
   lines.push(`[C]${D}`);
   lines.push(bill.gstRegistered ? '[C]<b>TAX INVOICE</b>' : '[C]<b>BILL</b>');
-  if (bill.channel === 'TAKEAWAY') {
-    lines.push('[C]<b>*** TAKEAWAY ***</b>');
+  if (isOffPremise(bill.channel)) {
+    lines.push(`[C]<b>*** ${channelLabel(bill.channel).toUpperCase()} ***</b>`);
     if (bill.pickupToken) {
       lines.push(`[C]<b><font size="big">${bill.pickupToken}</font></b>`);
     }
@@ -356,7 +358,7 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   lines.push(`[L]${d}`);
   // Owner's custom thank-you line overrides the channel default when configured.
   const thankYou = bill.thankYouMessage?.trim()
-    || (bill.channel === 'TAKEAWAY' ? 'Thank you for your order.' : 'Thank you for dining with us.');
+    || (isOffPremise(bill.channel) ? 'Thank you for your order.' : 'Thank you for dining with us.');
   for (const ln of wrapText(thankYou, W)) lines.push(`[C]${ln}`);
   // Owner's custom free-text footer note (e.g. "No returns on cooked food",
   // "WiFi: guest123"), printed below the thank-you line when set.
