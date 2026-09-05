@@ -91,6 +91,28 @@ export interface InvoiceBill {
   /** Owner's custom free-text footer note (Bill Settings), printed below the
    *  thank-you line. Word-wrapped to the paper width. */
   footerNote?: string | null;
+  /** Loyalty bill nudge (LOYALTY_POINTS_PLAN.md §2.1, §8.6). Comes verbatim
+   *  from Session.loyaltySnapshot via finalize-invoice — a SNAPSHOT taken when
+   *  the points were earned, never recomputed here. Absent/null for every
+   *  restaurant without an active loyalty program, in which case the block
+   *  simply does not print. */
+  loyalty?: LoyaltyNudge | null;
+}
+
+/** Mirror of the backend's LoyaltyBillSnapshot (services/loyalty/bill-nudge.service.ts).
+ *  Every field is treated as possibly-absent: old sessions were snapshotted by
+ *  earlier versions, and a bill must still print if the shape is unfamiliar. */
+export interface LoyaltyNudge {
+  pointsEarned?: number;
+  balanceAfter?: number;
+  pointsLabel?: string;
+  nextGoal?: {
+    name: string;
+    gap: number;
+    target: number;
+    kind: 'REWARD' | 'TIER';
+    ready: boolean;
+  } | null;
 }
 
 /**
@@ -163,6 +185,63 @@ function wrapText(text: string, width: number): string[] {
   }
   if (cur) out.push(cur);
   return out.length ? out : [text];
+}
+
+/**
+ * The three loyalty lines (LOYALTY_POINTS_PLAN.md §2.1) — the highest
+ * impact-to-effort feature in the plan, and the one thing a bolt-on loyalty
+ * vendor physically cannot do without deep POS integration.
+ *
+ *     Rewards
+ *     Points earned this visit      +42
+ *     Your points balance           138
+ *     120 more -> Free Cappuccino
+ *     [######----] 53%
+ *
+ * Everything here is READ from the snapshot, never computed from today's
+ * catalog (§7.7): a reprint issued after the reward was renamed or repriced
+ * must still show what was true at the time of sale.
+ *
+ * Returns [] when there is nothing worth saying, so the caller prints no
+ * divider and no heading either.
+ */
+function loyaltyLines(nudge: LoyaltyNudge, W: number): string[] {
+  const earned = Math.max(0, Math.trunc(nudge.pointsEarned ?? 0));
+  const balance = Math.max(0, Math.trunc(nudge.balanceAfter ?? 0));
+
+  // Nothing earned and nothing banked — printing "+0 / 0" is noise, not a nudge.
+  if (earned <= 0 && balance <= 0) return [];
+
+  // The owner renames points ("beans", "stars"); the snapshot carries the label
+  // that was in force at the time of sale.
+  const rawLabel = (nudge.pointsLabel ?? 'points').trim() || 'points';
+  const Label = rawLabel.charAt(0).toUpperCase() + rawLabel.slice(1);
+
+  const out: string[] = [];
+  out.push(`[C]<b>Rewards</b>`);
+  if (earned > 0) out.push(`[L]${leftRight(`${Label} earned this visit`, `+${earned}`, W)}`);
+  out.push(`[L]${leftRight(`Your ${rawLabel} balance`, String(balance), W)}`);
+
+  const goal = nudge.nextGoal;
+  if (goal && goal.name) {
+    if (goal.ready) {
+      for (const ln of wrapText(`Ready to redeem: ${goal.name}`, W)) out.push(`[L]${ln}`);
+    } else if (goal.gap > 0) {
+      for (const ln of wrapText(`${goal.gap} more -> ${goal.name}`, W)) out.push(`[L]${ln}`);
+      // Progress reads identically for both goal kinds because gap is always
+      // (target - current): a REWARD measures balance against its cost, a TIER
+      // measures lifetime earned against its threshold. Guard the divide — a
+      // malformed snapshot must not print "NaN%" on a customer's bill.
+      if (goal.target > 0 && goal.gap <= goal.target) {
+        const barW = Math.min(20, Math.max(8, W - 8));
+        const pct = Math.max(0, Math.min(100, Math.round(((goal.target - goal.gap) / goal.target) * 100)));
+        const filled = Math.round((pct / 100) * barW);
+        out.push(`[L][${'#'.repeat(filled)}${'-'.repeat(barW - filled)}] ${pct}%`);
+      }
+    }
+  }
+
+  return out;
 }
 
 function formatDateTime(iso: string): string {
@@ -352,6 +431,17 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
       : `[C]<b>Scan to pay ${fmt(bill.grandTotal)}</b>`);
     lines.push('[C] '); // breathing room between the heading and the QR
     lines.push(`[C]<qrcode size='${profile.qrSize}'>${upiString}</qrcode>`);
+  }
+
+  // ── Loyalty nudge (§2.1) ──────────────────────────────────────────────────
+  // Prints only for restaurants running an active program, and only when the
+  // diner actually has something to be told.
+  if (bill.loyalty) {
+    const nudge = loyaltyLines(bill.loyalty, W);
+    if (nudge.length > 0) {
+      lines.push(`[L]${d}`);
+      for (const ln of nudge) lines.push(ln);
+    }
   }
 
   // ── Footer ────────────────────────────────────────────────────────────────
