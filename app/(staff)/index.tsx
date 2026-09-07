@@ -21,7 +21,7 @@ import QRCode from 'react-native-qrcode-svg';
 
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
-import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewTakeaway, restaurantApi, printerApi, type ClosedSessionInfo } from '../../services/api';
+import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewTakeaway, crewDelivery, restaurantApi, printerApi, type ClosedSessionInfo } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { invalidateCache } from '../../services/dataCache';
 import { printKot, printBill, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
@@ -59,6 +59,8 @@ import { TableSkeleton } from '../../components/ui/TableSkeleton';
 import { MenuSkeleton } from '../../components/ui/MenuSkeleton';
 import { TakeawaySkeleton } from '../../components/ui/TakeawaySkeleton';
 import { GiveDiscountModal } from '../../components/ui/GiveDiscountModal';
+import { DeliveryBoard } from '../../components/delivery/DeliveryBoard';
+import { CAP } from '../../constants/capabilities';
 import { useResponsive } from '../../hooks/useResponsive';
 import { expiryLevel, expiryColor, expiryChipStyle, type ExpiryLevel } from '../../constants/sessionExpiry';
 import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
@@ -110,7 +112,7 @@ Notifications.setNotificationHandler({
   },
 });
 
-type NavItem = 'tables' | 'menu' | 'orders' | 'takeaway';
+type NavItem = 'tables' | 'menu' | 'orders' | 'takeaway' | 'delivery';
 type TableStatus = 'available' | 'occupied' | 'offline';
 
 type Table = {
@@ -249,7 +251,7 @@ const STATUS_META: Record<TableStatus, { label: string; color: string }> = {
 
 export default function StaffDashboard() {
   const insets = useSafeAreaInsets();
-  const { staffInfo } = useAuth();
+  const { staffInfo, can } = useAuth();
   const { width: winWidth, isTablet, isWide } = useResponsive();
   // Table grid columns: phones stay 2-up; tablets scale with width (target
   // ~240dp per card) so landscape fills the screen instead of leaving 2 wide
@@ -257,6 +259,25 @@ export default function StaffDashboard() {
   const tableColumns = isTablet ? Math.max(3, Math.floor(winWidth / 240)) : 2;
   const tableCellWidth = `${(100 - 2 * (tableColumns - 1)) / tableColumns}%` as `${number}%`;
   const [activeTab, setActiveTab] = useState<NavItem>('tables');
+  // Delivery is a channel on the navbar, not a row in the burger menu — but
+  // only at venues where it is actually switched on. `can` answers yes when the
+  // capability list is unknown (older backend / restored session), so the
+  // capability alone would put a dead tab on every venue's navbar; one cheap
+  // probe settles it, since every delivery route 404s where it is off.
+  const canDelivery = can(CAP.DELIVERY);
+  const [deliveryOn, setDeliveryOn] = useState(false);
+  useEffect(() => {
+    if (!canDelivery) { setDeliveryOn(false); return; }
+    let alive = true;
+    crewDelivery.meta()
+      .then(() => { if (alive) setDeliveryOn(true); })
+      .catch(() => { if (alive) setDeliveryOn(false); });
+    return () => { alive = false; };
+  }, [canDelivery]);
+  // Don't strand the staffer on a tab that just disappeared from the navbar.
+  useEffect(() => {
+    if (!deliveryOn) setActiveTab((t) => (t === 'delivery' ? 'tables' : t));
+  }, [deliveryOn]);
   const [filterVisible, setFilterVisible] = useState(false);
   // Tapping a free table starts the session immediately — no confirm modal.
   // Long-press is already "mark offline" (see handleLongPress), so a single
@@ -2715,6 +2736,12 @@ export default function StaffDashboard() {
           />
           )}
         </View>
+      ) : activeTab === 'delivery' ? (
+        <View style={styles.tabContent}>
+          {/* The whole delivery board, framed as a tab: the dashboard keeps its
+              top bar and side padding, the board brings the rest. */}
+          <DeliveryBoard embedded />
+        </View>
       ) : null}
 
       {/* End-of-service multi-select action bar — floats above the navbar. */}
@@ -2756,6 +2783,11 @@ export default function StaffDashboard() {
           { key: 'orders' as NavItem, label: 'Orders', icon: 'receipt-outline', iconActive: 'receipt' },
           { key: 'tables' as NavItem, label: 'Tables', icon: 'grid-outline', iconActive: 'grid' },
           { key: 'takeaway' as NavItem, label: 'Takeaway', icon: 'bag-handle-outline', iconActive: 'bag-handle' },
+          // Delivery sits beside the other two off-premise channels, not five
+          // taps away behind the burger menu.
+          ...(deliveryOn
+            ? [{ key: 'delivery' as NavItem, label: 'Delivery', icon: 'bicycle-outline' as const, iconActive: 'bicycle' as const }]
+            : []),
           { key: 'menu' as NavItem, label: 'Menu', icon: 'restaurant-outline', iconActive: 'restaurant' },
         ]}
       />

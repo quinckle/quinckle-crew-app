@@ -9,7 +9,7 @@ import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { crewSessions, crewTables, crewOrders, restaurantApi, printerApi } from '../../services/api';
 import type { SessionBill, BillOrderItem, BillOrder } from '../../services/api';
 import { printBill, printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
-import type { InvoiceBill } from '../../services/invoiceTemplate';
+import type { InvoiceBill, LoyaltyNudge } from '../../services/invoiceTemplate';
 import { useAuth } from '../../context/AuthContext';
 import { useCountdown } from '../../hooks/useCountdown';
 import { expiryLevel, expiryColor, expiryChipStyle } from '../../constants/sessionExpiry';
@@ -774,12 +774,18 @@ export default function TableDetail() {
       }
 
       let invoiceNumber = sessionInvoiceNumber;
+      // The loyalty snapshot rides on the same response as the invoice number.
+      // Null whenever the venue runs no programme, or the bill has not been
+      // paid yet — the nudge is written at payment capture, so a bill printed
+      // before settlement legitimately has nothing to show.
+      let loyalty: LoyaltyNudge | null = null;
       if (finalizeRes.status === 'fulfilled') {
         invoiceNumber = finalizeRes.value.data.invoice_number;
+        loyalty = finalizeRes.value.data.loyalty ?? null;
         setSessionInvoiceNumber(invoiceNumber);
       }
 
-      return { invoiceMeta, invoiceNumber };
+      return { invoiceMeta, invoiceNumber, loyalty };
     })();
 
     // upiOmitAmount = true → static restaurant QR (diner types amount);
@@ -788,7 +794,7 @@ export default function TableDetail() {
       // Usually resolved already (prep ran while the QR sheet was up), so the
       // preparing phase is a flash at most.
       setPrintJob({ phase: 'preparing', label: 'Invoice' });
-      const { invoiceMeta, invoiceNumber } = await prep;
+      const { invoiceMeta, invoiceNumber, loyalty } = await prep;
       setPrintJob({ phase: 'printing', label: 'Invoice' });
       const result = await printBill({
         restaurantName: staffInfo?.restaurantName ?? '',
@@ -826,6 +832,7 @@ export default function TableDetail() {
         generatedAt: new Date().toISOString(),
         thankYouMessage: invoiceMeta?.billThankYouMsg ?? null,
         footerNote: invoiceMeta?.billFooterNote ?? null,
+        loyalty,
       });
 
       if (result === 'failed') {

@@ -28,6 +28,9 @@ type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 type Row = { label: string; sub: string; icon: IoniconName; route: string; cap?: Capability };
 type Group = { title: string; rows: Row[] };
 
+// Delivery is deliberately NOT here: it is a bottom-nav tab on the dashboard
+// (beside Orders, Tables and Takeaway), because a live order board is something
+// staff watch, not something they navigate to.
 const GROUPS: Group[] = [
   {
     title: 'Service',
@@ -43,17 +46,6 @@ const GROUPS: Group[] = [
       { label: 'Cash ledger', sub: 'Every cash movement', icon: 'swap-vertical-outline', route: '/(staff)/cash-ledger', cap: CAP.CASH_DRAWER },
       { label: 'Day-end report', sub: 'Z-report for the shift', icon: 'document-text-outline', route: '/(staff)/z-report', cap: CAP.CASH_DRAWER },
       { label: 'Dues', sub: 'Khata & udhaar', icon: 'book-outline', route: '/(staff)/dues', cap: CAP.DUES },
-    ],
-  },
-  {
-    // Delivery is rolling out venue-by-venue behind a feature flag. This row is
-    // capability-gated only: a staffer at a venue without the flag who somehow
-    // holds DELIVERY sees the row and the screen explains it isn't switched on,
-    // which is friendlier than a silently missing menu item. Capability checks
-    // here are UX only anyway — the backend enforces both gates.
-    title: 'Delivery',
-    rows: [
-      { label: 'Deliveries', sub: 'Orders, riders & rider cash', icon: 'bicycle-outline', route: '/(staff)/delivery', cap: CAP.DELIVERY },
     ],
   },
   {

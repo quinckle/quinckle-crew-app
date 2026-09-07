@@ -1,3 +1,4 @@
+import type { LoyaltyNudge } from './invoiceTemplate';
 import { API_BASE_URL } from '../constants/env';
 import type { CancelReason } from '../constants/adjustmentReasons';
 import type { LivenessTelemetry } from './face';
@@ -567,7 +568,19 @@ export const crewSessions = {
     ),
   /** Assign (or fetch the existing) sequential tax-invoice number. Idempotent. */
   finalizeInvoice: (sessionId: string) =>
-    request<{ success: boolean; data: { invoice_number: string; financial_year: string; issued_at: string } }>(
+    request<{
+      success: boolean;
+      data: {
+        invoice_number: string;
+        financial_year: string;
+        issued_at: string;
+        // Loyalty bill nudge (LOYALTY_POINTS_PLAN.md §2.1). Rides on this call
+        // because the print path already awaits it. Null for any venue without
+        // an active programme, and for any session that has not been paid yet —
+        // the snapshot is written when points are earned, at payment capture.
+        loyalty?: LoyaltyNudge | null;
+      };
+    }>(
       'POST', `/api/crew/sessions/${sessionId}/finalize-invoice`, undefined, true
     ),
 
@@ -1142,9 +1155,17 @@ export const crewStock = {
 // DELIVERY feature flag, so every call here 404s for a venue that has not been
 // switched on. The screen treats that 404 as "not enabled", not as an error.
 
+/**
+ * Four stages — DELIVERY_V2_PLAN.md §2.
+ *
+ *   NEW → OUT → DELIVERED → CLOSED,  with CANCELLED and FAILED as the exits.
+ *
+ * DELIVERED means the door is closed and the bill is settled; the cash (if any
+ * was taken at the door) is still on the rider. CLOSED means it came back — or
+ * that none ever left, which is why a prepaid order lands there directly.
+ */
 export type DeliveryStatus =
-  | 'PENDING' | 'ACCEPTED' | 'READY' | 'ASSIGNED'
-  | 'OUT_FOR_DELIVERY' | 'DELIVERED' | 'FAILED' | 'CANCELLED';
+  | 'NEW' | 'OUT' | 'DELIVERED' | 'CLOSED' | 'FAILED' | 'CANCELLED';
 
 export interface DeliveryAddress {
   house_no: string;
@@ -1177,12 +1198,16 @@ export interface DeliveryOrder {
   cod_amount: number | null;
   cod_settled_at: string | null;
   payment_status: string | null;
+  /** Orders on this session that still owe money — what the payment sheet settles. */
+  unpaid_order_ids?: string[];
   final_total: number | null;
   created_at: string | null;
 }
 
 export interface DeliveryRider { id: string; name: string; role?: string }
 export interface DeliveryFailureReasonOption { code: string; label: string }
+/** Coded VOID reasons, served by the backend so the panel never invents one. */
+export interface DeliveryCancelReasonOption { code: string; label: string }
 
 export interface CreateDeliveryBody {
   recipientName: string;
@@ -1199,8 +1224,12 @@ export interface CreateDeliveryBody {
 
 export const crewDelivery = {
   meta: () =>
-    request<{ success: true; data: { statuses: DeliveryStatus[]; failure_reasons: DeliveryFailureReasonOption[]; riders: DeliveryRider[] } }>(
-      'GET', '/api/crew/delivery/meta', undefined, true),
+    request<{ success: true; data: {
+      statuses: DeliveryStatus[];
+      failure_reasons: DeliveryFailureReasonOption[];
+      cancel_reasons?: DeliveryCancelReasonOption[];
+      riders: DeliveryRider[];
+    } }>('GET', '/api/crew/delivery/meta', undefined, true),
 
   list: (status?: DeliveryStatus | null) => {
     const q = status ? `?status=${encodeURIComponent(status)}` : '';
@@ -1222,11 +1251,21 @@ export const crewDelivery = {
   setStatus: (
     id: string,
     status: DeliveryStatus,
-    extra?: { assignedStaffId?: string; failureReason?: string; collectedCash?: number },
+    extra?: { assignedStaffId?: string; failureReason?: string; cancelReason?: string; cancelNote?: string },
   ) =>
     request<{ success: true; data: DeliveryOrder }>(
       'POST', `/api/crew/delivery/${id}/status`, { status, ...(extra ?? {}) }, true),
 
+  /**
+   * A rider hands their WHOLE float over at once. Riders come back with one
+   * bundle of notes across several drops; settling that order by order is
+   * friction at the busiest moment of the evening.
+   */
+  settleRider: (riderId: string) =>
+    request<{ success: true; data: { settled: number; amount: number; delivery_ids: string[] } }>(
+      'POST', '/api/crew/delivery/settle-rider', { riderId }, true),
+
+  /** One order's cash, for a rider settling only part of their float. */
   settleCod: (id: string) =>
     request<{ success: true; data: DeliveryOrder }>('POST', `/api/crew/delivery/${id}/settle-cod`, {}, true),
 };
