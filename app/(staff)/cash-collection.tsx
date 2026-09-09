@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState, useRef } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   Dimensions,
   RefreshControl,
@@ -257,7 +258,24 @@ export default function CashCollectionScreen() {
         setUpiSuccessingOrderId(null);
         successSweep.setValue(0);
       }, 780);
-    } catch (err) {
+    } catch (err: any) {
+      const code = String(err?.code ?? err?.message ?? '');
+      if (code.includes('SESSION_HAS_UNCOLLECTED_ORDERS')) {
+        // The request went stale: another round landed after it was raised, so
+        // the backend refused to bank a part of the bill and re-parked the WHOLE
+        // table in staff collection. Reload and the card comes back at the true
+        // net — split by tender there if some of it was already paid.
+        const nextTotal = Number(err?.outstanding_total ?? 0);
+        setOpenMenuOrderId(null);
+        await load();
+        Alert.alert(
+          'Bill changed',
+          nextTotal > 0
+            ? `A new order landed on this table. The bill is now ₹${nextTotal.toLocaleString('en-IN')} — open the card and collect it in one go.`
+            : 'A new order landed on this table. Open the refreshed card and collect the full bill in one go.',
+        );
+        return;
+      }
       console.error('[cash-collection] confirm UPI direct failed', err);
     } finally {
       if (req.intentId) markIntentBusy(req.intentId, false);

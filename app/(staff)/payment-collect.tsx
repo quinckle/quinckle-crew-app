@@ -15,7 +15,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -23,7 +23,7 @@ import * as Haptics from 'expo-haptics';
 import QRCode from 'react-native-qrcode-svg';
 import Svg, { Path } from 'react-native-svg';
 import { useAuth } from '../../context/AuthContext';
-import { crewOrders, crewPayments, restaurantApi, type BillBreakdown, type CollectDueOptions, type CollectSplitMethod, type CrewOrderPaymentContext } from '../../services/api';
+import { crewOrders, crewPayments, crewSessions, restaurantApi, type BillBreakdown, type CollectDueOptions, type CollectSplitMethod, type CrewOrderPaymentContext, type SessionCollectible } from '../../services/api';
 import { BillBreakdownView } from '../../components/ui/BillBreakdownView';
 import { playPaymentSuccess } from '../../services/sound';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
@@ -271,17 +271,50 @@ export default function PaymentCollectScreen() {
     try { const v = JSON.parse(params.orderIds); return Array.isArray(v) ? v.map(String) : []; }
     catch { return []; }
   }, [params.orderIds]);
+  /**
+   * The navigation params are a SNAPSHOT of what the table owed when the card
+   * was tapped. They go stale the moment another round lands — and collecting a
+   * stale snapshot banks part of the bill and strands the rest as a second
+   * pending card (the "₹700 then ₹300 instead of ₹1000" bug). So the sheet
+   * re-reads the table's net from the server on open and on every focus, and
+   * everything below runs off THAT, with the params only as a first paint.
+   */
+  const [liveDue, setLiveDue] = useState<SessionCollectible | null>(null);
+  const [isSyncingDue, setIsSyncingDue] = useState(false);
+  const [dueSyncError, setDueSyncError] = useState<string | null>(null);
+
+  const syncSessionDue = useCallback(async () => {
+    if (!sessionId || params.intentId) return;
+    setIsSyncingDue(true);
+    try {
+      const res = await crewSessions.getCollectible(sessionId);
+      const data = res?.data ?? null;
+      // An empty outstanding set means somebody else already settled the table.
+      setLiveDue(data && data.orderIds.length > 0 ? data : null);
+      setDueSyncError(null);
+    } catch {
+      // Keep the snapshot on screen rather than blanking the sheet, but say so.
+      setDueSyncError('Showing the last known total — could not refresh the bill.');
+    } finally {
+      setIsSyncingDue(false);
+    }
+  }, [sessionId, params.intentId]);
+
+  useFocusEffect(useCallback(() => { void syncSessionDue(); }, [syncSessionDue]));
+
+  /** Server truth when we have it; the navigation snapshot until then. */
+  const effectiveOrderIds = liveDue?.orderIds.length ? liveDue.orderIds : orderIds;
   // Multi-order ⇒ settle the session; the single-order payment context (fetched
   // per representative order) would otherwise under-report the table total.
-  const isSessionCollect = !params.intentId && !!sessionId && orderIds.length > 0;
-  const isMultiOrder      = orderIds.length > 1;
+  const isSessionCollect = !params.intentId && !!sessionId && effectiveOrderIds.length > 0;
+  const isMultiOrder      = effectiveOrderIds.length > 1;
   const tableNumber   = Number(params.tableNumber ?? 0);
   const channel       = params.channel ?? 'DINE_IN';
   const pickupToken   = params.pickupToken ?? null;
   const locationLabel = isOffPremise(channel)
     ? (pickupToken ?? channelLabel(channel))
     : `Table ${tableNumber}`;
-  const total         = Number(params.amount ?? 0);
+  const snapshotTotal = Number(params.amount ?? 0);
   const customerName  = params.customerName && params.customerName.length > 0 ? params.customerName : null;
   const customerPhone = params.customerPhone ?? '';
   const intentId      = params.intentId ?? '';
@@ -359,8 +392,16 @@ export default function PaymentCollectScreen() {
     return () => { alive = false; };
   }, [orderId, isMultiOrder]);
 
-  const resolvedTotal = isMultiOrder ? total : (paymentContext?.total ?? total);
+  // Precedence: the session's live net > the per-order context > the snapshot.
+  const resolvedTotal = liveDue
+    ? liveDue.totalAmount
+    : isMultiOrder ? snapshotTotal : (paymentContext?.total ?? snapshotTotal);
   const resolvedBreakdown: BillBreakdown | null = useMemo(() => {
+    // A breakdown that no longer sums to the amount being collected is worse
+    // than none — drop it rather than itemise a bill the crew isn't taking.
+    if (liveDue && breakdown && Math.abs(breakdown.total - liveDue.totalAmount) > 0.5 && isMultiOrder) {
+      return null;
+    }
     if (paymentContext && !isMultiOrder) {
       return {
         subtotal: paymentContext.subtotal,
@@ -374,7 +415,7 @@ export default function PaymentCollectScreen() {
       };
     }
     return breakdown;
-  }, [paymentContext, breakdown, isMultiOrder]);
+  }, [paymentContext, breakdown, isMultiOrder, liveDue]);
 
   const cashNum    = Number(cashInput || 0);
   const upiNum     = Math.max(0, resolvedTotal - cashNum);
@@ -392,7 +433,7 @@ export default function PaymentCollectScreen() {
   const buildCollectIdempotencyKey = (splits: { method: CollectSplitMethod; amount: number }[]) =>
     `crew-collect:${orderId}:${splitsSig(splits)}`;
   const buildSessionIdempotencyKey = (splits: { method: CollectSplitMethod; amount: number }[]) =>
-    `crew-collect-session:${sessionId}:${[...orderIds].sort().join(',')}:${splitsSig(splits)}`;
+    `crew-collect-session:${sessionId}:${[...effectiveOrderIds].sort().join(',')}:${splitsSig(splits)}`;
 
   const submit = async (splits: { method: CollectSplitMethod; amount: number }[], dueOptions?: CollectDueOptions | null) => {
     const staffId = staffInfo?.id;
@@ -408,7 +449,7 @@ export default function PaymentCollectScreen() {
         await crewPayments.confirmPaymentIntent(intentId);
       } else if (isSessionCollect) {
         // Whole-table: settle every pending order the card was showing.
-        await crewPayments.collectSessionPayment(sessionId, orderIds, staffId, splits, buildSessionIdempotencyKey(splits), null, dueOptions ?? null);
+        await crewPayments.collectSessionPayment(sessionId, effectiveOrderIds, staffId, splits, buildSessionIdempotencyKey(splits), null, dueOptions ?? null);
       } else {
         await crewPayments.collectPayment(orderId, staffId, splits, buildCollectIdempotencyKey(splits), null, dueOptions ?? null);
       }
@@ -418,8 +459,22 @@ export default function PaymentCollectScreen() {
       const code = String(err?.code ?? err?.message ?? '');
       if (code.includes('ALREADY_COLLECTED')) {
         Alert.alert('Already collected', 'This table has already been settled.', [{ text: 'OK', onPress: () => router.back() }]);
-      } else if (code.includes('STALE_ORDERS')) {
-        Alert.alert('Bill changed', 'A new order arrived for this table. Reopen the card to collect the updated total.', [{ text: 'OK', onPress: () => router.back() }]);
+      } else if (code.includes('SESSION_HAS_UNCOLLECTED_ORDERS') || code.includes('STALE_ORDERS')) {
+        // The backend refused to bank a PART of the bill. Pull the real net and
+        // stay on the sheet with it loaded, so the fix is one tap, not a
+        // round-trip back to the list — and the rest is never left behind.
+        const nextTotal = Number(err?.outstanding_total ?? 0);
+        setMode('normal');
+        setStep('choose');
+        setCashInput('');
+        await syncSessionDue();
+        Alert.alert(
+          'Bill changed',
+          nextTotal > 0
+            ? `A new order landed on this table. The bill is now ₹${nextTotal.toLocaleString('en-IN')} — collect it in one go.`
+            : 'A new order landed on this table. The total has been refreshed — collect it in one go.',
+          [{ text: 'OK' }],
+        );
       } else {
         Alert.alert('Could not record payment', err?.message ?? 'Please try again.');
       }
@@ -525,7 +580,12 @@ export default function PaymentCollectScreen() {
     splitValid    ? QuinckleColors.success
     : remaining < 0 ? QuinckleColors.danger
     : QuinckleColors.textTertiary;
-  const paymentReady = resolvedTotal > 0 && !isLoadingPaymentContext;
+  // No tender button arms until the table's net has been read back at least
+  // once — a tap on the navigation snapshot is exactly how a part-collection
+  // gets banked. `liveDue` is only null before the first sync, or for the
+  // intent path (which is a single fixed-amount request, not a table bill).
+  const isVerifyingDue = isSyncingDue && !liveDue && isSessionCollect;
+  const paymentReady = resolvedTotal > 0 && !isLoadingPaymentContext && !isVerifyingDue;
 
   return (
     <KeyboardAvoidingView style={s.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -567,8 +627,16 @@ export default function PaymentCollectScreen() {
             <BillBreakdownView breakdown={resolvedBreakdown} compact />
           </View>
         )}
+        {isMultiOrder && (
+          <Text style={s.orderCountNote}>
+            {`Whole table \u00b7 ${effectiveOrderIds.length} orders in one bill`}
+          </Text>
+        )}
         {paymentContextError && (
           <Text style={s.contextWarning}>{paymentContextError}</Text>
+        )}
+        {dueSyncError && (
+          <Text style={s.contextWarning}>{dueSyncError}</Text>
         )}
       </View>
 
@@ -756,8 +824,8 @@ export default function PaymentCollectScreen() {
         {step === 'choose' && mode === 'normal' && (
           <View style={s.btnRow}>
             {intentMethod !== 'UPI_DIRECT' && (
-              <TouchableOpacity style={s.btnCash} onPress={handleCashTap} disabled={loading} activeOpacity={0.8}>
-                {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>Cash</Text>}
+              <TouchableOpacity style={[s.btnCash, !paymentReady && s.btnMuted]} onPress={handleCashTap} disabled={loading || !paymentReady} activeOpacity={0.8}>
+                {loading || isVerifyingDue ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>Cash</Text>}
               </TouchableOpacity>
             )}
             <TouchableOpacity
@@ -838,7 +906,7 @@ export default function PaymentCollectScreen() {
             disabled={!splitValid || loading || isLoadingPaymentContext || !paymentReady}
             activeOpacity={0.8}
           >
-            {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>Mark as Paid</Text>}
+            {loading || isVerifyingDue ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>Mark as Paid</Text>}
           </TouchableOpacity>
         )}
 
@@ -927,6 +995,7 @@ const s = StyleSheet.create({
   splitReadonly: { flex: 1, fontSize: 22, fontWeight: '600', letterSpacing: -0.4 },
   splitHint: { fontSize: 13, fontWeight: '500', textAlign: 'right' },
   contextWarning: { color: QuinckleColors.warning, fontSize: 12, fontWeight: '500', marginTop: 10 },
+  orderCountNote: { color: QuinckleColors.textSecondary, fontSize: 12, fontWeight: '600', marginTop: 8 },
 
   // Bottom
   bottom: {

@@ -104,11 +104,17 @@ async function request<T>(
 
   if (!res.ok) {
     const msg = json.message ?? json.error?.message ?? json.error ?? `API error ${res.status}`;
-    const err = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg)) as Error & { code?: string; refundable?: number };
+    const err = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg)) as Error & {
+      code?: string; refundable?: number; outstanding_total?: number; missing_order_ids?: string[];
+    };
     err.code = json.code ?? undefined;
     // The refund endpoint reports how much is actually left; without carrying it
     // the crew is told "too much" and never told what the real ceiling is.
     if (typeof json.refundable === 'number') err.refundable = json.refundable;
+    // Same idea for a refused part-collection: the server knows the table's real
+    // net, so carry it through and let the sheet re-render on the right number.
+    if (typeof json.outstanding_total === 'number') err.outstanding_total = json.outstanding_total;
+    if (Array.isArray(json.missing_order_ids)) err.missing_order_ids = json.missing_order_ids;
     throw err;
   }
   return json as T;
@@ -546,6 +552,17 @@ export interface LedgerResponse {
   pages: number;
 }
 
+export interface SessionCollectible {
+  sessionId: string;
+  orderIds: string[];
+  orderCount: number;
+  totalAmount: number;
+  orders: { id: string; total: number; paymentStatus: string }[];
+  tableNumber: number;
+  customerName: string | null;
+  customerPhone: string | null;
+}
+
 export const crewSessions = {
   // newParty (shared seating): seat a SEPARATE party on an occupied table —
   // the backend assigns the next free party slot (409 TABLE_PARTIES_FULL at cap).
@@ -582,6 +599,18 @@ export const crewSessions = {
       };
     }>(
       'POST', `/api/crew/sessions/${sessionId}/finalize-invoice`, undefined, true
+    ),
+
+  /**
+   * What the table still owes, right now — the authoritative net.
+   *
+   * The Collection Sheet reads this on open instead of trusting the amount it
+   * was navigated with: a snapshot taken before another round landed would
+   * under-collect and leave the rest as a second pending card.
+   */
+  getCollectible: (sessionId: string) =>
+    request<{ success: boolean; data: SessionCollectible }>(
+      'GET', `/api/crew/sessions/${sessionId}/collectible`, undefined, true
     ),
 
   requestCollection: (sessionId: string, customerPhone?: string | null, customerName?: string | null) =>
