@@ -1,10 +1,20 @@
 /**
  * Delivery board — DELIVERY_PANEL_PLAN.md §6, Phase 1.
  *
- * Counter staff drive every transition from here: accept, pack, hand to a
- * rider, send out, close as delivered or failed, then take the cash back off
- * the rider. There is deliberately no rider app yet, so this board alone has
- * to be enough to run delivery end to end.
+ * The COUNTER's view (DELIVERY_V2_PLAN §4). Counter staff drive the moves that
+ * belong to the building: take a phone order, dispatch it to a rider, cancel
+ * it before it leaves, and receive the cash back when the rider returns. The
+ * moves that belong to the road — collect at the door, completed, couldn't
+ * deliver — are the rider's, in components/delivery/RiderRuns.
+ *
+ * Which of the two a staffer gets is decided by capability, in one place
+ * (deliveryViewFor in constants/capabilities). It matters that the counter
+ * cannot be the rider: stage 3 and stage 4 are meant to be two people saying
+ * the same number, and the split is what stops one person dispatching to
+ * themself and then confirming their own cash (§3).
+ *
+ * This board can still run a delivery end to end — an owner holds both roles —
+ * so nothing here assumes a rider is using the app.
  *
  * It lives in components/ rather than app/ because delivery is a channel on the
  * staff dashboard (a bottom-nav tab beside Orders, Tables and Takeaway), not a
@@ -29,66 +39,31 @@ import {
   type DeliveryStatus,
   type DeliveryRider,
   type DeliveryFailureReasonOption,
+  type DeliveryCancelReasonOption,
 } from '../../services/api';
 import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
-import { useAuth } from '../../context/AuthContext';
+// Every money/lifecycle predicate is shared with the rider view — two copies
+// of "is this paid?" is how one surface ends up telling somebody a stale
+// number. Layout stays per-view on purpose.
+import {
+  STATUS_META, money, timeAgo, oneLineAddress, cashStillOut, isLive, isPaid,
+  prepOf, directionsUrl, PrepChip, EmptyState,
+} from './shared';
 import { PickupSegmented } from '../ui/pickup';
 
-// ── Presentation for each lifecycle state ────────────────────────────────────
-const STATUS_META: Record<DeliveryStatus, { label: string; color: string; soft: string; border: string }> = {
-  PENDING:          { label: 'New',        color: QuinckleColors.warning, soft: QuinckleColors.warningSoft, border: QuinckleColors.warningBorder },
-  ACCEPTED:         { label: 'Preparing',  color: QuinckleColors.info,    soft: QuinckleColors.infoSoft,    border: QuinckleColors.infoBorder },
-  READY:            { label: 'Packed',     color: QuinckleColors.primary, soft: QuinckleColors.primarySoft, border: QuinckleColors.primarySoftBorder },
-  ASSIGNED:         { label: 'Rider set',  color: QuinckleColors.primary, soft: QuinckleColors.primarySoft, border: QuinckleColors.primarySoftBorder },
-  OUT_FOR_DELIVERY: { label: 'On the way', color: QuinckleColors.info,    soft: QuinckleColors.infoSoft,    border: QuinckleColors.infoBorder },
-  DELIVERED:        { label: 'Delivered',  color: QuinckleColors.success, soft: QuinckleColors.successSoft, border: QuinckleColors.successBorder },
-  FAILED:           { label: 'Failed',     color: QuinckleColors.danger,  soft: QuinckleColors.dangerSoft,  border: QuinckleColors.dangerBorder },
-  CANCELLED:        { label: 'Cancelled',  color: QuinckleColors.textTertiary, soft: QuinckleColors.surfaceMuted, border: QuinckleColors.border },
-};
+type BoardTab = 'LIVE' | 'CASH' | 'DONE';
 
-const OPEN_STATUSES: DeliveryStatus[] = ['PENDING', 'ACCEPTED', 'READY', 'ASSIGNED', 'OUT_FOR_DELIVERY'];
-
-/** Prepaid orders must not ask for cash at the door. */
-const PAID_STATUSES = ['PAID_CASH', 'PAID_UPI_DIRECT', 'PAID_ONLINE', 'PAID_MIXED', 'WAIVED'];
-const isPrepaid = (d: DeliveryOrder) => !!d.payment_status && PAID_STATUSES.includes(d.payment_status);
-
-const money = (n: number | null | undefined) =>
-  `₹${Number(n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
-
-function timeAgo(iso: string | null): string {
-  if (!iso) return '';
-  const mins = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  return hrs < 24 ? `${hrs}h ago` : `${Math.floor(hrs / 24)}d ago`;
-}
-
-const oneLineAddress = (d: DeliveryOrder) =>
-  [d.address.house_no, d.address.line, d.address.landmark].filter(Boolean).join(', ');
-
-type BoardTab = 'ACTIVE' | 'MINE' | 'DONE';
-
-/** Delivered, but the rider still has the money — the venue is not done with it. */
-const cashStillOut = (o: DeliveryOrder) =>
-  o.status === 'DELIVERED' && !!o.cod_amount && !o.cod_settled_at;
-
-/**
- * "Active" means somebody still has to do something: every open status, plus a
- * delivered order whose cash has not come back to the counter. The board used
- * to say "3 to collect" while the Active list showed none of them.
- */
-const isActive = (o: DeliveryOrder) => OPEN_STATUSES.includes(o.status) || cashStillOut(o);
-
-/** Run order for the Active list — the newest ticket is not the most urgent. */
+/** Run order for the Live list — the newest ticket is not the most urgent. */
 const STAGE: Record<DeliveryStatus, number> = {
-  PENDING: 0, ACCEPTED: 1, READY: 2, ASSIGNED: 3, OUT_FOR_DELIVERY: 4,
-  DELIVERED: 5, FAILED: 6, CANCELLED: 7,
+  NEW: 0, OUT: 1, DELIVERED: 2, CLOSED: 3, FAILED: 4, CANCELLED: 5,
 };
 
 const at = (o: DeliveryOrder) => new Date(o.created_at ?? 0).getTime();
 const byRun = (a: DeliveryOrder, b: DeliveryOrder) => STAGE[a.status] - STAGE[b.status] || at(a) - at(b);
 const byNewest = (a: DeliveryOrder, b: DeliveryOrder) => at(b) - at(a);
+
+/** One rider's outstanding float — what the Cash tab settles in a single tap. */
+type RiderFloat = { staffId: string | null; name: string; amount: number; orders: DeliveryOrder[] };
 
 /**
  * The delivery board.
@@ -102,21 +77,18 @@ const byNewest = (a: DeliveryOrder, b: DeliveryOrder) => at(b) - at(a);
 export function DeliveryBoard({ embedded = false }: { embedded?: boolean }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { staffInfo } = useAuth();
-  const myStaffId = staffInfo?.id ?? null;
 
   const [orders, setOrders] = useState<DeliveryOrder[]>([]);
   const [riders, setRiders] = useState<DeliveryRider[]>([]);
   const [failureReasons, setFailureReasons] = useState<DeliveryFailureReasonOption[]>([]);
-  const [riderFloat, setRiderFloat] = useState(0);
+  const [cancelReasons, setCancelReasons] = useState<DeliveryCancelReasonOption[]>([]);
+  const [riderFloatTotal, setRiderFloatTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [notEnabled, setNotEnabled] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // 'MINE' is the rider view (§Phase 3): the same board scoped to the orders
-  // this staffer is actually carrying. A separate screen would duplicate every
-  // lifecycle action for no behavioural difference.
-  const [tab, setTab] = useState<BoardTab>('ACTIVE');
+  const [tab, setTab] = useState<BoardTab>('LIVE');
+  const [settling, setSettling] = useState<string | null>(null);
 
   const [action, setAction] = useState<DeliveryOrder | null>(null);
   const [showNew, setShowNew] = useState(false);
@@ -131,7 +103,8 @@ export function DeliveryBoard({ embedded = false }: { embedded?: boolean }) {
       setOrders(list.data);
       setRiders(meta.data.riders);
       setFailureReasons(meta.data.failure_reasons);
-      setRiderFloat(float.data.total);
+      setCancelReasons(meta.data.cancel_reasons ?? []);
+      setRiderFloatTotal(float.data.total);
       setNotEnabled(false);
       setError(null);
     } catch (e: any) {
@@ -146,24 +119,39 @@ export function DeliveryBoard({ embedded = false }: { embedded?: boolean }) {
     }
   }, []);
 
+  // Also re-runs when the counter comes back from the payment sheet, which is
+  // what turns "Collect payment" into "Completed" without a manual refresh.
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const { active, mine, done } = useMemo(() => ({
-    active: orders.filter(isActive).sort(byRun),
-    mine: orders.filter((o) => o.assigned_staff?.id === myStaffId && isActive(o)).sort(byRun),
-    done: orders.filter((o) => !isActive(o)).sort(byNewest),
-  }), [orders, myStaffId]);
-
-  const visible = tab === 'MINE' ? mine : tab === 'DONE' ? done : active;
-  const isRiderView = tab === 'MINE';
-
-  // What THIS rider owes the counter, as opposed to the venue-wide float.
-  const myFloat = useMemo(
-    () => mine.filter(cashStillOut).reduce((sum, o) => sum + Number(o.cod_amount ?? 0), 0),
-    [mine],
+  const live = useMemo(() => orders.filter(isLive).sort(byRun), [orders]);
+  const done = useMemo(
+    () => orders.filter((o) => o.status === 'CLOSED' || o.status === 'FAILED' || o.status === 'CANCELLED').sort(byNewest),
+    [orders],
   );
-  const cashOut = isRiderView ? myFloat : riderFloat;
-  const toCollect = (isRiderView ? mine : orders).filter(cashStillOut).length;
+
+  /**
+   * Cash, grouped by the rider carrying it. A rider comes back with one bundle
+   * of notes across several drops; settling that order by order is three taps
+   * of friction at the busiest moment of the evening.
+   */
+  const floats = useMemo<RiderFloat[]>(() => {
+    const byRider = new Map<string, RiderFloat>();
+    for (const o of orders.filter(cashStillOut)) {
+      const key = o.assigned_staff?.id ?? '_unassigned';
+      const cur = byRider.get(key) ?? {
+        staffId: o.assigned_staff?.id ?? null,
+        name: o.assigned_staff?.name ?? 'Unassigned',
+        amount: 0,
+        orders: [],
+      };
+      cur.amount += Number(o.cod_amount ?? 0);
+      cur.orders.push(o);
+      byRider.set(key, cur);
+    }
+    return [...byRider.values()].sort((a, b) => b.amount - a.amount);
+  }, [orders]);
+
+  const toCollect = floats.reduce((n, f) => n + f.orders.length, 0);
 
   const apply = async (fn: () => Promise<unknown>) => {
     try {
@@ -172,6 +160,42 @@ export function DeliveryBoard({ embedded = false }: { embedded?: boolean }) {
       setAction(null);
     } catch (e: any) {
       setError(e?.message ?? 'That did not work');
+    }
+  };
+
+  /** Money at the door goes through the SAME sheet as any other bill (V2 §5). */
+  const collectPayment = (o: DeliveryOrder) => {
+    const ids = o.unpaid_order_ids ?? [];
+    setAction(null);
+    router.push({
+      pathname: '/(staff)/payment-collect',
+      params: {
+        orderId: ids[0] ?? '',
+        sessionId: o.session_id,
+        orderIds: JSON.stringify(ids),
+        tableNumber: '',
+        channel: 'DELIVERY',
+        pickupToken: o.order_token ?? '',
+        amount: String(o.final_total ?? 0),
+        customerName: o.recipient_name,
+        customerPhone: o.recipient_phone,
+      },
+    });
+  };
+
+  const settleRider = async (f: RiderFloat) => {
+    if (!f.staffId) {
+      setError('This cash is not attached to a rider — settle it order by order.');
+      return;
+    }
+    setSettling(f.staffId);
+    try {
+      await crewDelivery.settleRider(f.staffId);
+      await load();
+    } catch (e: any) {
+      setError(e?.message ?? 'Could not record that handover');
+    } finally {
+      setSettling(null);
     }
   };
 
@@ -207,6 +231,14 @@ export function DeliveryBoard({ embedded = false }: { embedded?: boolean }) {
     );
   }
 
+  const listPad = {
+    flexGrow: 1,
+    gap: Spacing.md,
+    // Embedded, the bottom navbar floats over the list; standalone, only the
+    // home indicator does.
+    paddingBottom: embedded ? 100 : insets.bottom + Spacing.xl,
+  };
+
   return frame(
     <>
       {/* Same segmented control as the Orders and Takeaway tabs — this is one
@@ -214,8 +246,8 @@ export function DeliveryBoard({ embedded = false }: { embedded?: boolean }) {
       <View style={styles.segmentWrap}>
         <PickupSegmented
           items={[
-            { key: 'ACTIVE', label: 'Active', count: active.length },
-            { key: 'MINE', label: 'Mine', count: mine.length },
+            { key: 'LIVE', label: 'Live', count: live.length },
+            { key: 'CASH', label: 'Cash', count: toCollect },
             { key: 'DONE', label: 'Done', count: done.length },
           ]}
           active={tab}
@@ -226,17 +258,17 @@ export function DeliveryBoard({ embedded = false }: { embedded?: boolean }) {
       <View style={styles.controlsRow}>
         {/* Cash with riders is the number that matters at 11pm — it is money the
             venue has earned that is not in the drawer. */}
-        <View style={[styles.cashStrip, cashOut > 0 && styles.cashStripWarn]}>
+        <View style={[styles.cashStrip, riderFloatTotal > 0 && styles.cashStripWarn]}>
           <Ionicons
             name="cash-outline"
             size={15}
-            color={cashOut > 0 ? QuinckleColors.warning : QuinckleColors.textTertiary}
+            color={riderFloatTotal > 0 ? QuinckleColors.warning : QuinckleColors.textTertiary}
           />
           <Text
-            style={[styles.cashStripText, cashOut > 0 && styles.cashStripTextWarn]}
+            style={[styles.cashStripText, riderFloatTotal > 0 && styles.cashStripTextWarn]}
             numberOfLines={1}
           >
-            {money(cashOut)} {isRiderView ? 'on you' : 'with riders'}
+            {money(riderFloatTotal)} with riders
             {toCollect > 0 ? `  ·  ${toCollect} to collect` : ''}
           </Text>
         </View>
@@ -270,50 +302,58 @@ export function DeliveryBoard({ embedded = false }: { embedded?: boolean }) {
         </TouchableOpacity>
       )}
 
-      <FlatList
-        data={visible}
-        keyExtractor={(o) => o.id}
-        contentContainerStyle={{
-          flexGrow: 1,
-          gap: Spacing.md,
-          // Embedded, the bottom navbar floats over the list; standalone, only
-          // the home indicator does.
-          paddingBottom: embedded ? 100 : insets.bottom + Spacing.xl,
-        }}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={QuinckleColors.primary} />
-        }
-        ListEmptyComponent={
-          <View style={styles.emptyWrap}>
-            <View style={styles.emptyMedallion}>
-              <Ionicons
-                name={tab === 'DONE' ? 'time-outline' : 'bicycle-outline'}
-                size={28}
-                color={QuinckleColors.textTertiary}
-              />
-            </View>
-            <Text style={styles.emptyTitle}>
-              {tab === 'MINE' ? 'Nothing on you' : tab === 'DONE' ? 'Nothing closed yet' : 'No live deliveries'}
-            </Text>
-            <Text style={styles.emptyBody}>
-              {tab === 'MINE'
-                ? 'Orders assigned to you — and any cash you still hold — show up here.'
-                : tab === 'DONE'
-                  ? 'Delivered, failed and cancelled orders land here.'
-                  : 'New delivery orders show up here the moment they are placed.'}
-            </Text>
-          </View>
-        }
-        renderItem={({ item }) => <DeliveryCard order={item} onPress={() => setAction(item)} />}
-      />
+      {tab === 'CASH' ? (
+        <FlatList
+          data={floats}
+          keyExtractor={(f) => f.staffId ?? '_unassigned'}
+          contentContainerStyle={listPad}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={QuinckleColors.primary} />
+          }
+          ListEmptyComponent={
+            <EmptyState
+              icon="checkmark-done"
+              title="No cash out"
+              body="Every rider has handed back what they collected."
+            />
+          }
+          renderItem={({ item }) => (
+            <RiderFloatCard
+              float={item}
+              busy={settling === item.staffId}
+              onSettle={() => settleRider(item)}
+              onOpenOrder={setAction}
+            />
+          )}
+        />
+      ) : (
+        <FlatList
+          data={tab === 'LIVE' ? live : done}
+          keyExtractor={(o) => o.id}
+          contentContainerStyle={listPad}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={QuinckleColors.primary} />
+          }
+          ListEmptyComponent={
+            tab === 'DONE' ? (
+              <EmptyState icon="time-outline" title="Nothing closed yet" body="Delivered, failed and cancelled orders land here." />
+            ) : (
+              <EmptyState icon="bicycle-outline" title="No live deliveries" body="New delivery orders show up here the moment they are placed." />
+            )
+          }
+          renderItem={({ item }) => <DeliveryCard order={item} onPress={() => setAction(item)} />}
+        />
+      )}
 
       {action && (
         <ActionSheet
           order={action}
           riders={riders}
           failureReasons={failureReasons}
+          cancelReasons={cancelReasons}
           onClose={() => setAction(null)}
           onApply={apply}
+          onCollectPayment={() => collectPayment(action)}
         />
       )}
 
@@ -354,7 +394,10 @@ function Header({ onBack, onRefresh }: { onBack: () => void; onRefresh: () => vo
 
 function DeliveryCard({ order, onPress }: { order: DeliveryOrder; onPress: () => void }) {
   const meta = STATUS_META[order.status];
-  const owesCash = order.status === 'DELIVERED' && !!order.cod_amount && !order.cod_settled_at;
+  const owed = cashStillOut(order);
+  // Only while the bag is still in the building — after dispatch this would be
+  // reporting on food that is already at somebody's door.
+  const prep = order.status === 'NEW' ? prepOf(order) : null;
 
   return (
     <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.75}>
@@ -380,24 +423,84 @@ function DeliveryCard({ order, onPress }: { order: DeliveryOrder; onPress: () =>
 
       <View style={styles.cardBottom}>
         <Text style={styles.total}>{money(order.final_total)}</Text>
+        {prep && <PrepChip prep={prep} />}
         {order.assigned_staff && (
           <View style={styles.riderChip}>
             <Ionicons name="person-outline" size={11} color={QuinckleColors.textSecondary} />
             <Text style={styles.riderChipText}>{order.assigned_staff.name}</Text>
           </View>
         )}
-        {owesCash && (
+        {owed && (
           <View style={[styles.pill, { backgroundColor: QuinckleColors.warningSoft, borderColor: QuinckleColors.warningBorder }]}>
             <Text style={[styles.pillText, { color: QuinckleColors.warning }]}>{money(order.cod_amount)} with rider</Text>
           </View>
         )}
-        {isPrepaid(order) && order.status !== 'DELIVERED' && (
-          <View style={[styles.pill, { backgroundColor: QuinckleColors.successSoft, borderColor: QuinckleColors.successBorder }]}>
-            <Text style={[styles.pillText, { color: QuinckleColors.success }]}>Prepaid</Text>
+        {/* Unpaid is the thing that blocks "Completed", so it belongs on the
+            card rather than being discovered inside the sheet. */}
+        {isLive(order) && (
+          <View style={[
+            styles.pill,
+            isPaid(order)
+              ? { backgroundColor: QuinckleColors.successSoft, borderColor: QuinckleColors.successBorder }
+              : { backgroundColor: QuinckleColors.surfaceMuted, borderColor: QuinckleColors.border },
+          ]}>
+            <Text style={[styles.pillText, { color: isPaid(order) ? QuinckleColors.success : QuinckleColors.textSecondary }]}>
+              {isPaid(order) ? 'Paid' : 'Unpaid'}
+            </Text>
           </View>
         )}
       </View>
     </TouchableOpacity>
+  );
+}
+
+/**
+ * One rider's float. The button settles the WHOLE bundle — that is the event
+ * that actually happens at the counter.
+ */
+function RiderFloatCard({
+  float, busy, onSettle, onOpenOrder,
+}: {
+  float: RiderFloat;
+  busy: boolean;
+  onSettle: () => void;
+  onOpenOrder: (o: DeliveryOrder) => void;
+}) {
+  return (
+    <View style={styles.card}>
+      <View style={styles.cardTop}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }}>
+          <Ionicons name="person-circle-outline" size={20} color={QuinckleColors.textSecondary} />
+          <Text style={styles.token}>{float.name}</Text>
+        </View>
+        <Text style={[styles.total, { color: QuinckleColors.warning }]}>{money(float.amount)}</Text>
+      </View>
+
+      {float.orders.map((o) => (
+        <TouchableOpacity key={o.id} style={styles.floatRow} onPress={() => onOpenOrder(o)} activeOpacity={0.7}>
+          <Text style={styles.floatRowText} numberOfLines={1}>
+            {o.order_token ?? o.session_ref ?? '—'} · {o.recipient_name}
+          </Text>
+          <Text style={styles.floatRowAmount}>{money(o.cod_amount)}</Text>
+        </TouchableOpacity>
+      ))}
+
+      <TouchableOpacity
+        style={[styles.actionBtn, styles.actionBtnPrimary, { marginTop: Spacing.md }, busy && { opacity: 0.6 }]}
+        onPress={onSettle}
+        disabled={busy}
+        activeOpacity={0.85}
+      >
+        {busy ? <ActivityIndicator color="#fff" /> : (
+          <>
+            <Ionicons name="cash-outline" size={17} color="#fff" />
+            <Text style={[styles.actionText, { color: '#fff' }]}>
+              Received {money(float.amount)} from {float.name.split(' ')[0]}
+            </Text>
+          </>
+        )}
+      </TouchableOpacity>
+    </View>
   );
 }
 
@@ -409,16 +512,17 @@ function DeliveryCard({ order, onPress }: { order: DeliveryOrder; onPress: () =>
  * rejects surfaces as an error rather than being silently swallowed.
  */
 function ActionSheet({
-  order, riders, failureReasons, onClose, onApply,
+  order, riders, failureReasons, cancelReasons, onClose, onApply, onCollectPayment,
 }: {
   order: DeliveryOrder;
   riders: DeliveryRider[];
   failureReasons: DeliveryFailureReasonOption[];
+  cancelReasons: DeliveryCancelReasonOption[];
   onClose: () => void;
   onApply: (fn: () => Promise<unknown>) => Promise<void>;
+  onCollectPayment: () => void;
 }) {
-  const [mode, setMode] = useState<'actions' | 'rider' | 'cash' | 'failed'>('actions');
-  const [cash, setCash] = useState(String(order.final_total ?? 0));
+  const [mode, setMode] = useState<'actions' | 'dispatch' | 'failed' | 'cancel'>('actions');
   const [busy, setBusy] = useState(false);
 
   const run = async (fn: () => Promise<unknown>) => {
@@ -427,8 +531,8 @@ function ActionSheet({
     setBusy(false);
   };
 
-  const owesCash = order.status === 'DELIVERED' && !!order.cod_amount && !order.cod_settled_at;
-  const canCancel = ['PENDING', 'ACCEPTED', 'READY', 'ASSIGNED'].includes(order.status);
+  const owed = cashStillOut(order);
+  const paid = isPaid(order);
 
   return (
     <Modal transparent animationType="slide" onRequestClose={onClose}>
@@ -448,19 +552,10 @@ function ActionSheet({
               <Ionicons name="call-outline" size={16} color={QuinckleColors.textPrimary} />
               <Text style={styles.quickText}>Call</Text>
             </TouchableOpacity>
-            {/* Deep link to the real Maps app — live traffic, voice nav and
-                offline maps for free, and it ships OTA because there is no
-                native map dependency. Coordinates when the diner dropped a pin
-                (exact), otherwise the typed address a phone order carries. */}
+            {/* Deep link to the real Maps app — see directionsUrl in ./shared. */}
             <TouchableOpacity
               style={styles.quickBtn}
-              onPress={() => {
-                const { latitude, longitude } = order.address;
-                const dest = latitude != null && longitude != null
-                  ? `${latitude},${longitude}`
-                  : encodeURIComponent(oneLineAddress(order));
-                Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${dest}`);
-              }}
+              onPress={() => Linking.openURL(directionsUrl(order))}
             >
               <Ionicons name="navigate-outline" size={16} color={QuinckleColors.textPrimary} />
               <Text style={styles.quickText}>Directions</Text>
@@ -469,9 +564,10 @@ function ActionSheet({
 
           {busy && <ActivityIndicator color={QuinckleColors.primary} style={{ marginVertical: Spacing.md }} />}
 
-          {/* ── Pick a rider ── */}
-          {mode === 'rider' && (
+          {/* ── Hand the bag to a rider ── */}
+          {mode === 'dispatch' && (
             <ScrollView style={{ maxHeight: 280 }}>
+              <Text style={styles.hint}>Who is taking it? Naming the rider sends the order out.</Text>
               {riders.length === 0 ? (
                 <Text style={styles.hint}>
                   Nobody has the Delivery permission yet. An owner grants it on the staff screen.
@@ -480,37 +576,13 @@ function ActionSheet({
                 <TouchableOpacity
                   key={r.id}
                   style={styles.rowBtn}
-                  onPress={() => run(() => crewDelivery.setStatus(order.id, 'ASSIGNED', { assignedStaffId: r.id }))}
+                  onPress={() => run(() => crewDelivery.setStatus(order.id, 'OUT', { assignedStaffId: r.id }))}
                 >
                   <Ionicons name="person-circle-outline" size={20} color={QuinckleColors.textSecondary} />
                   <Text style={styles.rowBtnText}>{r.name}</Text>
                 </TouchableOpacity>
               ))}
             </ScrollView>
-          )}
-
-          {/* ── How much cash came back ── */}
-          {mode === 'cash' && (
-            <View>
-              <Text style={styles.hint}>How much did the rider collect at the door?</Text>
-              <TextInput
-                style={styles.input}
-                value={cash}
-                onChangeText={setCash}
-                keyboardType="numeric"
-                placeholder="0"
-                placeholderTextColor={QuinckleColors.textMuted}
-              />
-              <TouchableOpacity
-                style={styles.primaryBtn}
-                onPress={() => run(() => crewDelivery.setStatus(order.id, 'DELIVERED', { collectedCash: Number(cash) || 0 }))}
-              >
-                <Text style={styles.primaryBtnText}>Mark delivered</Text>
-              </TouchableOpacity>
-              <Text style={styles.footnote}>
-                This cash stays counted against the rider until they hand it over at the counter.
-              </Text>
-            </View>
           )}
 
           {/* ── Why it failed ── */}
@@ -530,57 +602,68 @@ function ActionSheet({
             </View>
           )}
 
+          {/* ── Why it was cancelled ── */}
+          {mode === 'cancel' && (
+            <View>
+              <Text style={styles.hint}>
+                Why is it being cancelled? This lands in the discarded-orders ledger with your name and the time.
+              </Text>
+              {cancelReasons.map((r) => (
+                <TouchableOpacity
+                  key={r.code}
+                  style={styles.rowBtn}
+                  onPress={() => run(() => crewDelivery.setStatus(order.id, 'CANCELLED', { cancelReason: r.code }))}
+                >
+                  <Ionicons name="close-circle-outline" size={18} color={QuinckleColors.textSecondary} />
+                  <Text style={styles.rowBtnText}>{r.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+
           {/* ── The lifecycle buttons ── */}
           {mode === 'actions' && (
             <View style={{ gap: Spacing.sm }}>
-              {order.status === 'PENDING' && (
-                <Action label="Accept order" icon="checkmark-circle-outline"
-                  onPress={() => run(() => crewDelivery.setStatus(order.id, 'ACCEPTED'))} />
-              )}
-              {order.status === 'ACCEPTED' && (
-                <Action label="Packed & ready" icon="bag-check-outline"
-                  onPress={() => run(() => crewDelivery.setStatus(order.id, 'READY'))} />
-              )}
-              {order.status === 'READY' && (
-                <Action label="Assign a rider" icon="person-add-outline" onPress={() => setMode('rider')} />
-              )}
-              {order.status === 'ASSIGNED' && (
+              {order.status === 'NEW' && (
                 <>
-                  <Action label="Send out" icon="bicycle-outline"
-                    onPress={() => run(() => crewDelivery.setStatus(order.id, 'OUT_FOR_DELIVERY'))} />
-                  <Action label="Change rider" icon="swap-horizontal-outline" subtle onPress={() => setMode('rider')} />
-                  <Action label="Take rider off" icon="person-remove-outline" subtle
-                    onPress={() => run(() => crewDelivery.setStatus(order.id, 'READY'))} />
+                  <Action label="Dispatch — pick a rider" icon="bicycle-outline" onPress={() => setMode('dispatch')} />
+                  <Action label="Cancel order" icon="trash-outline" danger subtle onPress={() => setMode('cancel')} />
                 </>
               )}
-              {order.status === 'OUT_FOR_DELIVERY' && (
+
+              {order.status === 'OUT' && (
                 <>
+                  {/* Money at the door goes through the normal payment sheet —
+                      cash, UPI, split or khata — so the sale lands in the same
+                      ledger as every other bill instead of as a typed number. */}
+                  {!paid && (
+                    <Action label="Collect payment" icon="card-outline" onPress={onCollectPayment} />
+                  )}
                   <Action
-                    label="Delivered"
+                    label="Completed"
                     icon="checkmark-done-outline"
-                    onPress={() =>
-                      // A prepaid order takes no cash at the door, so skip the prompt.
-                      isPrepaid(order)
-                        ? run(() => crewDelivery.setStatus(order.id, 'DELIVERED'))
-                        : setMode('cash')
-                    }
+                    disabled={!paid}
+                    hint={!paid ? 'Collect the payment first' : undefined}
+                    onPress={() => run(() => crewDelivery.setStatus(order.id, 'DELIVERED'))}
                   />
                   <Action label="Couldn't deliver" icon="close-circle-outline" danger onPress={() => setMode('failed')} />
                 </>
               )}
-              {owesCash && (
+
+              {owed && (
                 <Action
-                  label={`Collect ${money(order.cod_amount)} from rider`}
+                  label={`Received ${money(order.cod_amount)} from ${order.assigned_staff?.name ?? 'the rider'}`}
                   icon="cash-outline"
                   onPress={() => run(() => crewDelivery.settleCod(order.id))}
                 />
               )}
-              {canCancel && (
-                <Action label="Cancel order" icon="trash-outline" danger subtle
-                  onPress={() => run(() => crewDelivery.setStatus(order.id, 'CANCELLED'))} />
-              )}
-              {['DELIVERED', 'FAILED', 'CANCELLED'].includes(order.status) && !owesCash && (
-                <Text style={styles.hint}>This delivery is closed.</Text>
+
+              {!isLive(order) && !owed && (
+                <Text style={styles.hint}>
+                  {order.status === 'FAILED' && order.failure_reason
+                    ? `This delivery failed: ${order.failure_reason.toLowerCase().replace(/_/g, ' ')}.`
+                    : 'This delivery is closed.'}
+                </Text>
               )}
             </View>
           )}
@@ -595,18 +678,30 @@ function ActionSheet({
 }
 
 function Action({
-  label, icon, onPress, danger, subtle,
-}: { label: string; icon: any; onPress: () => void; danger?: boolean; subtle?: boolean }) {
+  label, icon, onPress, danger, subtle, disabled, hint,
+}: {
+  label: string; icon: any; onPress: () => void;
+  danger?: boolean; subtle?: boolean; disabled?: boolean; hint?: string;
+}) {
   const color = danger ? QuinckleColors.danger : subtle ? QuinckleColors.textSecondary : QuinckleColors.textPrimary;
   return (
-    <TouchableOpacity
-      style={[styles.actionBtn, !subtle && !danger && styles.actionBtnPrimary, danger && styles.actionBtnDanger]}
-      onPress={onPress}
-      activeOpacity={0.8}
-    >
-      <Ionicons name={icon} size={17} color={danger ? QuinckleColors.danger : subtle ? color : '#fff'} />
-      <Text style={[styles.actionText, { color: danger ? QuinckleColors.danger : subtle ? color : '#fff' }]}>{label}</Text>
-    </TouchableOpacity>
+    <View>
+      <TouchableOpacity
+        style={[
+          styles.actionBtn,
+          !subtle && !danger && styles.actionBtnPrimary,
+          danger && styles.actionBtnDanger,
+          disabled && styles.actionBtnDisabled,
+        ]}
+        onPress={onPress}
+        disabled={disabled}
+        activeOpacity={0.8}
+      >
+        <Ionicons name={icon} size={17} color={danger ? QuinckleColors.danger : subtle ? color : '#fff'} />
+        <Text style={[styles.actionText, { color: danger ? QuinckleColors.danger : subtle ? color : '#fff' }]}>{label}</Text>
+      </TouchableOpacity>
+      {!!hint && <Text style={styles.actionHint}>{hint}</Text>}
+    </View>
   );
 }
 
@@ -786,10 +881,6 @@ const styles = StyleSheet.create({
 
   // Same medallion + two lines of copy as every other empty tab on the
   // dashboard, so an empty Delivery tab doesn't read as a different app.
-  emptyWrap: {
-    flex: 1, alignItems: 'center', justifyContent: 'center',
-    paddingVertical: Spacing.huge, paddingHorizontal: Spacing.lg,
-  },
   emptyMedallion: {
     width: 72, height: 72, borderRadius: 36,
     alignItems: 'center', justifyContent: 'center',
@@ -828,7 +919,18 @@ const styles = StyleSheet.create({
   },
   actionBtnPrimary: { backgroundColor: QuinckleColors.primary, borderColor: QuinckleColors.primary },
   actionBtnDanger: { backgroundColor: QuinckleColors.dangerSoft, borderColor: QuinckleColors.dangerBorder },
+  actionBtnDisabled: { opacity: 0.4 },
   actionText: { ...Typography.bodyStrong },
+  actionHint: { ...Typography.micro, color: QuinckleColors.textTertiary, textAlign: 'center', marginTop: Spacing.xs },
+
+  // One line per drop inside a rider's float card.
+  floatRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingVertical: Spacing.sm,
+    borderBottomWidth: 1, borderBottomColor: QuinckleColors.borderSubtle,
+  },
+  floatRowText: { ...Typography.caption, color: QuinckleColors.textSecondary, flex: 1 },
+  floatRowAmount: { ...Typography.caption, color: QuinckleColors.textPrimary, fontWeight: '700' },
 
   rowBtn: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.md,

@@ -1117,18 +1117,19 @@ export interface OpenShift {
     id: string; openingFloat: string | number; openedAt: string; openingNote?: string | null;
     openedBy?: { id: string; name: string } | null; movements: CashMovement[];
   };
-  // cashWithRiders / riderSettlementsIn are optional: a backend deployed before
-  // delivery does not send them, and the drawer must render exactly as before.
+  // cashWithRiders / riderSettlementsIn / selfSettledCash are optional: a
+  // backend deployed before delivery does not send them, and the drawer must
+  // render exactly as before.
   aggregates: {
     cashSales: number; payIns: number; payOuts: number; expectedCash: number;
-    cashWithRiders?: number; riderSettlementsIn?: number;
+    cashWithRiders?: number; riderSettlementsIn?: number; selfSettledCash?: number;
   };
 }
 export interface ShiftCloseResult {
   id: string; openingFloat: string | number; countedCash: string | number;
   expectedCash: number; cashSalesTotal: number; variance: number;
   cashSales: number; payIns: number; payOuts: number; openedAt: string; closedAt: string;
-  cashWithRiders?: number; riderSettlementsIn?: number;
+  cashWithRiders?: number; riderSettlementsIn?: number; selfSettledCash?: number;
 }
 
 export interface ZReport {
@@ -1137,7 +1138,7 @@ export interface ZReport {
   sales: { orders: number; sessions: number; grossSales: number; discounts: number; gstCollected: number; netSales: number };
   adjustments: { voidCount: number; voidAmount: number; compCount: number; compAmount: number };
   drawer:
-    | { state: 'CLOSED'; openingFloat: number; cashSales: number; cashWithRiders?: number; expected: number; counted: number; variance: number; openedAt: string; closedAt: string }
+    | { state: 'CLOSED'; openingFloat: number; cashSales: number; cashWithRiders?: number; selfSettledCash?: number; expected: number; counted: number; variance: number; openedAt: string; closedAt: string }
     | { state: 'OPEN'; openingFloat: number; openedAt: string }
     | { state: 'NONE' };
 }
@@ -1226,7 +1227,21 @@ export interface DeliveryOrder {
   failure_reason: string | null;
   cod_amount: number | null;
   cod_settled_at: string | null;
+  /**
+   * Closed by the rider themself. Only an owner/manager can (V2 §3) — for
+   * everyone else the handover is two people — and when they do, it says so.
+   */
+  cod_self_settled?: boolean;
   payment_status: string | null;
+  /**
+   * Live prep off the kitchen display — `{ ready, total }` items.
+   *
+   * This is what replaced the ACCEPTED and READY stages (V2 §2): the counter
+   * reads what the kitchen has finished instead of re-declaring it. NULL means
+   * the server did not send it (an older backend, or a response that did not
+   * load items) — render nothing, never "0/0".
+   */
+  prep?: { ready: number; total: number } | null;
   /** Orders on this session that still owe money — what the payment sheet settles. */
   unpaid_order_ids?: string[];
   final_total: number | null;
@@ -1291,7 +1306,7 @@ export const crewDelivery = {
    * friction at the busiest moment of the evening.
    */
   settleRider: (riderId: string) =>
-    request<{ success: true; data: { settled: number; amount: number; delivery_ids: string[] } }>(
+    request<{ success: true; data: { settled: number; amount: number; delivery_ids: string[]; self_settled?: boolean } }>(
       'POST', '/api/crew/delivery/settle-rider', { riderId }, true),
 
   /** One order's cash, for a rider settling only part of their float. */

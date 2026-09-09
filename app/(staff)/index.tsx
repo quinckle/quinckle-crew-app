@@ -60,7 +60,8 @@ import { MenuSkeleton } from '../../components/ui/MenuSkeleton';
 import { TakeawaySkeleton } from '../../components/ui/TakeawaySkeleton';
 import { GiveDiscountModal } from '../../components/ui/GiveDiscountModal';
 import { DeliveryBoard } from '../../components/delivery/DeliveryBoard';
-import { CAP } from '../../constants/capabilities';
+import { RiderRuns } from '../../components/delivery/RiderRuns';
+import { CAP, deliveryViewFor, hasCapability, type Capability } from '../../constants/capabilities';
 import { useResponsive } from '../../hooks/useResponsive';
 import { expiryLevel, expiryColor, expiryChipStyle, type ExpiryLevel } from '../../constants/sessionExpiry';
 import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
@@ -251,7 +252,7 @@ const STATUS_META: Record<TableStatus, { label: string; color: string }> = {
 
 export default function StaffDashboard() {
   const insets = useSafeAreaInsets();
-  const { staffInfo, can } = useAuth();
+  const { staffInfo, capabilities } = useAuth();
   const { width: winWidth, isTablet, isWide } = useResponsive();
   // Table grid columns: phones stay 2-up; tablets scale with width (target
   // ~240dp per card) so landscape fills the screen instead of leaving 2 wide
@@ -264,7 +265,13 @@ export default function StaffDashboard() {
   // capability list is unknown (older backend / restored session), so the
   // capability alone would put a dead tab on every venue's navbar; one cheap
   // probe settles it, since every delivery route 404s where it is off.
-  const canDelivery = can(CAP.DELIVERY);
+  //
+  // WHICH board they get follows from the capability too (§3/§4): the counter
+  // runs the whole panel, a rider sees only their own runs. One tab, two
+  // views — a separate rider stack would duplicate every lifecycle action for
+  // no behavioural difference.
+  const deliveryView = deliveryViewFor(capabilities);
+  const canDelivery = deliveryView !== null;
   const [deliveryOn, setDeliveryOn] = useState(false);
   useEffect(() => {
     if (!canDelivery) { setDeliveryOn(false); return; }
@@ -278,6 +285,52 @@ export default function StaffDashboard() {
   useEffect(() => {
     if (!deliveryOn) setActiveTab((t) => (t === 'delivery' ? 'tables' : t));
   }, [deliveryOn]);
+
+  /**
+   * The navbar is built from capabilities, not fixed (§3).
+   *
+   * It used to be four hard-coded tabs, which was harmless while everyone who
+   * could log in could work the floor. A rider-only staffer breaks that: they
+   * would land on a table grid they cannot use, with their actual job one tab
+   * across. Same rule as the burger menu — show what they hold.
+   *
+   * `can` answers YES when capabilities are unknown (older backend, restored
+   * session), so this degrades to exactly the old four-tab bar rather than to
+   * an empty one.
+   */
+  const navTabs = useMemo(() => {
+    // Keyed off `capabilities` rather than `can`, which AuthContext rebuilds
+    // on every render — depending on it would recompute the bar (and re-run
+    // the effect below) on every single render.
+    const holds = (c: Capability) => hasCapability(capabilities, c);
+    const tabs: { key: NavItem; label: string; icon: any; iconActive: any }[] = [];
+    if (holds(CAP.ORDERS)) {
+      tabs.push({ key: 'orders', label: 'Orders', icon: 'receipt-outline', iconActive: 'receipt' });
+    }
+    if (holds(CAP.TABLES)) {
+      tabs.push({ key: 'tables', label: 'Tables', icon: 'grid-outline', iconActive: 'grid' });
+    }
+    // Takeaway is a channel of ORDERS, not a capability of its own.
+    if (holds(CAP.ORDERS)) {
+      tabs.push({ key: 'takeaway', label: 'Takeaway', icon: 'bag-handle-outline', iconActive: 'bag-handle' });
+    }
+    // Delivery sits beside the other two off-premise channels, not five taps
+    // away behind the burger menu — and only where the venue has it switched on.
+    if (deliveryOn) {
+      tabs.push({ key: 'delivery', label: 'Delivery', icon: 'bicycle-outline', iconActive: 'bicycle' });
+    }
+    if (holds(CAP.MENU_EDIT)) {
+      tabs.push({ key: 'menu', label: 'Menu', icon: 'restaurant-outline', iconActive: 'restaurant' });
+    }
+    return tabs;
+  }, [capabilities, deliveryOn]);
+
+  // A staffer whose only tab is Delivery must OPEN on it. The default is
+  // 'tables', which for a rider is a grid they hold no capability for.
+  useEffect(() => {
+    if (navTabs.length === 0) return;
+    setActiveTab((t) => (navTabs.some((tab) => tab.key === t) ? t : navTabs[0].key));
+  }, [navTabs]);
   const [filterVisible, setFilterVisible] = useState(false);
   // Tapping a free table starts the session immediately — no confirm modal.
   // Long-press is already "mark offline" (see handleLongPress), so a single
@@ -2740,7 +2793,7 @@ export default function StaffDashboard() {
         <View style={styles.tabContent}>
           {/* The whole delivery board, framed as a tab: the dashboard keeps its
               top bar and side padding, the board brings the rest. */}
-          <DeliveryBoard embedded />
+          {deliveryView === 'RIDER' ? <RiderRuns embedded /> : <DeliveryBoard embedded />}
         </View>
       ) : null}
 
@@ -2779,17 +2832,7 @@ export default function StaffDashboard() {
       <BottomNavbar
         activeTab={activeTab}
         onTabChange={setActiveTab}
-        tabs={[
-          { key: 'orders' as NavItem, label: 'Orders', icon: 'receipt-outline', iconActive: 'receipt' },
-          { key: 'tables' as NavItem, label: 'Tables', icon: 'grid-outline', iconActive: 'grid' },
-          { key: 'takeaway' as NavItem, label: 'Takeaway', icon: 'bag-handle-outline', iconActive: 'bag-handle' },
-          // Delivery sits beside the other two off-premise channels, not five
-          // taps away behind the burger menu.
-          ...(deliveryOn
-            ? [{ key: 'delivery' as NavItem, label: 'Delivery', icon: 'bicycle-outline' as const, iconActive: 'bicycle' as const }]
-            : []),
-          { key: 'menu' as NavItem, label: 'Menu', icon: 'restaurant-outline', iconActive: 'restaurant' },
-        ]}
+        tabs={navTabs}
       />
 
       {/* Filter tables — centered modal on tablet-landscape, bottom sheet elsewhere */}

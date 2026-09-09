@@ -110,6 +110,18 @@ export default function ZReportScreen() {
                 )}
                 <Row label="Expected" value={inr(d.expected)} />
                 <Row label="Counted" value={inr(d.counted)} />
+                {/* AFTER the drawer maths, never inside it: this cash IS in the
+                    till, so it changes no total. It is named because it is the
+                    only money on the slip that one person both carried and
+                    received — everyone else hands their float to somebody else
+                    (V2 §3). Hidden at zero, which is almost every venue. */}
+                {(d.selfSettledCash ?? 0) > 0 && (
+                  <Row
+                    label="Of which self-settled"
+                    value={inr(d.selfSettledCash ?? 0)}
+                    tone="warning"
+                  />
+                )}
                 <View style={styles.divider} />
                 <Row label="Variance"
                   value={`${d.variance < 0 ? '−' : d.variance > 0 ? '+' : ''}${inr(Math.abs(d.variance))}`}

@@ -92,6 +92,9 @@ export default function CashDrawer() {
               {(result.cashWithRiders ?? 0) > 0 && (
                 <Row label="Less: cash with riders" value={`−${inr(result.cashWithRiders ?? 0)}`} tone="warning" />
               )}
+              {(result.selfSettledCash ?? 0) > 0 && (
+                <Row label="Of which self-settled" value={inr(result.selfSettledCash ?? 0)} tone="warning" />
+              )}
               <Row label="Expected in drawer" value={inr(result.expectedCash)} />
               <Row label="Counted" value={inr(result.countedCash)} />
               <View style={styles.divider} />
@@ -139,6 +142,13 @@ export default function CashDrawer() {
                 )}
                 {(agg?.riderSettlementsIn ?? 0) > 0 && (
                   <Row label="Riders settled in" value={`+${inr(agg?.riderSettlementsIn ?? 0)}`} tone="success" />
+                )}
+                {/* No sign and no arithmetic: this cash is already inside the
+                    line above. It is called out because it is the only float
+                    one person both carried and received — an owner closing
+                    their own (V2 §3). Hidden at zero, which is most venues. */}
+                {(agg?.selfSettledCash ?? 0) > 0 && (
+                  <Row label="Of which self-settled" value={inr(agg?.selfSettledCash ?? 0)} tone="warning" />
                 )}
               </View>
 

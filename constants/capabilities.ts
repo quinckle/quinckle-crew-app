@@ -16,7 +16,13 @@ export const CAP = {
   DUES: 'DUES',
   OUTSTANDING: 'OUTSTANDING',
   KITCHEN: 'KITCHEN',
-  DELIVERY: 'DELIVERY',
+  // Two delivery keys, and the split is about MONEY (DELIVERY_V2_PLAN §3).
+  // The counter dispatches and receives cash back; the rider carries it. They
+  // are mutually exclusive for staff — enforced on the backend, not here —
+  // because stage 3 and stage 4 are meant to be two people saying the same
+  // number. An owner/manager may hold both and self-settle, which is stamped.
+  DELIVERY_COUNTER: 'DELIVERY_COUNTER',
+  DELIVERY_RIDER: 'DELIVERY_RIDER',
   MENU_EDIT: 'MENU_EDIT',
   STOCK: 'STOCK',
   EXPENSES: 'EXPENSES',
@@ -41,6 +47,10 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   DUES: 'Khata / dues',
   OUTSTANDING: 'Outstanding receivables',
   KITCHEN: 'Kitchen display',
+  DELIVERY_COUNTER: 'Delivery counter',
+  DELIVERY_RIDER: 'Deliveries (riding)',
+  // A pre-split backend still sends the single key; label it rather than
+  // showing a staffer a blank row in "Your access".
   DELIVERY: 'Deliveries & riding',
   MENU_EDIT: 'Edit menu & combos',
   STOCK: 'Stock & availability',
@@ -72,6 +82,38 @@ export function hasCapability(capabilities: string[] | undefined | null, capabil
 export function hasAnyCapability(capabilities: string[] | undefined | null, wanted: Capability[]): boolean {
   if (capabilities === undefined || capabilities === null) return true;
   return wanted.some((c) => capabilities.includes(c));
+}
+
+/**
+ * Which delivery view does this staffer get? (DELIVERY_V2_PLAN §3/§4)
+ *
+ * There is no rider APP and no rider STACK — there is one Delivery tab whose
+ * contents follow from the capability held, the same rule that already governs
+ * every other screen.
+ *
+ *   'COUNTER'  the whole board: phone orders, dispatch, cancel, fail, cash back
+ *   'RIDER'    only their own runs: details, payment sheet, Completed
+ *   null       no delivery access; the tab does not appear at all
+ *
+ * COUNTER WINS when someone holds both. That combination is only legal for an
+ * owner (the §3 exception), and the counter board is a superset of the rider
+ * view — an owner who rides can still collect and complete from it. Showing
+ * them the cut-down view instead would hide their own cash position.
+ *
+ * Unknown capabilities mean an older backend, so we answer COUNTER: that is
+ * the board this app has always shown, and hiding it would strand a working
+ * staffer. Server-side checks are the real control either way.
+ */
+export type DeliveryView = 'COUNTER' | 'RIDER' | null;
+
+export function deliveryViewFor(capabilities: string[] | undefined | null): DeliveryView {
+  if (!Array.isArray(capabilities)) return 'COUNTER';
+  // 'DELIVERY' is the pre-split key. A backend that has not been migrated yet
+  // still sends it, and it always meant the counter.
+  const counter =
+    capabilities.includes(CAP.DELIVERY_COUNTER) || capabilities.includes('DELIVERY');
+  if (counter) return 'COUNTER';
+  return capabilities.includes(CAP.DELIVERY_RIDER) ? 'RIDER' : null;
 }
 
 /**

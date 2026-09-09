@@ -66,6 +66,12 @@ export function buildZReportText(z: ZReport, paper: PaperProfile | number = 58):
     }
     L.push(`[L]${leftRight('Expected', fmt(z.drawer.expected), W)}`);
     L.push(`[L]${leftRight('Counted', fmt(z.drawer.counted), W)}`);
+    // After the maths, not inside it — this cash IS in the till. Printed
+    // because it is the only float on the slip that one person both carried
+    // and received. Omitted at zero, which is almost every venue.
+    if ((z.drawer.selfSettledCash ?? 0) > 0) {
+      L.push(`[L]${leftRight('Of which self-settled', fmt(z.drawer.selfSettledCash ?? 0), W)}`);
+    }
     const v = z.drawer.variance;
     const sign = v < 0 ? '-' : v > 0 ? '+' : '';
     L.push(`[L]<b>${leftRight('Variance', `${sign}${fmt(Math.abs(v))}`, W)}</b>`);
