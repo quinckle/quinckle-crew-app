@@ -18,6 +18,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
+import type { Channel } from '../../constants/channel';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 
 export type KitchenItem = {
@@ -33,7 +34,7 @@ export type KitchenTicket = {
   location:  string;
   placedAt?: string;
   status:    'new' | 'completed';
-  channel?:  'DINE_IN' | 'TAKEAWAY';
+  channel?:  Channel;
   pickupToken?: string | null;
   sessionRef?: string | null;
   items:     KitchenItem[];

@@ -39,6 +39,7 @@ import {
   type KitchenTicket,
 } from '../../components/ui/KitchenTicketCard';
 import { KitchenSkeleton } from '../../components/ui/KitchenSkeleton';
+import { normalizeChannel, isOffPremise, channelLabel, locationLabel } from '../../constants/channel';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -108,9 +109,13 @@ export default function CookDashboard() {
   // ── Data mapping ─────────────────────────────────────────────────────────
   const mapTicket = (t: any, isCompleted = false): KitchenTicket => ({
     id:       t.order_id,
-    table:    t.channel === 'TAKEAWAY' ? (t.pickup_token ?? 'TK') : `T${t.table_number}`,
-    location: t.channel === 'TAKEAWAY' ? 'Takeaway' : '',
-    channel:  t.channel === 'TAKEAWAY' ? 'TAKEAWAY' : 'DINE_IN',
+    // Every one of these used to be `=== 'TAKEAWAY' ? … : dine-in`, which
+    // showed a delivery ticket as table "T0" on the kitchen display. The
+    // counter now reads prep state off THIS board to decide what is packable
+    // (DELIVERY_V2_PLAN §2), so the kitchen has to say which channel it is.
+    table:    locationLabel(t.channel, { token: t.pickup_token, tableNumber: t.table_number }),
+    location: isOffPremise(t.channel) ? channelLabel(t.channel) : '',
+    channel:  normalizeChannel(t.channel),
     pickupToken: t.pickup_token ?? null,
     sessionRef: t.session_ref ?? null,
     placedAt: t.placed_at,
