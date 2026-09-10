@@ -5,7 +5,7 @@
  * Handles: scan BT devices, pair, unpair, test print, status display.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -13,7 +13,7 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
-  FlatList,
+  TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -21,18 +21,34 @@ import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { QuinckleColors, Radius, Spacing } from '../constants/Colors';
 import { ThemedDialog } from '../components/ui/themed-dialog';
+import { WidthPickerSheet } from '../components/ui/WidthPickerSheet';
 import {
   scan,
   pair,
+  pairNetwork,
+  pairUsb,
   unpair,
   printTest,
   getStatus,
   getConfig,
+  isUpiQrEnabled,
+  setUpiQrEnabled,
+  isUsbSupported,
+  listUsbPrinters,
   type BluetoothDevice,
   type PrinterStatus,
+  type UsbPrinterDevice,
 } from '../services/printer';
 import { printerApi } from '../services/api';
+import { getPrintDeviceId } from '../services/printDevice';
 import { useAuth } from '../context/AuthContext';
+
+/** Suffix shown after the paper width on the status card. Bluetooth is the
+ *  historical default and stays unlabelled. */
+const TRANSPORT_LABEL: Record<string, string> = {
+  network: ' · Network',
+  usb: ' · USB',
+};
 
 export default function PrinterScreen() {
   const insets = useSafeAreaInsets();
@@ -59,10 +75,30 @@ export default function PrinterScreen() {
   const [isUnpairing, setIsUnpairing] = useState(false);
   const [showScanView, setShowScanView] = useState(false);
   const [toast, setToast] = useState<{ message: string; ok: boolean } | null>(null);
+  const [upiQr, setUpiQr] = useState(isUpiQrEnabled());
+
+  // Network (LAN/WiFi) printer entry
+  const [showNetworkForm, setShowNetworkForm] = useState(false);
+  const [networkIp, setNetworkIp] = useState('');
+  const [networkPort, setNetworkPort] = useState('9100');
+
+  // USB (OTG) printers. `usbAvailable` is false on builds without the native
+  // patch — devices on an older APK still receive this JS over OTA, so the
+  // whole USB section must stay hidden there rather than crash on print.
+  const usbAvailable = isUsbSupported();
+  const [usbDevices, setUsbDevices] = useState<UsbPrinterDevice[]>([]);
+  const [isUsbScanning, setIsUsbScanning] = useState(false);
+  const [selectedUsb, setSelectedUsb] = useState<UsbPrinterDevice | null>(null);
+
+  const handleUpiQrToggle = useCallback((next: boolean) => {
+    setUpiQr(next);
+    Haptics.selectionAsync();
+    void setUpiQrEnabled(next);
+  }, []);
 
   const [dialog, setDialog] = useState<{
     visible: boolean; title: string; message: string;
-    actions: Array<{ label: string; variant?: 'default' | 'danger' | 'primary'; onPress: () => void }>;
+    actions: { label: string; variant?: 'default' | 'danger' | 'primary'; onPress: () => void }[];
   }>({ visible: false, title: '', message: '', actions: [] });
 
   // ── Load server status on mount ────────────────────────────────────────────
@@ -113,6 +149,9 @@ export default function PrinterScreen() {
     setIsScanning(true);
     setDevices([]);
     setShowScanView(true);
+    // USB enumeration is instant and permission-free, so fold it into the same
+    // gesture — the crew opens one screen and sees every reachable printer.
+    void refreshUsbDevices();
     try {
       const found = await scan();
       setDevices(found);
@@ -128,27 +167,53 @@ export default function PrinterScreen() {
     }
   }
 
-  // ── Pair ───────────────────────────────────────────────────────────────────
+  // ── Paper width picker ───────────────────────────────────────────────────────
+  // Opens a bottom sheet with the standard roll widths; invokes `onPick` with
+  // the chosen width in mm. Used by both the Bluetooth and network pairing flows.
 
-  async function handlePair(device: BluetoothDevice) {
+  const [widthPickerVisible, setWidthPickerVisible] = useState(false);
+  const widthPickerCallback = useRef<((widthMM: number) => void) | null>(null);
+
+  function chooseWidth(onPick: (widthMM: number) => void) {
+    widthPickerCallback.current = onPick;
+    setWidthPickerVisible(true);
+  }
+
+  function handleWidthPick(widthMM: number) {
+    setWidthPickerVisible(false);
+    const cb = widthPickerCallback.current;
+    widthPickerCallback.current = null;
+    cb?.(widthMM);
+  }
+
+  // ── Pair (Bluetooth) ─────────────────────────────────────────────────────────
+
+  function handlePair(device: BluetoothDevice) {
+    // Ask for the paper width first, then pair — fixes the old always-58mm bug.
+    chooseWidth((width) => void doPairBluetooth(device, width));
+  }
+
+  async function doPairBluetooth(device: BluetoothDevice, width: number) {
     if (!staffInfo?.id) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setSelectedDevice(device);
     setIsPairing(true);
     try {
-      await pair(device, 58);
-      // Also register on backend
+      await pair(device, width);
+      // Also register on backend — deviceId marks THIS device as the sink so
+      // any previously-paired device stands down (see printSink self-heal).
       await printerApi.setPairing({
         pairedTo: staffInfo.id,
         name: device.name,
         address: device.address,
-        paperWidth: 58,
+        paperWidth: width,
+        deviceId: await getPrintDeviceId(),
       });
       setLocalStatus(getStatus());
       setConfig(getConfig());
       await loadServerStatus();
       setShowScanView(false);
-      showToast(`Paired with ${device.name}`, true);
+      showToast(`Paired with ${device.name} · ${width}mm`, true);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch {
       showToast(`Failed to pair with ${device.name}`, false);
@@ -156,6 +221,94 @@ export default function PrinterScreen() {
     } finally {
       setIsPairing(false);
       setSelectedDevice(null);
+    }
+  }
+
+  // ── Pair (Network / LAN) ──────────────────────────────────────────────────────
+
+  function handlePairNetwork() {
+    const ip = networkIp.trim();
+    if (!ip) {
+      showToast('Enter the printer IP address', false);
+      return;
+    }
+    chooseWidth((width) => void doPairNetwork(ip, width));
+  }
+
+  async function doPairNetwork(ip: string, width: number) {
+    if (!staffInfo?.id) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const port = parseInt(networkPort, 10) || 9100;
+    const name = `Network printer (${ip})`;
+    setIsPairing(true);
+    try {
+      await pairNetwork({ ip, port, name }, width);
+      await printerApi.setPairing({
+        pairedTo: staffInfo.id,
+        name,
+        address: `tcp://${ip}:${port}`,
+        paperWidth: width,
+        deviceId: await getPrintDeviceId(),
+      });
+      setLocalStatus(getStatus());
+      setConfig(getConfig());
+      await loadServerStatus();
+      setShowScanView(false);
+      setShowNetworkForm(false);
+      showToast(`Paired with ${name} · ${width}mm`, true);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch {
+      showToast('Failed to reach the network printer. Check the IP and that it is on the same WiFi.', false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    } finally {
+      setIsPairing(false);
+    }
+  }
+
+  // ── Pair (USB / OTG) ─────────────────────────────────────────────────────────
+
+  const refreshUsbDevices = useCallback(async () => {
+    if (!usbAvailable) return;
+    setIsUsbScanning(true);
+    try {
+      setUsbDevices(await listUsbPrinters());
+    } finally {
+      setIsUsbScanning(false);
+    }
+  }, [usbAvailable]);
+
+  function handlePairUsb(device: UsbPrinterDevice) {
+    chooseWidth((width) => void doPairUsb(device, width));
+  }
+
+  async function doPairUsb(device: UsbPrinterDevice, width: number) {
+    if (!staffInfo?.id) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setSelectedUsb(device);
+    setIsPairing(true);
+    try {
+      await pairUsb(device, width);
+      await printerApi.setPairing({
+        pairedTo: staffInfo.id,
+        name: device.deviceName,
+        // Mirrors the tcp:// convention so the server keeps one address column
+        // that encodes the transport.
+        address: `usb://${device.vendorId}:${device.productId}`,
+        paperWidth: width,
+        deviceId: await getPrintDeviceId(),
+      });
+      setLocalStatus(getStatus());
+      setConfig(getConfig());
+      await loadServerStatus();
+      setShowScanView(false);
+      showToast(`Paired with ${device.deviceName} · ${width}mm`, true);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch {
+      showToast(`Failed to pair with ${device.deviceName}`, false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    } finally {
+      setIsPairing(false);
+      setSelectedUsb(null);
     }
   }
 
@@ -178,7 +331,7 @@ export default function PrinterScreen() {
               setLocalStatus('unpaired');
               setConfig(null);
               await loadServerStatus();
-              showToast('Printer unpaired', true);
+              showToast('Printer has been unpaired', false);
             } catch {
               showToast('Failed to unpair', false);
             } finally {
@@ -246,7 +399,9 @@ export default function PrinterScreen() {
                 <>
                   <Text style={styles.statusName}>{config.name}</Text>
                   <Text style={styles.statusSub}>
-                    {localStatus === 'connected' ? 'Connected · 58mm' : 'Disconnected — tap re-pair to reconnect'}
+                    {localStatus === 'connected'
+                      ? `Connected · ${config.paperWidth}mm${TRANSPORT_LABEL[config.transport] ?? ''}`
+                      : 'Disconnected — tap re-pair to reconnect'}
                   </Text>
                 </>
               ) : serverStatus?.paired ? (
@@ -275,6 +430,21 @@ export default function PrinterScreen() {
               style={[styles.toggleTrack, kotAutoPrint && styles.toggleTrackOn]}
             >
               <View style={[styles.toggleThumb, kotAutoPrint && styles.toggleThumbOn]} />
+            </TouchableOpacity>
+          </View>
+
+          {/* UPI scan-to-pay QR on bills */}
+          <View style={styles.autoPrintRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.autoPrintLabel}>Print UPI QR on bills</Text>
+              <Text style={styles.autoPrintSub}>Scan-to-pay QR with the exact amount on unpaid bills</Text>
+            </View>
+            <TouchableOpacity
+              onPress={() => handleUpiQrToggle(!upiQr)}
+              activeOpacity={0.8}
+              style={[styles.toggleTrack, upiQr && styles.toggleTrackOn]}
+            >
+              <View style={[styles.toggleThumb, upiQr && styles.toggleThumbOn]} />
             </TouchableOpacity>
           </View>
         </View>
@@ -375,6 +545,101 @@ export default function PrinterScreen() {
                 <Text style={styles.rescanText}>Scan again</Text>
               </TouchableOpacity>
             )}
+
+            {/* USB / OTG printers — hidden entirely on builds without the
+                native USB bridge (see usbAvailable). */}
+            {usbAvailable && (
+              <>
+                <View style={styles.netDivider} />
+                <View style={styles.scanHeader}>
+                  <Text style={styles.sectionLabel}>USB PRINTERS</Text>
+                  {isUsbScanning && <ActivityIndicator size="small" color={QuinckleColors.primary} />}
+                </View>
+
+                {usbDevices.length === 0 && !isUsbScanning && (
+                  <Text style={styles.emptyText}>
+                    No USB printer detected. Connect it with an OTG cable and make sure it is powered on.
+                  </Text>
+                )}
+
+                {usbDevices.map((device) => (
+                  <TouchableOpacity
+                    key={`${device.vendorId}:${device.productId}`}
+                    style={[
+                      styles.deviceRow,
+                      isPairing
+                        && selectedUsb?.vendorId === device.vendorId
+                        && selectedUsb?.productId === device.productId
+                        && styles.deviceRowLoading,
+                    ]}
+                    onPress={() => handlePairUsb(device)}
+                    disabled={isPairing}
+                    activeOpacity={0.75}
+                  >
+                    <Ionicons name="hardware-chip-outline" size={20} color={QuinckleColors.textSecondary} />
+                    <View style={{ flex: 1, marginLeft: Spacing.sm }}>
+                      <Text style={styles.deviceName}>{device.deviceName}</Text>
+                      <Text style={styles.deviceAddress}>USB · {device.vendorId}:{device.productId}</Text>
+                    </View>
+                    {isPairing
+                      && selectedUsb?.vendorId === device.vendorId
+                      && selectedUsb?.productId === device.productId
+                      ? <ActivityIndicator size="small" color={QuinckleColors.primary} />
+                      : <Ionicons name="chevron-forward" size={16} color={QuinckleColors.textTertiary} />
+                    }
+                  </TouchableOpacity>
+                ))}
+
+                {!isUsbScanning && (
+                  <TouchableOpacity style={styles.rescanBtn} onPress={() => void refreshUsbDevices()} activeOpacity={0.7}>
+                    <Ionicons name="refresh-outline" size={15} color={QuinckleColors.primary} />
+                    <Text style={styles.rescanText}>Check for USB printers</Text>
+                  </TouchableOpacity>
+                )}
+              </>
+            )}
+
+            {/* Network / WiFi printer entry */}
+            <View style={styles.netDivider} />
+            {!showNetworkForm ? (
+              <TouchableOpacity style={styles.rescanBtn} onPress={() => setShowNetworkForm(true)} activeOpacity={0.7}>
+                <Ionicons name="wifi-outline" size={15} color={QuinckleColors.primary} />
+                <Text style={styles.rescanText}>Add a network / WiFi printer</Text>
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.netForm}>
+                <Text style={styles.netLabel}>NETWORK PRINTER (LAN / WiFi)</Text>
+                <TextInput
+                  style={styles.netInput}
+                  placeholder="Printer IP (e.g. 192.168.1.50)"
+                  placeholderTextColor={QuinckleColors.textTertiary}
+                  value={networkIp}
+                  onChangeText={setNetworkIp}
+                  keyboardType="numbers-and-punctuation"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <TextInput
+                  style={styles.netInput}
+                  placeholder="Port (default 9100)"
+                  placeholderTextColor={QuinckleColors.textTertiary}
+                  value={networkPort}
+                  onChangeText={setNetworkPort}
+                  keyboardType="number-pad"
+                />
+                <TouchableOpacity
+                  style={[styles.netConnectBtn, isPairing && styles.actionBtnDisabled]}
+                  onPress={handlePairNetwork}
+                  disabled={isPairing}
+                  activeOpacity={0.85}
+                >
+                  {isPairing
+                    ? <ActivityIndicator size="small" color="#fff" />
+                    : <Ionicons name="print-outline" size={16} color="#fff" />}
+                  <Text style={styles.netConnectText}>Connect network printer</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
         )}
       </ScrollView>
@@ -393,6 +658,12 @@ export default function PrinterScreen() {
         message={dialog.message}
         actions={dialog.actions}
         onClose={() => setDialog((d) => ({ ...d, visible: false }))}
+      />
+
+      <WidthPickerSheet
+        visible={widthPickerVisible}
+        onPick={handleWidthPick}
+        onClose={() => setWidthPickerVisible(false)}
       />
     </View>
   );
@@ -557,6 +828,36 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.sm,
   },
   rescanText: { fontSize: 13, color: QuinckleColors.primary },
+
+  netDivider: { height: 1, backgroundColor: QuinckleColors.border, marginTop: Spacing.sm },
+  netForm: { paddingTop: Spacing.md, gap: Spacing.sm },
+  netLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    color: QuinckleColors.textTertiary,
+  },
+  netInput: {
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: QuinckleColors.textPrimary,
+  },
+  netConnectBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    backgroundColor: QuinckleColors.primary,
+    borderRadius: Radius.pill,
+    paddingVertical: 12,
+    marginTop: 4,
+  },
+  netConnectText: { fontSize: 14, fontWeight: '600', color: '#fff' },
 
   toast: {
     position: 'absolute',

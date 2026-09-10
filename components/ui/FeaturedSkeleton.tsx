@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { Animated, Easing, StyleSheet, View } from 'react-native';
-import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
+import { Radius, Spacing } from '../../constants/Colors';
 import { ShimmerBlock } from './TableSkeleton';
 
 const SHIMMER_DURATION_MS = 1500;

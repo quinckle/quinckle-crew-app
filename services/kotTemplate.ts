@@ -1,11 +1,16 @@
 /**
  * KOT Template builder (KOT_PRINTER_PLAN.md Phase 5)
  *
- * Converts an order into ESC/POS text commands for 58mm or 80mm thermal printers.
+ * Converts an order into ESC/POS text commands for any thermal printer width
+ * (58 / 72 / 80 / 112 mm). Layout is driven entirely by the PaperProfile's
+ * computed charsPerLine, so a new width needs no template changes.
  * Uses react-native-thermal-printer's text command format.
  *
  * Output: array of text-format strings passed to ThermalPrinter.printText().
  */
+
+import { profileFromWidth, type PaperProfile } from './paperProfile';
+import { isOffPremise, channelLabel } from '../constants/channel';
 
 export interface KotItem {
   name: string;
@@ -19,6 +24,8 @@ export interface KotItem {
 export interface KotOrder {
   id: string;
   sessionId?: string;
+  /** Human-readable session ref (e.g. "TK-070726-ABC-001"), same value the bill prints. Preferred over the id-derived fallback. */
+  sessionRef?: string | null;
   tableNumber: number | string;
   /** Sequential day-counter (e.g. 1, 2, 42). Takes priority over id-derived suffix. */
   orderNumber?: string | number;
@@ -27,16 +34,11 @@ export interface KotOrder {
   items: KotItem[];
   isAddOn?: boolean;
   isUrgent?: boolean;
+  channel?: 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY';
+  pickupToken?: string;
 }
 
-// ── Character widths ───────────────────────────────────────────────────────────
-
-const WIDTH_58 = 32; // ~32 chars on 58mm at 12pt
-const WIDTH_80 = 48; // ~48 chars on 80mm at 12pt
-
-function lineWidth(paperWidth: 58 | 80): number {
-  return paperWidth === 80 ? WIDTH_80 : WIDTH_58;
-}
+// ── Layout helpers ─────────────────────────────────────────────────────────────
 
 function center(text: string, width: number): string {
   const pad = Math.max(0, Math.floor((width - text.length) / 2));
@@ -56,14 +58,6 @@ function formatTime(iso: string): string {
   }
 }
 
-function minutesAgo(iso: string): number {
-  try {
-    return Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
-  } catch {
-    return 0;
-  }
-}
-
 function toSessionRef(sessionId: string | null | undefined): string {
   const v = String(sessionId ?? '');
   const tail = v.slice(-8).toUpperCase();
@@ -75,32 +69,47 @@ function toSessionRef(sessionId: string | null | undefined): string {
 /**
  * Returns the full KOT as a single ESC/POS text string
  * (react-native-thermal-printer `text` format — uses [C] center, [L] left, etc.)
+ *
+ * `paper` accepts a full PaperProfile, or a bare width in mm (back-compat) which
+ * is resolved to a profile via profileFromWidth().
  */
-export function buildKotText(order: KotOrder, paperWidth: 58 | 80 = 58): string {
-  const W = lineWidth(paperWidth);
+export function buildKotText(order: KotOrder, paper: PaperProfile | number = 58): string {
+  const profile = typeof paper === 'number' ? profileFromWidth(paper) : paper;
+  const W = profile.charsPerLine;
   const lines: string[] = [];
   const D = divider(W, '=');
   const d = divider(W);
 
   // ── Header ────────────────────────────────────────────────────────────────
-  lines.push('[C]<b><font size="big">QUINCKLE</font></b>');
-  lines.push(`[C]<b>${order.restaurantName}</b>`);
+  lines.push(`[C]<b><font size="big">${order.restaurantName}</font></b>`);
   lines.push(`[C]${D}`);
 
-  // ── Table + Order # ───────────────────────────────────────────────────────
-  lines.push(`[C]<b><font size="big">*** TABLE ${String(order.tableNumber).padStart(2, '0')} ***</font></b>`);
+  // ── Table / Takeaway + Order # ─────────────────────────────────────────────
+  // Off-premise covers takeaway AND delivery. Before this, a delivery order fell
+  // into the dine-in branch and the kitchen got a ticket reading "Tundefined".
+  if (isOffPremise(order.channel) && order.pickupToken) {
+    lines.push(`[C]<b><font size="big">${order.pickupToken}</font></b>`);
+    lines.push(`[C]${channelLabel(order.channel)}`);
+  } else if (isOffPremise(order.channel)) {
+    // Tokenless off-premise order — still must not claim to be a table.
+    lines.push(`[C]<b><font size="big">${channelLabel(order.channel).toUpperCase()}</font></b>`);
+  } else {
+    lines.push(`[C]<b><font size="big">T${String(order.tableNumber).padStart(2, '0')}</font></b>`);
+    lines.push('[C]Dine In');
+  }
 
   // Use sequential day-counter when available; fall back to last-6-chars of id
   const ordNum = order.orderNumber != null
     ? `#${order.orderNumber}`
     : `#${order.id.slice(-6).toUpperCase()}`;
   const timeStr = formatTime(order.createdAt);
-  const ago = minutesAgo(order.createdAt);
   lines.push(`[C]Order ${ordNum}`);
-  if (order.sessionId) {
+  if (order.sessionRef) {
+    lines.push(`[C]Session ${order.sessionRef}`);
+  } else if (order.sessionId) {
     lines.push(`[C]Session ${toSessionRef(order.sessionId)}`);
   }
-  lines.push(`[C]${timeStr}  ·  ${ago} min ago`);
+  lines.push(`[C]${timeStr}`);
 
   lines.push(`[L]${d}`);
 
@@ -151,18 +160,6 @@ export function buildKotText(order: KotOrder, paperWidth: 58 | 80 = 58): string 
   if (order.isUrgent) {
     lines.push('[C]<b> *** URGENT *** </b>');
   }
-
-  // ── Footer ────────────────────────────────────────────────────────────────
-  const now = new Date().toLocaleTimeString('en-IN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
-  lines.push('[C]*** END ***');
-  lines.push(`[C]${now}`);
-  lines.push('[C]Support: quinckle.com/support');
-  lines.push(`[C]${D}`);
 
   // Blank lines + cut
   lines.push('[L] ');

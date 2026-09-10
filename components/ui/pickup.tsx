@@ -45,6 +45,12 @@ export type PickupItemData = {
   id: string;
   name: string;
   qty: number;
+  /**
+   * Units of `qty` already handed to the guest. A steward often carries out 2
+   * of a 4× line and comes back for the rest, so a line is not all-or-nothing.
+   * isServed === (servedQty >= qty).
+   */
+  servedQty: number;
   orderedAt: string;
   isServed: boolean;
   isReady: boolean;
@@ -183,27 +189,42 @@ const segStyles = StyleSheet.create({
 
 type ItemRowProps = {
   item: PickupItemData;
-  onToggle: () => void;
+  onToggle: (nextQty: number) => void;
   disabled?: boolean;
   isCompleted?: boolean;
 };
 
 function PickupItemRow({ item, onToggle, disabled, isCompleted }: ItemRowProps) {
-  // Three calm states:
+  // Four calm states:
   //   served  → filled check, collapsed, line-through
+  //   partial → half-filled check, "2/4×", still tappable for the rest
   //   ready   → empty check, bold text, green dot, tap-row enabled
   //   pending → empty check, faded text, kitchen dot, untappable
   const tappable = item.isReady && !item.isServed && !disabled && !isCompleted;
+  const servedQty = Math.max(0, Math.min(item.qty, item.servedQty));
+  const isPartial = !item.isServed && servedQty > 0;
+  // Hold-to-serve-the-rest only earns its place when there IS a rest.
+  const holdable = tappable && item.qty - servedQty > 1;
 
+  // One tap hands over one more unit. A 1× line therefore behaves exactly as
+  // it always has: single tap, done.
   const handlePress = () => {
     if (!tappable) return;
     Haptics.selectionAsync().catch(() => {});
-    onToggle();
+    onToggle(servedQty + 1);
+  };
+
+  const handleLongPress = () => {
+    if (!holdable) return;
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    onToggle(item.qty);
   };
 
   return (
     <Pressable
       onPress={handlePress}
+      onLongPress={handleLongPress}
+      delayLongPress={350}
       disabled={!tappable}
       android_ripple={tappable ? { color: 'rgba(255,255,255,0.05)' } : undefined}
       style={[rowStyles.row, item.isServed && rowStyles.rowServed]}
@@ -211,17 +232,19 @@ function PickupItemRow({ item, onToggle, disabled, isCompleted }: ItemRowProps) 
       <View style={[
         rowStyles.checkbox,
         item.isServed && rowStyles.checkboxFilled,
-        item.isReady && !item.isServed && rowStyles.checkboxReady,
+        (item.isReady || isPartial) && !item.isServed && rowStyles.checkboxReady,
       ]}>
         {item.isServed && <Ionicons name="checkmark" size={12} color="#fff" />}
+        {isPartial && <View style={rowStyles.checkboxPartialFill} />}
       </View>
 
       <Text style={[
         rowStyles.qty,
+        isPartial && rowStyles.qtyPartial,
         item.isServed && rowStyles.textMuted,
         !item.isReady && !item.isServed && rowStyles.textMuted,
       ]}>
-        {item.qty}×
+        {isPartial ? `${servedQty}/${item.qty}×` : `${item.qty}×`}
       </Text>
 
       <Text
@@ -276,11 +299,22 @@ const rowStyles = StyleSheet.create({
     backgroundColor: QuinckleColors.success,
     borderColor: QuinckleColors.success,
   },
+  // Part of the line is out. Reads as "started, not finished" at a glance,
+  // without the finality of the filled checkmark.
+  checkboxPartialFill: {
+    width: 8,
+    height: 8,
+    borderRadius: 2,
+    backgroundColor: QuinckleColors.success,
+  },
   qty: {
     color: QuinckleColors.textPrimary,
     fontSize: 14,
     fontWeight: '700',
     minWidth: 24,
+  },
+  qtyPartial: {
+    color: QuinckleColors.success,
   },
   name: {
     flex: 1,
@@ -311,7 +345,7 @@ const rowStyles = StyleSheet.create({
 type CardProps = {
   order: PickupOrderData;
   isCompleting: boolean;
-  onToggleItem: (itemId: string) => void;
+  onToggleItem: (itemId: string, nextQty: number) => void;
   onCompletionFinished: () => void;
   onReopen?: () => void;
 };
@@ -463,17 +497,20 @@ export function PickupCard({
     outputRange: [0.6, 1],
   });
 
-  // Single status phrase — simplified for direct-serve flow (no kitchen gate)
-  const remaining = items.filter(i => !i.isServed).length;
-  const servedCount = items.filter(i => i.isServed).length;
+  // Single status phrase — simplified for direct-serve flow (no kitchen gate).
+  // Counted in UNITS, not lines: with partial ticking a 4× line can be half
+  // out, and "1 of 2 served" would be a lie about how much food is still owed.
   const totalCount = items.length;
+  const unitsTotal = items.reduce((n, i) => n + i.qty, 0);
+  const unitsServed = items.reduce((n, i) => n + Math.min(i.qty, i.servedQty), 0);
+  const remaining = unitsTotal - unitsServed;
   let statusPhrase: string;
   if (isCompleted) {
     statusPhrase = `Completed${order.completedAt ? ` · ${formatClock(order.completedAt)}` : ''}`;
   } else if (remaining === 0) {
     statusPhrase = 'All served';
-  } else if (servedCount > 0) {
-    statusPhrase = `${servedCount} of ${totalCount} served · ${remaining} remaining`;
+  } else if (unitsServed > 0) {
+    statusPhrase = `${unitsServed} of ${unitsTotal} served · ${remaining} remaining`;
   } else {
     statusPhrase = `${remaining} item${remaining === 1 ? '' : 's'} · tap to serve`;
   }
@@ -545,7 +582,7 @@ export function PickupCard({
             <PickupItemRow
               key={it.id}
               item={it}
-              onToggle={() => onToggleItem(it.id)}
+              onToggle={(nextQty) => onToggleItem(it.id, nextQty)}
               disabled={isCompleting}
               isCompleted={isCompleted}
             />

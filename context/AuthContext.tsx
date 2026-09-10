@@ -3,10 +3,12 @@ import { AppState } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
-import { setCrewToken, setOn401Callback } from '../services/api';
+import { setCrewToken, setOn401Callback, crewAuth } from '../services/api';
 import type { StaffInfo } from '../services/api';
+import { hasAnyCapability, hasCapability, type Capability } from '../constants/capabilities';
 import { setRealtimeAuth, disconnectRealtime } from '../services/realtime';
 import { heartbeatCrewPushToken, registerCrewPushNotifications } from '../services/pushNotifications';
+import { setSinkContext, stopPrintSink } from '../services/printSink';
 
 type Role = 'staff' | 'cook' | null;
 
@@ -18,6 +20,13 @@ interface AuthContextType {
   login: (role: Role, token?: string, staff?: StaffInfo) => void;
   logout: () => void;
   setPhotoUrl: (url: string) => void;
+  /** Switch between the (staff) and (cook) stacks without re-authenticating. */
+  switchRole: (nextRole: 'staff' | 'cook') => void;
+  /** Effective capabilities; `undefined` = unknown (older backend / restored session). */
+  capabilities: string[] | undefined;
+  /** UX gate only — the server enforces independently. Unknown answers yes. */
+  can: (capability: Capability) => boolean;
+  canAny: (capabilities: Capability[]) => boolean;
 }
 
 // SecureStore keeps the JWT in the iOS Keychain / Android Keystore — readable
@@ -106,6 +115,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         if (saved.staffInfo?.id) {
           setRealtimeAuth(saved.crewToken, `crew:${saved.staffInfo.id}`);
         }
+        // Let the background print sink know we're signed in + which restaurant,
+        // so its foreground-service drain can run + stamp KOTs with the venue.
+        setSinkContext({ authed: true, restaurantName: saved.staffInfo?.restaurantName ?? '' });
       })
       .finally(() => setIsRestoring(false));
   }, []);
@@ -143,11 +155,28 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       }
     }
     if (staff) setStaffInfo(staff);
+    setSinkContext({ authed: true, restaurantName: staff?.restaurantName ?? '' });
     void persist(selectedRole, token ?? null, staff ?? null);
+  };
+
+  /**
+   * Move a staffer between the (staff) and (cook) stacks without re-authenticating.
+   *
+   * Deliberately NOT `login(nextRole)`: login() forwards `token ?? null` to
+   * persist(), and a null token DELETES the SecureStore entry — switching
+   * stacks that way would silently sign the user out on next launch.
+   */
+  const switchRole = (nextRole: Exclude<Role, null>) => {
+    setRole(nextRole);
+    void persist(nextRole, crewToken, staffInfo);
+    router.replace(nextRole === 'cook' ? '/(cook)' : '/(staff)');
   };
 
   const logout = () => {
     disconnectRealtime();
+    // Signal the print sink to shut down its foreground service + notification.
+    setSinkContext({ authed: false });
+    void stopPrintSink();
     setRole(null);
     setStaffInfo(null);
     setCrewTokenState(null);
@@ -171,9 +200,62 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setOn401Callback(logout);
   }, []);
 
+  // Crew tokens live 30 days, so a partner granting or revoking a capability
+  // would otherwise not reach this device until the next login. Re-fetch the
+  // profile on sign-in and whenever the app returns to the foreground, and
+  // fold the fresh list into staffInfo.
+  useEffect(() => {
+    if (!crewToken || !staffInfo?.id) return;
+
+    const refresh = async () => {
+      try {
+        const profile = (await crewAuth.getProfile())?.data;
+        const next = profile?.capabilities;
+        if (!Array.isArray(next)) return;
+        setStaffInfo(prev => {
+          if (!prev) return prev;
+          // Compare EVERY field this refresh can change, not just capabilities.
+          // Checking capabilities alone meant a staffer whose permissions hadn't
+          // moved kept a stale designation and banner colour forever — which is
+          // exactly the common case, since the migration backfilled capabilities
+          // to what they already had. The colour only appeared on a fresh login.
+          const capsSame =
+            Array.isArray(prev.capabilities) &&
+            prev.capabilities.length === next.length &&
+            prev.capabilities.every(c => next.includes(c));
+          const designationSame = (profile.designation ?? null) === (prev.designation ?? null);
+          const colorSame = (profile.designationColor ?? null) === (prev.designationColor ?? null);
+          if (capsSame && designationSame && colorSame) return prev;
+          const updated = {
+            ...prev,
+            capabilities: next,
+            designation: profile.designation ?? prev.designation,
+            designationColor: profile.designationColor ?? prev.designationColor,
+          };
+          void AsyncStorage.setItem(STAFF_KEY, JSON.stringify({ role, staffInfo: updated })).catch(() => {});
+          return updated;
+        });
+      } catch {
+        // Offline or an older backend — keep whatever we already had rather
+        // than blanking the drawer mid-shift.
+      }
+    };
+
+    void refresh();
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void refresh();
+    });
+    return () => sub.remove();
+  }, [crewToken, staffInfo?.id, role]);
+
+  const capabilities = staffInfo?.capabilities;
+  const can = (capability: Capability) => hasCapability(capabilities, capability);
+  const canAny = (wanted: Capability[]) => hasAnyCapability(capabilities, wanted);
+
   return (
     <AuthContext.Provider value={{
       role, staffInfo, crewToken, isRestoring, login, logout, setPhotoUrl,
+      switchRole, capabilities, can, canAny,
     }}>
       {children}
     </AuthContext.Provider>

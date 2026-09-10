@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useState, useRef } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   Dimensions,
-  Image,
   RefreshControl,
   StyleSheet,
   Text,
@@ -14,15 +14,18 @@ import {
 import { Stack, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useAuth } from '../../context/AuthContext';
 import { crewPayments, restaurantApi, type PendingCashRequest, type CollectedCashRecord } from '../../services/api';
+import { CAP } from '../../constants/capabilities';
 import { subscribeChannel } from '../../services/realtime';
+import { playPaymentSuccess } from '../../services/sound';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { CashCollectionSkeleton } from '../../components/ui/CashCollectionSkeleton';
+import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
 
 type Row =
   | { kind: 'sectionHeader'; title: string; subtitle: string }
+  | { kind: 'groupHeader'; title: string; subtitle: string }
   | { kind: 'pending'; data: PendingCashRequest }
   | { kind: 'collected'; data: CollectedCashRecord }
   | { kind: 'empty'; message: string };
@@ -43,11 +46,49 @@ function timeOfDay(iso: string): string {
   });
 }
 
+const inr = (n: number) => `₹${n.toLocaleString('en-IN')}`;
+
+// Confirmed Paid tab: group today's collections under their table (takeaway
+// gets its own group), each with a subtotal, so a table's payments sit
+// together instead of scattered chronologically. Groups and rows are ordered
+// most-recent-first.
+function buildConfirmedRows(collected: CollectedCashRecord[]): Row[] {
+  const grand = collected.reduce((s, c) => s + c.amount, 0);
+  const head: Row = {
+    kind: 'sectionHeader',
+    title: 'Confirmed Paid',
+    subtitle: `${collected.length} payment${collected.length === 1 ? '' : 's'} · ${inr(grand)}`,
+  };
+  if (collected.length === 0) return [head, { kind: 'empty', message: 'Nothing confirmed yet.' }];
+
+  const groups = new Map<string, CollectedCashRecord[]>();
+  for (const c of collected) {
+    const key = isOffPremise(c.channel) ? `__${String(c.channel).toLowerCase()}__` : `t${c.tableNumber || 0}`;
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(c); else groups.set(key, [c]);
+  }
+
+  const ts = (iso: string) => new Date(iso).getTime();
+  const ordered = [...groups.values()]
+    .map(recs => recs.slice().sort((a, b) => ts(b.collectedAt) - ts(a.collectedAt)))
+    .sort((a, b) => ts(b[0].collectedAt) - ts(a[0].collectedAt));
+
+  const rows: Row[] = [head];
+  for (const recs of ordered) {
+    const first = recs[0];
+    const title = isOffPremise(first.channel) ? channelLabel(first.channel) : `Table ${first.tableNumber || '—'}`;
+    const subtotal = recs.reduce((s, c) => s + c.amount, 0);
+    rows.push({ kind: 'groupHeader', title, subtitle: `${recs.length} · ${inr(subtotal)}` });
+    for (const c of recs) rows.push({ kind: 'collected', data: c });
+  }
+  return rows;
+}
+
 
 export default function CashCollectionScreen() {
   const router  = useRouter();
   const insets  = useSafeAreaInsets();
-  const { staffInfo } = useAuth();
+  const { staffInfo, can } = useAuth();
 
   const [pending, setPending]             = useState<PendingCashRequest[]>([]);
   const [todayCollected, setTodayCollected] = useState<CollectedCashRecord[]>([]);
@@ -154,7 +195,12 @@ export default function CashCollectionScreen() {
       pathname: '/(staff)/payment-collect',
       params: {
         orderId: req.orderId,
+        // Whole-table collect settles every pending order on the session.
+        sessionId: req.sessionId ?? '',
+        orderIds: req.orderIds ? JSON.stringify(req.orderIds) : '',
         tableNumber: String(req.tableNumber ?? ''),
+        channel: req.channel ?? 'DINE_IN',
+        pickupToken: req.pickupToken ?? '',
         amount: String(req.amount ?? 0),
         customerName: req.customerName ?? '',
         customerPhone: req.customerPhone ?? '',
@@ -200,6 +246,7 @@ export default function CashCollectionScreen() {
       }
       setOpenMenuOrderId(null);
       setUpiSuccessingOrderId(req.orderId);
+      playPaymentSuccess();
       successSweep.setValue(0);
       Animated.timing(successSweep, {
         toValue: 1,
@@ -211,7 +258,24 @@ export default function CashCollectionScreen() {
         setUpiSuccessingOrderId(null);
         successSweep.setValue(0);
       }, 780);
-    } catch (err) {
+    } catch (err: any) {
+      const code = String(err?.code ?? err?.message ?? '');
+      if (code.includes('SESSION_HAS_UNCOLLECTED_ORDERS')) {
+        // The request went stale: another round landed after it was raised, so
+        // the backend refused to bank a part of the bill and re-parked the WHOLE
+        // table in staff collection. Reload and the card comes back at the true
+        // net — split by tender there if some of it was already paid.
+        const nextTotal = Number(err?.outstanding_total ?? 0);
+        setOpenMenuOrderId(null);
+        await load();
+        Alert.alert(
+          'Bill changed',
+          nextTotal > 0
+            ? `A new order landed on this table. The bill is now ₹${nextTotal.toLocaleString('en-IN')} — open the card and collect it in one go.`
+            : 'A new order landed on this table. Open the refreshed card and collect the full bill in one go.',
+        );
+        return;
+      }
       console.error('[cash-collection] confirm UPI direct failed', err);
     } finally {
       if (req.intentId) markIntentBusy(req.intentId, false);
@@ -234,51 +298,38 @@ export default function CashCollectionScreen() {
 
   const totalDue = pending.reduce((s, p) => s + p.amount, 0);
 
-  const renderHero = () => (
-    <View style={s.heroWrap}>
-      <Image
-        source={require('../../assets/images/hero banner/cash collection screen/hero banner.webp')}
-        style={s.heroImage}
-        resizeMode="cover"
-      />
-      <LinearGradient
-        colors={['rgba(10,10,11,0.05)', 'rgba(10,10,11,0.75)', QuinckleColors.background]}
-        locations={[0, 0.75, 1]}
-        style={StyleSheet.absoluteFillObject}
-      />
-      <View style={s.heroContent}>
-        <Text style={s.heroTitle}>Payment Collection</Text>
-        {pending.length > 0 ? (
-          <Text style={s.heroSub}>{pending.length} pending · ₹{totalDue.toLocaleString('en-IN')} due</Text>
-        ) : (
-          <Text style={s.heroSub}>All caught up</Text>
-        )}
-      </View>
-    </View>
-  );
 
+  const tabs: { key: TabKey; label: string }[] = [
+    { key: 'active', label: 'Active' },
+    { key: 'confirmed', label: 'Confirmed' },
+  ];
+
+  /**
+   * Underline tabs. Each tab takes an equal share of the width and centres its
+   * own label, with the rule sized to the text rather than the full column —
+   * so the labels sit centred and the underline sits centred beneath them.
+   *
+   * Replaces a segmented control whose active state was a BLUE fill under
+   * ORANGE text; the two never belonged together, and a filled block competed
+   * with the outlined cards below it.
+   */
   const renderTabBar = () => (
     <View style={s.tabBarWrap}>
-      <View style={s.tabBar}>
-        <TouchableOpacity
-          style={[s.tabBtn, activeTab === 'active' && s.tabBtnActive]}
-          onPress={() => setActiveTab('active')}
-          activeOpacity={0.8}
-        >
-          <Text style={[s.tabBtnText, activeTab === 'active' && s.tabBtnTextActive]}>
-            Active Requests
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[s.tabBtn, activeTab === 'confirmed' && s.tabBtnActive]}
-          onPress={() => setActiveTab('confirmed')}
-          activeOpacity={0.8}
-        >
-          <Text style={[s.tabBtnText, activeTab === 'confirmed' && s.tabBtnTextActive]}>
-            Confirmed Paid
-          </Text>
-        </TouchableOpacity>
-      </View>
+      {tabs.map(t => {
+        const isActive = activeTab === t.key;
+        return (
+          <TouchableOpacity
+            key={t.key}
+            style={s.tabBtn}
+            onPress={() => setActiveTab(t.key)}
+            activeOpacity={0.7}
+          >
+            <View style={[s.tabUnderline, isActive && s.tabUnderlineActive]}>
+              <Text style={[s.tabBtnText, isActive && s.tabBtnTextActive]}>{t.label}</Text>
+            </View>
+          </TouchableOpacity>
+        );
+      })}
     </View>
   );
 
@@ -289,35 +340,37 @@ export default function CashCollectionScreen() {
           ? [{ kind: 'empty' as const, message: 'No active requests.' }]
           : pending.map(p => ({ kind: 'pending' as const, data: p }))),
       ]
-    : [
-        { kind: 'sectionHeader', title: 'Confirmed Paid', subtitle: `${todayCollected.length} payment${todayCollected.length === 1 ? '' : 's'}` },
-        ...(todayCollected.length === 0
-          ? [{ kind: 'empty' as const, message: 'Nothing confirmed yet.' }]
-          : todayCollected.map(c => ({ kind: 'collected' as const, data: c }))),
-      ];
+    : buildConfirmedRows(todayCollected);
 
   return (
     <View style={s.root}>
       <Stack.Screen options={{ headerShown: false }} />
 
-      {/* Sticky overlay header — fades in as user scrolls past hero */}
-      <View style={[s.stickyHeader, { paddingTop: insets.top }]} pointerEvents="box-none">
-        <Animated.View style={[s.stickyBg, {
-          opacity: scrollY.interpolate({ inputRange: [80, 160], outputRange: [0, 1], extrapolate: 'clamp' }),
-        }]} />
-        <View style={s.stickyRow}>
+      {/* Header — static, not a fade-in overlay. The title, the actions and the
+          tabs should all be readable without scrolling first; the old hero
+          image pushed them below the fold. */}
+      <View style={[s.header, { paddingTop: insets.top + Spacing.sm }]}>
+        <View style={s.headerRow}>
           <TouchableOpacity onPress={() => router.back()} activeOpacity={0.6} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Ionicons name="chevron-back" size={24} color={QuinckleColors.textPrimary} />
           </TouchableOpacity>
-          <Animated.Text style={[s.stickyTitle, {
-            opacity: scrollY.interpolate({ inputRange: [120, 180], outputRange: [0, 1], extrapolate: 'clamp' }),
-          }]}>
-            Payment Collection
-          </Animated.Text>
+          <Text style={s.headerTitle} numberOfLines={1}>Payment collection</Text>
+          {/* Outstanding is its own screen, not a tab: it answers a different
+              question (what's uncollected across the venue) and owns the waive
+              flow. Capability-gated — the server enforces it too. */}
+          {can(CAP.OUTSTANDING) && (
+            <TouchableOpacity onPress={() => router.push('/(staff)/outstanding')} activeOpacity={0.6} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <Ionicons name="alert-circle-outline" size={21} color={QuinckleColors.textSecondary} />
+            </TouchableOpacity>
+          )}
           <TouchableOpacity onPress={handleRefresh} activeOpacity={0.6} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-            <Ionicons name="refresh-outline" size={20} color={QuinckleColors.textSecondary} />
+            <Ionicons name="refresh-outline" size={21} color={QuinckleColors.textSecondary} />
           </TouchableOpacity>
         </View>
+
+        {/* No summary line here — the section header below already renders
+            "ACTIVE REQUESTS" against "N · ₹X due". */}
+        {renderTabBar()}
       </View>
 
       {isLoading ? (
@@ -326,8 +379,6 @@ export default function CashCollectionScreen() {
           scrollEventThrottle={16}
           contentContainerStyle={{ paddingBottom: insets.bottom + 88 }}
         >
-          {renderHero()}
-          {renderTabBar()}
           <CashCollectionSkeleton />
         </Animated.ScrollView>
       ) : (
@@ -337,12 +388,11 @@ export default function CashCollectionScreen() {
             if (row.kind === 'pending')      return `p-${row.data.orderId}`;
             if (row.kind === 'collected')    return `c-${row.data.orderId}-${row.data.method}`;
             if (row.kind === 'sectionHeader') return `h-${row.title}`;
+            if (row.kind === 'groupHeader')  return `g-${row.title}`;
             return `e-${i}`;
           }}
           ListHeaderComponent={() => (
             <View>
-              {renderHero()}
-              {renderTabBar()}
             </View>
           )}
           onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
@@ -357,8 +407,22 @@ export default function CashCollectionScreen() {
               );
             }
 
+            if (item.kind === 'groupHeader') {
+              return (
+                <View style={s.groupHeader}>
+                  <Text style={s.groupTitle}>{item.title}</Text>
+                  <Text style={s.groupSubtotal}>{item.subtitle}</Text>
+                </View>
+              );
+            }
+
             if (item.kind === 'empty') {
-              return <Text style={s.emptyText}>{item.message}</Text>;
+              return (
+                <View style={s.emptyState}>
+                  <Ionicons name="wallet-outline" size={40} color={QuinckleColors.textTertiary} style={{ opacity: 0.5 }} />
+                  <Text style={s.emptyText}>{item.message}</Text>
+                </View>
+              );
             }
 
             if (item.kind === 'pending') {
@@ -369,6 +433,7 @@ export default function CashCollectionScreen() {
               // VPA (so the Collection Sheet QR works), so presence of p.upi.vpa
               // no longer implies UPI Direct — staff-collect has it too.
               const isUpiDirect = methodRaw.includes('UPI');
+              const isTakeaway = isOffPremise(p.channel);
               const intentBusy = !!(p.intentId && intentBusyIds.has(p.intentId));
               const orderBusy = collectingIds.has(p.orderId);
               const menuOpen = openMenuOrderId === p.orderId;
@@ -378,6 +443,9 @@ export default function CashCollectionScreen() {
                 inputRange: [0, 1],
                 outputRange: [-screenWidth, 0],
               });
+              const locationLabel = isTakeaway
+                ? (p.pickupToken ?? 'Takeaway')
+                : `T${p.tableNumber || '—'}`;
               return (
                 <View style={[s.pendingCard, isUpiDirect ? s.pendingCardUpi : s.pendingCardStaff]}>
                   {isSuccessing && (
@@ -394,12 +462,19 @@ export default function CashCollectionScreen() {
                   )}
                   <View style={s.pendingTop}>
                     <View style={s.pendingTitleRow}>
-                      <Text style={s.pendingTableTitle}>{`T${p.tableNumber || '—'}`}</Text>
-                      <View style={[s.methodBadge, isUpiDirect ? s.methodBadgeUpi : s.methodBadgeStaff, s.methodBadgeInline]}>
-                        <Text style={[s.methodBadgeText, isUpiDirect ? s.methodBadgeTextUpi : s.methodBadgeTextStaff]}>
-                          {isUpiDirect ? 'UPI DIRECT' : 'PAY VIA STAFF'}
-                        </Text>
-                      </View>
+                      <Text style={s.pendingTableTitle}>{locationLabel}</Text>
+                      {isTakeaway && (
+                        <View style={[s.methodBadge, s.methodBadgeTakeaway, s.methodBadgeInline]}>
+                          <Text style={[s.methodBadgeText, s.methodBadgeTextTakeaway]}>TAKEAWAY</Text>
+                        </View>
+                      )}
+                      {!isTakeaway && (
+                        <View style={[s.methodBadge, isUpiDirect ? s.methodBadgeUpi : s.methodBadgeStaff, s.methodBadgeInline]}>
+                          <Text style={[s.methodBadgeText, isUpiDirect ? s.methodBadgeTextUpi : s.methodBadgeTextStaff]}>
+                            {isUpiDirect ? 'UPI DIRECT' : 'PAY VIA STAFF'}
+                          </Text>
+                        </View>
+                      )}
                     </View>
                     <View style={s.pendingTopRight}>
                       <Text style={s.pendingTime}>{timeAgo(p.requestedAt)}</Text>
@@ -436,7 +511,9 @@ export default function CashCollectionScreen() {
                     <>
                       <View style={s.pendingBody}>
                         <View style={s.pendingAmountBlock}>
-                          <Text style={s.pendingAmountLabel}>Amount due</Text>
+                          <Text style={s.pendingAmountLabel}>
+                            {p.orderCount && p.orderCount > 1 ? `Amount due · ${p.orderCount} orders` : 'Amount due'}
+                          </Text>
                           <Text style={s.pendingAmount}>₹{p.amount.toLocaleString('en-IN')}</Text>
                         </View>
                         <View style={s.pendingMetaRow}>
@@ -483,19 +560,20 @@ export default function CashCollectionScreen() {
               );
             }
 
-            // collected row
+            // collected row — grouped under its table/takeaway header, so the
+            // row leads with the payment method (the table is in the header).
             const c = item.data;
+            const cIsTakeaway = isOffPremise(c.channel);
+            const cMethodLabel = String(c.method).toLowerCase() === 'upi_direct' ? 'UPI Direct' : 'Cash';
+            const cLabel = cIsTakeaway
+              ? `${c.pickupToken ?? 'Takeaway'} · ${cMethodLabel}`
+              : cMethodLabel;
             return (
               <View style={s.collectedRow}>
                 <View style={s.collectedLeft}>
                   <View style={s.collectedTableRow}>
                     <Ionicons name="checkmark-circle" size={14} color={QuinckleColors.success} />
-                    <Text style={s.collectedTable}>Table {c.tableNumber || '—'}</Text>
-                    {String(c.method).toLowerCase() === 'upi_direct' && (
-                      <View style={s.confirmedUpiBadge}>
-                        <Text style={s.confirmedUpiBadgeText}>UPI DIRECT</Text>
-                      </View>
-                    )}
+                    <Text style={s.collectedTable}>{cLabel}</Text>
                   </View>
                   <Text style={s.collectedPhone}>{c.customerPhone}</Text>
                   {c.collectedByName && <Text style={s.collectedBy}>{c.collectedByName}</Text>}
@@ -529,60 +607,48 @@ const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: QuinckleColors.background },
 
   // Sticky overlay header
-  stickyHeader: {
-    position: 'absolute', top: 0, left: 0, right: 0, zIndex: 100,
-  },
-  stickyBg: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: QuinckleColors.background,
+  header: {
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.sm,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: QuinckleColors.border,
   },
-  stickyRow: {
-    height: 52,
+  headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: Spacing.lg,
+    gap: Spacing.md,
   },
-  stickyTitle: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '600' },
+  headerTitle: {
+    flex: 1,
+    color: QuinckleColors.textPrimary,
+    fontSize: 17,
+    fontWeight: '700',
+    letterSpacing: -0.3,
+  },
   tabBarWrap: {
+    flexDirection: 'row',
     paddingHorizontal: Spacing.lg,
     paddingTop: Spacing.md,
-    paddingBottom: Spacing.sm,
   },
-  tabBar: {
-    flexDirection: 'row',
-    borderRadius: Radius.md,
-    backgroundColor: QuinckleColors.surface,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
-    overflow: 'hidden',
-  },
+  // Equal share of the width so the two labels sit symmetrically…
   tabBtn: {
     flex: 1,
     alignItems: 'center',
-    justifyContent: 'center',
-    height: 42,
   },
-  tabBtnActive: { backgroundColor: 'rgba(81,136,255,0.16)' },
-  tabBtnText: { color: QuinckleColors.textTertiary, fontSize: 13, fontWeight: '600' },
+  // …and the rule hugs the label rather than spanning the whole column, so it
+  // reads as centred under the word. Transparent when inactive keeps both tabs
+  // the same height, so nothing shifts on switch.
+  tabUnderline: {
+    paddingBottom: 8,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  tabUnderlineActive: { borderBottomColor: QuinckleColors.primary },
+  tabBtnText: { color: QuinckleColors.textTertiary, fontSize: 14, fontWeight: '600' },
   tabBtnTextActive: { color: QuinckleColors.primary },
 
   // Hero banner
-  heroWrap: { height: 220, width: '100%', overflow: 'hidden' },
-  heroImage: { width: '100%', height: '100%' },
-  heroContent: {
-    position: 'absolute', bottom: Spacing.xl, left: Spacing.xl, right: Spacing.xl,
-  },
-  heroTitle: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 26,
-    fontWeight: '700',
-    letterSpacing: -0.5,
-    marginBottom: 4,
-  },
-  heroSub: { color: QuinckleColors.textSecondary, fontSize: 14, fontWeight: '500' },
 
   sectionHeader: {
     flexDirection: 'row',
@@ -600,11 +666,27 @@ const s = StyleSheet.create({
   },
   sectionCount: { color: QuinckleColors.textTertiary, fontSize: 12 },
 
+  groupHeader: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.lg,
+    paddingBottom: Spacing.xs,
+  },
+  groupTitle: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '700' },
+  groupSubtotal: { color: QuinckleColors.textSecondary, fontSize: 13, fontWeight: '600' },
+
+  emptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing.xxl * 2,
+    gap: Spacing.md,
+  },
   emptyText: {
     color: QuinckleColors.textTertiary,
     fontSize: 13,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.md,
+    textAlign: 'center',
   },
 
   // Pending card
@@ -707,6 +789,11 @@ const s = StyleSheet.create({
   methodBadgeText: { fontSize: 9, fontWeight: '700', letterSpacing: 0.8 },
   methodBadgeTextStaff: { color: QuinckleColors.textSecondary },
   methodBadgeTextUpi: { color: '#fff' },
+  methodBadgeTakeaway: {
+    backgroundColor: 'rgba(242,93,59,0.15)',
+    borderColor: 'rgba(242,93,59,0.35)',
+  },
+  methodBadgeTextTakeaway: { color: '#f25d3b' },
   pendingBody: {
     marginTop: 2,
     marginBottom: 14,
@@ -815,6 +902,21 @@ const s = StyleSheet.create({
   },
   confirmedUpiBadgeText: {
     color: '#9ec0ff',
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+  },
+  confirmedTakeawayBadge: {
+    marginLeft: 6,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: 'rgba(242,93,59,0.32)',
+    backgroundColor: 'rgba(242,93,59,0.12)',
+  },
+  confirmedTakeawayBadgeText: {
+    color: '#f25d3b',
     fontSize: 9,
     fontWeight: '700',
     letterSpacing: 0.6,

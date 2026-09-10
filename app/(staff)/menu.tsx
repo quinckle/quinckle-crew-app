@@ -42,9 +42,11 @@ export default function OrderMenu() {
   const [cart, setCart] = useState<Record<string, number>>({});
 
   const filteredMenu = useMemo(() => {
+    const q = searchText.toLowerCase();
     return MENU_DATA.filter((item) => {
-      const matchesSearch = item.name.toLowerCase().includes(searchText.toLowerCase());
-      const matchesCategory = activeCategory === 'All' || item.category === activeCategory;
+      const matchesSearch = item.name.toLowerCase().includes(q);
+      // When searching, ignore the active category tab and search globally
+      const matchesCategory = q.length > 0 || activeCategory === 'All' || item.category === activeCategory;
       return matchesSearch && matchesCategory;
     });
   }, [searchText, activeCategory]);

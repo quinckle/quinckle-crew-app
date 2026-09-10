@@ -9,7 +9,6 @@ import {
   TouchableOpacity,
   View,
   Image,
-  Dimensions,
 } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -165,7 +164,7 @@ export default function CombosScreen() {
                         {detailItems.map((i: any, idx: number) => (
                           <View key={idx} style={styles.comboItemEntry}>
                             <View style={styles.comboItemDot} />
-                            <Text style={styles.comboItemList}>{i.name ?? i.menuItemName ?? 'Item'}</Text>
+                            <Text style={styles.comboItemList}>{(Number(i.quantity) || 1) > 1 ? `${Number(i.quantity)}× ` : ''}{i.name ?? i.menuItemName ?? 'Item'}</Text>
                             {(i.comboPrice || i.price) ? (
                               <Text style={styles.comboItemPrice}>₹{parseFloat(i.comboPrice ?? i.price ?? 0).toFixed(0)}</Text>
                             ) : null}

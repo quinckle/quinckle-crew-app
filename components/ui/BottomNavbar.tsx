@@ -53,7 +53,9 @@ export function BottomNavbar<K extends string = StaffTabKey>({
                 size={22}
                 color={isActive ? QuinckleColors.primary : QuinckleColors.textTertiary}
               />
-              <Text style={[styles.label, isActive && styles.labelActive]}>{tab.label}</Text>
+              {/* Five tabs on a narrow phone: clip rather than wrap, which
+                  would shove the row taller than the icons. */}
+              <Text numberOfLines={1} style={[styles.label, isActive && styles.labelActive]}>{tab.label}</Text>
             </TouchableOpacity>
           );
         })}

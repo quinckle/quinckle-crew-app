@@ -1,5 +1,5 @@
 // app/index.tsx
-import { Redirect, useRootNavigationState, router } from 'expo-router';
+import { useRootNavigationState, router } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import { 
   StyleSheet, 
@@ -10,19 +10,19 @@ import {
   StatusBar 
 } from 'react-native';
 import { useAuth } from '../context/AuthContext';
+import { landingStackFor } from '../constants/capabilities';
 import { QuinckleColors } from '../constants/Colors';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function Index() {
-  const { role, isRestoring } = useAuth();
+  const { role, isRestoring, staffInfo } = useAuth();
   const rootNavigationState = useRootNavigationState();
   const [isSplashReady, setIsSplashReady] = useState(false);
   
   // Animation values
   const logoScale = useRef(new Animated.Value(0.8)).current;
   const logoOpacity = useRef(new Animated.Value(0)).current;
-  const splashOpacity = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     // Start splash animation
@@ -46,16 +46,32 @@ export default function Index() {
     }, 2000);
 
     return () => clearTimeout(timer);
-  }, []);
+  }, [logoScale, logoOpacity]);
 
   // Handle redirect only after splash is done AND navigation is ready
   const isReady = rootNavigationState?.key && isSplashReady && !isRestoring;
 
-  if (isReady) {
-    if (role === null) return <Redirect href="/login" />;
-    if (role === 'staff') return <Redirect href="/(staff)" />;
-    return <Redirect href="/(cook)" />;
-  }
+  // Route imperatively exactly once. This screen subscribes to
+  // useRootNavigationState(), so it re-renders on every navigation. A
+  // declarative <Redirect href="/login"> here re-fired on every re-render
+  // while logged out, fighting the login screen's own internal step state
+  // (the "auth page keeps redirecting back" bug). A one-shot guarded replace
+  // decides the entry route and then never fights forward nav.
+  const hasRedirected = useRef(false);
+  useEffect(() => {
+    if (!isReady || hasRedirected.current) return;
+    hasRedirected.current = true;
+    if (role === null) {
+      router.replace('/login');
+      return;
+    }
+    // A restored session carries the stack chosen at its last login, which may
+    // predate a capability change (e.g. a chef who has since been given floor
+    // duties). Re-derive from capabilities; falls back to the stored role when
+    // they're unknown, so nothing changes against an older backend.
+    const stack = landingStackFor(staffInfo?.capabilities, staffInfo?.role) ?? role;
+    router.replace(stack === 'cook' ? '/(cook)' : '/(staff)');
+  }, [isReady, role, staffInfo?.capabilities, staffInfo?.role]);
 
   return (
     <View style={styles.container}>

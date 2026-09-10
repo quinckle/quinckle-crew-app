@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -15,7 +15,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -23,9 +23,11 @@ import * as Haptics from 'expo-haptics';
 import QRCode from 'react-native-qrcode-svg';
 import Svg, { Path } from 'react-native-svg';
 import { useAuth } from '../../context/AuthContext';
-import { crewOrders, crewPayments, restaurantApi, type BillBreakdown, type CrewOrderPaymentContext } from '../../services/api';
+import { crewOrders, crewPayments, crewSessions, restaurantApi, type BillBreakdown, type CollectDueOptions, type CollectSplitMethod, type CrewOrderPaymentContext, type SessionCollectible } from '../../services/api';
 import { BillBreakdownView } from '../../components/ui/BillBreakdownView';
+import { playPaymentSuccess } from '../../services/sound';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
+import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
 
 function buildUpiUri(vpa: string, merchantName: string, amount: number): string {
   const enc = (v: string | number) => encodeURIComponent(String(v));
@@ -38,12 +40,34 @@ function normalizeOptionalText(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-type Mode = 'normal' | 'split';
-type Step = 'choose' | 'confirm_cash';
+type Mode = 'normal' | 'split' | 'khata';
+/**
+ * Every path that settles money passes through 'confirm'.
+ *
+ * Cash used to be the only method that asked, while UPI submitted on the first
+ * tap — so the method where nobody had verified the transfer landed was the one
+ * with LESS friction. There is no undo: the crew payment API exposes only
+ * collect / collect-session / intent confirm+reject, and the sole reversal is
+ * `POST /orders/:id/refund`, which needs a manager PIN and records a refund
+ * adjustment rather than erasing the collection. One deliberate tap is cheap
+ * next to unwinding that.
+ */
+type Step = 'choose' | 'confirm';
+
+/** What a confirmed tap will submit, held between 'choose' and 'confirm'. */
+type PendingPayment = {
+  splits: { method: CollectSplitMethod; amount: number }[];
+  dueOptions?: CollectDueOptions | null;
+  /** Reads after "Confirm" — e.g. "₹1,200 received in cash?" */
+  question: string;
+  /** Styles the confirm button to match the method being confirmed. */
+  tone: 'cash' | 'upi' | 'split' | 'khata';
+};
 type SuccessInfo = {
   tableNumber: number;
+  locationLabel: string;
   total: number;
-  splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[];
+  splits: { method: CollectSplitMethod; amount: number }[];
 };
 
 // ── Shimmer (matches TableSkeleton) ─────────────────────────────────────────
@@ -58,7 +82,7 @@ function useShimmerTx() {
     );
     loop.start();
     return () => loop.stop();
-  }, []);
+  }, [p]);
   return p.interpolate({ inputRange: [0, 1], outputRange: [-SWEEP, SWEEP] });
 }
 
@@ -100,18 +124,22 @@ function SuccessScreen({ info, onDone }: { info: SuccessInfo; onDone: () => void
   const riseAnim  = useRef(new Animated.Value(20)).current;
 
   useEffect(() => {
+    playPaymentSuccess();
     Animated.parallel([
       Animated.timing(fadeAnim, { toValue: 1, duration: 260, useNativeDriver: true }),
       Animated.timing(riseAnim, { toValue: 0, duration: 340, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
     ]).start();
     const t = setTimeout(onDone, 2400);
     return () => clearTimeout(t);
-  }, []);
+  }, [fadeAnim, riseAnim, onDone]);
 
   const cashSplit = info.splits.find(s => s.method === 'CASH');
   const upiSplit  = info.splits.find(s => s.method === 'UPI_DIRECT');
-  const isSplit   = !!(cashSplit && upiSplit);
-  const isUpiOnly = !cashSplit && !!upiSplit;
+  const dueSplit  = info.splits.find(s => s.method === 'DUE');
+  const moneyParts = [cashSplit, upiSplit, dueSplit].filter(Boolean).length;
+  const isSplit   = moneyParts > 1;
+  const isUpiOnly = !cashSplit && !!upiSplit && !dueSplit;
+  const isDueOnly = !!dueSplit && !cashSplit && !upiSplit;
 
   return (
     <Animated.View style={[sc.screen, { opacity: fadeAnim }]}>
@@ -126,8 +154,8 @@ function SuccessScreen({ info, onDone }: { info: SuccessInfo; onDone: () => void
           </Svg>
         </View>
 
-        <Text style={sc.title}>Collected</Text>
-        <Text style={sc.table}>Table {info.tableNumber}</Text>
+        <Text style={sc.title}>{dueSplit ? 'Recorded' : 'Collected'}</Text>
+        <Text style={sc.table}>{info.locationLabel}</Text>
         <Text style={sc.amount}>₹{info.total.toLocaleString('en-IN')}</Text>
 
         <View style={sc.divider} />
@@ -135,18 +163,29 @@ function SuccessScreen({ info, onDone }: { info: SuccessInfo; onDone: () => void
         {/* Method breakdown */}
         {isSplit ? (
           <View style={sc.methodRow}>
-            <View style={sc.methodItem}>
-              <Text style={sc.methodAmt}>₹{cashSplit!.amount.toLocaleString('en-IN')}</Text>
-              <Text style={sc.methodLabel}>Cash</Text>
-            </View>
-            <View style={sc.methodSep} />
-            <View style={sc.methodItem}>
-              <Text style={sc.methodAmt}>₹{upiSplit!.amount.toLocaleString('en-IN')}</Text>
-              <Text style={sc.methodLabel}>UPI</Text>
-            </View>
+            {cashSplit && (
+              <View style={sc.methodItem}>
+                <Text style={sc.methodAmt}>₹{cashSplit.amount.toLocaleString('en-IN')}</Text>
+                <Text style={sc.methodLabel}>Cash</Text>
+              </View>
+            )}
+            {cashSplit && (upiSplit || dueSplit) && <View style={sc.methodSep} />}
+            {upiSplit && (
+              <View style={sc.methodItem}>
+                <Text style={sc.methodAmt}>₹{upiSplit.amount.toLocaleString('en-IN')}</Text>
+                <Text style={sc.methodLabel}>UPI</Text>
+              </View>
+            )}
+            {upiSplit && dueSplit && <View style={sc.methodSep} />}
+            {dueSplit && (
+              <View style={sc.methodItem}>
+                <Text style={sc.methodAmt}>₹{dueSplit.amount.toLocaleString('en-IN')}</Text>
+                <Text style={sc.methodLabel}>Khata</Text>
+              </View>
+            )}
           </View>
         ) : (
-          <Text style={sc.methodSingle}>{isUpiOnly ? 'via UPI' : 'via Cash'}</Text>
+          <Text style={sc.methodSingle}>{isDueOnly ? 'on khata (pay later)' : isUpiOnly ? 'via UPI' : 'via Cash'}</Text>
         )}
       </Animated.View>
     </Animated.View>
@@ -207,21 +246,75 @@ const sc = StyleSheet.create({
 // ── Main screen ──────────────────────────────────────────────────────────────
 export default function PaymentCollectScreen() {
   const router  = useRouter();
+  const returnToPreviousScreen = useCallback(() => router.back(), [router]);
   const insets  = useSafeAreaInsets();
   const { staffInfo } = useAuth();
   const params  = useLocalSearchParams<{
     orderId: string; tableNumber: string; amount?: string;
     customerName: string; customerPhone: string;
+    sessionId?: string;
+    orderIds?: string;
     intentId?: string;
     intentMethod?: 'STAFF_COLLECT' | 'UPI_DIRECT';
     upiVpa?: string;
     upiName?: string;
     breakdown?: string;
+    channel?: string;
+    pickupToken?: string;
   }>();
 
   const orderId       = params.orderId ?? '';
+  const sessionId     = params.sessionId ?? '';
+  // Every pending order on the table — present ⇒ this is a whole-table collect.
+  const orderIds      = useMemo<string[]>(() => {
+    if (!params.orderIds) return [];
+    try { const v = JSON.parse(params.orderIds); return Array.isArray(v) ? v.map(String) : []; }
+    catch { return []; }
+  }, [params.orderIds]);
+  /**
+   * The navigation params are a SNAPSHOT of what the table owed when the card
+   * was tapped. They go stale the moment another round lands — and collecting a
+   * stale snapshot banks part of the bill and strands the rest as a second
+   * pending card (the "₹700 then ₹300 instead of ₹1000" bug). So the sheet
+   * re-reads the table's net from the server on open and on every focus, and
+   * everything below runs off THAT, with the params only as a first paint.
+   */
+  const [liveDue, setLiveDue] = useState<SessionCollectible | null>(null);
+  const [isSyncingDue, setIsSyncingDue] = useState(false);
+  const [dueSyncError, setDueSyncError] = useState<string | null>(null);
+
+  const syncSessionDue = useCallback(async () => {
+    if (!sessionId || params.intentId) return;
+    setIsSyncingDue(true);
+    try {
+      const res = await crewSessions.getCollectible(sessionId);
+      const data = res?.data ?? null;
+      // An empty outstanding set means somebody else already settled the table.
+      setLiveDue(data && data.orderIds.length > 0 ? data : null);
+      setDueSyncError(null);
+    } catch {
+      // Keep the snapshot on screen rather than blanking the sheet, but say so.
+      setDueSyncError('Showing the last known total — could not refresh the bill.');
+    } finally {
+      setIsSyncingDue(false);
+    }
+  }, [sessionId, params.intentId]);
+
+  useFocusEffect(useCallback(() => { void syncSessionDue(); }, [syncSessionDue]));
+
+  /** Server truth when we have it; the navigation snapshot until then. */
+  const effectiveOrderIds = liveDue?.orderIds.length ? liveDue.orderIds : orderIds;
+  // Multi-order ⇒ settle the session; the single-order payment context (fetched
+  // per representative order) would otherwise under-report the table total.
+  const isSessionCollect = !params.intentId && !!sessionId && effectiveOrderIds.length > 0;
+  const isMultiOrder      = effectiveOrderIds.length > 1;
   const tableNumber   = Number(params.tableNumber ?? 0);
-  const total         = Number(params.amount ?? 0);
+  const channel       = params.channel ?? 'DINE_IN';
+  const pickupToken   = params.pickupToken ?? null;
+  const locationLabel = isOffPremise(channel)
+    ? (pickupToken ?? channelLabel(channel))
+    : `Table ${tableNumber}`;
+  const snapshotTotal = Number(params.amount ?? 0);
   const customerName  = params.customerName && params.customerName.length > 0 ? params.customerName : null;
   const customerPhone = params.customerPhone ?? '';
   const intentId      = params.intentId ?? '';
@@ -236,12 +329,20 @@ export default function PaymentCollectScreen() {
 
   const [mode, setMode]           = useState<Mode>('normal');
   const [step, setStep]           = useState<Step>('choose');
+  const [pending, setPending]     = useState<PendingPayment | null>(null);
   const [cashInput, setCashInput] = useState('');
   const [loading, setLoading]     = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
   const [isLoadingUpi, setIsLoadingUpi] = useState(true);
   const [partnerUpi, setPartnerUpi]     = useState<{ vpa: string | null; merchantName: string | null }>({ vpa: null, merchantName: null });
   const [successInfo, setSuccessInfo]   = useState<SuccessInfo | null>(null);
+
+  // ── Khata (due) mode state ────────────────────────────────────────────────
+  // "Received now" is optional — 0 means the whole bill goes on the khata.
+  const [khataPaidInput, setKhataPaidInput]   = useState('');
+  const [khataPaidMethod, setKhataPaidMethod] = useState<'CASH' | 'UPI_DIRECT'>('CASH');
+  const [khataPhone, setKhataPhone]           = useState('');
+  const [khataName, setKhataName]             = useState('');
 
   useEffect(() => {
     const restaurantId = staffInfo?.restaurantId;
@@ -271,7 +372,9 @@ export default function PaymentCollectScreen() {
   useEffect(() => {
     let alive = true;
     const loadPaymentContext = async () => {
-      if (!orderId) return;
+      // For a multi-order (whole-table) collect the per-order context would
+      // under-report the total — rely on the summed card amount/breakdown.
+      if (!orderId || isMultiOrder) return;
       setIsLoadingPaymentContext(true);
       setPaymentContextError(null);
       try {
@@ -287,11 +390,19 @@ export default function PaymentCollectScreen() {
     };
     void loadPaymentContext();
     return () => { alive = false; };
-  }, [orderId]);
+  }, [orderId, isMultiOrder]);
 
-  const resolvedTotal = paymentContext?.total ?? total;
+  // Precedence: the session's live net > the per-order context > the snapshot.
+  const resolvedTotal = liveDue
+    ? liveDue.totalAmount
+    : isMultiOrder ? snapshotTotal : (paymentContext?.total ?? snapshotTotal);
   const resolvedBreakdown: BillBreakdown | null = useMemo(() => {
-    if (paymentContext) {
+    // A breakdown that no longer sums to the amount being collected is worse
+    // than none — drop it rather than itemise a bill the crew isn't taking.
+    if (liveDue && breakdown && Math.abs(breakdown.total - liveDue.totalAmount) > 0.5 && isMultiOrder) {
+      return null;
+    }
+    if (paymentContext && !isMultiOrder) {
       return {
         subtotal: paymentContext.subtotal,
         discount: 0,
@@ -304,7 +415,7 @@ export default function PaymentCollectScreen() {
       };
     }
     return breakdown;
-  }, [paymentContext, breakdown]);
+  }, [paymentContext, breakdown, isMultiOrder, liveDue]);
 
   const cashNum    = Number(cashInput || 0);
   const upiNum     = Math.max(0, resolvedTotal - cashNum);
@@ -317,10 +428,14 @@ export default function PaymentCollectScreen() {
     return buildUpiUri(partnerUpi.vpa, partnerUpi.merchantName ?? 'Merchant', qrAmount);
   }, [partnerUpi.vpa, partnerUpi.merchantName, qrAmount]);
 
-  const buildCollectIdempotencyKey = (splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[]) =>
-    `crew-collect:${orderId}:${splits.map(s => `${s.method}:${Number(s.amount).toFixed(2)}`).join('|')}`;
+  const splitsSig = (splits: { method: CollectSplitMethod; amount: number }[]) =>
+    splits.map(s => `${s.method}:${Number(s.amount).toFixed(2)}`).join('|');
+  const buildCollectIdempotencyKey = (splits: { method: CollectSplitMethod; amount: number }[]) =>
+    `crew-collect:${orderId}:${splitsSig(splits)}`;
+  const buildSessionIdempotencyKey = (splits: { method: CollectSplitMethod; amount: number }[]) =>
+    `crew-collect-session:${sessionId}:${[...effectiveOrderIds].sort().join(',')}:${splitsSig(splits)}`;
 
-  const submit = async (splits: { method: 'CASH' | 'UPI_DIRECT'; amount: number }[]) => {
+  const submit = async (splits: { method: CollectSplitMethod; amount: number }[], dueOptions?: CollectDueOptions | null) => {
     const staffId = staffInfo?.id;
     if (!staffId) { Alert.alert('Not signed in', 'Please reopen the app and sign in again.'); return; }
     setLoading(true);
@@ -332,13 +447,37 @@ export default function PaymentCollectScreen() {
           return;
         }
         await crewPayments.confirmPaymentIntent(intentId);
+      } else if (isSessionCollect) {
+        // Whole-table: settle every pending order the card was showing.
+        await crewPayments.collectSessionPayment(sessionId, effectiveOrderIds, staffId, splits, buildSessionIdempotencyKey(splits), null, dueOptions ?? null);
       } else {
-        await crewPayments.collectPayment(orderId, staffId, splits, buildCollectIdempotencyKey(splits));
+        await crewPayments.collectPayment(orderId, staffId, splits, buildCollectIdempotencyKey(splits), null, dueOptions ?? null);
       }
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setSuccessInfo({ tableNumber, total: resolvedTotal, splits });
+      setSuccessInfo({ tableNumber, locationLabel, total: resolvedTotal, splits });
     } catch (err: any) {
-      Alert.alert('Could not record payment', err?.message ?? 'Please try again.');
+      const code = String(err?.code ?? err?.message ?? '');
+      if (code.includes('ALREADY_COLLECTED')) {
+        Alert.alert('Already collected', 'This table has already been settled.', [{ text: 'OK', onPress: () => router.back() }]);
+      } else if (code.includes('SESSION_HAS_UNCOLLECTED_ORDERS') || code.includes('STALE_ORDERS')) {
+        // The backend refused to bank a PART of the bill. Pull the real net and
+        // stay on the sheet with it loaded, so the fix is one tap, not a
+        // round-trip back to the list — and the rest is never left behind.
+        const nextTotal = Number(err?.outstanding_total ?? 0);
+        setMode('normal');
+        setStep('choose');
+        setCashInput('');
+        await syncSessionDue();
+        Alert.alert(
+          'Bill changed',
+          nextTotal > 0
+            ? `A new order landed on this table. The bill is now ₹${nextTotal.toLocaleString('en-IN')} — collect it in one go.`
+            : 'A new order landed on this table. The total has been refreshed — collect it in one go.',
+          [{ text: 'OK' }],
+        );
+      } else {
+        Alert.alert('Could not record payment', err?.message ?? 'Please try again.');
+      }
     } finally {
       setLoading(false);
     }
@@ -358,16 +497,78 @@ export default function PaymentCollectScreen() {
     }
   };
 
-  const handleUpiPay      = () => { void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); void submit([{ method: 'UPI_DIRECT', amount: resolvedTotal }]); };
-  const handleCashTap     = () => { void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); setStep('confirm_cash'); };
-  const handleCashConfirm = () => { void submit([{ method: 'CASH', amount: resolvedTotal }]); };
-  const handleSplitPaid   = () => { if (!splitValid) return; void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); void submit([{ method: 'CASH', amount: cashNum }, { method: 'UPI_DIRECT', amount: upiNum }]); };
+  const rupees = (n: number) => `₹${n.toLocaleString('en-IN')}`;
+
+  /** Stage a payment for confirmation. Nothing is sent until `confirmPending`. */
+  const stage = (p: PendingPayment) => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setPending(p);
+    setStep('confirm');
+  };
+  const cancelPending  = () => { setPending(null); setStep('choose'); };
+  const confirmPending = () => { if (pending) void submit(pending.splits, pending.dueOptions ?? null); };
+
+  const handleUpiPay      = () => stage({
+    splits: [{ method: 'UPI_DIRECT', amount: resolvedTotal }],
+    question: `${rupees(resolvedTotal)} received via UPI?`,
+    tone: 'upi',
+  });
+  const handleCashTap     = () => stage({
+    splits: [{ method: 'CASH', amount: resolvedTotal }],
+    question: `${rupees(resolvedTotal)} received in cash?`,
+    tone: 'cash',
+  });
+  const handleSplitPaid   = () => {
+    if (!splitValid) return;
+    stage({
+      splits: [{ method: 'CASH', amount: cashNum }, { method: 'UPI_DIRECT', amount: upiNum }],
+      question: `${rupees(cashNum)} in cash and ${rupees(upiNum)} via UPI received?`,
+      tone: 'split',
+    });
+  };
   const enterSplitMode    = () => {
     if (intentId) return;
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setMode('split'); setStep('choose'); setCashInput('');
+    setMode('split'); setStep('choose'); setPending(null); setCashInput('');
   };
-  const exitSplitMode     = () => { setMode('normal'); setStep('choose'); setCashInput(''); Keyboard.dismiss(); };
+  const exitSplitMode     = () => { setMode('normal'); setStep('choose'); setPending(null); setCashInput(''); setKhataPaidInput(''); Keyboard.dismiss(); };
+
+  // ── Khata (due) mode ─────────────────────────────────────────────────────
+  const enterKhataMode = () => {
+    if (intentId) return;
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setMode('khata');
+    setStep('choose');
+    setPending(null);
+    setKhataPaidInput('');
+    setKhataPaidMethod('CASH');
+    // Prefill from the session's known customer; staff can overwrite.
+    setKhataPhone((customerPhone || '').replace(/^\+91|[\s\-()]/g, '').slice(0, 10));
+    setKhataName(customerName ?? '');
+  };
+
+  const khataPaidNum   = Number(khataPaidInput || 0);
+  const khataDueAmount = Math.max(0, resolvedTotal - khataPaidNum);
+  const khataPhoneValid = /^[6-9]\d{9}$/.test(khataPhone);
+  const khataValid = khataPhoneValid && khataDueAmount > 0 && khataPaidNum >= 0 && khataPaidNum < resolvedTotal;
+
+  const handleKhataConfirm = () => {
+    if (!khataValid || loading) return;
+    const splits: { method: CollectSplitMethod; amount: number }[] = [];
+    if (khataPaidNum > 0) splits.push({ method: khataPaidMethod, amount: khataPaidNum });
+    splits.push({ method: 'DUE', amount: khataDueAmount });
+    // Khata is credit extended to a named person, not money in the drawer, so
+    // the question names who is on the hook rather than what was received.
+    const who = khataName.trim() || khataPhone;
+    stage({
+      splits,
+      dueOptions: { customerPhone: khataPhone, customerName: khataName.trim() || null },
+      question: khataPaidNum > 0
+        ? `${rupees(khataPaidNum)} received now and ${rupees(khataDueAmount)} on ${who}'s khata?`
+        : `${rupees(khataDueAmount)} on ${who}'s khata?`,
+      tone: 'khata',
+    });
+  };
 
   const splitHint =
     cashInput.length === 0 ? null
@@ -379,7 +580,12 @@ export default function PaymentCollectScreen() {
     splitValid    ? QuinckleColors.success
     : remaining < 0 ? QuinckleColors.danger
     : QuinckleColors.textTertiary;
-  const paymentReady = resolvedTotal > 0 && !isLoadingPaymentContext;
+  // No tender button arms until the table's net has been read back at least
+  // once — a tap on the navigation snapshot is exactly how a part-collection
+  // gets banked. `liveDue` is only null before the first sync, or for the
+  // intent path (which is a single fixed-amount request, not a table bill).
+  const isVerifyingDue = isSyncingDue && !liveDue && isSessionCollect;
+  const paymentReady = resolvedTotal > 0 && !isLoadingPaymentContext && !isVerifyingDue;
 
   return (
     <KeyboardAvoidingView style={s.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -406,7 +612,7 @@ export default function PaymentCollectScreen() {
 
       {/* Order summary */}
       <View style={[s.summary, { paddingHorizontal: Spacing.xl }]}>
-        <Text style={s.tableLabel}>Table {tableNumber}</Text>
+        <Text style={s.tableLabel}>{locationLabel}</Text>
         <Text style={s.totalAmount}>₹{resolvedTotal.toLocaleString('en-IN')}</Text>
         <View style={s.customerRow}>
           <Text style={s.customerText}>{customerName ?? 'Guest'}</Text>
@@ -421,8 +627,16 @@ export default function PaymentCollectScreen() {
             <BillBreakdownView breakdown={resolvedBreakdown} compact />
           </View>
         )}
+        {isMultiOrder && (
+          <Text style={s.orderCountNote}>
+            {`Whole table \u00b7 ${effectiveOrderIds.length} orders in one bill`}
+          </Text>
+        )}
         {paymentContextError && (
           <Text style={s.contextWarning}>{paymentContextError}</Text>
+        )}
+        {dueSyncError && (
+          <Text style={s.contextWarning}>{dueSyncError}</Text>
         )}
       </View>
 
@@ -456,7 +670,7 @@ export default function PaymentCollectScreen() {
         )}
 
         {/* Split mode */}
-        {mode === 'split' && (
+        {step === 'choose' && mode === 'split' && (
           <View style={s.splitSection}>
             <Text style={s.splitTitle}>Split payment</Text>
             <Text style={s.splitSub}>Enter the cash amount — UPI is calculated automatically.</Text>
@@ -508,16 +722,110 @@ export default function PaymentCollectScreen() {
             {upiNum > 0 && isLoadingUpi && <QrSkeleton size={180} />}
           </View>
         )}
+
+        {/* Khata (due) mode */}
+        {step === 'choose' && mode === 'khata' && (
+          <View style={s.splitSection}>
+            <Text style={s.splitTitle}>Add to khata</Text>
+            <Text style={s.splitSub}>The unpaid amount is recorded against the customer&apos;s phone — collect it later from the Dues screen.</Text>
+
+            {/* Customer phone (required) + name */}
+            <View style={{ gap: Spacing.md }}>
+              <View>
+                <Text style={s.splitColLabel}>Customer phone *</Text>
+                <View style={[s.splitField, s.splitFieldActive]}>
+                  <Text style={s.splitCurrency}>+91</Text>
+                  <TextInput
+                    value={khataPhone}
+                    onChangeText={raw => setKhataPhone(raw.replace(/[^\d]/g, '').slice(0, 10))}
+                    keyboardType="phone-pad"
+                    placeholder="10-digit mobile"
+                    placeholderTextColor={QuinckleColors.textTertiary}
+                    style={s.splitInput}
+                    autoFocus={!khataPhone}
+                  />
+                  {khataPhoneValid && <Ionicons name="checkmark-circle" size={18} color={QuinckleColors.success} />}
+                </View>
+              </View>
+              <View>
+                <Text style={s.splitColLabel}>Customer name (optional)</Text>
+                <View style={s.splitField}>
+                  <TextInput
+                    value={khataName}
+                    onChangeText={setKhataName}
+                    placeholder="Name"
+                    placeholderTextColor={QuinckleColors.textTertiary}
+                    style={s.splitInput}
+                    autoCapitalize="words"
+                  />
+                </View>
+              </View>
+            </View>
+
+            {/* Received now (optional) */}
+            <View style={{ marginTop: Spacing.lg }}>
+              <Text style={s.splitColLabel}>Received now (optional)</Text>
+              <View style={s.splitRow}>
+                <View style={[s.splitCol, { flex: 1.4 }]}>
+                  <View style={s.splitField}>
+                    <Text style={s.splitCurrency}>₹</Text>
+                    <TextInput
+                      value={khataPaidInput}
+                      onChangeText={raw => setKhataPaidInput(raw.replace(/[^\d]/g, '').slice(0, 7))}
+                      keyboardType="number-pad"
+                      placeholder="0"
+                      placeholderTextColor={QuinckleColors.textTertiary}
+                      style={s.splitInput}
+                    />
+                  </View>
+                </View>
+                <View style={[s.splitCol, { flexDirection: 'row', gap: Spacing.sm }]}>
+                  {(['CASH', 'UPI_DIRECT'] as const).map(m => (
+                    <TouchableOpacity
+                      key={m}
+                      onPress={() => { void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setKhataPaidMethod(m); }}
+                      style={[s.khataMethodChip, khataPaidMethod === m && s.khataMethodChipActive]}
+                      activeOpacity={0.8}
+                      disabled={m === 'UPI_DIRECT' && !partnerUpi.vpa}
+                    >
+                      <Text style={[s.khataMethodChipText, khataPaidMethod === m && s.khataMethodChipTextActive]}>
+                        {m === 'CASH' ? 'Cash' : 'UPI'}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            </View>
+
+            {/* Due summary */}
+            <View style={s.khataSummary}>
+              <View style={{ flex: 1 }}>
+                <Text style={s.khataSummaryLabel}>Goes on khata</Text>
+                <Text style={s.khataSummaryHint}>
+                  {khataPaidNum > 0 ? `₹${khataPaidNum.toLocaleString('en-IN')} received via ${khataPaidMethod === 'CASH' ? 'cash' : 'UPI'}` : 'Nothing received now'}
+                </Text>
+              </View>
+              <Text style={[s.khataSummaryAmount, khataPaidNum >= resolvedTotal && { color: QuinckleColors.danger }]}>
+                ₹{khataDueAmount.toLocaleString('en-IN')}
+              </Text>
+            </View>
+            {khataPaidNum >= resolvedTotal && resolvedTotal > 0 && (
+              <Text style={[s.splitHint, { color: QuinckleColors.danger }]}>
+                Received amount covers the bill — use Cash/UPI instead of khata.
+              </Text>
+            )}
+          </View>
+        )}
       </ScrollView>
 
       {/* Bottom actions */}
       <View style={[s.bottom, { paddingBottom: insets.bottom + 16 }]}>
 
-        {mode === 'normal' && step === 'choose' && (
+        {step === 'choose' && mode === 'normal' && (
           <View style={s.btnRow}>
             {intentMethod !== 'UPI_DIRECT' && (
-              <TouchableOpacity style={s.btnCash} onPress={handleCashTap} disabled={loading} activeOpacity={0.8}>
-                {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>Cash</Text>}
+              <TouchableOpacity style={[s.btnCash, !paymentReady && s.btnMuted]} onPress={handleCashTap} disabled={loading || !paymentReady} activeOpacity={0.8}>
+                {loading || isVerifyingDue ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>Cash</Text>}
               </TouchableOpacity>
             )}
             <TouchableOpacity
@@ -528,9 +836,25 @@ export default function PaymentCollectScreen() {
             >
               {loading
                 ? <ActivityIndicator color="#fff" size="small" />
-                : <Text style={s.btnLabel}>{intentId ? 'Confirm Paid' : 'UPI'}</Text>}
+                : <Text style={s.btnLabel}>{intentId ? 'Mark as Paid' : 'UPI'}</Text>}
             </TouchableOpacity>
           </View>
+        )}
+
+        {/* Khata entry — pay-later isn't available on diner-initiated intents */}
+        {!intentId && mode === 'normal' && step === 'choose' && (
+          <TouchableOpacity
+            style={[s.khataEntryBtn, (loading || !paymentReady) && { opacity: 0.5 }]}
+            onPress={enterKhataMode}
+            disabled={loading || !paymentReady}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="book-outline" size={17} color={QuinckleColors.warning} />
+            {/* "(pay later)" glossed a term the staff already use every shift.
+                If anyone needs the gloss it belongs on the khata screen, not
+                permanently on the button. */}
+            <Text style={s.khataEntryText}>Put on khata</Text>
+          </TouchableOpacity>
         )}
 
         {intentId && mode === 'normal' && step === 'choose' && (
@@ -546,14 +870,29 @@ export default function PaymentCollectScreen() {
           </TouchableOpacity>
         )}
 
-        {mode === 'normal' && step === 'confirm_cash' && (
+        {/* One confirmation for every method — cash, UPI, split and khata all
+            land here. The button keeps the colour of the method being
+            confirmed, so the second tap still feels like the one you chose. */}
+        {step === 'confirm' && pending && (
           <View style={s.confirmWrap}>
-            <Text style={s.confirmMsg}>Confirm ₹{resolvedTotal.toLocaleString('en-IN')} cash received?</Text>
+            <Text style={s.confirmMsg}>{pending.question}</Text>
             <View style={s.btnRow}>
-              <TouchableOpacity style={s.btnGhost} onPress={() => setStep('choose')} disabled={loading} activeOpacity={0.7}>
+              <TouchableOpacity style={s.btnGhost} onPress={cancelPending} disabled={loading} activeOpacity={0.7}>
                 <Text style={s.btnGhostLabel}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[s.btnCash, { flex: 2 }, (loading || isLoadingPaymentContext || !paymentReady) && { opacity: 0.5 }]} onPress={handleCashConfirm} disabled={loading || isLoadingPaymentContext || !paymentReady} activeOpacity={0.8}>
+              <TouchableOpacity
+                style={[
+                  pending.tone === 'cash' ? s.btnCash
+                    : pending.tone === 'upi' ? s.btnUpi
+                    : pending.tone === 'khata' ? s.btnKhata
+                    : s.btnPrimary,
+                  { flex: 2 },
+                  (loading || isLoadingPaymentContext || !paymentReady) && { opacity: 0.5 },
+                ]}
+                onPress={confirmPending}
+                disabled={loading || isLoadingPaymentContext || !paymentReady}
+                activeOpacity={0.8}
+              >
                 {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>Confirm</Text>}
               </TouchableOpacity>
             </View>
@@ -567,12 +906,25 @@ export default function PaymentCollectScreen() {
             disabled={!splitValid || loading || isLoadingPaymentContext || !paymentReady}
             activeOpacity={0.8}
           >
-            {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>Mark as Paid</Text>}
+            {loading || isVerifyingDue ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>Mark as Paid</Text>}
+          </TouchableOpacity>
+        )}
+
+        {mode === 'khata' && (
+          <TouchableOpacity
+            style={[s.btnKhata, (!khataValid || loading || isLoadingPaymentContext || !paymentReady) && s.btnMuted]}
+            onPress={handleKhataConfirm}
+            disabled={!khataValid || loading || isLoadingPaymentContext || !paymentReady}
+            activeOpacity={0.8}
+          >
+            {loading
+              ? <ActivityIndicator color="#fff" size="small" />
+              : <Text style={s.btnLabel}>Record ₹{khataDueAmount.toLocaleString('en-IN')} due</Text>}
           </TouchableOpacity>
         )}
       </View>
 
-      {successInfo && <SuccessScreen info={successInfo} onDone={() => router.back()} />}
+      {successInfo && <SuccessScreen info={successInfo} onDone={returnToPreviousScreen} />}
     </KeyboardAvoidingView>
   );
 }
@@ -643,6 +995,7 @@ const s = StyleSheet.create({
   splitReadonly: { flex: 1, fontSize: 22, fontWeight: '600', letterSpacing: -0.4 },
   splitHint: { fontSize: 13, fontWeight: '500', textAlign: 'right' },
   contextWarning: { color: QuinckleColors.warning, fontSize: 12, fontWeight: '500', marginTop: 10 },
+  orderCountNote: { color: QuinckleColors.textSecondary, fontSize: 12, fontWeight: '600', marginTop: 8 },
 
   // Bottom
   bottom: {
@@ -678,4 +1031,61 @@ const s = StyleSheet.create({
   btnGhostLabel: { color: QuinckleColors.textSecondary, fontSize: 16, fontWeight: '500' },
   confirmWrap: { gap: Spacing.md },
   confirmMsg: { color: QuinckleColors.textSecondary, fontSize: 14, textAlign: 'center' },
+
+  // Khata (due) mode
+  // Khata read as "odd" because it differed from Cash/UPI on four axes at once —
+  // 44 vs 52 tall, 13px vs 16px label, outlined vs filled, plus an icon. It
+  // SHOULD stay subordinate: it isn't a payment method, it's the decision not to
+  // collect, and it's the only path needing a phone number because it's credit
+  // tied to a person. But subordinate is one deliberate difference, not four.
+  // Same height, radius and type size as its neighbours; outlined instead of
+  // filled is the single thing that sets it apart.
+  khataEntryBtn: {
+    marginTop: Spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    height: 52,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: QuinckleColors.warningBorder,
+    backgroundColor: QuinckleColors.warningSoft,
+  },
+  khataEntryText: { color: QuinckleColors.warning, fontSize: 16, fontWeight: '600' },
+  btnKhata: {
+    height: 52, borderRadius: Radius.lg,
+    backgroundColor: '#b45309',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  khataMethodChip: {
+    flex: 1,
+    height: 52,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  khataMethodChipActive: {
+    borderColor: QuinckleColors.primarySoftBorder,
+    backgroundColor: QuinckleColors.primarySoft,
+  },
+  khataMethodChipText: { color: QuinckleColors.textSecondary, fontSize: 13, fontWeight: '600' },
+  khataMethodChipTextActive: { color: QuinckleColors.primary },
+  khataSummary: {
+    marginTop: Spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    padding: Spacing.md,
+    borderRadius: Radius.md,
+    backgroundColor: QuinckleColors.warningSoft,
+    borderWidth: 1,
+    borderColor: QuinckleColors.warningBorder,
+  },
+  khataSummaryLabel: { color: QuinckleColors.warning, fontSize: 12, fontWeight: '700' },
+  khataSummaryHint: { color: QuinckleColors.textTertiary, fontSize: 11, marginTop: 2 },
+  khataSummaryAmount: { color: QuinckleColors.warning, fontSize: 24, fontWeight: '800', letterSpacing: -0.5 },
 });
