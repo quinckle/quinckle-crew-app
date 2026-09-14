@@ -9,6 +9,7 @@ import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { crewSessions, crewTables, crewOrders, restaurantApi, printerApi } from '../../services/api';
 import type { SessionBill, BillOrderItem, BillOrder } from '../../services/api';
 import { printBill, printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
+import { loyaltyApi, type CrewLadder } from '../../services/api';
 import type { InvoiceBill, LoyaltyNudge } from '../../services/invoiceTemplate';
 import { useAuth } from '../../context/AuthContext';
 import { useCountdown } from '../../hooks/useCountdown';
@@ -1148,6 +1149,100 @@ export default function TableDetail() {
     );
   };
 
+  // ── Step ladder (§22) ──────────────────────────────────────────────────
+  // A steward reads this mid-service, so it leads with the ACTION — whether
+  // something has to be carried to the table — not the step number. The number
+  // is context; "bring a cappuccino" is the job.
+  const [ladder, setLadder] = useState<CrewLadder | null>(null);
+  const [ladderOpen, setLadderOpen] = useState(false);
+
+  useEffect(() => {
+    if (!sessionId) { setLadder(null); return; }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await loyaltyApi.balance(sessionId);
+        if (!cancelled) setLadder(res?.data?.ladder ?? null);
+      } catch {
+        // A loyalty failure must never disturb a table screen mid-service.
+        if (!cancelled) setLadder(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sessionId, orders.length]);
+
+  const ladderStripJsx = ladder ? (
+    <TouchableOpacity
+      style={[styles.ladderStrip, ladder.thisVisit?.carry && styles.ladderStripCarry]}
+      onPress={() => setLadderOpen(true)}
+      activeOpacity={0.75}
+      accessibilityRole="button"
+      accessibilityLabel={
+        ladder.thisVisit?.carry
+          ? `Bring ${ladder.thisVisit.rewardName}`
+          : `Step ${ladder.step} of ${ladder.totalSteps}`
+      }
+    >
+      <Ionicons
+        name={ladder.thisVisit?.carry ? 'gift' : 'trophy-outline'}
+        size={16}
+        color={ladder.thisVisit?.carry ? QuinckleColors.warning : QuinckleColors.textTertiary}
+      />
+      <Text style={styles.ladderStripText} numberOfLines={1}>
+        {ladder.thisVisit?.carry
+          // The one case a steward has to act on.
+          ? `${ladder.thisVisit.rewardName} — bring it`
+          : ladder.thisVisit
+            ? `${ladder.thisVisit.rewardName} on this bill`
+            : `Step ${ladder.step} of ${ladder.totalSteps}`}
+      </Text>
+      <Ionicons name="chevron-forward" size={14} color={QuinckleColors.textTertiary} />
+    </TouchableOpacity>
+  ) : null;
+
+  // The ladder, expanded. Ladder only — see the sheet body.
+  const ladderSheetJsx = (
+    <BottomSheet visible={ladderOpen} onClose={() => setLadderOpen(false)} title="Rewards ladder">
+      {/* The ladder itself, and nothing else. No visit history in v1: it would
+          let any steward read a regular's pattern, and it is far easier to add
+          later than to walk back. */}
+      {ladder && (
+        <View>
+          {ladder.thisVisit?.carry && (
+            <Text style={{ fontSize: 13, fontWeight: '700', color: QuinckleColors.warning, marginBottom: Spacing.sm }}>
+              Bring {ladder.thisVisit.rewardName} to this table
+            </Text>
+          )}
+          {!ladder.optedIn && (
+            <Text style={{ fontSize: 12, color: QuinckleColors.textTertiary, marginBottom: Spacing.sm }}>
+              This guest hasn&apos;t joined yet — nothing is being collected.
+            </Text>
+          )}
+          {ladder.steps.map((st) => (
+            <View key={st.position} style={styles.ladderSheetRow}>
+              <Text style={styles.ladderSheetNum}>{st.position}</Text>
+              <Text style={styles.ladderSheetName}>
+                {st.rewardName ?? 'Nothing — they just move up'}
+              </Text>
+              <Text style={[styles.ladderSheetState, {
+                color: st.state === 'current' ? QuinckleColors.warning
+                     : st.state === 'done' ? QuinckleColors.textTertiary
+                     : QuinckleColors.borderSubtle,
+              }]}>
+                {st.state === 'current' ? 'Today' : st.state === 'done' ? 'Done' : ''}
+              </Text>
+            </View>
+          ))}
+          {ladder.nextVisit && (
+            <Text style={{ fontSize: 12, color: QuinckleColors.textTertiary, marginTop: Spacing.sm }}>
+              Next visit: {ladder.nextVisit.rewardName}
+            </Text>
+          )}
+        </View>
+      )}
+    </BottomSheet>
+  );
+
   const actionRowJsx = (
     <View style={styles.actionRow}>
       {actionCard('add', 'add-circle-outline', 'Add items', () => router.push({
@@ -1429,6 +1524,7 @@ export default function TableDetail() {
 
             {/* Same three actions as the phone layout, so behaviour doesn't
                 diverge by form factor. */}
+            {ladderStripJsx}
             {actionRowJsx}
 
             <View style={styles.railBillWrap}>
@@ -1495,7 +1591,8 @@ export default function TableDetail() {
         </View>
       ) : (
         <>
-          {actionRowJsx}
+          {ladderStripJsx}
+            {actionRowJsx}
           {orderListJsx}
         </>
       )}
@@ -1598,6 +1695,7 @@ export default function TableDetail() {
           comes out UNDERNEATH it, with the total and collect button sitting on
           top of the sheet. Keep new sheets and toasts in this block. */}
       {sessionInfoSheetJsx}
+      {ladderSheetJsx}
 
       <HintToast message={hint} onDismiss={() => setHint(null)} bottomOffset={isWide ? 24 : 96} />
 
@@ -2277,6 +2375,31 @@ const styles = StyleSheet.create({
   // Three equal fixed slots. `flex: 1` on every card keeps the widths identical
   // whether or not an action is currently available, so a disabled card holds
   // its place instead of letting the row reflow.
+  // ── Step ladder strip ──────────────────────────────────────────────────
+  // ABOVE the action cards, not below. Those three are deliberately fixed slots
+  // so "print is the third one" stays true for muscle memory; a fourth card
+  // would break that, and a strip under them is below the fold of a steward's
+  // attention. This is information about the guest, and it belongs with them.
+  ladderStrip: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingVertical: Spacing.sm, paddingHorizontal: Spacing.md,
+    marginBottom: Spacing.sm,
+    backgroundColor: QuinckleColors.surface,
+    borderRadius: Radius.lg,
+    borderWidth: 1, borderColor: QuinckleColors.border,
+  },
+  // Something has to be carried to the table — the only state worth colour.
+  ladderStripCarry: { borderColor: QuinckleColors.warning },
+  ladderStripText: { flex: 1, fontSize: 13, fontWeight: '600', color: QuinckleColors.textPrimary },
+  ladderSheetRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingVertical: Spacing.sm,
+    borderBottomWidth: 1, borderBottomColor: QuinckleColors.borderSubtle,
+  },
+  ladderSheetNum: { width: 26, fontSize: 12, fontWeight: '700', color: QuinckleColors.textTertiary, fontVariant: ['tabular-nums'] as any },
+  ladderSheetName: { flex: 1, fontSize: 13, color: QuinckleColors.textSecondary },
+  ladderSheetState: { fontSize: 10, fontWeight: '700', letterSpacing: 0.4, textTransform: 'uppercase' },
+
   actionRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.lg },
   actionCard: {
     flex: 1,

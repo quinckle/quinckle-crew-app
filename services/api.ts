@@ -1422,6 +1422,44 @@ export interface PrintStatus {
 
 // ── Printer API ───────────────────────────────────────────────────────────────
 
+/** The diner's step ladder, as the table screen shows it (§22). */
+export interface CrewLadder {
+  step: number;
+  totalSteps: number;
+  completesLadder: boolean;
+  optedIn: boolean;
+  /**
+   * What this visit earns. Null when the diner has not joined or the step is
+   * empty — there is nothing for a steward to do, and showing a reward the bill
+   * will not honour would have the floor promising it.
+   */
+  thisVisit: {
+    rewardName: string;
+    /** Someone has to physically bring this. A percentage needs no carrying. */
+    carry: boolean;
+    claimed: boolean;
+  } | null;
+  nextVisit: { rewardName: string } | null;
+  steps: { position: number; rewardName: string | null; state: 'done' | 'current' | 'upcoming' }[];
+}
+
+export const loyaltyApi = {
+  /**
+   * Balance, rewards and the step ladder for one table.
+   *
+   * The ladder block comes from the same resolveLadderView the diner's cart
+   * reads, so the floor and the table cannot disagree about which step someone
+   * is on.
+   */
+  balance: (sessionId: string) =>
+    request<{ success: boolean; data: { programActive: boolean; ladder?: CrewLadder | null } }>(
+      'GET',
+      `/api/crew/loyalty/balance?sessionId=${encodeURIComponent(sessionId)}`,
+      undefined,
+      true,
+    ),
+};
+
 export const printerApi = {
   /**
    * Report a print result to the backend (printed or failed).
