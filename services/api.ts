@@ -1422,6 +1422,57 @@ export interface PrintStatus {
 
 // ── Printer API ───────────────────────────────────────────────────────────────
 
+/** The diner's step ladder, as the table screen shows it (§22). */
+export interface CrewLadder {
+  step: number;
+  totalSteps: number;
+  completesLadder: boolean;
+  optedIn: boolean;
+  /**
+   * What this visit earns. Null when the diner has not joined or the step is
+   * empty — there is nothing for a steward to do, and showing a reward the bill
+   * will not honour would have the floor promising it.
+   */
+  thisVisit: {
+    rewardName: string;
+    /** Someone has to physically bring this. A percentage needs no carrying. */
+    carry: boolean;
+    /** The guest added it to their cart. */
+    claimed: boolean;
+    /** It is on an order — the kitchen has it on the KOT. */
+    ordered?: boolean;
+    /** The reward has been written into this bill. */
+    applied?: boolean;
+  } | null;
+  /** False when this guest's visit already counted today. */
+  eligible?: boolean;
+  /** Qualifying visits still needed before step 1. 0 = on the ladder. */
+  visitsToUnlock?: number;
+  /** Bill before discount a visit needs to count and get its reward. null = any. */
+  minBill?: number | null;
+  billSoFar?: number;
+  meetsMinBill?: boolean;
+  nextVisit: { rewardName: string } | null;
+  steps: { position: number; rewardName: string | null; state: 'done' | 'current' | 'upcoming' }[];
+}
+
+export const loyaltyApi = {
+  /**
+   * Balance, rewards and the step ladder for one table.
+   *
+   * The ladder block comes from the same resolveLadderView the diner's cart
+   * reads, so the floor and the table cannot disagree about which step someone
+   * is on.
+   */
+  balance: (sessionId: string) =>
+    request<{ success: boolean; data: { programActive: boolean; ladder?: CrewLadder | null } }>(
+      'GET',
+      `/api/crew/loyalty/balance?sessionId=${encodeURIComponent(sessionId)}`,
+      undefined,
+      true,
+    ),
+};
+
 export const printerApi = {
   /**
    * Report a print result to the backend (printed or failed).

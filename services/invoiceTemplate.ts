@@ -113,6 +113,23 @@ export interface LoyaltyNudge {
     kind: 'REWARD' | 'TIER';
     ready: boolean;
   } | null;
+  /**
+   * Step ladder (§22), present only for a STEP_LADDER programme. Absent on every
+   * bill written before the ladder existed and on every points programme since,
+   * which is exactly why loyaltyLines branches on it rather than replacing the
+   * points lines — an old session must still reprint the way it always did.
+   */
+  ladder?: {
+    step: number;
+    totalSteps: number;
+    rewardName: string | null;
+    nextRewardName: string | null;
+    completesLadder: boolean;
+    /** Qualifying visits still needed after this one (0/absent = on the ladder). */
+    visitsToUnlock?: number;
+    /** The owner's minimum bill for a visit to count. */
+    minBill?: number | null;
+  } | null;
 }
 
 /**
@@ -188,6 +205,66 @@ function wrapText(text: string, width: number): string[] {
 }
 
 /**
+ * The ladder block (§22).
+ *
+ *     Chaarpai Club
+ *     Step 3 of 5
+ *     [######----] 60%
+ *     Free cappuccino - on us today
+ *     Next visit: 8% off
+ *
+ * Uses the SAME [#####-----] bar the points nudge below already prints, rather
+ * than the filled circles the screens use. That bar is proven on this hardware
+ * and is pure ASCII; ● and ○ depend on the printer's active codepage and would
+ * become mojibake on anything that does not carry them. A diner's bill is the
+ * wrong place to discover which printers those are.
+ *
+ * Width-aware like everything else here: this prints at 32, 42, 48 and 69
+ * characters depending on the roll the partner loaded.
+ */
+function ladderLines(ladder: NonNullable<LoyaltyNudge['ladder']>, W: number): string[] {
+  const total = Math.max(1, Math.trunc(ladder.totalSteps ?? 1));
+  const step = Math.max(1, Math.min(total, Math.trunc(ladder.step ?? 1)));
+
+  const out: string[] = [];
+  out.push(`[C]<b>Rewards</b>`);
+
+  // Still qualifying: no step, no bar — just how far to go.
+  const toUnlock = Math.max(0, Math.trunc(ladder.visitsToUnlock ?? 0));
+  if (toUnlock > 0) {
+    const msg = `${toUnlock} more visit${toUnlock === 1 ? '' : 's'} to unlock your rewards`;
+    for (const ln of wrapText(msg, W)) out.push(`[L]${ln}`);
+    if (ladder.minBill) {
+      for (const ln of wrapText(`Visits count on bills of Rs.${Math.round(ladder.minBill)}+`, W)) out.push(`[L]${ln}`);
+    }
+    return out;
+  }
+
+  out.push(`[L]${leftRight('Your progress', `Step ${step} of ${total}`, W)}`);
+
+  const barW = Math.min(20, Math.max(8, W - 8));
+  const pct = Math.max(0, Math.min(100, Math.round((step / total) * 100)));
+  const filled = Math.round((pct / 100) * barW);
+  out.push(`[L][${'#'.repeat(filled)}${'-'.repeat(barW - filled)}] ${pct}%`);
+
+  // What they got today. An empty step prints nothing here rather than a line
+  // saying nothing happened — they still advanced, which the bar already shows.
+  if (ladder.rewardName) {
+    for (const ln of wrapText(`${ladder.rewardName} - on us today`, W)) out.push(`[L]${ln}`);
+  }
+
+  // Finishing wins over "next visit": under RESET the next step is 1 again, and
+  // "Next visit: 2% off" would bury the fact that they just completed a lap.
+  if (ladder.completesLadder) {
+    for (const ln of wrapText(`You've finished the ladder!`, W)) out.push(`[L]${ln}`);
+  } else if (ladder.nextRewardName) {
+    for (const ln of wrapText(`Next visit: ${ladder.nextRewardName}`, W)) out.push(`[L]${ln}`);
+  }
+
+  return out;
+}
+
+/**
  * The three loyalty lines (LOYALTY_POINTS_PLAN.md §2.1) — the highest
  * impact-to-effort feature in the plan, and the one thing a bolt-on loyalty
  * vendor physically cannot do without deep POS integration.
@@ -206,6 +283,11 @@ function wrapText(text: string, width: number): string[] {
  * divider and no heading either.
  */
 function loyaltyLines(nudge: LoyaltyNudge, W: number): string[] {
+  // A step ladder is a different programme, not a different skin on points:
+  // there is no balance to report and nothing to spend. Branch first, and leave
+  // the points path below untouched for every bill that predates the ladder.
+  if (nudge.ladder) return ladderLines(nudge.ladder, W);
+
   const earned = Math.max(0, Math.trunc(nudge.pointsEarned ?? 0));
   const balance = Math.max(0, Math.trunc(nudge.balanceAfter ?? 0));
 
