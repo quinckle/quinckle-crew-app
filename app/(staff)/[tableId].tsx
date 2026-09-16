@@ -173,6 +173,7 @@ export default function TableDetail() {
   const [serviceChargeTotal, setServiceChargeTotal] = useState(0);
   const [chargeLines, setChargeLines] = useState<{ id: string; name: string; amount: number }[]>([]);
   const [discountTotal, setDiscountTotal] = useState(0);
+  const [discountLines, setDiscountLines] = useState<{ name: string; amount: number }[]>([]);
   const [tipTotal, setTipTotal] = useState(0);
   const [roundOffTotal, setRoundOffTotal] = useState(0);
   const [payableTotal, setPayableTotal] = useState(0);
@@ -347,6 +348,7 @@ export default function TableDetail() {
       setServiceChargeTotal(charges);
       setChargeLines(bill.charge_lines ?? []);
       setDiscountTotal(disc);
+      setDiscountLines(bill.discount_lines ?? []);
       setTipTotal(tipV);
       setRoundOffTotal(roundV);
       setPayableTotal(grand);
@@ -813,6 +815,7 @@ export default function TableDetail() {
         items: invoiceItems,
         subtotal: sessionTotal,
         discount: discountTotal,
+        discountLines,
         charges: serviceChargeTotal,
         chargeLines,
         tax: taxTotal,

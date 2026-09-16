@@ -45,6 +45,9 @@ export interface InvoiceBill {
   subtotal: number;
   /** Discount total applied before charges/tax. Printed as its own negative line. */
   discount?: number;
+  /** Named parts of `discount`. Printed one line each when they add up to it;
+   *  otherwise the single "Discount" line is printed. */
+  discountLines?: { name: string; amount: number }[];
   /** Service / packaging / cover charges total. Printed as its own line only
    *  when `chargeLines` is absent (legacy payloads and negative adjustments). */
   charges?: number;
@@ -416,7 +419,24 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   // ── Totals ────────────────────────────────────────────────────────────────
   lines.push(`[L]${leftRight('Subtotal', fmt(bill.subtotal), W)}`);
   if ((bill.discount ?? 0) > 0) {
-    lines.push(`[L]${leftRight('Discount', `-${fmt(bill.discount!)}`, W)}`);
+    // One line per named discount, so a free item and a membership don't print
+    // as one unexplained figure. A name too long for the paper takes its own
+    // line with the amount under it, rather than being cut to "Loyalty: Fre..".
+    const parts = (bill.discountLines ?? []).filter((l) => Number(l.amount) >= 0.01);
+    const partsSum = parts.reduce((n, l) => n + Number(l.amount), 0);
+    if (parts.length > 0 && Math.abs(partsSum - bill.discount!) < 0.01) {
+      for (const l of parts) {
+        const value = `-${fmt(Number(l.amount))}`;
+        if (l.name.length <= W - value.length - 1) {
+          lines.push(`[L]${leftRight(l.name, value, W)}`);
+        } else {
+          lines.push(`[L]${l.name.slice(0, W)}`);
+          lines.push(`[L]${leftRight('', value, W)}`);
+        }
+      }
+    } else {
+      lines.push(`[L]${leftRight('Discount', `-${fmt(bill.discount!)}`, W)}`);
+    }
   }
   // Print each charge under the name the partner gave it. Falling back to the
   // collapsed total labelled "Service charge" is only correct for bills written

@@ -431,6 +431,10 @@ export interface SessionBill {
    *  packaging fee isn't labelled "Service charge". */
   charge_lines?: { id: string; name: string; amount: number }[];
   discount_total?: number;
+  /** What discount_total is made of — "Loyalty: Free Panner Tikka x2",
+   *  "Membership: Silver", "Staff discount". Sums to discount_total. Absent on
+   *  older backends. */
+  discount_lines?: { kind: string; name: string; amount: number }[];
   tip_total?: number;
   /** Signed rupee rounding reconciling the paise-precision GST to the whole-rupee
    *  total. Absent (→ 0) on backends/bills from before round-off shipped. */
