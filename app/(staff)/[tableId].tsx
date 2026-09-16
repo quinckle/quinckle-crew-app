@@ -954,6 +954,31 @@ export default function TableDetail() {
     finally { setFreeing(false); }
   };
 
+  // ── Step ladder (§22) ──────────────────────────────────────────────────
+  // HOOKS MUST STAY ABOVE `if (isLoading) return`. They once sat below it:
+  // the loading render had fewer hooks than the loaded one and every table
+  // screen crashed (react-hooks/rules-of-hooks catches it — run lint).
+  // A steward reads this mid-service, so it leads with the ACTION — whether
+  // something has to be carried to the table — not the step number. The number
+  // is context; "bring a cappuccino" is the job.
+  const [ladder, setLadder] = useState<CrewLadder | null>(null);
+  const [ladderOpen, setLadderOpen] = useState(false);
+
+  useEffect(() => {
+    if (!sessionId) { setLadder(null); return; }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await loyaltyApi.balance(sessionId);
+        if (!cancelled) setLadder(res?.data?.ladder ?? null);
+      } catch {
+        // A loyalty failure must never disturb a table screen mid-service.
+        if (!cancelled) setLadder(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sessionId, orders.length]);
+
   if (isLoading) {
     return (
       <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
@@ -1149,27 +1174,6 @@ export default function TableDetail() {
     );
   };
 
-  // ── Step ladder (§22) ──────────────────────────────────────────────────
-  // A steward reads this mid-service, so it leads with the ACTION — whether
-  // something has to be carried to the table — not the step number. The number
-  // is context; "bring a cappuccino" is the job.
-  const [ladder, setLadder] = useState<CrewLadder | null>(null);
-  const [ladderOpen, setLadderOpen] = useState(false);
-
-  useEffect(() => {
-    if (!sessionId) { setLadder(null); return; }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await loyaltyApi.balance(sessionId);
-        if (!cancelled) setLadder(res?.data?.ladder ?? null);
-      } catch {
-        // A loyalty failure must never disturb a table screen mid-service.
-        if (!cancelled) setLadder(null);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [sessionId, orders.length]);
 
   // What the strip says, from the reward's real state. A free item only
   // reaches the table through an order — "bring it" used to show even when
