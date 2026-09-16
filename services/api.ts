@@ -1446,6 +1446,12 @@ export interface CrewLadder {
   } | null;
   /** False when this guest's visit already counted today. */
   eligible?: boolean;
+  /** Qualifying visits still needed before step 1. 0 = on the ladder. */
+  visitsToUnlock?: number;
+  /** Bill before discount a visit needs to count and get its reward. null = any. */
+  minBill?: number | null;
+  billSoFar?: number;
+  meetsMinBill?: boolean;
   nextVisit: { rewardName: string } | null;
   steps: { position: number; rewardName: string | null; state: 'done' | 'current' | 'upcoming' }[];
 }

@@ -1177,9 +1177,16 @@ export default function TableDetail() {
   // on the KOT (two coffees). The one thing a steward acts on is a free item
   // the guest has not added yet: tell them.
   const ladderDue = ladder?.thisVisit ?? null;
+  const ladderToUnlock = ladder?.visitsToUnlock ?? 0;
+  const ladderUnderMin = !!ladder?.minBill && ladder.meetsMinBill === false
+    && !ladderDue?.applied && !ladderDue?.ordered;
   const ladderNudge = !!ladderDue?.carry && !ladderDue.claimed && !ladderDue.ordered;
   const ladderLine = !ladder
     ? ''
+    : ladderToUnlock > 0
+      ? `Qualifying — ${ladderToUnlock} visit${ladderToUnlock === 1 ? '' : 's'} to unlock`
+    : ladderDue && ladderUnderMin
+      ? `${ladderDue.rewardName} — needs a ₹${Math.round(ladder.minBill!)} bill`
     : ladderDue
       ? ladderDue.carry
         ? ladderDue.ordered

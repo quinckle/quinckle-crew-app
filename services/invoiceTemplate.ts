@@ -125,6 +125,10 @@ export interface LoyaltyNudge {
     rewardName: string | null;
     nextRewardName: string | null;
     completesLadder: boolean;
+    /** Qualifying visits still needed after this one (0/absent = on the ladder). */
+    visitsToUnlock?: number;
+    /** The owner's minimum bill for a visit to count. */
+    minBill?: number | null;
   } | null;
 }
 
@@ -224,6 +228,18 @@ function ladderLines(ladder: NonNullable<LoyaltyNudge['ladder']>, W: number): st
 
   const out: string[] = [];
   out.push(`[C]<b>Rewards</b>`);
+
+  // Still qualifying: no step, no bar — just how far to go.
+  const toUnlock = Math.max(0, Math.trunc(ladder.visitsToUnlock ?? 0));
+  if (toUnlock > 0) {
+    const msg = `${toUnlock} more visit${toUnlock === 1 ? '' : 's'} to unlock your rewards`;
+    for (const ln of wrapText(msg, W)) out.push(`[L]${ln}`);
+    if (ladder.minBill) {
+      for (const ln of wrapText(`Visits count on bills of Rs.${Math.round(ladder.minBill)}+`, W)) out.push(`[L]${ln}`);
+    }
+    return out;
+  }
+
   out.push(`[L]${leftRight('Your progress', `Step ${step} of ${total}`, W)}`);
 
   const barW = Math.min(20, Math.max(8, W - 8));
