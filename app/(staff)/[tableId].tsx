@@ -1171,30 +1171,44 @@ export default function TableDetail() {
     return () => { cancelled = true; };
   }, [sessionId, orders.length]);
 
+  // What the strip says, from the reward's real state. A free item only
+  // reaches the table through an order — "bring it" used to show even when
+  // nothing was ordered (a free coffee off the books) or when it was already
+  // on the KOT (two coffees). The one thing a steward acts on is a free item
+  // the guest has not added yet: tell them.
+  const ladderDue = ladder?.thisVisit ?? null;
+  const ladderNudge = !!ladderDue?.carry && !ladderDue.claimed && !ladderDue.ordered;
+  const ladderLine = !ladder
+    ? ''
+    : ladderDue
+      ? ladderDue.carry
+        ? ladderDue.ordered
+          ? `${ladderDue.rewardName} — on the KOT, free`
+          : ladderDue.claimed
+            ? `${ladderDue.rewardName} — in the guest's cart`
+            : `${ladderDue.rewardName} free — ask the guest to add it`
+        : ladderDue.applied
+          ? `${ladderDue.rewardName} — off this bill`
+          : `${ladderDue.rewardName} — comes off this bill`
+      : ladder.eligible === false
+        ? 'Visit already counted today'
+        : `Step ${ladder.step} of ${ladder.totalSteps}`;
+
   const ladderStripJsx = ladder ? (
     <TouchableOpacity
-      style={[styles.ladderStrip, ladder.thisVisit?.carry && styles.ladderStripCarry]}
+      style={[styles.ladderStrip, ladderNudge && styles.ladderStripCarry]}
       onPress={() => setLadderOpen(true)}
       activeOpacity={0.75}
       accessibilityRole="button"
-      accessibilityLabel={
-        ladder.thisVisit?.carry
-          ? `Bring ${ladder.thisVisit.rewardName}`
-          : `Step ${ladder.step} of ${ladder.totalSteps}`
-      }
+      accessibilityLabel={ladderLine}
     >
       <Ionicons
-        name={ladder.thisVisit?.carry ? 'gift' : 'trophy-outline'}
+        name={ladderDue?.carry ? 'gift' : 'trophy-outline'}
         size={16}
-        color={ladder.thisVisit?.carry ? QuinckleColors.warning : QuinckleColors.textTertiary}
+        color={ladderNudge ? QuinckleColors.warning : QuinckleColors.textTertiary}
       />
       <Text style={styles.ladderStripText} numberOfLines={1}>
-        {ladder.thisVisit?.carry
-          // The one case a steward has to act on.
-          ? `${ladder.thisVisit.rewardName} — bring it`
-          : ladder.thisVisit
-            ? `${ladder.thisVisit.rewardName} on this bill`
-            : `Step ${ladder.step} of ${ladder.totalSteps}`}
+        {ladderLine}
       </Text>
       <Ionicons name="chevron-forward" size={14} color={QuinckleColors.textTertiary} />
     </TouchableOpacity>
@@ -1208,9 +1222,9 @@ export default function TableDetail() {
           later than to walk back. */}
       {ladder && (
         <View>
-          {ladder.thisVisit?.carry && (
-            <Text style={{ fontSize: 13, fontWeight: '700', color: QuinckleColors.warning, marginBottom: Spacing.sm }}>
-              Bring {ladder.thisVisit.rewardName} to this table
+          {ladderDue && (
+            <Text style={{ fontSize: 13, fontWeight: '700', color: ladderNudge ? QuinckleColors.warning : QuinckleColors.textPrimary, marginBottom: Spacing.sm }}>
+              {ladderLine}
             </Text>
           )}
           {!ladder.optedIn && (

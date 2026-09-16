@@ -1437,8 +1437,15 @@ export interface CrewLadder {
     rewardName: string;
     /** Someone has to physically bring this. A percentage needs no carrying. */
     carry: boolean;
+    /** The guest added it to their cart. */
     claimed: boolean;
+    /** It is on an order — the kitchen has it on the KOT. */
+    ordered?: boolean;
+    /** The reward has been written into this bill. */
+    applied?: boolean;
   } | null;
+  /** False when this guest's visit already counted today. */
+  eligible?: boolean;
   nextVisit: { rewardName: string } | null;
   steps: { position: number; rewardName: string | null; state: 'done' | 'current' | 'upcoming' }[];
 }
