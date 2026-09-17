@@ -1525,8 +1525,120 @@ export default function TableDetail() {
     </>
   );
 
+  // ── Three-dot menu ── shared by the phone and tablet headers.
+  const actionMenuJsx = (
+        <View style={{ position: 'relative' }}>
+          <TouchableOpacity onPress={() => { setPrintMenuOpen(false); setActionMenuOpen(o => !o); }} style={styles.iconBtn} activeOpacity={0.7}>
+            <Ionicons name="ellipsis-horizontal" size={18} color={QuinckleColors.textPrimary} />
+          </TouchableOpacity>
+          {actionMenuOpen && (
+            <View style={styles.actionMenu}>
+              <TouchableOpacity
+                onPress={() => { void openSwapModal(); }}
+                style={styles.actionMenuItem}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="swap-horizontal" size={14} color={QuinckleColors.textPrimary} />
+                <Text style={styles.actionMenuText}>Swap table</Text>
+              </TouchableOpacity>
+              <View style={styles.actionMenuDivider} />
+              <TouchableOpacity
+                onPress={openExtendMenu}
+                style={styles.actionMenuItem}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="time-outline" size={14} color={QuinckleColors.textPrimary} />
+                <Text style={styles.actionMenuText}>Extend time</Text>
+              </TouchableOpacity>
+            {!isPaid && (
+              <>
+                <View style={styles.actionMenuDivider} />
+                <TouchableOpacity
+                  onPress={() => {
+                    setActionMenuOpen(false);
+                    void requestCollection();
+                  }}
+                  style={styles.actionMenuItem}
+                  disabled={isRequestingCollection}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="checkmark-circle-outline" size={14} color={QuinckleColors.success} />
+                  <Text style={[styles.actionMenuText, { color: QuinckleColors.success }]}>
+                    {isRequestingCollection ? 'Requesting...' : 'Send to Payment Collection'}
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
+            <View style={styles.actionMenuDivider} />
+            <TouchableOpacity
+              onPress={() => { setActionMenuOpen(false); handleEndSession(); }}
+              style={styles.actionMenuItem}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="log-out-outline" size={14} color={QuinckleColors.danger} />
+              <Text style={[styles.actionMenuText, { color: QuinckleColors.danger }]}>End session</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        </View>
+  );
+
+  // Phone header: a centred nav bar. The title opens session details (it
+  // replaces the separate ⓘ target), and the timer is a coloured status line
+  // under it — green with time to spare, amber running low, red overdue.
+  const statusDot = !countdownStr ? QuinckleColors.textTertiary
+    : expiry === 'normal' ? QuinckleColors.success
+    : expiry === 'warning' ? QuinckleColors.warning
+    : QuinckleColors.danger;
+  const statusText = countdownStr
+    ? countdownStr === 'Expired' ? 'Time up' : `${countdownStr} left`
+    : elapsed ? `Seated ${elapsed}` : '';
+  const phoneHeaderJsx = (
+    <View style={styles.navBar}>
+      <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel="Back">
+        <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        onPress={() => setSessionInfoOpen(true)}
+        style={styles.navCenter}
+        activeOpacity={0.7}
+        accessibilityRole="button"
+        accessibilityLabel={`Table T${tableNum}, session details`}
+      >
+        <View style={styles.navTitleRow}>
+          <Text style={styles.navTitle} numberOfLines={1}>
+            Table T{tableNum}{groupLabel ? ` · ${groupLabel}` : ''}
+          </Text>
+          <Ionicons name="chevron-down" size={14} color={QuinckleColors.textTertiary} />
+        </View>
+        {(statusText || mergedFrom.length > 0) ? (
+          <View style={styles.navStatusRow}>
+            {!!statusText && (
+              <>
+                <View style={[styles.navDot, { backgroundColor: statusDot }]} />
+                <Text style={[styles.navStatus, countdownStr && expiry !== 'normal' ? { color: expiryFg } : null]}>
+                  {statusText}
+                </Text>
+              </>
+            )}
+            {/* Merged stays visible — it changes how staff read the bill. */}
+            {mergedFrom.length > 0 && (
+              <Text style={[styles.navStatus, { color: QuinckleColors.warning }]}>
+                {statusText ? ' · ' : ''}Merged
+              </Text>
+            )}
+          </View>
+        ) : null}
+      </TouchableOpacity>
+
+      {actionMenuJsx}
+    </View>
+  );
+
   return (
     <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
+      {!isWide ? phoneHeaderJsx : (
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} activeOpacity={0.7}>
@@ -1576,63 +1688,10 @@ export default function TableDetail() {
               bigger targets than 18px glyphs in the worst corner of the screen
               for someone working one-handed. Only the overflow stays here. */}
 
-          {/* ── Three-dot menu ── */}
-          <View style={{ position: 'relative' }}>
-            <TouchableOpacity onPress={() => { setPrintMenuOpen(false); setActionMenuOpen(o => !o); }} style={styles.iconBtn} activeOpacity={0.7}>
-              <Ionicons name="ellipsis-horizontal" size={18} color={QuinckleColors.textPrimary} />
-            </TouchableOpacity>
-            {actionMenuOpen && (
-              <View style={styles.actionMenu}>
-                <TouchableOpacity
-                  onPress={() => { void openSwapModal(); }}
-                  style={styles.actionMenuItem}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="swap-horizontal" size={14} color={QuinckleColors.textPrimary} />
-                  <Text style={styles.actionMenuText}>Swap table</Text>
-                </TouchableOpacity>
-                <View style={styles.actionMenuDivider} />
-                <TouchableOpacity
-                  onPress={openExtendMenu}
-                  style={styles.actionMenuItem}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="time-outline" size={14} color={QuinckleColors.textPrimary} />
-                  <Text style={styles.actionMenuText}>Extend time</Text>
-                </TouchableOpacity>
-              {!isPaid && (
-                <>
-                  <View style={styles.actionMenuDivider} />
-                  <TouchableOpacity
-                    onPress={() => {
-                      setActionMenuOpen(false);
-                      void requestCollection();
-                    }}
-                    style={styles.actionMenuItem}
-                    disabled={isRequestingCollection}
-                    activeOpacity={0.7}
-                  >
-                    <Ionicons name="checkmark-circle-outline" size={14} color={QuinckleColors.success} />
-                    <Text style={[styles.actionMenuText, { color: QuinckleColors.success }]}>
-                      {isRequestingCollection ? 'Requesting...' : 'Send to Payment Collection'}
-                    </Text>
-                  </TouchableOpacity>
-                </>
-              )}
-              <View style={styles.actionMenuDivider} />
-              <TouchableOpacity
-                onPress={() => { setActionMenuOpen(false); handleEndSession(); }}
-                style={styles.actionMenuItem}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="log-out-outline" size={14} color={QuinckleColors.danger} />
-                <Text style={[styles.actionMenuText, { color: QuinckleColors.danger }]}>End session</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-          </View>{/* end three-dot position:relative */}
+          {actionMenuJsx}
         </View>{/* end headerRight */}
-      </View>{/* end header */}
+      </View>
+      )}{/* end header */}
 
       {isWide ? (
         // ── POS layout: order ticket fills the main pane, a fixed receipt rail
@@ -2464,6 +2523,19 @@ const styles = StyleSheet.create({
   },
   railPaidText: { fontSize: 14, fontWeight: '700' },
   railEmptyHint: { ...Typography.caption, color: QuinckleColors.textMuted, textAlign: 'center', paddingVertical: 12 },
+  navBar: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingBottom: Spacing.md, marginBottom: Spacing.lg,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: QuinckleColors.border,
+    // The three-dot menu drops below the bar; keep it above the content.
+    zIndex: 10,
+  },
+  navCenter: { flex: 1, minWidth: 0, alignItems: 'center' },
+  navTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: '100%' },
+  navTitle: { flexShrink: 1, fontSize: 17, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.2 },
+  navStatusRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
+  navDot: { width: 6, height: 6, borderRadius: 3, marginRight: 5 },
+  navStatus: { fontSize: 12, fontWeight: '600', color: QuinckleColors.textSecondary, fontVariant: ['tabular-nums'] as any },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.xl },
   // flex + minWidth:0 so a long groupLabel truncates the table title instead of
   // pushing the timer and overflow menu off the right edge.
