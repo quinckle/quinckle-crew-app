@@ -28,8 +28,8 @@ import {
 } from '../../../services/api';
 import { QuinckleColors as C, Radius, Spacing } from '../../../constants/Colors';
 import { fmtQty, inr, istDate, prettyReason } from '../../../constants/stock';
-import { AddMaterialSheet } from '../../../components/stock/AddMaterialSheet';
 import { RecordWastageSheet } from '../../../components/stock/RecordWastageSheet';
+import { StockFilterSheet, type StockStateFilter } from '../../../components/stock/StockFilterSheet';
 
 type Tab = 'materials' | 'dishes' | 'wastage';
 /** Only what the server understands — `7d` is its default branch. */
@@ -69,8 +69,9 @@ export default function StockScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
   const [debounced, setDebounced] = useState('');
-  const [alertOnly, setAlertOnly] = useState(false);
+  const [filter, setFilter] = useState<StockStateFilter>('all');
   const [sort, setSort] = useState<MaterialSort>('qty_asc');
+  const [filterOpen, setFilterOpen] = useState(false);
   /** Guards against a slow page 1 landing after a newer query has started. */
   const queryId = useRef(0);
 
@@ -83,7 +84,6 @@ export default function StockScreen() {
   const [wastageTotal, setWastageTotal] = useState(0);
   const [wastageLoading, setWastageLoading] = useState(false);
 
-  const [adding, setAdding] = useState(false);
   const [recording, setRecording] = useState(false);
   /** The wastage picker needs every material, not the page on screen. */
   const [pickerMaterials, setPickerMaterials] = useState<CrewMaterial[]>([]);
@@ -101,7 +101,7 @@ export default function StockScreen() {
     if (!opts.quiet) setLoading(true);
     crewStock.materialsPage({
       search: debounced || undefined,
-      state: alertOnly ? 'alert' : 'all',
+      state: filter,
       sort, limit: PAGE, offset: 0,
     })
       .then((r) => {
@@ -112,7 +112,7 @@ export default function StockScreen() {
       })
       .catch(() => { if (id === queryId.current) { setItems([]); setNextOffset(null); } })
       .finally(() => { if (id === queryId.current) { setLoading(false); setRefreshing(false); } });
-  }, [debounced, alertOnly, sort]);
+  }, [debounced, filter, sort]);
 
   const loadNextPage = useCallback(() => {
     if (nextOffset == null || paging) return;
@@ -120,7 +120,7 @@ export default function StockScreen() {
     setPaging(true);
     crewStock.materialsPage({
       search: debounced || undefined,
-      state: alertOnly ? 'alert' : 'all',
+      state: filter,
       sort, limit: PAGE, offset: nextOffset,
     })
       .then((r) => {
@@ -132,7 +132,7 @@ export default function StockScreen() {
       })
       .catch(() => {})
       .finally(() => setPaging(false));
-  }, [nextOffset, paging, debounced, alertOnly, sort]);
+  }, [nextOffset, paging, debounced, filter, sort]);
 
   const loadDishes = useCallback(() => {
     setDishesLoading(true);
@@ -157,12 +157,22 @@ export default function StockScreen() {
   // the rows already on screen no longer belong to the same list.
   useEffect(() => { if (tab === 'materials') loadFirstPage(); }, [tab, loadFirstPage]);
 
-  // Coming back from a material detail must show what was just done there.
+  /**
+   * The focus refetch reads the loaders through a ref, NOT through the closure.
+   *
+   * With `loadFirstPage` captured in a `useCallback([tab, range])` it was frozen
+   * at whatever sort and filter were set when the tab last changed — so every
+   * focus event (returning from a material, a sheet closing) quietly refetched
+   * with the DEFAULTS while the control still showed your choice. That is what
+   * made filter and sort look broken.
+   */
+  const loaders = useRef({ loadFirstPage, loadDishes, loadWastage });
+  useEffect(() => { loaders.current = { loadFirstPage, loadDishes, loadWastage }; });
+
   useFocusEffect(useCallback(() => {
-    if (tab === 'materials') loadFirstPage({ quiet: true });
-    if (tab === 'dishes') loadDishes();
-    if (tab === 'wastage') loadWastage(range);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (tab === 'materials') loaders.current.loadFirstPage({ quiet: true });
+    if (tab === 'dishes') loaders.current.loadDishes();
+    if (tab === 'wastage') loaders.current.loadWastage(range);
   }, [tab, range]));
 
   const openRecordWastage = () => {
@@ -179,8 +189,11 @@ export default function StockScreen() {
   };
 
   const q = search.trim().toLowerCase();
-  const sortLabel = sort === 'qty_asc' ? 'Low first' : sort === 'qty_desc' ? 'High first' : 'A–Z';
-  const cycleSort = () => setSort((s) => (s === 'qty_asc' ? 'qty_desc' : s === 'qty_desc' ? 'name' : 'qty_asc'));
+  const sortLabel = sort === 'qty_asc' ? 'Least first' : sort === 'qty_desc' ? 'Most first' : 'A–Z';
+  const filterLabel =
+    filter === 'alert' ? 'Needs attention' : filter === 'out' ? 'Out' : filter === 'low' ? 'Low' : null;
+  // The button says what is applied, so nobody has to decode a tinted icon.
+  const controlLabel = filterLabel ? `${filterLabel} · ${sortLabel}` : sortLabel;
 
   return (
     <View style={[s.container, { paddingTop: insets.top }]}>
@@ -197,7 +210,7 @@ export default function StockScreen() {
             </Text>
           )}
         </View>
-        <TouchableOpacity style={s.iconBtn} onPress={() => setAdding(true)} activeOpacity={0.7}>
+        <TouchableOpacity style={s.iconBtn} onPress={() => router.push('/(staff)/stock/new')} activeOpacity={0.7}>
           <Ionicons name="add" size={24} color={C.primary} />
         </TouchableOpacity>
       </View>
@@ -213,7 +226,7 @@ export default function StockScreen() {
             onPress={() => switchTab(t.value)}
             activeOpacity={0.7}
           >
-            <Text style={[s.tabText, tab === t.value && s.tabTextOn]}>{t.label}</Text>
+            <Text style={[s.tabText, tab === t.value && s.tabTextOn]} numberOfLines={1}>{t.label}</Text>
           </TouchableOpacity>
         ))}
       </View>
@@ -229,17 +242,11 @@ export default function StockScreen() {
               />
             </View>
             <TouchableOpacity
-              style={[s.ctlBtn, alertOnly && s.ctlBtnWarn]}
-              onPress={() => setAlertOnly((v) => !v)} activeOpacity={0.8}
+              style={[s.sortBtn, filter !== 'all' && s.sortBtnOn]}
+              onPress={() => setFilterOpen(true)} activeOpacity={0.8}
             >
-              <Ionicons name={alertOnly ? 'alert-circle' : 'alert-circle-outline'} size={18} color={alertOnly ? C.warning : C.textSecondary} />
-            </TouchableOpacity>
-            <TouchableOpacity style={s.sortBtn} onPress={cycleSort} activeOpacity={0.8}>
-              <Ionicons
-                name={sort === 'qty_desc' ? 'arrow-down' : sort === 'qty_asc' ? 'arrow-up' : 'text'}
-                size={13} color={C.textSecondary}
-              />
-              <Text style={s.sortText}>{sortLabel}</Text>
+              <Ionicons name="options-outline" size={16} color={filter === 'all' ? C.textSecondary : C.warning} />
+              <Text style={[s.sortText, filter !== 'all' && { color: C.warning }]} numberOfLines={1}>{controlLabel}</Text>
             </TouchableOpacity>
           </View>
 
@@ -263,7 +270,7 @@ export default function StockScreen() {
                 items.length > 0 ? (
                   <View style={s.colHead}>
                     <Text style={s.colLabel}>Material</Text>
-                    <TouchableOpacity onPress={cycleSort} activeOpacity={0.7} hitSlop={8}>
+                    <TouchableOpacity onPress={() => setFilterOpen(true)} activeOpacity={0.7} hitSlop={8}>
                       <Text style={[s.colLabel, s.colRight, sort !== 'name' && { color: C.textSecondary }]}>
                         In stock {sort === 'qty_asc' ? '↑' : sort === 'qty_desc' ? '↓' : ''}
                       </Text>
@@ -276,12 +283,18 @@ export default function StockScreen() {
                 q ? (
                   // The empty search IS the add path — how a new ingredient gets
                   // recorded mid-delivery (§2 C2).
-                  <TouchableOpacity style={s.emptyAdd} onPress={() => setAdding(true)} activeOpacity={0.8}>
+                  <TouchableOpacity
+                    style={s.emptyAdd}
+                    onPress={() => router.push({ pathname: '/(staff)/stock/new', params: { name: search.trim() } })}
+                    activeOpacity={0.8}
+                  >
                     <Ionicons name="add-circle-outline" size={18} color={C.primary} />
                     <Text style={s.emptyAddText}>Add “{search.trim()}” as a new material</Text>
                   </TouchableOpacity>
                 ) : (
-                  <Text style={s.empty}>{alertOnly ? 'Nothing is low or out.' : 'No materials yet.'}</Text>
+                  <Text style={s.empty}>
+                    {filter === 'all' ? 'No materials yet.' : 'Nothing matches that filter.'}
+                  </Text>
                 )
               }
               ListFooterComponent={
@@ -437,11 +450,14 @@ export default function StockScreen() {
         </>
       )}
 
-      <AddMaterialSheet
-        visible={adding}
-        initialName={q && items.length === 0 ? search.trim() : undefined}
-        onClose={() => setAdding(false)}
-        onDone={(m) => { setAdding(false); setSearch(''); flash(m); loadFirstPage({ quiet: true }); }}
+      <StockFilterSheet
+        visible={filterOpen}
+        filter={filter}
+        sort={sort}
+        counts={counts}
+        onClose={() => setFilterOpen(false)}
+        onFilter={(f) => { setFilter(f); setFilterOpen(false); }}
+        onSort={(o) => { setSort(o); setFilterOpen(false); }}
       />
 
       <RecordWastageSheet
@@ -466,12 +482,17 @@ const s = StyleSheet.create({
   iconBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   headerTitle: { color: C.textPrimary, fontSize: 17, fontWeight: '700' },
   headerSub: { color: C.textTertiary, fontSize: 11.5, marginTop: 1 },
+  // Each tab takes an equal share of the width so the strip spans the screen
+  // and every label has the same target, rather than three labels huddled left.
   tabs: {
-    flexDirection: 'row', gap: Spacing.xl, paddingHorizontal: Spacing.lg, marginBottom: Spacing.md,
+    flexDirection: 'row', paddingHorizontal: Spacing.md, marginBottom: Spacing.md,
     borderBottomWidth: 1, borderBottomColor: C.border,
   },
-  tab: { paddingVertical: 9, borderBottomWidth: 2, borderBottomColor: 'transparent', marginBottom: -1 },
-  tabText: { color: C.textSecondary, fontSize: 13.5, fontWeight: '600' },
+  tab: {
+    flex: 1, alignItems: 'center', paddingVertical: 10,
+    borderBottomWidth: 2, borderBottomColor: 'transparent', marginBottom: -1,
+  },
+  tabText: { color: C.textSecondary, fontSize: 13, fontWeight: '600' },
   tabTextOn: { color: C.textPrimary },
   tabOn: { borderBottomColor: C.primary },
   searchRow: { flexDirection: 'row', gap: Spacing.sm, paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md },
@@ -483,10 +504,11 @@ const s = StyleSheet.create({
   ctlBtn: { width: 42, height: 42, borderRadius: Radius.md, borderWidth: 1, borderColor: C.border, alignItems: 'center', justifyContent: 'center' },
   ctlBtnWarn: { backgroundColor: C.warningSoft, borderColor: C.warningBorder },
   sortBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 5, height: 42, paddingHorizontal: Spacing.md,
-    borderRadius: Radius.md, borderWidth: 1, borderColor: C.border,
+    flexDirection: 'row', alignItems: 'center', gap: 6, height: 42, paddingHorizontal: Spacing.md,
+    borderRadius: Radius.md, borderWidth: 1, borderColor: C.border, maxWidth: 190,
   },
-  sortText: { color: C.textSecondary, fontSize: 12.5, fontWeight: '600' },
+  sortBtnOn: { borderColor: C.warningBorder, backgroundColor: C.warningSoft },
+  sortText: { color: C.textSecondary, fontSize: 12.5, fontWeight: '600', flexShrink: 1 },
   colHead: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     paddingTop: Spacing.xs, paddingBottom: 7, borderBottomWidth: 1, borderBottomColor: C.border,

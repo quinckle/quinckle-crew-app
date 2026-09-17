@@ -13,7 +13,7 @@
 import React, { useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { BottomSheet } from '../ui/BottomSheet';
-import { QuinckleColors as C, Radius, Spacing } from '../../constants/Colors';
+import { QuinckleColors as C, Spacing } from '../../constants/Colors';
 import {
   UNIT_LABEL, entryUnitsFor, defaultEntryUnit, fmtQty, fromBase, type StockEntryUnit,
 } from '../../constants/stock';
