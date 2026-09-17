@@ -15,7 +15,8 @@
  */
 
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { BottomSheet } from './BottomSheet';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import type { BillBreakdown, SessionBill } from '../../services/api';
@@ -154,7 +155,19 @@ function Section({ title, children, first }: { title: string; children: React.Re
   );
 }
 
-export function BillExplainContent({ bill }: { bill: ExplainedBill }) {
+export function BillExplainContent({ bill, pinned = false, inset = true, onGiveDiscount }: {
+  bill: ExplainedBill;
+  /**
+   * The tablet rail shows the bill permanently in a fixed-height pane: the
+   * lines scroll and the total stays on the pane's floor. The sheet scrolls
+   * as a whole instead.
+   */
+  pinned?: boolean;
+  /** Horizontal padding of its own; false when the parent already pads. */
+  inset?: boolean;
+  /** Puts the give/edit discount icon beside the total (tablet rail only). */
+  onGiveDiscount?: () => void;
+}) {
   const itemCount = bill.items.length;
 
   // Discount rows: the named lines when the backend itemises them; otherwise
@@ -174,8 +187,8 @@ export function BillExplainContent({ bill }: { bill: ExplainedBill }) {
   const taxable = taxLines.reduce((n, l) => n + l.taxableValue, 0);
   const hasRoundOff = Math.abs(bill.roundOff) >= 0.005;
 
-  return (
-    <View style={{ paddingHorizontal: Spacing.xl }}>
+  const body = (
+    <>
       {itemCount > 0 && (
         <Section title={`Items · ${itemCount}`} first>
           {bill.items.map((it) => (
@@ -243,12 +256,43 @@ export function BillExplainContent({ bill }: { bill: ExplainedBill }) {
         </Section>
       )}
 
-      <View style={styles.totalBox}>
-        <Text style={styles.totalLabel}>Total payable</Text>
+    </>
+  );
+
+  const total = (
+    <View style={styles.totalBox}>
+      <Text style={styles.totalLabel}>Total payable</Text>
+      <View style={styles.totalRight}>
+        {onGiveDiscount && (
+          <TouchableOpacity
+            onPress={onGiveDiscount}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel={bill.discountTotal > 0 ? 'Edit discount' : 'Give discount'}
+          >
+            <MaterialCommunityIcons
+              name="percent-box-outline"
+              size={20}
+              color={bill.discountTotal > 0 ? QuinckleColors.primary : QuinckleColors.textSecondary}
+            />
+          </TouchableOpacity>
+        )}
         <Text style={styles.totalValue}>{rupees(bill.total)}</Text>
       </View>
     </View>
   );
+
+  const pad = inset ? { paddingHorizontal: Spacing.xl } : null;
+  if (pinned) {
+    return (
+      <View style={[{ flex: 1 }, pad]}>
+        <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>{body}</ScrollView>
+        {total}
+      </View>
+    );
+  }
+  return <View style={pad}>{body}{total}</View>;
 }
 
 export function BillExplainSheet({ visible, onClose, bill, title = 'Bill breakdown' }: {
@@ -292,10 +336,11 @@ const styles = StyleSheet.create({
   tagText: { fontSize: 10, fontWeight: '700' },
 
   totalBox: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline',
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     backgroundColor: QuinckleColors.surfaceElevated, borderRadius: Radius.md,
     paddingHorizontal: Spacing.md, paddingVertical: Spacing.md, marginTop: Spacing.md,
   },
+  totalRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
   totalLabel: { color: QuinckleColors.textPrimary, fontSize: 14, fontWeight: '600' },
   totalValue: { color: QuinckleColors.textPrimary, fontSize: 24, fontWeight: '700', letterSpacing: -0.5, fontVariant: ['tabular-nums'] },
 });

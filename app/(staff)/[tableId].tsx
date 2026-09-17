@@ -19,8 +19,7 @@ import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
 import { PrintOptionsSheet, type InvoiceBuyer } from '../../components/ui/PrintOptionsSheet';
 import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintProgressOverlay';
-import { BillBreakdownContent } from '../../components/ui/BillDetailsSheet';
-import { BillExplainSheet, type ExplainedBill } from '../../components/ui/BillExplainSheet';
+import { BillExplainContent, BillExplainSheet, type ExplainedBill } from '../../components/ui/BillExplainSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { HintToast } from '../../components/ui/HintToast';
 import { ReasonSheet, ReasonChips } from '../../components/ui/ReasonSheet';
@@ -1665,19 +1664,11 @@ export default function TableDetail() {
             {actionRowJsx}
 
             <View style={styles.railBillWrap}>
-              <BillBreakdownContent
-                items={billableFlatItems}
-                subtotal={sessionTotal}
-                discountTotal={discountTotal}
-                serviceChargeTotal={serviceChargeTotal}
-                tax={tax}
-                taxRate={billTaxRate}
-                tipTotal={tipTotal}
-                grandTotal={grandTotal}
-                canGiveDiscount={!isPaid && orders.length > 0}
-                onGiveDiscount={() => setDiscountModalOpen(true)}
-                showItems
-                variant="receipt"
+              <BillExplainContent
+                bill={explainedBill}
+                pinned
+                inset={false}
+                onGiveDiscount={!isPaid && orders.length > 0 ? () => setDiscountModalOpen(true) : undefined}
               />
             </View>
 
