@@ -1360,9 +1360,10 @@ export interface CrewMaterialDetail extends CrewMaterial {
 
 export interface CrewWastageEntry {
   id: string; kind: 'MATERIAL' | 'DISH'; name: string;
-  qty: number; unit: StockBaseUnit | 'PLATE';
+  qty: number; unit: StockBaseUnit | 'PLATE' | null;
   reason: string; note: string | null; costValue: number;
-  by: string | null; createdAt: string;
+  /** The server's field is `recordedBy` (a stored name), not a staff id. */
+  recordedBy: string | null; createdAt: string;
 }
 
 /** One line of a multi-line wastage write-off — a material, or whole plates of a dish. */
@@ -1410,8 +1411,13 @@ export const crewStock = {
     request<{ success: true; data: { menuItemId: string; name: string; category: string | null }[] }>(
       'GET', `/api/crew/stock/dishes${search ? `?search=${encodeURIComponent(search)}` : ''}`, undefined, true),
 
-  wastageLog: (range: 'today' | '7d' | '30d' = 'today') =>
-    request<{ success: true; data: { entries: CrewWastageEntry[]; total: number } }>(
+  /**
+   * Ranges the server actually understands: `today`, `month`, `custom`, and
+   * anything else = the last 7 days. Do not invent a `30d` — it silently
+   * returns 7 days under a wrong label.
+   */
+  wastageLog: (range: 'today' | '7d' | 'month' = 'today') =>
+    request<{ success: true; data: { entries: CrewWastageEntry[]; totalCost: number; count: number } }>(
       'GET', `/api/crew/stock/wastage?range=${range}`, undefined, true),
 
   recordWastage: (lines: CrewWastageLine[]) =>

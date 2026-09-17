@@ -60,7 +60,9 @@ export function RecordWastageSheet({ visible, materials, prefillMaterial, onClos
   // is raw material, and the list is a second round trip.
   useEffect(() => {
     if (tab === 'DISH' && dishes === null) {
-      crewStock.dishes().then((r) => setDishes(r.data.map((d) => ({ menuItemId: d.menuItemId, name: d.name })))).catch(() => setDishes([]));
+      crewStock.dishes()
+        .then((r) => setDishes((r.data ?? []).map((d) => ({ menuItemId: d.menuItemId, name: d.name }))))
+        .catch(() => setDishes([]));
     }
   }, [tab, dishes]);
 

@@ -24,12 +24,13 @@ import { AddMaterialSheet } from '../../../components/stock/AddMaterialSheet';
 import { RecordWastageSheet } from '../../../components/stock/RecordWastageSheet';
 
 type Tab = 'materials' | 'wastage';
-type Range = 'today' | '7d' | '30d';
+/** Only what the server understands — `7d` is its default branch. */
+type Range = 'today' | '7d' | 'month';
 
 const RANGES: { value: Range; label: string }[] = [
   { value: 'today', label: 'Today' },
   { value: '7d', label: '7 days' },
-  { value: '30d', label: '30 days' },
+  { value: 'month', label: 'This month' },
 ];
 
 export default function StockScreen() {
@@ -58,16 +59,22 @@ export default function StockScreen() {
   const loadMaterials = useCallback(() => {
     setLoading(true);
     crewStock.materials()
-      .then((r) => { setItems(r.data.items); setLowCount(r.data.lowCount); })
+      .then((r) => { setItems(r.data?.items ?? []); setLowCount(Number(r.data?.lowCount) || 0); })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 
+  // Every field is defaulted. A shape that does not match must leave the tab
+  // empty, never blank the screen — reading `total` (the server sends
+  // `totalCost`) threw inside the ₹ formatter and took the whole screen down.
   const loadWastage = useCallback((r: Range) => {
     setWastageLoading(true);
     crewStock.wastageLog(r)
-      .then((res) => { setWastage(res.data.entries); setWastageTotal(res.data.total); })
-      .catch(() => {})
+      .then((res) => {
+        setWastage(res.data?.entries ?? []);
+        setWastageTotal(Number(res.data?.totalCost) || 0);
+      })
+      .catch(() => { setWastage([]); setWastageTotal(0); })
       .finally(() => setWastageLoading(false));
   }, []);
 
@@ -193,7 +200,7 @@ export default function StockScreen() {
                     <Text style={s.name} numberOfLines={1}>{item.name}</Text>
                     <Text style={s.wasteMeta}>
                       {fmtQty(item.qty, item.unit)} · {prettyReason(item.reason)}
-                      {item.by ? ` · ${item.by}` : ''}
+                      {item.recordedBy ? ` · ${item.recordedBy}` : ''}
                     </Text>
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>

@@ -47,7 +47,7 @@ export function RestockSheet({ material, visible, onClose, onDone }: {
     if (!visible) return;
     setQty(''); setUnit(defaultEntryUnit(material.unit)); setPaid('');
     setVendor(''); setVendorId(null); setNote(''); setBills([]); setRecordExpense(true); setError(null);
-    crewStock.vendors().then((r) => setVendors(r.data)).catch(() => {});
+    crewStock.vendors().then((r) => setVendors(r.data ?? [])).catch(() => {});
   }, [visible, material.unit]);
 
   // Typing a vendor name unpicks the chosen one — the typed name wins, and the
