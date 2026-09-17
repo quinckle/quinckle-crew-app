@@ -3,6 +3,7 @@ import { API_BASE_URL } from '../constants/env';
 import type { CancelReason } from '../constants/adjustmentReasons';
 import type { LivenessTelemetry } from './face';
 import type { Channel } from '../constants/channel';
+import type { StockBaseUnit, StockEntryUnit, WastageReason } from '../constants/stock';
 
 let _crewToken: string | null = null;
 let _on401: (() => void) | null = null;
@@ -1332,7 +1333,45 @@ export interface CrewStockItem {
   isLow: boolean; isOut: boolean;
 }
 
+/**
+ * Stock V2 shapes (STOCK_V2_PLAN.md · CREW_STOCK_PLAN.md). Quantities are in
+ * BASE units (g / ml / pcs) — `constants/stock.ts` turns them into kitchen
+ * units for display and back again for entry.
+ */
+export interface CrewMaterial {
+  id: string; name: string; unit: StockBaseUnit;
+  currentQty: number; lowStockAt: number | null;
+  isLow: boolean; isOut: boolean; usedByCount: number | null;
+}
+
+export interface CrewMovement {
+  id: string; type: string; label: string;
+  qtyDelta: number; value: number | null; reason: string | null;
+  vendorName: string | null;
+  /** Who did it. Null for automatic movements (a sale, a cancelled order). */
+  by: string | null;
+  billUrls: string[]; orderId: string | null; createdAt: string;
+}
+
+export interface CrewMaterialDetail extends CrewMaterial {
+  usedBy: { menuItemId: string; name: string; qty: number }[];
+  movements: CrewMovement[];
+}
+
+export interface CrewWastageEntry {
+  id: string; kind: 'MATERIAL' | 'DISH'; name: string;
+  qty: number; unit: StockBaseUnit | 'PLATE';
+  reason: string; note: string | null; costValue: number;
+  by: string | null; createdAt: string;
+}
+
+/** One line of a multi-line wastage write-off — a material, or whole plates of a dish. */
+export type CrewWastageLine =
+  | { kind: 'MATERIAL'; stockItemId: string; qty: number; unit: StockEntryUnit; reason: WastageReason; note?: string | null }
+  | { kind: 'DISH'; menuItemId: string; plates: number; reason: WastageReason; note?: string | null };
+
 export const crewStock = {
+  /** V1 shape — kept for the legacy callers that still read `currentQty` flat. */
   list: (low?: boolean, search?: string) => {
     const q = new URLSearchParams();
     if (low) q.set('low', 'true');
@@ -1340,6 +1379,56 @@ export const crewStock = {
     const s = q.toString();
     return request<{ success: true; data: { items: CrewStockItem[]; valuation: number; lowCount: number } }>('GET', `/api/crew/stock${s ? `?${s}` : ''}`, undefined, true);
   },
+
+  materials: (low?: boolean, search?: string) => {
+    const q = new URLSearchParams();
+    if (low) q.set('low', 'true');
+    if (search) q.set('search', search);
+    const s = q.toString();
+    return request<{ success: true; data: { items: CrewMaterial[]; valuation: number; lowCount: number } }>(
+      'GET', `/api/crew/stock/materials${s ? `?${s}` : ''}`, undefined, true);
+  },
+
+  material: (id: string) =>
+    request<{ success: true; data: CrewMaterialDetail }>('GET', `/api/crew/stock/materials/${id}`, undefined, true),
+
+  /** 409-ish duplicate comes back as NAME_TAKEN so the caller can offer the existing one. */
+  createMaterial: (body: { name: string; unit: StockEntryUnit; lowStockAt?: number | null; openingQty?: number | null }) =>
+    request<{ success: true; data: CrewMaterial }>('POST', '/api/crew/stock/materials', body, true),
+
+  restock: (id: string, body: {
+    qty: number; unit: StockEntryUnit; totalPaid?: number | null;
+    vendorId?: string | null; vendorName?: string | null;
+    billUrls?: string[]; note?: string | null; recordExpense?: boolean;
+  }) => request<{ success: true; data: { newQty: number } }>('POST', `/api/crew/stock/materials/${id}/restock`, body, true),
+
+  count: (id: string, body: { countedQty: number; unit: StockEntryUnit; note?: string | null }) =>
+    request<{ success: true; data: { newQty: number } }>('POST', `/api/crew/stock/materials/${id}/count`, body, true),
+
+  /** Dishes that HAVE a recipe — the only ones whose plates can come off stock. */
+  dishes: (search?: string) =>
+    request<{ success: true; data: { menuItemId: string; name: string; category: string | null }[] }>(
+      'GET', `/api/crew/stock/dishes${search ? `?search=${encodeURIComponent(search)}` : ''}`, undefined, true),
+
+  wastageLog: (range: 'today' | '7d' | '30d' = 'today') =>
+    request<{ success: true; data: { entries: CrewWastageEntry[]; total: number } }>(
+      'GET', `/api/crew/stock/wastage?range=${range}`, undefined, true),
+
+  recordWastage: (lines: CrewWastageLine[]) =>
+    request<{ success: true; data: { entries: number } }>('POST', '/api/crew/stock/wastage', { lines }, true),
+
+  vendors: () =>
+    request<{ success: true; data: { id: string; name: string }[] }>('GET', '/api/crew/stock/vendors', undefined, true),
+
+  /**
+   * One bill photo per call — a failed photo must never cost the restock, so
+   * the URLs are collected first and sent with the restock afterwards.
+   * Pass raw base64; the server resizes, WebP-encodes and returns a CDN URL.
+   */
+  uploadBill: (photoBase64: string) =>
+    request<{ success: true; data: { url: string } }>('POST', '/api/crew/stock/bill-photo', { photoBase64 }, true),
+
+  /** V1 — still used by nothing in-app, kept while older installs are live. */
   adjust: (id: string, countedQty: number) =>
     request<{ success: true; data: { newQty: number } }>('POST', `/api/crew/stock/${id}/adjust`, { countedQty, reason: 'Stock-take' }, true),
   wastage: (id: string, qty: number, reason: string) =>

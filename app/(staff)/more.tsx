@@ -53,7 +53,7 @@ const GROUPS: Group[] = [
     rows: [
       { label: 'Menu & combos', sub: 'Items, prices & combos', icon: 'restaurant-outline', route: '/(staff)/menu', cap: CAP.MENU_EDIT },
       { label: 'Highlighted', sub: 'Featured on the diner menu', icon: 'sparkles-outline', route: '/(staff)/featured', cap: CAP.MENU_EDIT },
-      { label: 'Stock', sub: 'Counts, 86 & wastage', icon: 'cube-outline', route: '/(staff)/stock', cap: CAP.STOCK },
+      { label: 'Stock', sub: 'Restock, count & wastage', icon: 'cube-outline', route: '/(staff)/stock', cap: CAP.STOCK },
     ],
   },
   {
