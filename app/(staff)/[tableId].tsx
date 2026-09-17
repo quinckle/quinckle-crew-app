@@ -1000,35 +1000,61 @@ export default function TableDetail() {
   if (isLoading) {
     return (
       <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
-        {/* ── Header skeleton ── */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
-            <View style={[styles.iconBtn, { backgroundColor: QuinckleColors.surfaceMuted }]} />
-            <View style={{ gap: 6 }}>
-              <Skeleton width={56} height={22} radius={6} />
-              <Skeleton width={80} height={11} radius={4} />
+        {!isWide ? (
+          <>
+            {/* ── Nav bar skeleton (phone) — same box as the real bar, so nothing shifts ── */}
+            <View style={styles.navBar}>
+              <View style={[styles.iconBtn, { backgroundColor: QuinckleColors.surfaceMuted }]} />
+              <View style={[styles.navCenter, { gap: 6 }]}>
+                <Skeleton width={120} height={17} radius={6} />
+                <Skeleton width={72} height={11} radius={4} />
+              </View>
+              <View style={[styles.iconBtn, { backgroundColor: QuinckleColors.surfaceMuted }]} />
             </View>
-          </View>
-          <View style={styles.headerRight}>
-            {[1, 2, 3].map(i => (
-              <View key={i} style={[styles.iconBtn, { backgroundColor: QuinckleColors.surfaceMuted }]} />
-            ))}
-          </View>
-        </View>
 
-        {/* ── Session group skeleton ── */}
-        <Skeleton width={52} height={10} radius={4} style={{ marginBottom: Spacing.sm }} />
-        <View style={[styles.sessionGroup, { overflow: 'hidden' }]}>
-          {[90, 70, 80].map((w, i) => (
-            <View key={i}>
-              {i > 0 && <View style={styles.sessionInfoSep} />}
-              <View style={styles.sessionInfoRow}>
-                <Skeleton width={40} height={13} radius={4} />
-                <Skeleton width={w} height={13} radius={4} />
+            {/* ── Action cards skeleton ── */}
+            <View style={styles.actionRow}>
+              {[56, 44, 36].map((w, i) => (
+                <View key={i} style={[styles.actionCard, { gap: 8 }]}>
+                  <Skeleton width={22} height={22} radius={11} />
+                  <Skeleton width={w} height={11} radius={4} />
+                </View>
+              ))}
+            </View>
+          </>
+        ) : (
+          <>
+            {/* ── Header skeleton (tablet) ── */}
+            <View style={styles.header}>
+              <View style={styles.headerLeft}>
+                <View style={[styles.iconBtn, { backgroundColor: QuinckleColors.surfaceMuted }]} />
+                <View style={{ gap: 6 }}>
+                  <Skeleton width={56} height={22} radius={6} />
+                  <Skeleton width={80} height={11} radius={4} />
+                </View>
+              </View>
+              <View style={styles.headerRight}>
+                {[1, 2].map(i => (
+                  <View key={i} style={[styles.iconBtn, { backgroundColor: QuinckleColors.surfaceMuted }]} />
+                ))}
               </View>
             </View>
-          ))}
-        </View>
+
+            {/* ── Session group skeleton ── */}
+            <Skeleton width={52} height={10} radius={4} style={{ marginBottom: Spacing.sm }} />
+            <View style={[styles.sessionGroup, { overflow: 'hidden' }]}>
+              {[90, 70, 80].map((w, i) => (
+                <View key={i}>
+                  {i > 0 && <View style={styles.sessionInfoSep} />}
+                  <View style={styles.sessionInfoRow}>
+                    <Skeleton width={40} height={13} radius={4} />
+                    <Skeleton width={w} height={13} radius={4} />
+                  </View>
+                </View>
+              ))}
+            </View>
+          </>
+        )}
 
         {/* ── Active Orders section header skeleton ── */}
         <View style={[styles.sectionHeader, { marginTop: Spacing.md }]}>
@@ -1526,70 +1552,70 @@ export default function TableDetail() {
   );
 
   // ── Three-dot menu ── shared by the phone and tablet headers.
+  // ── Three-dot button ── shared by the phone and tablet headers. The actions
+  // open in a bottom sheet (thumb reach, full-width targets) rather than a
+  // small dropdown in the top corner.
   const actionMenuJsx = (
-        <View style={{ position: 'relative' }}>
-          <TouchableOpacity onPress={() => { setPrintMenuOpen(false); setActionMenuOpen(o => !o); }} style={styles.iconBtn} activeOpacity={0.7}>
-            <Ionicons name="ellipsis-horizontal" size={18} color={QuinckleColors.textPrimary} />
-          </TouchableOpacity>
-          {actionMenuOpen && (
-            <View style={styles.actionMenu}>
-              <TouchableOpacity
-                onPress={() => { void openSwapModal(); }}
-                style={styles.actionMenuItem}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="swap-horizontal" size={14} color={QuinckleColors.textPrimary} />
-                <Text style={styles.actionMenuText}>Swap table</Text>
-              </TouchableOpacity>
-              <View style={styles.actionMenuDivider} />
-              <TouchableOpacity
-                onPress={openExtendMenu}
-                style={styles.actionMenuItem}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="time-outline" size={14} color={QuinckleColors.textPrimary} />
-                <Text style={styles.actionMenuText}>Extend time</Text>
-              </TouchableOpacity>
-            {!isPaid && (
-              <>
-                <View style={styles.actionMenuDivider} />
-                <TouchableOpacity
-                  onPress={() => {
-                    setActionMenuOpen(false);
-                    void requestCollection();
-                  }}
-                  style={styles.actionMenuItem}
-                  disabled={isRequestingCollection}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="checkmark-circle-outline" size={14} color={QuinckleColors.success} />
-                  <Text style={[styles.actionMenuText, { color: QuinckleColors.success }]}>
-                    {isRequestingCollection ? 'Requesting...' : 'Send to Payment Collection'}
-                  </Text>
-                </TouchableOpacity>
-              </>
-            )}
-            <View style={styles.actionMenuDivider} />
-            <TouchableOpacity
-              onPress={() => { setActionMenuOpen(false); handleEndSession(); }}
-              style={styles.actionMenuItem}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="log-out-outline" size={14} color={QuinckleColors.danger} />
-              <Text style={[styles.actionMenuText, { color: QuinckleColors.danger }]}>End session</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-        </View>
+    <TouchableOpacity
+      onPress={() => { setPrintMenuOpen(false); setActionMenuOpen(true); }}
+      style={styles.iconBtn}
+      activeOpacity={0.7}
+      accessibilityRole="button"
+      accessibilityLabel="Table actions"
+    >
+      <Ionicons name="ellipsis-horizontal" size={18} color={QuinckleColors.textPrimary} />
+    </TouchableOpacity>
+  );
+
+  const actionSheetRow = (o: {
+    key: string; icon: React.ComponentProps<typeof Ionicons>['name']; label: string;
+    color?: string; onPress: () => void; disabled?: boolean; last?: boolean;
+  }) => (
+    <TouchableOpacity
+      key={o.key}
+      onPress={o.onPress}
+      disabled={o.disabled}
+      activeOpacity={0.7}
+      accessibilityRole="button"
+      style={[styles.actionSheetRow, !o.last && styles.actionSheetRowDivider, o.disabled && { opacity: 0.5 }]}
+    >
+      <Ionicons name={o.icon} size={20} color={o.color ?? QuinckleColors.textPrimary} />
+      <Text style={[styles.actionSheetText, o.color ? { color: o.color } : null]}>{o.label}</Text>
+    </TouchableOpacity>
+  );
+
+  const actionSheetJsx = (
+    <BottomSheet
+      visible={actionMenuOpen}
+      onClose={() => setActionMenuOpen(false)}
+      title={`Table T${tableNum}${groupLabel ? ` · ${groupLabel}` : ''}`}
+    >
+      <View style={styles.actionSheetGroup}>
+        {actionSheetRow({ key: 'swap', icon: 'swap-horizontal', label: 'Swap table', onPress: () => { void openSwapModal(); } })}
+        {actionSheetRow({ key: 'extend', icon: 'time-outline', label: 'Extend time', onPress: openExtendMenu, last: isPaid })}
+        {!isPaid && actionSheetRow({
+          key: 'collect', icon: 'checkmark-circle-outline',
+          label: isRequestingCollection ? 'Requesting...' : 'Send to Payment Collection',
+          color: QuinckleColors.success,
+          disabled: isRequestingCollection,
+          onPress: () => { setActionMenuOpen(false); void requestCollection(); },
+          last: true,
+        })}
+      </View>
+      {/* Destructive, so it sits apart from the everyday actions. */}
+      <View style={[styles.actionSheetGroup, { marginTop: Spacing.md }]}>
+        {actionSheetRow({
+          key: 'end', icon: 'log-out-outline', label: 'End session', color: QuinckleColors.danger,
+          onPress: () => { setActionMenuOpen(false); handleEndSession(); },
+          last: true,
+        })}
+      </View>
+    </BottomSheet>
   );
 
   // Phone header: a centred nav bar. The title opens session details (it
-  // replaces the separate ⓘ target), and the timer is a coloured status line
-  // under it — green with time to spare, amber running low, red overdue.
-  const statusDot = !countdownStr ? QuinckleColors.textTertiary
-    : expiry === 'normal' ? QuinckleColors.success
-    : expiry === 'warning' ? QuinckleColors.warning
-    : QuinckleColors.danger;
+  // replaces the separate ⓘ target), and the timer is a status line under it —
+  // grey with time to spare, amber running low, red overdue.
   const statusText = countdownStr
     ? countdownStr === 'Expired' ? 'Time up' : `${countdownStr} left`
     : elapsed ? `Seated ${elapsed}` : '';
@@ -1615,12 +1641,9 @@ export default function TableDetail() {
         {(statusText || mergedFrom.length > 0) ? (
           <View style={styles.navStatusRow}>
             {!!statusText && (
-              <>
-                <View style={[styles.navDot, { backgroundColor: statusDot }]} />
-                <Text style={[styles.navStatus, countdownStr && expiry !== 'normal' ? { color: expiryFg } : null]}>
-                  {statusText}
-                </Text>
-              </>
+              <Text style={[styles.navStatus, countdownStr && expiry !== 'normal' ? { color: expiryFg } : null]}>
+                {statusText}
+              </Text>
             )}
             {/* Merged stays visible — it changes how staff read the bill. */}
             {mergedFrom.length > 0 && (
@@ -1883,6 +1906,7 @@ export default function TableDetail() {
           top of the sheet. Keep new sheets and toasts in this block. */}
       {sessionInfoSheetJsx}
       {ladderSheetJsx}
+      {actionSheetJsx}
 
       <HintToast message={hint} onDismiss={() => setHint(null)} bottomOffset={isWide ? 24 : 96} />
 
@@ -2262,40 +2286,6 @@ const styles = StyleSheet.create({
   },
   freeOptDangerText: { color: '#fca5a5', fontSize: 14, fontWeight: '700' },
   freeHint: { color: QuinckleColors.textTertiary, fontSize: 11, marginTop: 10, textAlign: 'center' },
-  actionMenu: {
-    position: 'absolute',
-    top: 44,
-    right: 0,
-    minWidth: 180,
-    backgroundColor: QuinckleColors.surface,
-    borderColor: QuinckleColors.border,
-    borderWidth: 1,
-    borderRadius: Radius.md,
-    paddingVertical: 4,
-    zIndex: 50,
-    shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 6,
-  },
-  actionMenuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 10,
-  },
-  actionMenuText: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  actionMenuDivider: {
-    height: 1,
-    backgroundColor: QuinckleColors.border,
-    marginVertical: 2,
-  },
   swapBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.6)',
@@ -2523,18 +2513,24 @@ const styles = StyleSheet.create({
   },
   railPaidText: { fontSize: 14, fontWeight: '700' },
   railEmptyHint: { ...Typography.caption, color: QuinckleColors.textMuted, textAlign: 'center', paddingVertical: 12 },
+  actionSheetGroup: {
+    marginHorizontal: Spacing.xl,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderRadius: Radius.lg, borderWidth: 1, borderColor: QuinckleColors.border,
+    overflow: 'hidden',
+  },
+  actionSheetRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, minHeight: 54, paddingHorizontal: Spacing.lg },
+  actionSheetRowDivider: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: QuinckleColors.border },
+  actionSheetText: { fontSize: 15, fontWeight: '600', color: QuinckleColors.textPrimary },
   navBar: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     paddingBottom: Spacing.md, marginBottom: Spacing.lg,
     borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: QuinckleColors.border,
-    // The three-dot menu drops below the bar; keep it above the content.
-    zIndex: 10,
   },
   navCenter: { flex: 1, minWidth: 0, alignItems: 'center' },
   navTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: '100%' },
   navTitle: { flexShrink: 1, fontSize: 17, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.2 },
   navStatusRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
-  navDot: { width: 6, height: 6, borderRadius: 3, marginRight: 5 },
   navStatus: { fontSize: 12, fontWeight: '600', color: QuinckleColors.textSecondary, fontVariant: ['tabular-nums'] as any },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.xl },
   // flex + minWidth:0 so a long groupLabel truncates the table title instead of
