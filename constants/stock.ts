@@ -52,6 +52,19 @@ export function toBase(qty: number, unit: StockEntryUnit): number {
   return qty;
 }
 
+/**
+ * Base units → what to put in an entry box. The inverse of `toBase`: 2000 g
+ * becomes `2 KG`, 150 g stays `150 GRAM`, pieces are always pieces. Used when
+ * loading a saved recipe back into an editable form.
+ */
+export function fromBase(qtyBase: number, base: StockBaseUnit): { qty: number; unit: StockEntryUnit } {
+  const q = Number(qtyBase) || 0;
+  if (base === 'PCS') return { qty: q, unit: 'PCS' };
+  const big = base === 'GRAM' ? 'KG' : 'LITRE';
+  const small = base === 'GRAM' ? 'GRAM' : 'ML';
+  return Math.abs(q) >= 1000 ? { qty: q / 1000, unit: big } : { qty: q, unit: small };
+}
+
 export const REASONS: { value: WastageReason; label: string }[] = [
   { value: 'SPOILED', label: 'Spoiled' },
   { value: 'EXPIRED', label: 'Expired' },

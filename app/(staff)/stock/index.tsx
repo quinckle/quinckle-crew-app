@@ -16,14 +16,14 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
-import { crewStock, type CrewMaterial, type CrewWastageEntry } from '../../../services/api';
+import { crewStock, type CrewDish, type CrewMaterial, type CrewWastageEntry } from '../../../services/api';
 import { QuinckleColors as C, Radius, Spacing } from '../../../constants/Colors';
 import { fmtQty, inr, istDate, prettyReason } from '../../../constants/stock';
 import { LevelBadge } from '../../../components/stock/pieces';
 import { AddMaterialSheet } from '../../../components/stock/AddMaterialSheet';
 import { RecordWastageSheet } from '../../../components/stock/RecordWastageSheet';
 
-type Tab = 'materials' | 'wastage';
+type Tab = 'materials' | 'dishes' | 'wastage';
 /** Only what the server understands — `7d` is its default branch. */
 type Range = 'today' | '7d' | 'month';
 
@@ -41,6 +41,10 @@ export default function StockScreen() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [lowOnly, setLowOnly] = useState(false);
+
+  const [dishes, setDishes] = useState<CrewDish[]>([]);
+  const [dishesLoading, setDishesLoading] = useState(false);
+  const [unlinkedOnly, setUnlinkedOnly] = useState(false);
 
   const [range, setRange] = useState<Range>('today');
   const [wastage, setWastage] = useState<CrewWastageEntry[]>([]);
@@ -67,6 +71,16 @@ export default function StockScreen() {
   // Every field is defaulted. A shape that does not match must leave the tab
   // empty, never blank the screen — reading `total` (the server sends
   // `totalCost`) threw inside the ₹ formatter and took the whole screen down.
+  // `all`, not the default `with`: this tab exists to find the dishes that have
+  // NO recipe — the ones whose sales deduct nothing.
+  const loadDishes = useCallback(() => {
+    setDishesLoading(true);
+    crewStock.dishes(undefined, 'all')
+      .then((r) => setDishes(r.data ?? []))
+      .catch(() => setDishes([]))
+      .finally(() => setDishesLoading(false));
+  }, []);
+
   const loadWastage = useCallback((r: Range) => {
     setWastageLoading(true);
     crewStock.wastageLog(r)
@@ -82,8 +96,9 @@ export default function StockScreen() {
   // the list refetches on focus rather than trusting the copy it already has.
   useFocusEffect(useCallback(() => {
     loadMaterials();
+    if (tab === 'dishes') loadDishes();
     if (tab === 'wastage') loadWastage(range);
-  }, [loadMaterials, loadWastage, tab, range]));
+  }, [loadMaterials, loadDishes, loadWastage, tab, range]));
 
   const q = search.trim().toLowerCase();
   const filtered = items.filter((i) =>
@@ -91,6 +106,7 @@ export default function StockScreen() {
 
   const switchTab = (t: Tab) => {
     setTab(t);
+    if (t === 'dishes' && dishes.length === 0) loadDishes();
     if (t === 'wastage' && wastage.length === 0) loadWastage(range);
   };
 
@@ -111,6 +127,9 @@ export default function StockScreen() {
           <Text style={[s.tabText, tab === 'materials' && s.tabTextOn]}>
             Materials{lowCount > 0 ? ` · ${lowCount} low` : ''}
           </Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[s.tab, tab === 'dishes' && s.tabOn]} onPress={() => switchTab('dishes')} activeOpacity={0.8}>
+          <Text style={[s.tabText, tab === 'dishes' && s.tabTextOn]}>Dishes</Text>
         </TouchableOpacity>
         <TouchableOpacity style={[s.tab, tab === 'wastage' && s.tabOn]} onPress={() => switchTab('wastage')} activeOpacity={0.8}>
           <Text style={[s.tabText, tab === 'wastage' && s.tabTextOn]}>Wastage</Text>
@@ -164,6 +183,59 @@ export default function StockScreen() {
                   <Text style={s.name} numberOfLines={1}>{item.name}</Text>
                   <Text style={s.qty}>{fmtQty(item.currentQty, item.unit)}</Text>
                   <LevelBadge isOut={item.isOut} isLow={item.isLow} />
+                  <Ionicons name="chevron-forward" size={16} color={C.textTertiary} />
+                </TouchableOpacity>
+              )}
+            />
+          )}
+        </>
+      ) : tab === 'dishes' ? (
+        <>
+          <View style={s.searchRow}>
+            <View style={s.searchWrap}>
+              <Ionicons name="search" size={16} color={C.textMuted} />
+              <TextInput
+                style={s.searchInput} value={search} onChangeText={setSearch}
+                placeholder="Search dishes" placeholderTextColor={C.textMuted}
+              />
+            </View>
+            <TouchableOpacity
+              style={[s.lowBtn, unlinkedOnly && s.lowBtnOn]}
+              onPress={() => setUnlinkedOnly((v) => !v)} activeOpacity={0.8}
+            >
+              <Ionicons name={unlinkedOnly ? 'link-outline' : 'link'} size={18} color={unlinkedOnly ? C.warning : C.textSecondary} />
+            </TouchableOpacity>
+          </View>
+
+          {dishesLoading ? (
+            <View style={s.center}><ActivityIndicator color={C.primary} /></View>
+          ) : (
+            <FlatList
+              data={dishes.filter((d) =>
+                (!q || d.name.toLowerCase().includes(q)) && (!unlinkedOnly || d.materials === 0))}
+              keyExtractor={(d) => d.menuItemId}
+              contentContainerStyle={{ padding: Spacing.lg, paddingBottom: insets.bottom + 40 }}
+              keyboardShouldPersistTaps="handled"
+              ListHeaderComponent={
+                unlinkedOnly || dishes.length === 0 ? null : (
+                  <Text style={s.dishHint}>
+                    {dishes.filter((d) => d.materials === 0).length} of {dishes.length} dishes take nothing out of stock when they sell.
+                  </Text>
+                )
+              }
+              ListEmptyComponent={<Text style={s.empty}>{unlinkedOnly ? 'Every dish is linked.' : 'No dishes.'}</Text>}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={s.row}
+                  activeOpacity={0.7}
+                  onPress={() => router.push({ pathname: '/(staff)/stock/dish/[id]', params: { id: item.menuItemId } })}
+                >
+                  <Text style={s.name} numberOfLines={1}>{item.name}</Text>
+                  {item.materials > 0 ? (
+                    <Text style={s.qty}>{item.materials} material{item.materials === 1 ? '' : 's'}</Text>
+                  ) : (
+                    <Text style={s.notLinked}>not linked</Text>
+                  )}
                   <Ionicons name="chevron-forward" size={16} color={C.textTertiary} />
                 </TouchableOpacity>
               )}
@@ -276,6 +348,8 @@ const s = StyleSheet.create({
   },
   name: { flex: 1, color: C.textPrimary, fontSize: 14.5, fontWeight: '600' },
   qty: { color: C.textSecondary, fontSize: 13, fontVariant: ['tabular-nums'] },
+  notLinked: { color: C.warning, fontSize: 12.5, fontWeight: '600' },
+  dishHint: { color: C.textTertiary, fontSize: 12.5, lineHeight: 18, marginBottom: Spacing.md },
   rangeRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingHorizontal: Spacing.lg },
   rangeChip: { paddingHorizontal: Spacing.md, paddingVertical: 7, borderRadius: Radius.pill, borderWidth: 1, borderColor: C.border },
   rangeChipOn: { backgroundColor: C.primarySoft, borderColor: C.primarySoftBorder },

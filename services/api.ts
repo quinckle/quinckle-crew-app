@@ -56,7 +56,7 @@ interface RawCrewBypassResponse {
 // ── HTTP client ───────────────────────────────────────────────────────────────
 
 async function request<T>(
-  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   path: string,
   body?: object,
   useAuth = false,
@@ -1366,6 +1366,18 @@ export interface CrewWastageEntry {
   recordedBy: string | null; createdAt: string;
 }
 
+export interface CrewDish {
+  menuItemId: string; name: string; category: string | null;
+  /** How many materials its recipe uses. 0 = not linked yet. */
+  materials: number;
+}
+
+/** A recipe as crew sees it — amounts and stock levels, no money. */
+export interface CrewRecipe {
+  menuItemId: string; name: string; category: string | null; stockOut: boolean;
+  lines: { stockItemId: string; name: string; unit: StockBaseUnit; qty: number; inStock: number }[];
+}
+
 /** One line of a multi-line wastage write-off — a material, or whole plates of a dish. */
 export type CrewWastageLine =
   | { kind: 'MATERIAL'; stockItemId: string; qty: number; unit: StockEntryUnit; reason: WastageReason; note?: string | null }
@@ -1406,10 +1418,25 @@ export const crewStock = {
   count: (id: string, body: { countedQty: number; unit: StockEntryUnit; note?: string | null }) =>
     request<{ success: true; data: { newQty: number } }>('POST', `/api/crew/stock/materials/${id}/count`, body, true),
 
-  /** Dishes that HAVE a recipe — the only ones whose plates can come off stock. */
-  dishes: (search?: string) =>
-    request<{ success: true; data: { menuItemId: string; name: string; category: string | null }[] }>(
-      'GET', `/api/crew/stock/dishes${search ? `?search=${encodeURIComponent(search)}` : ''}`, undefined, true),
+  /**
+   * Dishes. Default `with` = only those that already have a recipe, which is
+   * what the wastage picker needs (only they can come off stock as plates).
+   * The recipe tab asks for `all` / `without`.
+   */
+  dishes: (search?: string, filter?: 'all' | 'with' | 'without') => {
+    const q = new URLSearchParams();
+    if (search) q.set('search', search);
+    if (filter) q.set('filter', filter);
+    const s = q.toString();
+    return request<{ success: true; data: CrewDish[] }>(
+      'GET', `/api/crew/stock/dishes${s ? `?${s}` : ''}`, undefined, true);
+  },
+
+  recipe: (menuItemId: string) =>
+    request<{ success: true; data: CrewRecipe }>('GET', `/api/crew/stock/dishes/${menuItemId}/recipe`, undefined, true),
+
+  setRecipe: (menuItemId: string, lines: { stockItemId: string; qty: number; unit: StockEntryUnit }[]) =>
+    request<{ success: true; data: CrewRecipe }>('PUT', `/api/crew/stock/dishes/${menuItemId}/recipe`, { lines }, true),
 
   /**
    * Ranges the server actually understands: `today`, `month`, `custom`, and
