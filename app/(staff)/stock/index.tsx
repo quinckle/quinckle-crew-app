@@ -52,13 +52,16 @@ export default function StockScreen() {
 
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2200); };
 
+  // Always fetched whole, never filtered server-side: the low toggle is a view
+  // of the same list, and the wastage picker needs every material even while the
+  // list is showing only the low ones.
   const loadMaterials = useCallback(() => {
     setLoading(true);
-    crewStock.materials(lowOnly)
+    crewStock.materials()
       .then((r) => { setItems(r.data.items); setLowCount(r.data.lowCount); })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [lowOnly]);
+  }, []);
 
   const loadWastage = useCallback((r: Range) => {
     setWastageLoading(true);
@@ -76,7 +79,8 @@ export default function StockScreen() {
   }, [loadMaterials, loadWastage, tab, range]));
 
   const q = search.trim().toLowerCase();
-  const filtered = q ? items.filter((i) => i.name.toLowerCase().includes(q)) : items;
+  const filtered = items.filter((i) =>
+    (!q || i.name.toLowerCase().includes(q)) && (!lowOnly || i.isLow || i.isOut));
 
   const switchTab = (t: Tab) => {
     setTab(t);
