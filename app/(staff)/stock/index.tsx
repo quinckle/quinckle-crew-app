@@ -43,6 +43,13 @@ const RANGES: { value: Range; label: string }[] = [
 
 const PAGE = 40;
 
+/** Raw materials · Wastage · Menu linking — in that order, left to right. */
+const TABS: { value: Tab; label: string }[] = [
+  { value: 'materials', label: 'Raw materials' },
+  { value: 'wastage', label: 'Wastage' },
+  { value: 'dishes', label: 'Menu linking' },
+];
+
 const SECTION: Record<MaterialState, { label: string; color: string }> = {
   OUT: { label: 'Out', color: C.danger },
   LOW: { label: 'Running low', color: C.warning },
@@ -195,16 +202,20 @@ export default function StockScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* Underlined bar, not pills — the Ledger direction. The rule runs the
+          full width so the tabs read as one strip over the list, and the active
+          label goes solid white with the brand underline under it. */}
       <View style={s.tabs}>
-        <TouchableOpacity style={[s.tab, tab === 'materials' && s.tabOn]} onPress={() => switchTab('materials')} activeOpacity={0.8}>
-          <Text style={[s.tabText, tab === 'materials' && s.tabTextOn]}>Raw materials</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[s.tab, tab === 'dishes' && s.tabOn]} onPress={() => switchTab('dishes')} activeOpacity={0.8}>
-          <Text style={[s.tabText, tab === 'dishes' && s.tabTextOn]}>Menu linking</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[s.tab, tab === 'wastage' && s.tabOn]} onPress={() => switchTab('wastage')} activeOpacity={0.8}>
-          <Text style={[s.tabText, tab === 'wastage' && s.tabTextOn]}>Wastage</Text>
-        </TouchableOpacity>
+        {TABS.map((t) => (
+          <TouchableOpacity
+            key={t.value}
+            style={[s.tab, tab === t.value && s.tabOn]}
+            onPress={() => switchTab(t.value)}
+            activeOpacity={0.7}
+          >
+            <Text style={[s.tabText, tab === t.value && s.tabTextOn]}>{t.label}</Text>
+          </TouchableOpacity>
+        ))}
       </View>
 
       {tab === 'materials' ? (
@@ -455,11 +466,14 @@ const s = StyleSheet.create({
   iconBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   headerTitle: { color: C.textPrimary, fontSize: 17, fontWeight: '700' },
   headerSub: { color: C.textTertiary, fontSize: 11.5, marginTop: 1 },
-  tabs: { flexDirection: 'row', gap: Spacing.sm, paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md },
-  tab: { paddingHorizontal: Spacing.md, paddingVertical: 7, borderRadius: Radius.pill, borderWidth: 1, borderColor: C.border },
-  tabText: { color: C.textSecondary, fontSize: 12.5, fontWeight: '600' },
-  tabTextOn: { color: C.primary },
-  tabOn: { backgroundColor: C.primarySoft, borderColor: C.primarySoftBorder },
+  tabs: {
+    flexDirection: 'row', gap: Spacing.xl, paddingHorizontal: Spacing.lg, marginBottom: Spacing.md,
+    borderBottomWidth: 1, borderBottomColor: C.border,
+  },
+  tab: { paddingVertical: 9, borderBottomWidth: 2, borderBottomColor: 'transparent', marginBottom: -1 },
+  tabText: { color: C.textSecondary, fontSize: 13.5, fontWeight: '600' },
+  tabTextOn: { color: C.textPrimary },
+  tabOn: { borderBottomColor: C.primary },
   searchRow: { flexDirection: 'row', gap: Spacing.sm, paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md },
   searchWrap: {
     flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: Spacing.md, height: 42,
