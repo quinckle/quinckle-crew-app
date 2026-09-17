@@ -24,7 +24,7 @@ import QRCode from 'react-native-qrcode-svg';
 import Svg, { Path } from 'react-native-svg';
 import { useAuth } from '../../context/AuthContext';
 import { crewOrders, crewPayments, crewSessions, restaurantApi, type BillBreakdown, type CollectDueOptions, type CollectSplitMethod, type CrewOrderPaymentContext, type SessionCollectible } from '../../services/api';
-import { BillBreakdownView } from '../../components/ui/BillBreakdownView';
+import { BillExplainSheet, explainBreakdown, explainSessionBill, type ExplainedBill } from '../../components/ui/BillExplainSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { playPaymentSuccess } from '../../services/sound';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
@@ -339,6 +339,7 @@ export default function PaymentCollectScreen() {
   const [successInfo, setSuccessInfo]   = useState<SuccessInfo | null>(null);
   const [upiSheetOpen, setUpiSheetOpen] = useState(false);
   const [billOpen, setBillOpen]         = useState(false);
+  const [sessionBill, setSessionBill]   = useState<ExplainedBill | null>(null);
 
   // ── Khata (due) mode state ────────────────────────────────────────────────
   // "Received now" is optional — 0 means the whole bill goes on the khata.
@@ -394,6 +395,16 @@ export default function PaymentCollectScreen() {
     void loadPaymentContext();
     return () => { alive = false; };
   }, [orderId, isMultiOrder]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    let alive = true;
+    crewSessions.getBill(sessionId)
+      .then((bill) => { if (alive) setSessionBill(explainSessionBill(bill)); })
+      // Decoration only: without it the sheet falls back to the flat breakdown.
+      .catch(() => { if (alive) setSessionBill(null); });
+    return () => { alive = false; };
+  }, [sessionId, liveDue?.totalAmount]);
 
   // Precedence: the session's live net > the per-order context > the snapshot.
   const resolvedTotal = liveDue
@@ -590,7 +601,15 @@ export default function PaymentCollectScreen() {
   const isVerifyingDue = isSyncingDue && !liveDue && isSessionCollect;
   const paymentReady = resolvedTotal > 0 && !isLoadingPaymentContext && !isVerifyingDue;
 
-  const hasBreakdown = !!resolvedBreakdown;
+  // The itemised bill (items, tagged discounts, CGST/SGST, round off) comes
+  // from the session bill. It is only shown when it adds up to what is being
+  // collected — a session can also hold orders this screen isn't settling,
+  // and a breakdown of a different amount would explain the wrong bill.
+  const explainedBill: ExplainedBill | null =
+    sessionBill && Math.abs(sessionBill.total - resolvedTotal) <= 1 ? sessionBill
+    : resolvedBreakdown ? explainBreakdown(resolvedBreakdown)
+    : null;
+  const hasBreakdown = !!explainedBill;
 
   const openUpiSheet = () => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -964,13 +983,7 @@ export default function PaymentCollectScreen() {
         </View>
       </BottomSheet>
 
-      {hasBreakdown && (
-        <BottomSheet visible={billOpen} onClose={() => setBillOpen(false)} title="Bill breakdown">
-          <View style={{ paddingHorizontal: Spacing.xl }}>
-            <BillBreakdownView breakdown={resolvedBreakdown!} />
-          </View>
-        </BottomSheet>
-      )}
+      <BillExplainSheet visible={billOpen && !successInfo} onClose={() => setBillOpen(false)} bill={explainedBill} />
 
       {successInfo && <SuccessScreen info={successInfo} onDone={returnToPreviousScreen} />}
     </KeyboardAvoidingView>

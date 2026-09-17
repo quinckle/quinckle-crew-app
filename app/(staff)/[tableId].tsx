@@ -19,7 +19,8 @@ import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
 import { PrintOptionsSheet, type InvoiceBuyer } from '../../components/ui/PrintOptionsSheet';
 import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintProgressOverlay';
-import { BillDetailsSheet, BillBreakdownContent } from '../../components/ui/BillDetailsSheet';
+import { BillBreakdownContent } from '../../components/ui/BillDetailsSheet';
+import { BillExplainSheet, type ExplainedBill } from '../../components/ui/BillExplainSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { HintToast } from '../../components/ui/HintToast';
 import { ReasonSheet, ReasonChips } from '../../components/ui/ReasonSheet';
@@ -173,7 +174,7 @@ export default function TableDetail() {
   const [serviceChargeTotal, setServiceChargeTotal] = useState(0);
   const [chargeLines, setChargeLines] = useState<{ id: string; name: string; amount: number }[]>([]);
   const [discountTotal, setDiscountTotal] = useState(0);
-  const [discountLines, setDiscountLines] = useState<{ name: string; amount: number }[]>([]);
+  const [discountLines, setDiscountLines] = useState<{ kind: string; name: string; amount: number }[]>([]);
   const [tipTotal, setTipTotal] = useState(0);
   const [roundOffTotal, setRoundOffTotal] = useState(0);
   const [payableTotal, setPayableTotal] = useState(0);
@@ -494,6 +495,21 @@ export default function TableDetail() {
 
   const tax = taxTotal;
   const grandTotal = payableTotal;
+
+  const explainedBill = useMemo<ExplainedBill>(() => ({
+    items: billableFlatItems.map((i) => ({ key: `${i.order_id}:${i.key}`, name: i.name, modifiersSummary: i.modifiersSummary, price: i.price })),
+    subtotal: sessionTotal,
+    discountTotal,
+    discountLines,
+    chargesTotal: serviceChargeTotal,
+    chargeLines,
+    taxTotal: tax,
+    taxRate: billTaxRate,
+    taxLines: sessionTaxLines ?? [],
+    tip: tipTotal,
+    roundOff: roundOffTotal,
+    total: grandTotal,
+  }), [billableFlatItems, sessionTotal, discountTotal, discountLines, serviceChargeTotal, chargeLines, tax, billTaxRate, sessionTaxLines, tipTotal, roundOffTotal, grandTotal]);
 
   const handleApplyDiscount = async () => {
     const v = Number(discountValue);
@@ -1820,19 +1836,11 @@ export default function TableDetail() {
 
       <HintToast message={hint} onDismiss={() => setHint(null)} bottomOffset={isWide ? 24 : 96} />
 
-      <BillDetailsSheet
+      {/* The full bill, explained — the same sheet Collect Payment opens. */}
+      <BillExplainSheet
         visible={isExpanded}
-        items={billableFlatItems}
-        subtotal={sessionTotal}
-        discountTotal={discountTotal}
-        serviceChargeTotal={serviceChargeTotal}
-        tax={tax}
-        taxRate={billTaxRate}
-        tipTotal={tipTotal}
-        grandTotal={grandTotal}
-        canGiveDiscount={!isPaid && orders.length > 0}
-        onGiveDiscount={() => { setIsExpanded(false); setDiscountModalOpen(true); }}
         onClose={() => setIsExpanded(false)}
+        bill={explainedBill}
       />
 
       <QrChoiceSheet
