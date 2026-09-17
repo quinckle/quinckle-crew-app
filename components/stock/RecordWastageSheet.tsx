@@ -125,7 +125,10 @@ export function RecordWastageSheet({ visible, materials, prefillMaterial, onClos
 
   return (
     <BottomSheet visible={visible} onClose={onClose} title="Record wastage">
-      <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+      <ScrollView
+        keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}
+        contentContainerStyle={st.body}
+      >
         {built.map((b) => (
           <View key={b.key} style={st.builtRow}>
             <View style={{ flex: 1 }}>
@@ -244,6 +247,9 @@ function lastLineFromDraft(draft: Draft): CrewWastageLine {
 }
 
 const st = StyleSheet.create({
+  // BottomSheet indents its title and gives children nothing — every sheet in
+  // this app supplies its own side padding.
+  body: { paddingHorizontal: Spacing.xl },
   builtRow: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.md, padding: Spacing.md,
     borderRadius: Radius.md, borderWidth: 1, borderColor: C.border, marginBottom: Spacing.sm,

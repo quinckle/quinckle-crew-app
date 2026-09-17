@@ -67,7 +67,10 @@ export function MaterialSettingsSheet({ material, visible, onClose, onDone }: {
 
   return (
     <BottomSheet visible={visible} onClose={onClose} title={`${material.name} settings`} maxHeightRatio={0.8}>
-      <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+      <ScrollView
+        keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}
+        contentContainerStyle={st.body}
+      >
         <FieldLabel>Name</FieldLabel>
         <TextInput
           style={sheetStyles.input} value={name} onChangeText={setName}
@@ -105,6 +108,9 @@ export function MaterialSettingsSheet({ material, visible, onClose, onDone }: {
 }
 
 const st = StyleSheet.create({
+  // BottomSheet indents its title and gives children nothing — every sheet in
+  // this app supplies its own side padding.
+  body: { paddingHorizontal: Spacing.xl },
   toggleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, marginTop: Spacing.lg },
   toggleLabel: { color: C.textPrimary, fontSize: 14.5, fontWeight: '600', marginBottom: 2 },
   switch: { width: 44, height: 26, borderRadius: 13, backgroundColor: C.surfaceMutedHover, borderWidth: 1, borderColor: C.border, padding: 2 },

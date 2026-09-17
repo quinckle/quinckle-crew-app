@@ -48,6 +48,7 @@ export function UnitPicker({ visible, value, base, onClose, onPick }: {
 
   return (
     <BottomSheet visible={visible} onClose={onClose} title={base ? 'Enter in' : 'What does it measure?'} maxHeightRatio={0.85}>
+      <View style={s.body}>
       {kinds.map((kind) => (
         <View key={kind.base}>
           <Text style={s.kind}>{kind.label}</Text>
@@ -74,6 +75,7 @@ export function UnitPicker({ visible, value, base, onClose, onPick }: {
         </Text>
       )}
       <View style={{ height: Spacing.xl }} />
+      </View>
     </BottomSheet>
   );
 }
@@ -89,6 +91,8 @@ export function UnitField({ value, onPress, compact }: { value: StockEntryUnit; 
 }
 
 const s = StyleSheet.create({
+  // BottomSheet gives children no side padding — supply it here.
+  body: { paddingHorizontal: Spacing.xl },
   kind: {
     color: C.textSecondary, fontSize: 11, fontWeight: '700', letterSpacing: 0.8,
     textTransform: 'uppercase', marginTop: Spacing.lg,

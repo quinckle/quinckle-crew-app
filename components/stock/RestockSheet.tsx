@@ -115,7 +115,10 @@ export function RestockSheet({ material, visible, onClose, onDone }: {
 
   return (
     <BottomSheet visible={visible} onClose={onClose} title={`Restock ${material.name}`}>
-      <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+      <ScrollView
+        keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}
+        contentContainerStyle={st.body}
+      >
         <FieldLabel>How much came in</FieldLabel>
         <QtyRow value={qty} onChange={setQty} unit={unit} onUnit={setUnit} units={units} autoFocus />
 
@@ -196,6 +199,9 @@ export function RestockSheet({ material, visible, onClose, onDone }: {
 }
 
 const st = StyleSheet.create({
+  // BottomSheet indents its title and gives children nothing — every sheet in
+  // this app supplies its own side padding.
+  body: { paddingHorizontal: Spacing.xl },
   vendorList: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginTop: Spacing.sm },
   vendorChip: { paddingHorizontal: Spacing.md, paddingVertical: 7, borderRadius: Radius.pill, borderWidth: 1, borderColor: C.border, backgroundColor: C.surface },
   vendorChipText: { color: C.textSecondary, fontSize: 12.5, fontWeight: '600' },

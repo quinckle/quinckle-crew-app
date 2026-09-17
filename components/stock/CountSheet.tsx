@@ -54,7 +54,10 @@ export function CountSheet({ material, visible, onClose, onDone }: {
 
   return (
     <BottomSheet visible={visible} onClose={onClose} title={`Count ${material.name}`} maxHeightRatio={0.7}>
-      <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+      <ScrollView
+        keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}
+        contentContainerStyle={st.body}
+      >
         <Text style={sheetStyles.hint}>How much is actually there?</Text>
 
         <FieldLabel>Counted</FieldLabel>
@@ -84,6 +87,9 @@ export function CountSheet({ material, visible, onClose, onDone }: {
 }
 
 const st = StyleSheet.create({
+  // BottomSheet indents its title and gives children nothing — every sheet in
+  // this app supplies its own side padding.
+  body: { paddingHorizontal: Spacing.xl },
   diff: { marginTop: Spacing.md, padding: Spacing.md, borderRadius: Radius.md, borderWidth: 1 },
   diffBad: { backgroundColor: C.dangerSoft, borderColor: C.dangerBorder },
   diffGood: { backgroundColor: C.successSoft, borderColor: C.successBorder },

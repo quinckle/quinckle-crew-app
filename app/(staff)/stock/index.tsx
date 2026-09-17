@@ -456,8 +456,9 @@ export default function StockScreen() {
         sort={sort}
         counts={counts}
         onClose={() => setFilterOpen(false)}
-        onFilter={(f) => { setFilter(f); setFilterOpen(false); }}
-        onSort={(o) => { setSort(o); setFilterOpen(false); }}
+        // One commit for both choices: each change re-queries, so applying on
+        // every tap would fire three requests for one decision.
+        onApply={(f, o) => { setFilter(f); setSort(o); setFilterOpen(false); }}
       />
 
       <RecordWastageSheet
