@@ -1,25 +1,33 @@
 /**
- * Stock — materials and wastage (CREW_STOCK_PLAN.md §3).
+ * Stock — materials, dishes and wastage (CREW_STOCK_PLAN.md §3).
  *
- * Replaces the V1 screen (a flat list with a count box). Two tabs in one header:
- * the materials the kitchen holds, and the wastage log. Money is deliberately
- * thin here — no stock valuation, no ₹ per unit (§2 C3); the only ₹ a staffer
- * sees is the bill they typed and the wastage they caused.
+ * The materials tab is a LEDGER grouped into three sections: Out, Running low,
+ * Stocked. The grouping answers "what do I need to buy" before anyone touches a
+ * control, and the ledger keeps 7-8 materials on a phone screen instead of 3.
+ *
+ * Grouping and sorting happen on the SERVER, and pages are slices of that one
+ * ordered list — otherwise a section header would reappear at every page
+ * boundary. Rows arrive 40 at a time and the next page loads as you reach the
+ * end, so a venue with 400 materials opens as fast as one with 12.
+ *
+ * Money is deliberately thin here — no stock valuation, no ₹ per unit (§2 C3).
  *
  * Reached from More, gated on the STOCK capability on both sides.
  */
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, FlatList, StyleSheet, Text, TextInput, TouchableOpacity, View,
+  ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, TextInput, TouchableOpacity, View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
-import { crewStock, type CrewDish, type CrewMaterial, type CrewWastageEntry } from '../../../services/api';
+import {
+  crewStock,
+  type CrewDish, type CrewMaterial, type CrewWastageEntry, type MaterialSort, type MaterialState,
+} from '../../../services/api';
 import { QuinckleColors as C, Radius, Spacing } from '../../../constants/Colors';
 import { fmtQty, inr, istDate, prettyReason } from '../../../constants/stock';
-import { LevelBadge } from '../../../components/stock/pieces';
 import { AddMaterialSheet } from '../../../components/stock/AddMaterialSheet';
 import { RecordWastageSheet } from '../../../components/stock/RecordWastageSheet';
 
@@ -33,14 +41,31 @@ const RANGES: { value: Range; label: string }[] = [
   { value: 'month', label: 'This month' },
 ];
 
+const PAGE = 40;
+
+const SECTION: Record<MaterialState, { label: string; color: string }> = {
+  OUT: { label: 'Out', color: C.danger },
+  LOW: { label: 'Running low', color: C.warning },
+  OK: { label: 'Stocked', color: C.textSecondary },
+};
+
 export default function StockScreen() {
   const insets = useSafeAreaInsets();
   const [tab, setTab] = useState<Tab>('materials');
+
+  // ── Materials (grouped, sorted and paged on the server) ──────────────────
   const [items, setItems] = useState<CrewMaterial[]>([]);
-  const [lowCount, setLowCount] = useState(0);
+  const [counts, setCounts] = useState({ out: 0, low: 0, ok: 0, total: 0 });
+  const [nextOffset, setNextOffset] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
+  const [paging, setPaging] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
-  const [lowOnly, setLowOnly] = useState(false);
+  const [debounced, setDebounced] = useState('');
+  const [alertOnly, setAlertOnly] = useState(false);
+  const [sort, setSort] = useState<MaterialSort>('qty_asc');
+  /** Guards against a slow page 1 landing after a newer query has started. */
+  const queryId = useRef(0);
 
   const [dishes, setDishes] = useState<CrewDish[]>([]);
   const [dishesLoading, setDishesLoading] = useState(false);
@@ -53,26 +78,55 @@ export default function StockScreen() {
 
   const [adding, setAdding] = useState(false);
   const [recording, setRecording] = useState(false);
+  /** The wastage picker needs every material, not the page on screen. */
+  const [pickerMaterials, setPickerMaterials] = useState<CrewMaterial[]>([]);
   const [toast, setToast] = useState<string | null>(null);
 
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2200); };
 
-  // Always fetched whole, never filtered server-side: the low toggle is a view
-  // of the same list, and the wastage picker needs every material even while the
-  // list is showing only the low ones.
-  const loadMaterials = useCallback(() => {
-    setLoading(true);
-    crewStock.materials()
-      .then((r) => { setItems(r.data?.items ?? []); setLowCount(Number(r.data?.lowCount) || 0); })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
-  // Every field is defaulted. A shape that does not match must leave the tab
-  // empty, never blank the screen — reading `total` (the server sends
-  // `totalCost`) threw inside the ₹ formatter and took the whole screen down.
-  // `all`, not the default `with`: this tab exists to find the dishes that have
-  // NO recipe — the ones whose sales deduct nothing.
+  const loadFirstPage = useCallback((opts: { quiet?: boolean } = {}) => {
+    const id = ++queryId.current;
+    if (!opts.quiet) setLoading(true);
+    crewStock.materialsPage({
+      search: debounced || undefined,
+      state: alertOnly ? 'alert' : 'all',
+      sort, limit: PAGE, offset: 0,
+    })
+      .then((r) => {
+        if (id !== queryId.current) return;
+        setItems(r.data?.items ?? []);
+        setCounts(r.data?.counts ?? { out: 0, low: 0, ok: 0, total: 0 });
+        setNextOffset(r.data?.nextOffset ?? null);
+      })
+      .catch(() => { if (id === queryId.current) { setItems([]); setNextOffset(null); } })
+      .finally(() => { if (id === queryId.current) { setLoading(false); setRefreshing(false); } });
+  }, [debounced, alertOnly, sort]);
+
+  const loadNextPage = useCallback(() => {
+    if (nextOffset == null || paging) return;
+    const id = queryId.current;
+    setPaging(true);
+    crewStock.materialsPage({
+      search: debounced || undefined,
+      state: alertOnly ? 'alert' : 'all',
+      sort, limit: PAGE, offset: nextOffset,
+    })
+      .then((r) => {
+        // A filter or sort changed while this page was in flight — drop it
+        // rather than splicing rows from the old ordering into the new list.
+        if (id !== queryId.current) return;
+        setItems((prev) => [...prev, ...(r.data?.items ?? [])]);
+        setNextOffset(r.data?.nextOffset ?? null);
+      })
+      .catch(() => {})
+      .finally(() => setPaging(false));
+  }, [nextOffset, paging, debounced, alertOnly, sort]);
+
   const loadDishes = useCallback(() => {
     setDishesLoading(true);
     crewStock.dishes(undefined, 'all')
@@ -92,17 +146,24 @@ export default function StockScreen() {
       .finally(() => setWastageLoading(false));
   }, []);
 
-  // Coming back from a material detail must show what was just done there, so
-  // the list refetches on focus rather than trusting the copy it already has.
+  // Search, filter and sort each reset to page 1 — they change the ordering, so
+  // the rows already on screen no longer belong to the same list.
+  useEffect(() => { if (tab === 'materials') loadFirstPage(); }, [tab, loadFirstPage]);
+
+  // Coming back from a material detail must show what was just done there.
   useFocusEffect(useCallback(() => {
-    loadMaterials();
+    if (tab === 'materials') loadFirstPage({ quiet: true });
     if (tab === 'dishes') loadDishes();
     if (tab === 'wastage') loadWastage(range);
-  }, [loadMaterials, loadDishes, loadWastage, tab, range]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, range]));
 
-  const q = search.trim().toLowerCase();
-  const filtered = items.filter((i) =>
-    (!q || i.name.toLowerCase().includes(q)) && (!lowOnly || i.isLow || i.isOut));
+  const openRecordWastage = () => {
+    setRecording(true);
+    if (pickerMaterials.length === 0) {
+      crewStock.materials().then((r) => setPickerMaterials(r.data?.items ?? [])).catch(() => {});
+    }
+  };
 
   const switchTab = (t: Tab) => {
     setTab(t);
@@ -110,13 +171,25 @@ export default function StockScreen() {
     if (t === 'wastage' && wastage.length === 0) loadWastage(range);
   };
 
+  const q = search.trim().toLowerCase();
+  const sortLabel = sort === 'qty_asc' ? 'Low first' : sort === 'qty_desc' ? 'High first' : 'A–Z';
+  const cycleSort = () => setSort((s) => (s === 'qty_asc' ? 'qty_desc' : s === 'qty_desc' ? 'name' : 'qty_asc'));
+
   return (
     <View style={[s.container, { paddingTop: insets.top }]}>
       <View style={s.headerBar}>
         <TouchableOpacity style={s.iconBtn} onPress={() => router.back()} activeOpacity={0.7}>
           <Ionicons name="chevron-back" size={22} color={C.textPrimary} />
         </TouchableOpacity>
-        <Text style={s.headerTitle}>Stock</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={s.headerTitle}>Stock</Text>
+          {tab === 'materials' && (
+            <Text style={s.headerSub}>
+              {counts.total} material{counts.total === 1 ? '' : 's'}
+              {counts.out + counts.low > 0 ? ` · ${counts.out + counts.low} need attention` : ''}
+            </Text>
+          )}
+        </View>
         <TouchableOpacity style={s.iconBtn} onPress={() => setAdding(true)} activeOpacity={0.7}>
           <Ionicons name="add" size={24} color={C.primary} />
         </TouchableOpacity>
@@ -124,12 +197,10 @@ export default function StockScreen() {
 
       <View style={s.tabs}>
         <TouchableOpacity style={[s.tab, tab === 'materials' && s.tabOn]} onPress={() => switchTab('materials')} activeOpacity={0.8}>
-          <Text style={[s.tabText, tab === 'materials' && s.tabTextOn]}>
-            Materials{lowCount > 0 ? ` · ${lowCount} low` : ''}
-          </Text>
+          <Text style={[s.tabText, tab === 'materials' && s.tabTextOn]}>Raw materials</Text>
         </TouchableOpacity>
         <TouchableOpacity style={[s.tab, tab === 'dishes' && s.tabOn]} onPress={() => switchTab('dishes')} activeOpacity={0.8}>
-          <Text style={[s.tabText, tab === 'dishes' && s.tabTextOn]}>Dishes</Text>
+          <Text style={[s.tabText, tab === 'dishes' && s.tabTextOn]}>Menu linking</Text>
         </TouchableOpacity>
         <TouchableOpacity style={[s.tab, tab === 'wastage' && s.tabOn]} onPress={() => switchTab('wastage')} activeOpacity={0.8}>
           <Text style={[s.tabText, tab === 'wastage' && s.tabTextOn]}>Wastage</Text>
@@ -147,10 +218,17 @@ export default function StockScreen() {
               />
             </View>
             <TouchableOpacity
-              style={[s.lowBtn, lowOnly && s.lowBtnOn]}
-              onPress={() => setLowOnly((v) => !v)} activeOpacity={0.8}
+              style={[s.ctlBtn, alertOnly && s.ctlBtnWarn]}
+              onPress={() => setAlertOnly((v) => !v)} activeOpacity={0.8}
             >
-              <Ionicons name={lowOnly ? 'alert-circle' : 'alert-circle-outline'} size={18} color={lowOnly ? C.warning : C.textSecondary} />
+              <Ionicons name={alertOnly ? 'alert-circle' : 'alert-circle-outline'} size={18} color={alertOnly ? C.warning : C.textSecondary} />
+            </TouchableOpacity>
+            <TouchableOpacity style={s.sortBtn} onPress={cycleSort} activeOpacity={0.8}>
+              <Ionicons
+                name={sort === 'qty_desc' ? 'arrow-down' : sort === 'qty_asc' ? 'arrow-up' : 'text'}
+                size={13} color={C.textSecondary}
+              />
+              <Text style={s.sortText}>{sortLabel}</Text>
             </TouchableOpacity>
           </View>
 
@@ -158,34 +236,87 @@ export default function StockScreen() {
             <View style={s.center}><ActivityIndicator color={C.primary} /></View>
           ) : (
             <FlatList
-              data={filtered}
+              data={items}
               keyExtractor={(i) => i.id}
-              contentContainerStyle={{ padding: Spacing.lg, paddingBottom: insets.bottom + 40 }}
+              contentContainerStyle={{ paddingHorizontal: Spacing.lg, paddingBottom: insets.bottom + 40 }}
               keyboardShouldPersistTaps="handled"
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing} tintColor={C.textSecondary}
+                  onRefresh={() => { setRefreshing(true); loadFirstPage({ quiet: true }); }}
+                />
+              }
+              onEndReachedThreshold={0.4}
+              onEndReached={loadNextPage}
+              ListHeaderComponent={
+                items.length > 0 ? (
+                  <View style={s.colHead}>
+                    <Text style={s.colLabel}>Material</Text>
+                    <TouchableOpacity onPress={cycleSort} activeOpacity={0.7} hitSlop={8}>
+                      <Text style={[s.colLabel, s.colRight, sort !== 'name' && { color: C.textSecondary }]}>
+                        In stock {sort === 'qty_asc' ? '↑' : sort === 'qty_desc' ? '↓' : ''}
+                      </Text>
+                    </TouchableOpacity>
+                    <Text style={[s.colLabel, s.colRight]}>State</Text>
+                  </View>
+                ) : null
+              }
               ListEmptyComponent={
-                // The empty search IS the add path — this is how a new
-                // ingredient gets recorded mid-delivery (§2 C2).
                 q ? (
+                  // The empty search IS the add path — how a new ingredient gets
+                  // recorded mid-delivery (§2 C2).
                   <TouchableOpacity style={s.emptyAdd} onPress={() => setAdding(true)} activeOpacity={0.8}>
                     <Ionicons name="add-circle-outline" size={18} color={C.primary} />
                     <Text style={s.emptyAddText}>Add “{search.trim()}” as a new material</Text>
                   </TouchableOpacity>
                 ) : (
-                  <Text style={s.empty}>{lowOnly ? 'Nothing is running low.' : 'No materials yet.'}</Text>
+                  <Text style={s.empty}>{alertOnly ? 'Nothing is low or out.' : 'No materials yet.'}</Text>
                 )
               }
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={s.row}
-                  activeOpacity={0.7}
-                  onPress={() => router.push({ pathname: '/(staff)/stock/[id]', params: { id: item.id } })}
-                >
-                  <Text style={s.name} numberOfLines={1}>{item.name}</Text>
-                  <Text style={s.qty}>{fmtQty(item.currentQty, item.unit)}</Text>
-                  <LevelBadge isOut={item.isOut} isLow={item.isLow} />
-                  <Ionicons name="chevron-forward" size={16} color={C.textTertiary} />
-                </TouchableOpacity>
-              )}
+              ListFooterComponent={
+                paging ? <ActivityIndicator color={C.textMuted} style={{ marginVertical: Spacing.lg }} />
+                  : nextOffset == null && items.length > 12
+                    ? <Text style={s.endNote}>All {counts.total} materials</Text>
+                    : null
+              }
+              renderItem={({ item, index }) => {
+                const state = item.state ?? (item.isOut ? 'OUT' : item.isLow ? 'LOW' : 'OK');
+                const prev = index > 0 ? items[index - 1] : undefined;
+                const prevState = prev ? (prev.state ?? (prev.isOut ? 'OUT' : prev.isLow ? 'LOW' : 'OK')) : undefined;
+                const isFirstOfSection = state !== prevState;
+                const sectionCount = state === 'OUT' ? counts.out : state === 'LOW' ? counts.low : counts.ok;
+                return (
+                  <>
+                    {isFirstOfSection && (
+                      <View style={s.sectionHead}>
+                        <Text style={[s.sectionLabel, { color: SECTION[state].color }]}>
+                          {SECTION[state].label} · {sectionCount}
+                        </Text>
+                        {state === 'OUT' && <Text style={s.sectionNote}>Buy first</Text>}
+                      </View>
+                    )}
+                    <TouchableOpacity
+                      style={s.row}
+                      activeOpacity={0.7}
+                      onPress={() => router.push({ pathname: '/(staff)/stock/[id]', params: { id: item.id } })}
+                    >
+                      <View style={s.rowMain}>
+                        <Text style={s.name} numberOfLines={1}>{item.name}</Text>
+                        <Text style={s.rowSub} numberOfLines={1}>
+                          {item.usedByCount ? `used in ${item.usedByCount} dish${item.usedByCount === 1 ? '' : 'es'}` : 'not linked to a dish'}
+                          {item.lowStockAt != null ? ` · low at ${fmtQty(item.lowStockAt, item.unit)}` : ''}
+                        </Text>
+                      </View>
+                      <Text style={[s.qty, state === 'OUT' && { color: C.danger }, state === 'LOW' && { color: C.warning }]}>
+                        {fmtQty(item.currentQty, item.unit)}
+                      </Text>
+                      <Text style={[s.state, { color: state === 'OUT' ? C.danger : state === 'LOW' ? C.warning : C.textMuted }]}>
+                        {state}
+                      </Text>
+                    </TouchableOpacity>
+                  </>
+                );
+              }}
             />
           )}
         </>
@@ -200,10 +331,10 @@ export default function StockScreen() {
               />
             </View>
             <TouchableOpacity
-              style={[s.lowBtn, unlinkedOnly && s.lowBtnOn]}
+              style={[s.ctlBtn, unlinkedOnly && s.ctlBtnWarn]}
               onPress={() => setUnlinkedOnly((v) => !v)} activeOpacity={0.8}
             >
-              <Ionicons name={unlinkedOnly ? 'link-outline' : 'link'} size={18} color={unlinkedOnly ? C.warning : C.textSecondary} />
+              <Ionicons name={unlinkedOnly ? 'unlink' : 'link'} size={17} color={unlinkedOnly ? C.warning : C.textSecondary} />
             </TouchableOpacity>
           </View>
 
@@ -214,7 +345,7 @@ export default function StockScreen() {
               data={dishes.filter((d) =>
                 (!q || d.name.toLowerCase().includes(q)) && (!unlinkedOnly || d.materials === 0))}
               keyExtractor={(d) => d.menuItemId}
-              contentContainerStyle={{ padding: Spacing.lg, paddingBottom: insets.bottom + 40 }}
+              contentContainerStyle={{ paddingHorizontal: Spacing.lg, paddingBottom: insets.bottom + 40 }}
               keyboardShouldPersistTaps="handled"
               ListHeaderComponent={
                 unlinkedOnly || dishes.length === 0 ? null : (
@@ -230,7 +361,7 @@ export default function StockScreen() {
                   activeOpacity={0.7}
                   onPress={() => router.push({ pathname: '/(staff)/stock/dish/[id]', params: { id: item.menuItemId } })}
                 >
-                  <Text style={s.name} numberOfLines={1}>{item.name}</Text>
+                  <Text style={[s.name, { flex: 1 }]} numberOfLines={1}>{item.name}</Text>
                   {item.materials > 0 ? (
                     <Text style={s.qty}>{item.materials} material{item.materials === 1 ? '' : 's'}</Text>
                   ) : (
@@ -264,7 +395,7 @@ export default function StockScreen() {
             <FlatList
               data={wastage}
               keyExtractor={(e) => e.id}
-              contentContainerStyle={{ padding: Spacing.lg, paddingBottom: insets.bottom + 90 }}
+              contentContainerStyle={{ paddingHorizontal: Spacing.lg, paddingBottom: insets.bottom + 90 }}
               ListEmptyComponent={<Text style={s.empty}>Nothing recorded.</Text>}
               renderItem={({ item }) => (
                 <View style={s.wasteRow}>
@@ -286,7 +417,7 @@ export default function StockScreen() {
 
           <TouchableOpacity
             style={[s.fab, { bottom: insets.bottom + 20 }]}
-            onPress={() => setRecording(true)}
+            onPress={openRecordWastage}
             activeOpacity={0.85}
           >
             <Ionicons name="add" size={20} color="#fff" />
@@ -297,16 +428,16 @@ export default function StockScreen() {
 
       <AddMaterialSheet
         visible={adding}
-        initialName={q && filtered.length === 0 ? search.trim() : undefined}
+        initialName={q && items.length === 0 ? search.trim() : undefined}
         onClose={() => setAdding(false)}
-        onDone={(m) => { setAdding(false); setSearch(''); flash(m); loadMaterials(); }}
+        onDone={(m) => { setAdding(false); setSearch(''); flash(m); loadFirstPage({ quiet: true }); }}
       />
 
       <RecordWastageSheet
         visible={recording}
-        materials={items}
+        materials={pickerMaterials}
         onClose={() => setRecording(false)}
-        onDone={(m) => { setRecording(false); flash(m); loadWastage(range); loadMaterials(); }}
+        onDone={(m) => { setRecording(false); flash(m); loadWastage(range); loadFirstPage({ quiet: true }); }}
       />
 
       {toast && <View style={[s.toast, { bottom: insets.bottom + 90 }]}><Text style={s.toastText}>{toast}</Text></View>}
@@ -318,38 +449,63 @@ const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: C.background },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   headerBar: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: Spacing.md, paddingVertical: Spacing.md,
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
   },
   iconBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   headerTitle: { color: C.textPrimary, fontSize: 17, fontWeight: '700' },
+  headerSub: { color: C.textTertiary, fontSize: 11.5, marginTop: 1 },
   tabs: { flexDirection: 'row', gap: Spacing.sm, paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md },
-  tab: { paddingHorizontal: Spacing.lg, paddingVertical: 8, borderRadius: Radius.pill, borderWidth: 1, borderColor: C.border },
-  tabOn: { backgroundColor: C.primarySoft, borderColor: C.primarySoftBorder },
-  tabText: { color: C.textSecondary, fontSize: 13, fontWeight: '600' },
+  tab: { paddingHorizontal: Spacing.md, paddingVertical: 7, borderRadius: Radius.pill, borderWidth: 1, borderColor: C.border },
+  tabText: { color: C.textSecondary, fontSize: 12.5, fontWeight: '600' },
   tabTextOn: { color: C.primary },
-  searchRow: { flexDirection: 'row', gap: Spacing.sm, paddingHorizontal: Spacing.lg },
+  tabOn: { backgroundColor: C.primarySoft, borderColor: C.primarySoftBorder },
+  searchRow: { flexDirection: 'row', gap: Spacing.sm, paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md },
   searchWrap: {
     flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: Spacing.md, height: 42,
     backgroundColor: C.surfaceMutedHover, borderRadius: Radius.md, borderWidth: 1, borderColor: C.border,
   },
   searchInput: { flex: 1, color: C.textPrimary, fontSize: 14 },
-  lowBtn: { width: 42, height: 42, borderRadius: Radius.md, borderWidth: 1, borderColor: C.border, alignItems: 'center', justifyContent: 'center' },
-  lowBtnOn: { backgroundColor: C.warningSoft, borderColor: C.warningBorder },
+  ctlBtn: { width: 42, height: 42, borderRadius: Radius.md, borderWidth: 1, borderColor: C.border, alignItems: 'center', justifyContent: 'center' },
+  ctlBtnWarn: { backgroundColor: C.warningSoft, borderColor: C.warningBorder },
+  sortBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 5, height: 42, paddingHorizontal: Spacing.md,
+    borderRadius: Radius.md, borderWidth: 1, borderColor: C.border,
+  },
+  sortText: { color: C.textSecondary, fontSize: 12.5, fontWeight: '600' },
+  colHead: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingTop: Spacing.xs, paddingBottom: 7, borderBottomWidth: 1, borderBottomColor: C.border,
+  },
+  colLabel: {
+    color: C.textMuted, fontSize: 10, fontWeight: '700', letterSpacing: 0.8, textTransform: 'uppercase',
+    flex: 1,
+  },
+  colRight: { flex: 0, width: 82, textAlign: 'right' },
+  sectionHead: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingTop: Spacing.lg, paddingBottom: 6,
+  },
+  sectionLabel: { fontSize: 10.5, fontWeight: '700', letterSpacing: 0.9, textTransform: 'uppercase' },
+  sectionNote: { color: C.textMuted, fontSize: 10.5, fontWeight: '600' },
+  row: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: C.borderSubtle,
+  },
+  rowMain: { flex: 1, minWidth: 0 },
+  name: { color: C.textPrimary, fontSize: 14.5, fontWeight: '600' },
+  rowSub: { color: C.textTertiary, fontSize: 11, marginTop: 2 },
+  qty: { width: 82, textAlign: 'right', color: C.textPrimary, fontSize: 14, fontWeight: '600', fontVariant: ['tabular-nums'] },
+  state: { width: 34, textAlign: 'right', fontSize: 9.5, fontWeight: '700', letterSpacing: 0.4 },
+  notLinked: { color: C.warning, fontSize: 12.5, fontWeight: '600' },
+  dishHint: { color: C.textTertiary, fontSize: 12.5, lineHeight: 18, paddingVertical: Spacing.md },
   empty: { color: C.textMuted, textAlign: 'center', marginTop: 40, fontSize: 14 },
+  endNote: { color: C.textMuted, textAlign: 'center', fontSize: 11.5, marginTop: Spacing.lg },
   emptyAdd: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 32,
     paddingVertical: 14, borderRadius: Radius.md, borderWidth: 1, borderColor: C.primarySoftBorder, backgroundColor: C.primarySoft,
   },
   emptyAddText: { color: C.primary, fontSize: 14, fontWeight: '600' },
-  row: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    paddingVertical: Spacing.md, borderBottomWidth: 1, borderBottomColor: C.borderSubtle,
-  },
-  name: { flex: 1, color: C.textPrimary, fontSize: 14.5, fontWeight: '600' },
-  qty: { color: C.textSecondary, fontSize: 13, fontVariant: ['tabular-nums'] },
-  notLinked: { color: C.warning, fontSize: 12.5, fontWeight: '600' },
-  dishHint: { color: C.textTertiary, fontSize: 12.5, lineHeight: 18, marginBottom: Spacing.md },
   rangeRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingHorizontal: Spacing.lg },
   rangeChip: { paddingHorizontal: Spacing.md, paddingVertical: 7, borderRadius: Radius.pill, borderWidth: 1, borderColor: C.border },
   rangeChipOn: { backgroundColor: C.primarySoft, borderColor: C.primarySoftBorder },

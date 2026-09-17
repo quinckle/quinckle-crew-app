@@ -1342,6 +1342,23 @@ export interface CrewMaterial {
   id: string; name: string; unit: StockBaseUnit;
   currentQty: number; lowStockAt: number | null;
   isLow: boolean; isOut: boolean; usedByCount: number | null;
+  /** 86 every dish that uses it while it is out; un-hidden on restock. */
+  hideDishesWhenOut: boolean;
+  /** Present on the paged list — the section this row belongs to. */
+  state?: MaterialState;
+}
+
+/** The three sections the crew list groups by. OUT is what costs sales now. */
+export type MaterialState = 'OUT' | 'LOW' | 'OK';
+
+/** Stock low→high is the default: the list should open on what runs out first. */
+export type MaterialSort = 'qty_asc' | 'qty_desc' | 'name';
+
+export interface CrewMaterialPage {
+  items: CrewMaterial[];
+  counts: { out: number; low: number; ok: number; total: number };
+  /** Offset to request next, or null at the end of the list. */
+  nextOffset: number | null;
 }
 
 export interface CrewMovement {
@@ -1393,6 +1410,7 @@ export const crewStock = {
     return request<{ success: true; data: { items: CrewStockItem[]; valuation: number; lowCount: number } }>('GET', `/api/crew/stock${s ? `?${s}` : ''}`, undefined, true);
   },
 
+  /** The whole list in one go — still used where a full picker is needed. */
   materials: (low?: boolean, search?: string) => {
     const q = new URLSearchParams();
     if (low) q.set('low', 'true');
@@ -1401,6 +1419,27 @@ export const crewStock = {
     return request<{ success: true; data: { items: CrewMaterial[]; valuation: number; lowCount: number } }>(
       'GET', `/api/crew/stock/materials${s ? `?${s}` : ''}`, undefined, true);
   },
+
+  /**
+   * One page of the grouped list. Ordering is OUT → LOW → OK then `sort`, done
+   * on the server, so a page is a slice of one ordered list and a section header
+   * never appears twice.
+   */
+  materialsPage: (opts: { search?: string; state?: 'all' | 'alert' | 'out' | 'low'; sort?: MaterialSort; limit?: number; offset?: number }) => {
+    const q = new URLSearchParams();
+    q.set('limit', String(opts.limit ?? 40));
+    q.set('offset', String(opts.offset ?? 0));
+    if (opts.search) q.set('search', opts.search);
+    if (opts.state && opts.state !== 'all') q.set('state', opts.state);
+    if (opts.sort) q.set('sort', opts.sort);
+    return request<{ success: true; data: CrewMaterialPage }>(
+      'GET', `/api/crew/stock/materials?${q.toString()}`, undefined, true);
+  },
+
+  /** Material settings — rename, low threshold (in kitchen units), 86-when-out. */
+  updateMaterial: (id: string, body: {
+    name?: string; lowStockAt?: number | null; lowStockUnit?: StockEntryUnit; hideDishesWhenOut?: boolean;
+  }) => request<{ success: true; data: CrewMaterial }>('PATCH', `/api/crew/stock/materials/${id}`, body, true),
 
   material: (id: string) =>
     request<{ success: true; data: CrewMaterialDetail }>('GET', `/api/crew/stock/materials/${id}`, undefined, true),

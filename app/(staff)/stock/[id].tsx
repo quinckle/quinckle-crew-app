@@ -22,6 +22,7 @@ import { LevelBadge } from '../../../components/stock/pieces';
 import { RestockSheet } from '../../../components/stock/RestockSheet';
 import { CountSheet } from '../../../components/stock/CountSheet';
 import { RecordWastageSheet } from '../../../components/stock/RecordWastageSheet';
+import { MaterialSettingsSheet } from '../../../components/stock/MaterialSettingsSheet';
 
 /** Movements the kitchen caused vs ones the system did on its own. */
 const MANUAL_TYPES = new Set(['PURCHASE', 'WASTAGE', 'CORRECTION', 'OPENING']);
@@ -32,7 +33,7 @@ export default function MaterialDetailScreen() {
   const [data, setData] = useState<CrewMaterialDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
-  const [sheet, setSheet] = useState<'restock' | 'count' | 'wastage' | null>(null);
+  const [sheet, setSheet] = useState<'restock' | 'count' | 'wastage' | 'settings' | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   const load = useCallback(() => {
@@ -74,7 +75,9 @@ export default function MaterialDetailScreen() {
           <Ionicons name="chevron-back" size={22} color={C.textPrimary} />
         </TouchableOpacity>
         <Text style={s.headerTitle} numberOfLines={1}>{data.name}</Text>
-        <View style={s.iconBtn} />
+        <TouchableOpacity style={s.iconBtn} onPress={() => setSheet('settings')} activeOpacity={0.7}>
+          <Ionicons name="options-outline" size={20} color={C.textSecondary} />
+        </TouchableOpacity>
       </View>
 
       <ScrollView contentContainerStyle={{ padding: Spacing.lg, paddingBottom: insets.bottom + 40 }}>
@@ -82,9 +85,13 @@ export default function MaterialDetailScreen() {
           <Text style={s.level}>{fmtQty(data.currentQty, data.unit)}</Text>
           <LevelBadge isOut={data.isOut} isLow={data.isLow} />
         </View>
-        {data.lowStockAt != null && (
-          <Text style={s.levelSub}>Low below {fmtQty(data.lowStockAt, data.unit)}</Text>
-        )}
+        <TouchableOpacity onPress={() => setSheet('settings')} activeOpacity={0.7}>
+          <Text style={s.levelSub}>
+            {data.lowStockAt != null
+              ? `Running low below ${fmtQty(data.lowStockAt, data.unit)}`
+              : 'No low level set — tap to add one'}
+          </Text>
+        </TouchableOpacity>
 
         <View style={s.actions}>
           <TouchableOpacity style={[s.action, s.actionPrimary]} onPress={() => setSheet('restock')} activeOpacity={0.85}>
@@ -139,6 +146,7 @@ export default function MaterialDetailScreen() {
 
       <RestockSheet material={data} visible={sheet === 'restock'} onClose={() => setSheet(null)} onDone={done} />
       <CountSheet material={data} visible={sheet === 'count'} onClose={() => setSheet(null)} onDone={done} />
+      <MaterialSettingsSheet material={data} visible={sheet === 'settings'} onClose={() => setSheet(null)} onDone={done} />
       <RecordWastageSheet
         visible={sheet === 'wastage'}
         materials={[data]}

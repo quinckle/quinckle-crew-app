@@ -10,7 +10,7 @@ import React, { useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { BottomSheet } from '../ui/BottomSheet';
-import { QuinckleColors as C, Radius, Spacing } from '../../constants/Colors';
+import { QuinckleColors as C, Spacing } from '../../constants/Colors';
 import { fmtQty } from '../../constants/stock';
 import type { CrewMaterial } from '../../services/api';
 import { sheetStyles } from './pieces';
