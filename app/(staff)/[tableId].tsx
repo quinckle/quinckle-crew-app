@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, FlatList, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator } from 'react-native';
+import { Animated, FlatList, Image, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -1228,44 +1228,137 @@ export default function TableDetail() {
     </TouchableOpacity>
   ) : null;
 
-  // The ladder, expanded. Ladder only — see the sheet body.
+  // The ladder, expanded, as a stamp card: one stamp per visit so a steward
+  // reads "where is this guest" at a glance, then today's stamp says the job.
+  const ladderStepsDone = ladder ? ladder.steps.filter((st) => st.state === 'done').length : 0;
+  const ladderLast = ladder?.steps[ladder.steps.length - 1] ?? null;
+  const ladderCardKicker = !ladder ? ''
+    : ladderToUnlock > 0 ? 'Qualifying'
+    : ladderDue ? "Today's stamp"
+    : ladder.eligible === false ? 'Already stamped'
+    : "Today's stamp";
+  const ladderCardTitle = !ladder ? ''
+    : ladderToUnlock > 0 ? `${ladderToUnlock} visit${ladderToUnlock === 1 ? '' : 's'} to unlock`
+    : ladderDue ? ladderDue.rewardName
+    : ladder.eligible === false ? 'Visit counted today'
+    : 'No reward this step';
+  const ladderCardDetail = !ladder ? ''
+    : ladderToUnlock > 0 ? 'Rewards start once they qualify'
+    : ladderDue && ladderUnderMin ? `Needs a ₹${Math.round(ladder.minBill!)} bill to count`
+    : ladderDue
+      ? ladderDue.carry
+        ? ladderDue.ordered ? 'On the KOT — free'
+          : ladderDue.claimed ? "In the guest's cart"
+          : 'Not in their cart yet — ask them to add it'
+        : ladderDue.applied ? 'Off this bill' : 'Comes off this bill'
+    : ladder.eligible === false ? 'Nothing more to collect on this visit'
+    : 'They just move up a stamp';
+
+  let stampScroll: ScrollView | null = null;
   const ladderSheetJsx = (
-    <BottomSheet visible={ladderOpen} onClose={() => setLadderOpen(false)} title="Rewards ladder">
+    <BottomSheet visible={ladderOpen} onClose={() => setLadderOpen(false)} title="Stamp card">
       {/* The ladder itself, and nothing else. No visit history in v1: it would
           let any steward read a regular's pattern, and it is far easier to add
           later than to walk back. */}
       {ladder && (
-        <View>
-          {ladderDue && (
-            <Text style={{ fontSize: 13, fontWeight: '700', color: ladderNudge ? QuinckleColors.warning : QuinckleColors.textPrimary, marginBottom: Spacing.sm }}>
-              {ladderLine}
+        <View style={{ paddingHorizontal: Spacing.xl }}>
+          <Text style={styles.stampCount}>
+            {ladderToUnlock > 0 ? 'Not on the card yet' : `${ladderStepsDone} of ${ladder.totalSteps} stamped`}
+          </Text>
+
+          {/* One row, swiped sideways — a ladder can run to 10+ steps and a
+              wrapped grid loses the left-to-right "journey". The row opens
+              scrolled to today's stamp. No hook here (this sits below the
+              loading return), so the scroll handle is a plain render local. */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            ref={(r) => { stampScroll = r; }}
+            contentContainerStyle={styles.stampRow}
+            style={styles.stampScroller}
+          >
+            {ladder.steps.map((st, i) => {
+              const isLast = i === ladder.steps.length - 1;
+              const img = st.imageUrl || null;
+              const ring = st.state === 'done' ? styles.stampDone
+                : st.state === 'current' ? styles.stampCurrent
+                : styles.stampUpcoming;
+              return (
+                <View
+                  key={st.position}
+                  style={styles.stampCell}
+                  onLayout={st.state === 'current'
+                    ? (e) => stampScroll?.scrollTo({ x: Math.max(0, e.nativeEvent.layout.x - 96), animated: false })
+                    : undefined}
+                >
+                  <View style={[styles.stamp, ring]}>
+                    {img ? (
+                      <Image
+                        source={{ uri: img }}
+                        style={[styles.stampImg, st.state === 'upcoming' && { opacity: 0.45 }]}
+                      />
+                    ) : st.state === 'done' ? (
+                      <Ionicons name="checkmark" size={22} color={QuinckleColors.background} />
+                    ) : st.state === 'current' ? (
+                      <Ionicons name={st.rewardName ? 'gift-outline' : 'arrow-up'} size={22} color={QuinckleColors.primary} />
+                    ) : isLast ? (
+                      <Ionicons name="trophy-outline" size={20} color={QuinckleColors.textTertiary} />
+                    ) : (
+                      <Text style={styles.stampNum}>{st.position}</Text>
+                    )}
+                    {img && st.state === 'done' && (
+                      <View style={styles.stampDoneVeil}>
+                        <Ionicons name="checkmark" size={22} color={QuinckleColors.textPrimary} />
+                      </View>
+                    )}
+                  </View>
+                  <Text
+                    style={[styles.stampLabel, st.state === 'current' && styles.stampLabelCurrent]}
+                    numberOfLines={1}
+                  >
+                    {st.state === 'current' ? 'Today' : st.rewardName ?? `Step ${st.position}`}
+                  </Text>
+                </View>
+              );
+            })}
+          </ScrollView>
+
+          <View style={[styles.stampToday, ladderNudge && styles.stampTodayNudge]}>
+            <Text style={styles.stampKicker}>{ladderCardKicker}</Text>
+            <Text style={styles.stampTitle} numberOfLines={2}>{ladderCardTitle}</Text>
+            <Text style={[styles.stampDetail, (ladderNudge || ladderUnderMin) && { color: QuinckleColors.warning }]}>
+              {ladderCardDetail}
             </Text>
-          )}
+          </View>
+
           {!ladder.optedIn && (
-            <Text style={{ fontSize: 12, color: QuinckleColors.textTertiary, marginBottom: Spacing.sm }}>
+            <Text style={styles.stampNote}>
               This guest hasn&apos;t joined yet — nothing is being collected.
             </Text>
           )}
-          {ladder.steps.map((st) => (
-            <View key={st.position} style={styles.ladderSheetRow}>
-              <Text style={styles.ladderSheetNum}>{st.position}</Text>
-              <Text style={styles.ladderSheetName}>
-                {st.rewardName ?? 'Nothing — they just move up'}
-              </Text>
-              <Text style={[styles.ladderSheetState, {
-                color: st.state === 'current' ? QuinckleColors.warning
-                     : st.state === 'done' ? QuinckleColors.textTertiary
-                     : QuinckleColors.borderSubtle,
-              }]}>
-                {st.state === 'current' ? 'Today' : st.state === 'done' ? 'Done' : ''}
-              </Text>
-            </View>
-          ))}
-          {ladder.nextVisit && (
-            <Text style={{ fontSize: 12, color: QuinckleColors.textTertiary, marginTop: Spacing.sm }}>
-              Next visit: {ladder.nextVisit.rewardName}
-            </Text>
-          )}
+
+          <View style={styles.stampFacts}>
+            {ladder.nextVisit && (
+              <View style={styles.stampFactRow}>
+                <Text style={styles.stampFactLabel}>Next visit</Text>
+                <Text style={styles.stampFactValue} numberOfLines={1}>{ladder.nextVisit.rewardName}</Text>
+              </View>
+            )}
+            {ladderLast?.rewardName && ladderLast.state === 'upcoming' && (
+              <View style={styles.stampFactRow}>
+                <Text style={styles.stampFactLabel}>Card complete</Text>
+                <Text style={styles.stampFactValue} numberOfLines={1}>{ladderLast.rewardName}</Text>
+              </View>
+            )}
+            {!!ladder.minBill && (
+              <View style={styles.stampFactRow}>
+                <Text style={styles.stampFactLabel}>Min. bill</Text>
+                <Text style={styles.stampFactValue}>
+                  ₹{Math.round(ladder.minBill)}{ladder.meetsMinBill ? ' · met' : ''}
+                </Text>
+              </View>
+            )}
+          </View>
         </View>
       )}
     </BottomSheet>
@@ -2419,14 +2512,36 @@ const styles = StyleSheet.create({
   // Something has to be carried to the table — the only state worth colour.
   ladderStripCarry: { borderColor: QuinckleColors.warning },
   ladderStripText: { flex: 1, fontSize: 13, fontWeight: '600', color: QuinckleColors.textPrimary },
-  ladderSheetRow: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    paddingVertical: Spacing.sm,
-    borderBottomWidth: 1, borderBottomColor: QuinckleColors.borderSubtle,
+  stampCount: { fontSize: 12, color: QuinckleColors.textTertiary, marginBottom: Spacing.md },
+  stampScroller: { marginHorizontal: -Spacing.xl, marginBottom: Spacing.lg },
+  stampRow: { paddingHorizontal: Spacing.xl, gap: Spacing.sm },
+  stampCell: { width: 64, alignItems: 'center' },
+  stamp: { width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+  stampDone: { backgroundColor: QuinckleColors.primary, borderWidth: 2, borderColor: QuinckleColors.primary },
+  stampCurrent: { borderWidth: 2, borderStyle: 'dashed', borderColor: QuinckleColors.primary, backgroundColor: QuinckleColors.primarySoft },
+  stampUpcoming: { borderWidth: 1, borderColor: QuinckleColors.borderStrong, backgroundColor: QuinckleColors.surfaceMuted },
+  stampImg: { width: '100%', height: '100%' },
+  stampDoneVeil: {
+    ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(243,93,59,0.72)',
   },
-  ladderSheetNum: { width: 26, fontSize: 12, fontWeight: '700', color: QuinckleColors.textTertiary, fontVariant: ['tabular-nums'] as any },
-  ladderSheetName: { flex: 1, fontSize: 13, color: QuinckleColors.textSecondary },
-  ladderSheetState: { fontSize: 10, fontWeight: '700', letterSpacing: 0.4, textTransform: 'uppercase' },
+  stampLabel: { marginTop: 6, fontSize: 10, color: QuinckleColors.textTertiary, maxWidth: 64 },
+  stampLabelCurrent: { color: QuinckleColors.primary, fontWeight: '700' },
+  stampNum: { fontSize: 13, fontWeight: '600', color: QuinckleColors.textTertiary, fontVariant: ['tabular-nums'] as any },
+  stampToday: {
+    backgroundColor: QuinckleColors.surfaceElevated, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: QuinckleColors.border,
+    padding: Spacing.md, marginBottom: Spacing.md,
+  },
+  stampTodayNudge: { borderColor: QuinckleColors.primarySoftBorder },
+  stampKicker: { fontSize: 10, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase', color: QuinckleColors.primary },
+  stampTitle: { fontSize: 19, fontWeight: '700', color: QuinckleColors.textPrimary, marginTop: 4, marginBottom: 2 },
+  stampDetail: { fontSize: 13, color: QuinckleColors.textSecondary },
+  stampNote: { fontSize: 12, color: QuinckleColors.textTertiary, marginBottom: Spacing.md },
+  stampFacts: { gap: Spacing.sm },
+  stampFactRow: { flexDirection: 'row', justifyContent: 'space-between', gap: Spacing.md },
+  stampFactLabel: { fontSize: 13, color: QuinckleColors.textSecondary },
+  stampFactValue: { flexShrink: 1, fontSize: 13, fontWeight: '600', color: QuinckleColors.textPrimary, textAlign: 'right' },
 
   actionRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.lg },
   actionCard: {
