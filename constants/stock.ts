@@ -7,13 +7,52 @@
  * kitchen units (kg / L / pcs). Every conversion lives here.
  */
 
+/**
+ * A material measures ONE of three things and keeps it for life: weight, volume
+ * or count. A recipe subtracts from the same number a restock adds to, and
+ * average cost divides by it, so the whole history has to be one canonical unit.
+ */
 export type StockBaseUnit = 'GRAM' | 'ML' | 'PCS';
-export type StockEntryUnit = 'KG' | 'GRAM' | 'LITRE' | 'ML' | 'PCS';
+
+/** What a person may type. Each converts into its base by a fixed factor. */
+export type StockEntryUnit =
+  | 'GRAM' | 'KG' | 'QUINTAL' | 'TONNE' | 'POUND' | 'OUNCE'
+  | 'ML' | 'LITRE'
+  | 'PCS';
 export type WastageReason = 'SPOILED' | 'EXPIRED' | 'BURNT' | 'DROPPED' | 'RETURNED' | 'OTHER';
 
 export const UNIT_LABEL: Record<StockEntryUnit, string> = {
-  KG: 'kg', GRAM: 'g', LITRE: 'L', ML: 'ml', PCS: 'pcs',
+  GRAM: 'g', KG: 'kg', QUINTAL: 'quintal', TONNE: 'tonne', POUND: 'lb', OUNCE: 'oz',
+  ML: 'ml', LITRE: 'L',
+  PCS: 'pcs',
 };
+
+/** The long name for a picker row, where there is room to be unambiguous. */
+export const UNIT_NAME: Record<StockEntryUnit, string> = {
+  GRAM: 'Grams', KG: 'Kilograms', QUINTAL: 'Quintal', TONNE: 'Tonnes', POUND: 'Pounds', OUNCE: 'Ounces',
+  ML: 'Millilitres', LITRE: 'Litres',
+  PCS: 'Pieces',
+};
+
+/** How much of the base unit one of these is — shown so nobody has to guess. */
+export const UNIT_FACTOR: Record<StockEntryUnit, number> = {
+  GRAM: 1, KG: 1000, QUINTAL: 100000, TONNE: 1000000, POUND: 453.592, OUNCE: 28.3495,
+  ML: 1, LITRE: 1000,
+  PCS: 1,
+};
+
+export const BASE_OF_ENTRY: Record<StockEntryUnit, StockBaseUnit> = {
+  GRAM: 'GRAM', KG: 'GRAM', QUINTAL: 'GRAM', TONNE: 'GRAM', POUND: 'GRAM', OUNCE: 'GRAM',
+  ML: 'ML', LITRE: 'ML',
+  PCS: 'PCS',
+};
+
+/** The three kinds, in the order a kitchen meets them. */
+export const UNIT_KINDS: { base: StockBaseUnit; label: string; hint: string; units: StockEntryUnit[] }[] = [
+  { base: 'GRAM', label: 'Weight', hint: 'Vegetables, paneer, rice, meat', units: ['KG', 'GRAM', 'QUINTAL', 'TONNE', 'POUND', 'OUNCE'] },
+  { base: 'ML', label: 'Volume', hint: 'Milk, oil, sauces', units: ['LITRE', 'ML'] },
+  { base: 'PCS', label: 'Count', hint: 'Bottles, eggs, packets', units: ['PCS'] },
+];
 
 /**
  * Formatters are the last thing between a server response and the screen, so
@@ -36,6 +75,15 @@ export function fmtQty(qty: number, unit: StockBaseUnit | 'PLATE' | null | undef
 
 /** The units a quantity may be typed in, for a material stored in `base`. */
 export function entryUnitsFor(base: StockBaseUnit): StockEntryUnit[] {
+  return UNIT_KINDS.find((k) => k.base === base)?.units ?? ['PCS'];
+}
+
+/**
+ * The two or three units worth putting on a row of chips. The long tail
+ * (quintal, tonne, lb, oz) stays in the picker — a chip row is for the units
+ * someone types every day, not for completeness.
+ */
+export function quickUnitsFor(base: StockBaseUnit): StockEntryUnit[] {
   if (base === 'GRAM') return ['KG', 'GRAM'];
   if (base === 'ML') return ['LITRE', 'ML'];
   return ['PCS'];

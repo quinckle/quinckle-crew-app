@@ -18,16 +18,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { crewStock } from '../../../services/api';
-import { QuinckleColors as C, Radius, Spacing } from '../../../constants/Colors';
-import { UNIT_LABEL, type StockEntryUnit } from '../../../constants/stock';
+import { QuinckleColors as C, Spacing } from '../../../constants/Colors';
+import { UNIT_LABEL, UNIT_NAME, BASE_OF_ENTRY, type StockEntryUnit } from '../../../constants/stock';
 import { ErrorLine, FieldLabel, PrimaryButton, sheetStyles } from '../../../components/stock/pieces';
-
-/** What a kitchen buys in. The base unit (g / ml / pcs) is derived server-side. */
-const UNITS: { value: StockEntryUnit; label: string; hint: string }[] = [
-  { value: 'KG', label: 'Kilograms', hint: 'Vegetables, paneer, rice' },
-  { value: 'LITRE', label: 'Litres', hint: 'Milk, oil' },
-  { value: 'PCS', label: 'Pieces', hint: 'Bottles, eggs, packets' },
-];
+import { UnitPicker, UnitField } from '../../../components/stock/UnitPicker';
 
 export default function NewMaterialScreen() {
   const insets = useSafeAreaInsets();
@@ -39,6 +33,7 @@ export default function NewMaterialScreen() {
   const [unit, setUnit] = useState<StockEntryUnit>('KG');
   const [low, setLow] = useState('');
   const [opening, setOpening] = useState('');
+  const [unitOpen, setUnitOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -85,23 +80,13 @@ export default function NewMaterialScreen() {
           placeholder="Tomato" placeholderTextColor={C.textMuted} autoFocus={!initialName}
         />
 
-        <FieldLabel>Bought in</FieldLabel>
-        {UNITS.map((u) => (
-          <TouchableOpacity
-            key={u.value}
-            style={[s.unit, unit === u.value && s.unitOn]}
-            onPress={() => setUnit(u.value)}
-            activeOpacity={0.8}
-          >
-            <View style={{ flex: 1 }}>
-              <Text style={[s.unitLabel, unit === u.value && s.unitLabelOn]}>{u.label}</Text>
-              <Text style={s.unitHint}>{u.hint}</Text>
-            </View>
-            {unit === u.value && <Ionicons name="checkmark" size={18} color={C.primary} />}
-          </TouchableOpacity>
-        ))}
+        <FieldLabel>Measured in</FieldLabel>
+        <UnitField value={unit} onPress={() => setUnitOpen(true)} />
         <Text style={[sheetStyles.hint, { marginTop: 8 }]}>
-          This cannot be changed later — it would reinterpret every quantity recorded against it.
+          {BASE_OF_ENTRY[unit] === 'PCS'
+            ? 'Counted one by one.'
+            : `Stored in ${BASE_OF_ENTRY[unit] === 'GRAM' ? 'grams' : 'millilitres'} — you can still type ${UNIT_NAME[unit].toLowerCase()} anywhere.`}
+          {' '}What it measures cannot change later; it would reinterpret every quantity recorded against it.
         </Text>
 
         <FieldLabel>Tell me when it drops below</FieldLabel>
@@ -122,6 +107,13 @@ export default function NewMaterialScreen() {
         <ErrorLine text={error} />
         <PrimaryButton label="Add material" onPress={save} busy={busy} />
       </ScrollView>
+
+      <UnitPicker
+        visible={unitOpen}
+        value={unit}
+        onClose={() => setUnitOpen(false)}
+        onPick={(u) => { setUnit(u); setUnitOpen(false); }}
+      />
     </View>
   );
 }
@@ -134,13 +126,4 @@ const s = StyleSheet.create({
   },
   iconBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   headerTitle: { flex: 1, textAlign: 'center', color: C.textPrimary, fontSize: 17, fontWeight: '700' },
-  unit: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
-    paddingVertical: 12, paddingHorizontal: Spacing.md, marginBottom: 7,
-    borderRadius: Radius.md, borderWidth: 1, borderColor: C.border,
-  },
-  unitOn: { backgroundColor: C.primarySoft, borderColor: C.primarySoftBorder },
-  unitLabel: { color: C.textPrimary, fontSize: 15, fontWeight: '500' },
-  unitLabelOn: { fontWeight: '700' },
-  unitHint: { color: C.textTertiary, fontSize: 11.5, marginTop: 2 },
 });

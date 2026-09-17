@@ -12,18 +12,16 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
-import {
-  ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View,
-} from 'react-native';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { crewStock, type CrewMaterial } from '../../../../services/api';
 import { QuinckleColors as C, Radius, Spacing } from '../../../../constants/Colors';
 import {
-  UNIT_LABEL, entryUnitsFor, defaultEntryUnit, fmtQty, fromBase, toBase, type StockEntryUnit,
+  entryUnitsFor, defaultEntryUnit, fmtQty, fromBase, toBase, type StockEntryUnit,
 } from '../../../../constants/stock';
-import { ErrorLine, PrimaryButton } from '../../../../components/stock/pieces';
+import { ErrorLine, PrimaryButton, QtyRow } from '../../../../components/stock/pieces';
 import { MaterialPickerSheet } from '../../../../components/stock/MaterialPickerSheet';
 
 type Line = {
@@ -150,26 +148,15 @@ export default function RecipeScreen() {
               </TouchableOpacity>
             </View>
 
-            <View style={s.lineRow}>
-              <TextInput
-                style={s.qtyInput}
-                value={l.qty}
-                onChangeText={(v) => setLines((ls) => ls.map((x, j) => (j === i ? { ...x, qty: v } : x)))}
-                keyboardType="decimal-pad" placeholder="0" placeholderTextColor={C.textMuted}
-              />
-              <View style={s.units}>
-                {entryUnitsFor(l.base).map((u) => (
-                  <TouchableOpacity
-                    key={u}
-                    style={[s.unit, u === l.unit && s.unitOn]}
-                    onPress={() => setLines((ls) => ls.map((x, j) => (j === i ? { ...x, unit: u } : x)))}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={[s.unitText, u === l.unit && s.unitTextOn]}>{UNIT_LABEL[u]}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
+            {/* Same dropdown as every other quantity in the section — a chip
+                per unit stopped fitting once weight had six of them. */}
+            <QtyRow
+              value={l.qty}
+              onChange={(v) => setLines((ls) => ls.map((x, j) => (j === i ? { ...x, qty: v } : x)))}
+              unit={l.unit}
+              onUnit={(u) => setLines((ls) => ls.map((x, j) => (j === i ? { ...x, unit: u } : x)))}
+              units={entryUnitsFor(l.base)}
+            />
 
             <Text style={s.lineMeta}>
               {fmtQty(l.inStock, l.base)} in stock
@@ -213,16 +200,6 @@ const s = StyleSheet.create({
   line: { borderRadius: Radius.md, borderWidth: 1, borderColor: C.border, padding: Spacing.md, marginBottom: Spacing.sm },
   lineHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: Spacing.sm },
   lineName: { flex: 1, color: C.textPrimary, fontSize: 14.5, fontWeight: '600' },
-  lineRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
-  qtyInput: {
-    flex: 1, backgroundColor: C.surfaceMutedHover, borderRadius: Radius.md, borderWidth: 1, borderColor: C.border,
-    color: C.textPrimary, paddingHorizontal: Spacing.md, paddingVertical: 11, fontSize: 16, fontVariant: ['tabular-nums'],
-  },
-  units: { flexDirection: 'row', gap: 4 },
-  unit: { paddingHorizontal: Spacing.md, paddingVertical: 10, borderRadius: Radius.md, borderWidth: 1, borderColor: C.border },
-  unitOn: { backgroundColor: C.primarySoft, borderColor: C.primarySoftBorder },
-  unitText: { color: C.textSecondary, fontSize: 13, fontWeight: '600' },
-  unitTextOn: { color: C.primary },
   lineMeta: { color: C.textTertiary, fontSize: 11.5, marginTop: 6 },
   add: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,

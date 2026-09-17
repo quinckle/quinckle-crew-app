@@ -3,10 +3,14 @@
  * Kept in one file because none of them is worth a screen of its own.
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { QuinckleColors as C, Radius, Spacing } from '../../constants/Colors';
-import { UNIT_LABEL, REASONS, type StockEntryUnit, type WastageReason } from '../../constants/stock';
+import {
+  UNIT_LABEL, UNIT_NAME, UNIT_FACTOR, BASE_OF_ENTRY, REASONS,
+  type StockEntryUnit, type WastageReason,
+} from '../../constants/stock';
 
 export function LevelBadge({ isOut, isLow }: { isOut: boolean; isLow: boolean }) {
   if (!isOut && !isLow) return null;
@@ -23,31 +27,61 @@ export function FieldLabel({ children }: { children: React.ReactNode }) {
   return <Text style={s.label}>{children}</Text>;
 }
 
-/** Number box + unit picker on one line. A single-unit material shows a static chip. */
+/**
+ * Number box + unit dropdown on one line.
+ *
+ * The dropdown expands INLINE rather than opening a sheet, because every caller
+ * is already inside a bottom sheet and this app's sheets render in the tree
+ * rather than as native modals — a sheet inside a sheet would be clipped by its
+ * parent's scroll view.
+ *
+ * A material with only one possible unit (pieces) shows a static chip: there is
+ * nothing to choose.
+ */
 export function QtyRow({ value, onChange, unit, onUnit, units, placeholder, autoFocus }: {
   value: string; onChange: (v: string) => void;
   unit: StockEntryUnit; onUnit: (u: StockEntryUnit) => void; units: StockEntryUnit[];
   placeholder?: string; autoFocus?: boolean;
 }) {
+  const [open, setOpen] = useState(false);
+
   return (
-    <View style={s.qtyRow}>
-      <TextInput
-        style={s.qtyInput} value={value} onChangeText={onChange} keyboardType="decimal-pad"
-        placeholder={placeholder ?? '0'} placeholderTextColor={C.textMuted} autoFocus={autoFocus}
-      />
-      {units.length > 1 ? (
-        <View style={s.unitGroup}>
-          {units.map((u) => (
-            <TouchableOpacity
-              key={u} onPress={() => onUnit(u)} activeOpacity={0.8}
-              style={[s.unitChip, u === unit && s.unitChipOn]}
-            >
-              <Text style={[s.unitChipText, u === unit && s.unitChipTextOn]}>{UNIT_LABEL[u]}</Text>
-            </TouchableOpacity>
-          ))}
+    <View>
+      <View style={s.qtyRow}>
+        <TextInput
+          style={s.qtyInput} value={value} onChangeText={onChange} keyboardType="decimal-pad"
+          placeholder={placeholder ?? '0'} placeholderTextColor={C.textMuted} autoFocus={autoFocus}
+        />
+        {units.length > 1 ? (
+          <TouchableOpacity style={[s.unitField, open && s.unitFieldOn]} onPress={() => setOpen((v) => !v)} activeOpacity={0.8}>
+            <Text style={s.unitFieldText}>{UNIT_LABEL[unit]}</Text>
+            <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={13} color={C.textSecondary} />
+          </TouchableOpacity>
+        ) : (
+          <View style={s.unitStatic}><Text style={s.unitChipText}>{UNIT_LABEL[unit]}</Text></View>
+        )}
+      </View>
+
+      {open && (
+        <View style={s.unitList}>
+          {units.map((u) => {
+            const factor = UNIT_FACTOR[u];
+            const base = BASE_OF_ENTRY[u];
+            const baseLabel = base === 'GRAM' ? 'g' : base === 'ML' ? 'ml' : 'pcs';
+            return (
+              <TouchableOpacity
+                key={u} style={s.unitRow} activeOpacity={0.75}
+                onPress={() => { onUnit(u); setOpen(false); }}
+              >
+                <Text style={[s.unitName, u === unit && s.unitNameOn]}>{UNIT_NAME[u]}</Text>
+                {factor !== 1 && (
+                  <Text style={s.unitWorth}>1 {UNIT_LABEL[u]} = {factor.toLocaleString('en-IN')} {baseLabel}</Text>
+                )}
+                {u === unit && <Ionicons name="checkmark" size={16} color={C.primary} />}
+              </TouchableOpacity>
+            );
+          })}
         </View>
-      ) : (
-        <View style={s.unitStatic}><Text style={s.unitChipText}>{UNIT_LABEL[unit]}</Text></View>
       )}
     </View>
   );
@@ -109,11 +143,26 @@ const s = StyleSheet.create({
     color: C.textPrimary, paddingHorizontal: Spacing.md, paddingVertical: Spacing.md, fontSize: 17,
     fontVariant: ['tabular-nums'],
   },
-  unitGroup: { flexDirection: 'row', gap: 4 },
-  unitChip: { paddingHorizontal: Spacing.md, paddingVertical: 11, borderRadius: Radius.md, borderWidth: 1, borderColor: C.border },
-  unitChipOn: { backgroundColor: C.primarySoft, borderColor: C.primarySoftBorder },
+  unitField: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 86, justifyContent: 'space-between',
+    paddingHorizontal: Spacing.md, paddingVertical: 12, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: C.border, backgroundColor: C.surfaceMutedHover,
+  },
+  unitFieldOn: { borderColor: C.primarySoftBorder, backgroundColor: C.primarySoft },
+  unitFieldText: { color: C.textPrimary, fontSize: 14, fontWeight: '600' },
+  unitList: {
+    marginTop: 6, borderRadius: Radius.md, borderWidth: 1, borderColor: C.border,
+    backgroundColor: C.surfaceElevated, overflow: 'hidden',
+  },
+  unitRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingHorizontal: Spacing.md, paddingVertical: 11,
+    borderBottomWidth: 1, borderBottomColor: C.borderSubtle,
+  },
+  unitName: { flex: 1, color: C.textPrimary, fontSize: 14, fontWeight: '500' },
+  unitNameOn: { fontWeight: '700' },
+  unitWorth: { color: C.textTertiary, fontSize: 11, fontVariant: ['tabular-nums'] },
   unitChipText: { color: C.textSecondary, fontSize: 13, fontWeight: '600' },
-  unitChipTextOn: { color: C.primary },
   unitStatic: { paddingHorizontal: Spacing.md, paddingVertical: 11, borderRadius: Radius.md, borderWidth: 1, borderColor: C.borderSubtle },
   chipsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
   chip: { paddingHorizontal: Spacing.md, paddingVertical: 8, borderRadius: Radius.pill, borderWidth: 1, borderColor: C.border },
