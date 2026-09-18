@@ -16,7 +16,7 @@
  * payment request, so the caller MUST re-read the bill afterwards rather than
  * trusting what is on screen — see onApplied.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -74,6 +74,18 @@ export function AdjustBillSheet({
   const [amounts, setAmounts] = useState<Record<string, string>>({});
   const [covers, setCovers] = useState('');
   const [capacity, setCapacity] = useState<number | null>(null);
+  // What the server had when the sheet opened, so Save can tell a real edit
+  // from an untouched field.
+  const [loadedCovers, setLoadedCovers] = useState('');
+
+  // The parents pass `onError` as an inline arrow, so it is a new function on
+  // every one of their renders — and the table screen re-renders constantly
+  // (a poll timer plus realtime pushes). Holding it in a ref keeps it OUT of
+  // the effect below: with it in the dependency array the sheet re-fetched on
+  // every parent render, flashing the spinner and — far worse — overwriting
+  // whatever amount the biller was in the middle of typing.
+  const onErrorRef = useRef(onError);
+  useEffect(() => { onErrorRef.current = onError; });
 
   // Re-read on every open: another device may have billed this table since,
   // and a stale amount here would be saved back over theirs.
@@ -87,7 +99,9 @@ export function AdjustBillSheet({
         if (cancelled) return;
         const data = res.data;
         setCharges(data.charges);
-        setCovers(data.coverCount != null ? String(data.coverCount) : '');
+        const covs = data.coverCount != null ? String(data.coverCount) : '';
+        setCovers(covs);
+        setLoadedCovers(covs);
         setCapacity(data.tableCapacity ?? null);
         setAmounts(
           Object.fromEntries(
@@ -96,7 +110,7 @@ export function AdjustBillSheet({
         );
       })
       .catch(() => {
-        if (!cancelled) onError('Could not load', 'Please try again.');
+        if (!cancelled) onErrorRef.current('Could not load', 'Please try again.');
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -104,7 +118,8 @@ export function AdjustBillSheet({
     return () => {
       cancelled = true;
     };
-  }, [visible, sessionId, onError]);
+    // Re-reads only when the sheet OPENS, or for a different session.
+  }, [visible, sessionId]);
 
   const handleSave = async () => {
     const coverCount = covers.trim() === '' ? null : Number(covers);
@@ -128,7 +143,11 @@ export function AdjustBillSheet({
       typed.push({ chargeId: c.id, amount: n });
     }
 
-    const coversChanged = coverCount !== null || covers.trim() !== '';
+    // Compare against what was loaded, not against emptiness. The old test was
+    // the same condition twice, which broke it both ways: clearing a party size
+    // never saved, and merely opening the sheet on a table that had one
+    // re-priced the session and voided its payment request for nothing.
+    const coversChanged = covers.trim() !== loadedCovers;
     if (typed.length === 0 && !coversChanged) {
       onClose();
       return;
