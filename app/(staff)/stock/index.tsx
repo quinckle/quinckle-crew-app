@@ -17,8 +17,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, FlatList, RefreshControl, ScrollView, StyleSheet, Text, TextInput,
-  TouchableOpacity, View,
+  ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, TextInput, TouchableOpacity, View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -32,6 +31,7 @@ import { QuinckleColors as C, Radius, Spacing } from '../../../constants/Colors'
 import { fmtQty, inr, istDate, prettyReason } from '../../../constants/stock';
 import { CoverageRow, MaterialChips, NotLinked, PriorityBanner } from '../../../components/stock/DishCoverage';
 import { StockFilterSheet, type StockStateFilter } from '../../../components/stock/StockFilterSheet';
+import { DishFilterSheet, type DishFilter } from '../../../components/stock/DishFilterSheet';
 
 type Tab = 'materials' | 'dishes' | 'wastage';
 /** Only what the server understands — `7d` is its default branch. */
@@ -83,9 +83,12 @@ export default function StockScreen() {
   const [dishesLoading, setDishesLoading] = useState(false);
   const [dishesPaging, setDishesPaging] = useState(false);
   const [dishNext, setDishNext] = useState<number | null>(null);
-  const [unlinkedOnly, setUnlinkedOnly] = useState(false);
+  const [dishFilter, setDishFilter] = useState<DishFilter>('all');
   /** null = every course. Values come from the coverage list. */
   const [category, setCategory] = useState<string | null>(null);
+  const [dishFilterOpen, setDishFilterOpen] = useState(false);
+  /** Dishes carrying an unconfirmed amount — for the sheet's segment. */
+  const [estimatedCount, setEstimatedCount] = useState(0);
   const [overview, setOverview] = useState<CrewLinkingOverview | null>(null);
   /** Units sold per dish, from the priority list — shown on unlinked rows. */
   const [soldBy, setSoldBy] = useState<Record<string, number>>({});
@@ -146,15 +149,16 @@ export default function StockScreen() {
   const loadDishes = useCallback((opts: { offset?: number } = {}) => {
     const offset = opts.offset ?? 0;
     if (offset === 0) setDishesLoading(true); else setDishesPaging(true);
-    crewStock.dishes(debounced || undefined, unlinkedOnly ? 'without' : 'all', { limit: PAGE, offset }, category ?? undefined)
+    crewStock.dishes(debounced || undefined, dishFilter, { limit: PAGE, offset }, category ?? undefined)
       .then((r) => {
         const incoming = r.data ?? [];
         setDishes((prev) => (offset === 0 ? incoming : [...prev, ...incoming]));
         setDishNext(r.meta?.nextOffset ?? null);
+        if (r.meta?.estimated != null) setEstimatedCount(r.meta.estimated);
       })
       .catch(() => { if (offset === 0) { setDishes([]); setDishNext(null); } })
       .finally(() => { setDishesLoading(false); setDishesPaging(false); });
-  }, [debounced, unlinkedOnly, category]);
+  }, [debounced, dishFilter, category]);
 
   const loadOverview = useCallback(() => {
     crewStock.linkingOverview()
@@ -214,6 +218,10 @@ export default function StockScreen() {
     filter === 'alert' ? 'Needs attention' : filter === 'out' ? 'Out' : filter === 'low' ? 'Low' : null;
   // The button says what is applied, so nobody has to decode a tinted icon.
   const controlLabel = [filterLabel, sortLabel, grouped ? null : 'flat'].filter(Boolean).join(' · ');
+  const dishControlLabel = [
+    dishFilter === 'without' ? 'Not linked' : dishFilter === 'estimated' ? 'To confirm' : null,
+    category,
+  ].filter(Boolean).join(' · ') || 'All dishes';
 
   return (
     <View style={[s.container, { paddingTop: insets.top }]}>
@@ -381,47 +389,21 @@ export default function StockScreen() {
               />
             </View>
             <TouchableOpacity
-              style={[s.ctlBtn, unlinkedOnly && s.ctlBtnWarn]}
-              onPress={() => setUnlinkedOnly((v) => !v)} activeOpacity={0.8}
+              style={[s.sortBtn, (dishFilter !== 'all' || category) && s.sortBtnOn]}
+              onPress={() => setDishFilterOpen(true)} activeOpacity={0.8}
             >
-              <Ionicons name={unlinkedOnly ? 'unlink' : 'link'} size={17} color={unlinkedOnly ? C.warning : C.textSecondary} />
+              <Ionicons
+                name="options-outline" size={16}
+                color={dishFilter === 'all' && !category ? C.textSecondary : C.warning}
+              />
+              <Text
+                style={[s.sortText, (dishFilter !== 'all' || category) && { color: C.warning }]}
+                numberOfLines={1}
+              >
+                {dishControlLabel}
+              </Text>
             </TouchableOpacity>
           </View>
-
-          {/* Courses, with how much of each is linked. Built from the coverage
-              list the overview already returns — no extra call. */}
-          {(overview?.coverage.length ?? 0) > 1 && (
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-              contentContainerStyle={s.catRow}
-            >
-              <TouchableOpacity
-                style={[s.catChip, category === null && s.catChipOn]}
-                onPress={() => setCategory(null)} activeOpacity={0.8}
-              >
-                <Text style={[s.catText, category === null && s.catTextOn]}>
-                  All {overview ? `${overview.linked}/${overview.total}` : ''}
-                </Text>
-              </TouchableOpacity>
-              {overview?.coverage.map((c) => (
-                <TouchableOpacity
-                  key={c.category}
-                  style={[s.catChip, category === c.category && s.catChipOn]}
-                  onPress={() => setCategory((v) => (v === c.category ? null : c.category))}
-                  activeOpacity={0.8}
-                >
-                  <Text style={[s.catText, category === c.category && s.catTextOn]} numberOfLines={1}>
-                    {c.category}
-                  </Text>
-                  <Text style={[s.catCount, c.linked === c.total && { color: C.success }]}>
-                    {c.linked}/{c.total}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          )}
 
           {dishesLoading ? (
             <View style={s.center}><ActivityIndicator color={C.primary} /></View>
@@ -446,7 +428,11 @@ export default function StockScreen() {
                 ) : null
               }
               ListEmptyComponent={
-                <Text style={s.empty}>{unlinkedOnly ? 'Every dish is linked.' : 'No dishes.'}</Text>
+                <Text style={s.empty}>
+                  {dishFilter === 'without' ? 'Every dish here is linked.'
+                    : dishFilter === 'estimated' ? 'No amounts waiting to be confirmed.'
+                      : 'No dishes.'}
+                </Text>
               }
               ListFooterComponent={
                 dishesPaging ? <ActivityIndicator color={C.textMuted} style={{ marginVertical: Spacing.lg }} /> : null
@@ -539,6 +525,16 @@ export default function StockScreen() {
         </>
       )}
 
+      <DishFilterSheet
+        visible={dishFilterOpen}
+        filter={dishFilter}
+        category={category}
+        overview={overview}
+        estimatedCount={estimatedCount}
+        onClose={() => setDishFilterOpen(false)}
+        onApply={(f, c) => { setDishFilter(f); setCategory(c); setDishFilterOpen(false); }}
+      />
+
       <StockFilterSheet
         visible={filterOpen}
         filter={filter}
@@ -616,16 +612,6 @@ const s = StyleSheet.create({
   rowSub: { color: C.textTertiary, fontSize: 11, marginTop: 2 },
   qty: { width: 82, textAlign: 'right', color: C.textPrimary, fontSize: 14, fontWeight: '600', fontVariant: ['tabular-nums'] },
   state: { width: 34, textAlign: 'right', fontSize: 9.5, fontWeight: '700', letterSpacing: 0.4 },
-  catRow: { gap: 6, paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md },
-  catChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, maxWidth: 190,
-    paddingHorizontal: Spacing.md, paddingVertical: 7,
-    borderRadius: Radius.pill, borderWidth: 1, borderColor: C.border,
-  },
-  catChipOn: { backgroundColor: C.primarySoft, borderColor: C.primarySoftBorder },
-  catText: { color: C.textSecondary, fontSize: 12.5, fontWeight: '600', flexShrink: 1 },
-  catTextOn: { color: C.primary },
-  catCount: { color: C.textTertiary, fontSize: 11, fontVariant: ['tabular-nums'] },
   dishRow: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: C.borderSubtle,
