@@ -36,16 +36,18 @@ const SORTS: { value: MaterialSort; label: string; hint: string }[] = [
   { value: 'name', label: 'A to Z', hint: 'By name' },
 ];
 
-export function StockFilterSheet({ visible, filter, sort, counts, onClose, onApply }: {
+export function StockFilterSheet({ visible, filter, sort, grouped, counts, onClose, onApply }: {
   visible: boolean;
   filter: StockStateFilter;
   sort: MaterialSort;
+  grouped: boolean;
   counts: { out: number; low: number; ok: number; total: number };
   onClose: () => void;
-  onApply: (filter: StockStateFilter, sort: MaterialSort) => void;
+  onApply: (filter: StockStateFilter, sort: MaterialSort, grouped: boolean) => void;
 }) {
   const [draftFilter, setDraftFilter] = useState(filter);
   const [draftSort, setDraftSort] = useState(sort);
+  const [draftGrouped, setDraftGrouped] = useState(grouped);
 
   // Reopening after a cancel must show what is actually applied, not the draft
   // that was abandoned last time.
@@ -53,7 +55,8 @@ export function StockFilterSheet({ visible, filter, sort, counts, onClose, onApp
     if (!visible) return;
     setDraftFilter(filter);
     setDraftSort(sort);
-  }, [visible, filter, sort]);
+    setDraftGrouped(grouped);
+  }, [visible, filter, sort, grouped]);
 
   const countFor = (f: StockStateFilter) =>
     f === 'all' ? counts.total : f === 'alert' ? counts.out + counts.low : f === 'out' ? counts.out : counts.low;
@@ -97,9 +100,25 @@ export function StockFilterSheet({ visible, filter, sort, counts, onClose, onApp
           );
         })}
 
-        <Text style={s.foot}>Out always sits above Running low, above Stocked — sorting orders the rows inside each.</Text>
+        {/* The honest resolution of grouping vs sorting. With sections on, a sort
+            orders rows INSIDE each one, so "most stock first" still opens on a
+            0 kg row — which reads as broken. Turning this off is the only way
+            the sort means what it says. */}
+        <TouchableOpacity style={s.toggleRow} onPress={() => setDraftGrouped((v) => !v)} activeOpacity={0.8}>
+          <View style={{ flex: 1 }}>
+            <Text style={s.name}>Group by state</Text>
+            <Text style={s.hint}>
+              {draftGrouped
+                ? 'Out, then Running low, then Stocked — sorted inside each'
+                : 'One list in pure sort order, no sections'}
+            </Text>
+          </View>
+          <View style={[s.switch, draftGrouped && s.switchOn]}>
+            <View style={[s.knob, draftGrouped && s.knobOn]} />
+          </View>
+        </TouchableOpacity>
 
-        <TouchableOpacity style={s.apply} onPress={() => onApply(draftFilter, draftSort)} activeOpacity={0.85}>
+        <TouchableOpacity style={s.apply} onPress={() => onApply(draftFilter, draftSort, draftGrouped)} activeOpacity={0.85}>
           <Text style={s.applyText}>
             {resulting === 0 ? 'Nothing to show' : `Show ${resulting} material${resulting === 1 ? '' : 's'}`}
           </Text>
@@ -134,7 +153,14 @@ const s = StyleSheet.create({
   name: { color: C.textPrimary, fontSize: 15, fontWeight: '500' },
   nameOn: { fontWeight: '700' },
   hint: { color: C.textTertiary, fontSize: 11.5, marginTop: 2 },
-  foot: { color: C.textMuted, fontSize: 11.5, lineHeight: 17, marginTop: Spacing.md },
+  toggleRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
+    paddingVertical: 13, marginTop: Spacing.xs,
+  },
+  switch: { width: 44, height: 26, borderRadius: 13, backgroundColor: C.surfaceMutedHover, borderWidth: 1, borderColor: C.border, padding: 2 },
+  switchOn: { backgroundColor: C.primary, borderColor: C.primary },
+  knob: { width: 20, height: 20, borderRadius: 10, backgroundColor: C.textMuted },
+  knobOn: { backgroundColor: '#fff', alignSelf: 'flex-end' },
   apply: {
     backgroundColor: C.primary, borderRadius: Radius.md, paddingVertical: 14,
     alignItems: 'center', marginTop: Spacing.lg,

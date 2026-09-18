@@ -71,6 +71,8 @@ export default function StockScreen() {
   const [debounced, setDebounced] = useState('');
   const [filter, setFilter] = useState<StockStateFilter>('all');
   const [sort, setSort] = useState<MaterialSort>('qty_asc');
+  /** Sections on by default; off gives one flat list in pure sort order. */
+  const [grouped, setGrouped] = useState(true);
   const [filterOpen, setFilterOpen] = useState(false);
   /** Guards against a slow page 1 landing after a newer query has started. */
   const queryId = useRef(0);
@@ -102,7 +104,7 @@ export default function StockScreen() {
     crewStock.materialsPage({
       search: debounced || undefined,
       state: filter,
-      sort, limit: PAGE, offset: 0,
+      sort, grouped, limit: PAGE, offset: 0,
     })
       .then((r) => {
         if (id !== queryId.current) return;
@@ -112,7 +114,7 @@ export default function StockScreen() {
       })
       .catch(() => { if (id === queryId.current) { setItems([]); setNextOffset(null); } })
       .finally(() => { if (id === queryId.current) { setLoading(false); setRefreshing(false); } });
-  }, [debounced, filter, sort]);
+  }, [debounced, filter, sort, grouped]);
 
   const loadNextPage = useCallback(() => {
     if (nextOffset == null || paging) return;
@@ -121,7 +123,7 @@ export default function StockScreen() {
     crewStock.materialsPage({
       search: debounced || undefined,
       state: filter,
-      sort, limit: PAGE, offset: nextOffset,
+      sort, grouped, limit: PAGE, offset: nextOffset,
     })
       .then((r) => {
         // A filter or sort changed while this page was in flight — drop it
@@ -132,7 +134,7 @@ export default function StockScreen() {
       })
       .catch(() => {})
       .finally(() => setPaging(false));
-  }, [nextOffset, paging, debounced, filter, sort]);
+  }, [nextOffset, paging, debounced, filter, sort, grouped]);
 
   const loadDishes = useCallback(() => {
     setDishesLoading(true);
@@ -193,7 +195,7 @@ export default function StockScreen() {
   const filterLabel =
     filter === 'alert' ? 'Needs attention' : filter === 'out' ? 'Out' : filter === 'low' ? 'Low' : null;
   // The button says what is applied, so nobody has to decode a tinted icon.
-  const controlLabel = filterLabel ? `${filterLabel} · ${sortLabel}` : sortLabel;
+  const controlLabel = [filterLabel, sortLabel, grouped ? null : 'flat'].filter(Boolean).join(' · ');
 
   return (
     <View style={[s.container, { paddingTop: insets.top }]}>
@@ -307,7 +309,8 @@ export default function StockScreen() {
                 const state = item.state ?? (item.isOut ? 'OUT' : item.isLow ? 'LOW' : 'OK');
                 const prev = index > 0 ? items[index - 1] : undefined;
                 const prevState = prev ? (prev.state ?? (prev.isOut ? 'OUT' : prev.isLow ? 'LOW' : 'OK')) : undefined;
-                const isFirstOfSection = state !== prevState;
+                // No sections in a flat list — the sort is the only order there.
+                const isFirstOfSection = grouped && state !== prevState;
                 const sectionCount = state === 'OUT' ? counts.out : state === 'LOW' ? counts.low : counts.ok;
                 return (
                   <>
@@ -454,11 +457,12 @@ export default function StockScreen() {
         visible={filterOpen}
         filter={filter}
         sort={sort}
+        grouped={grouped}
         counts={counts}
         onClose={() => setFilterOpen(false)}
         // One commit for both choices: each change re-queries, so applying on
         // every tap would fire three requests for one decision.
-        onApply={(f, o) => { setFilter(f); setSort(o); setFilterOpen(false); }}
+        onApply={(f, o, g) => { setFilter(f); setSort(o); setGrouped(g); setFilterOpen(false); }}
       />
 
       <RecordWastageSheet

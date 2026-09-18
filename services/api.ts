@@ -1425,13 +1425,19 @@ export const crewStock = {
    * on the server, so a page is a slice of one ordered list and a section header
    * never appears twice.
    */
-  materialsPage: (opts: { search?: string; state?: 'all' | 'alert' | 'out' | 'low'; sort?: MaterialSort; limit?: number; offset?: number }) => {
+  materialsPage: (opts: {
+    search?: string; state?: 'all' | 'alert' | 'out' | 'low'; sort?: MaterialSort;
+    /** false = one flat list in pure sort order, no sections. */
+    grouped?: boolean;
+    limit?: number; offset?: number;
+  }) => {
     const q = new URLSearchParams();
     q.set('limit', String(opts.limit ?? 40));
     q.set('offset', String(opts.offset ?? 0));
     if (opts.search) q.set('search', opts.search);
     if (opts.state && opts.state !== 'all') q.set('state', opts.state);
     if (opts.sort) q.set('sort', opts.sort);
+    if (opts.grouped === false) q.set('group', 'false');
     return request<{ success: true; data: CrewMaterialPage }>(
       'GET', `/api/crew/stock/materials?${q.toString()}`, undefined, true);
   },
