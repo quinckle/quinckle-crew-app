@@ -657,6 +657,10 @@ export const crewSessions = {
         sessionId: string;
         coverCount: number | null;
         tableCapacity: number | null;
+        /** Rupees already discounted by hand. Never a percentage — only the
+         *  amount it came to is stored. */
+        manualDiscount: number;
+        manualDiscountNote: string | null;
         charges: {
           id: string;
           name: string;
@@ -669,6 +673,38 @@ export const crewSessions = {
         }[];
       };
     }>('GET', `/api/crew/sessions/${sessionId}/adjustments`, undefined, true),
+
+  /**
+   * What the bill WOULD be with these pending changes — priced by the server,
+   * inside a transaction it rolls back. Writes nothing.
+   *
+   * Debounce it. It is a write transaction behind a read-shaped endpoint (the
+   * only way the projected total is guaranteed to equal what Save produces),
+   * so it is not free to call on every keystroke.
+   */
+  previewAdjustments: (
+    sessionId: string,
+    body: {
+      coverCount?: number | null;
+      charges?: { chargeId: string; amount: number }[];
+      tipAmount?: number | null;
+      discount?: { type: 'PERCENT' | 'FLAT'; value: number } | null;
+    },
+  ) =>
+    request<{
+      success: boolean;
+      data: {
+        sessionId: string;
+        current: BillBreakdown;
+        projected: BillBreakdown;
+        taxLines: { rate: number; taxableValue: number; amount: number; cgst: number; sgst: number }[];
+        chargeLines: { id: string; name: string; amount: number }[];
+        /** projected.total − current.total. */
+        delta: number;
+        /** The discount would absorb the whole bill: reason + manager PIN. */
+        zeroesTheBill: boolean;
+      };
+    }>('POST', `/api/crew/sessions/${sessionId}/adjustments/preview`, body, true),
 
   /**
    * Save them. This re-prices every collectible order and voids any mid-flight

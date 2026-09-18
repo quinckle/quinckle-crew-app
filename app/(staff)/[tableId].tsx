@@ -24,7 +24,7 @@ import { BottomSheet } from '../../components/ui/BottomSheet';
 import { HintToast } from '../../components/ui/HintToast';
 import { ReasonSheet, ReasonChips } from '../../components/ui/ReasonSheet';
 import { useManagerApproval } from '../../components/ui/ManagerPinSheet';
-import { WAIVE_REASONS, EXEMPTION_REASONS, isReasonComplete, toReasonPayload, wouldZeroBill, type CancelReason } from '../../constants/adjustmentReasons';
+import { WAIVE_REASONS, isReasonComplete, toReasonPayload, type CancelReason } from '../../constants/adjustmentReasons';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { useResponsive } from '../../hooks/useResponsive';
 
@@ -94,7 +94,7 @@ export default function TableDetail() {
   // sit in a left pane, ordered items alone fill the right pane. Phone and
   // tablet-portrait keep the original single-column stack.
   const { isWide } = useResponsive();
-  const { tableId, sessionId: paramSessionId, tableDbId, occupiedSince, expiresAt: paramExpiresAt, customerName: paramCustomerName, customerPhone: paramCustomerPhone, groupLabel: paramGroupLabel, openBill } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string; occupiedSince: string; expiresAt: string; customerName: string; customerPhone: string; groupLabel?: string; openBill?: string }>();
+  const { tableId, sessionId: paramSessionId, tableDbId, occupiedSince, expiresAt: paramExpiresAt, customerName: paramCustomerName, customerPhone: paramCustomerPhone, groupLabel: paramGroupLabel, zoneName: paramZoneName, openBill } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string; occupiedSince: string; expiresAt: string; customerName: string; customerPhone: string; groupLabel?: string; zoneName?: string; openBill?: string }>();
   const router = useRouter();
   const { staffInfo } = useAuth();
 
@@ -218,14 +218,6 @@ export default function TableDetail() {
   const [showUpiModal, setShowUpiModal] = useState(false);
   const [upiAmount, setUpiAmount]   = useState('');
   const [upiUri, setUpiUri]         = useState<string | null>(null);
-  // Crew custom discount
-  const [discountModalOpen, setDiscountModalOpen] = useState(false);
-  const [discountType, setDiscountType] = useState<'PERCENT' | 'FLAT'>('PERCENT');
-  const [discountValue, setDiscountValue] = useState('');
-  const [exemptCode, setExemptCode] = useState<string | null>(null);
-  const [exemptText, setExemptText] = useState('');
-  const [discountNote, setDiscountNote] = useState('');
-  const [applyingDiscount, setApplyingDiscount] = useState(false);
   // Free-table (structured close) modal
   const [freeModalOpen, setFreeModalOpen] = useState(false);
   const [freeStep, setFreeStep] = useState<'choose' | 'waive'>('choose');
@@ -233,7 +225,6 @@ export default function TableDetail() {
   const [waiveCode, setWaiveCode] = useState<string | null>(null);
   const { sheet: managerPinSheet, runWithApproval } = useManagerApproval();
   const [freeing, setFreeing] = useState(false);
-  const isAdmin = staffInfo?.role === 'ADMIN';
 
   // Action menu + swap-table state for the 3-dot header
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
@@ -267,7 +258,12 @@ export default function TableDetail() {
     if (!sessionId) return;
     router.push({
       pathname: '/(staff)/adjust-bill',
-      params: { sessionId, subtitle: tablePrintLabel, total: String(grandTotal) },
+      params: {
+        sessionId,
+        subtitle: `Table T${tableNum}`,
+        zone: (paramZoneName ?? '').trim(),
+        total: String(grandTotal),
+      },
     });
   };
 
@@ -520,53 +516,6 @@ export default function TableDetail() {
     total: grandTotal,
   }), [billableFlatItems, sessionTotal, discountTotal, discountLines, serviceChargeTotal, chargeLines, tax, billTaxRate, sessionTaxLines, tipTotal, roundOffTotal, grandTotal]);
 
-  const handleApplyDiscount = async () => {
-    const v = Number(discountValue);
-    if (!Number.isFinite(v) || v <= 0) {
-      showDialog('Invalid amount', 'Enter a discount greater than zero.', [{ label: 'OK', onPress: () => {} }]);
-      return;
-    }
-    if (discountType === 'PERCENT' && v > 100) {
-      showDialog('Invalid percentage', 'Percentage cannot exceed 100%.', [{ label: 'OK', onPress: () => {} }]);
-      return;
-    }
-    // A discount that zeroes the bill is an exemption, not a discount: the
-    // backend gates it on ADMIN and records it on the adjustments ledger.
-    const zeroing = wouldZeroBill(discountType, v, sessionTotal);
-    if (zeroing && !isReasonComplete(exemptCode, exemptText)) return;
-    const coded = zeroing ? toReasonPayload(exemptCode!, exemptText) : undefined;
-
-    setApplyingDiscount(true);
-    try {
-      await runWithApproval({ action: 'EXEMPT_SESSION', amount: sessionTotal }, async (mint) => {
-        const grantId = mint ? await mint(sessionId, null) : undefined;
-        await crewSessions.applyDiscount(sessionId, discountType, v, discountNote.trim() || null, coded, grantId);
-      });
-      setDiscountModalOpen(false);
-      setDiscountValue('');
-      setDiscountNote('');
-      setExemptCode(null);
-      setExemptText('');
-      await loadBill();
-    } catch (e: any) {
-      const code = e?.code as string | undefined;
-      const msg = code === 'NO_DISCOUNTABLE_ORDERS'
-        ? 'Everything on this table is already paid — nothing to discount.'
-        : code === 'ADMIN_REQUIRED' || code === 'AUTHORIZATION_REQUIRED'
-        ? 'A manager must approve clearing the whole bill.'
-        : (typeof e?.message === 'string' && e.message) || 'Please try again.';
-      showDialog('Could not apply discount', msg, [{ label: 'OK', onPress: () => {} }]);
-    } finally {
-      setApplyingDiscount(false);
-    }
-  };
-
-  // A zeroing discount is an exemption: admin-only, and it must carry a reason.
-  const discountZeroesBill = wouldZeroBill(discountType, Number(discountValue), sessionTotal);
-  const canApplyDiscount =
-    parseFloat(discountValue) > 0 &&
-    !applyingDiscount &&
-    (!discountZeroesBill || isReasonComplete(exemptCode, exemptText));
 
   // `nextQty` is the ABSOLUTE served count the line should stand at. A tap
   // hands over one more unit; a hold on the button hands over the rest.
@@ -1760,7 +1709,6 @@ export default function TableDetail() {
                 bill={explainedBill}
                 pinned
                 inset={false}
-                onGiveDiscount={!isPaid && orders.length > 0 ? () => setDiscountModalOpen(true) : undefined}
               />
             </View>
 
@@ -1856,26 +1804,6 @@ export default function TableDetail() {
                 </View>
               </View>
               <View style={styles.totalValueContainer}>
-                {/* Discount lives on the total, not inside the breakdown sheet —
-                    giving one shouldn't require opening a read-only explanation
-                    of the bill first. Nested inside the row's Touchable: the
-                    inner responder wins, so this does not also expand the sheet. */}
-                {!isPaid && orders.length > 0 && (
-                  <TouchableOpacity
-                    onPress={() => setDiscountModalOpen(true)}
-                    style={styles.totalDiscountBtn}
-                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 8 }}
-                    activeOpacity={0.7}
-                    accessibilityRole="button"
-                    accessibilityLabel={discountTotal > 0 ? 'Edit discount' : 'Give discount'}
-                  >
-                    <MaterialCommunityIcons
-                      name="percent-box-outline"
-                      size={20}
-                      color={discountTotal > 0 ? QuinckleColors.primary : QuinckleColors.textSecondary}
-                    />
-                  </TouchableOpacity>
-                )}
                 {/* Party size and the charges staff type per bill (container,
                     delivery). Sits beside the discount for the same reason:
                     billing a parcel shouldn't start by opening a read-only
@@ -2126,89 +2054,6 @@ export default function TableDetail() {
         <View style={{ height: Spacing.md }} />
       </BottomSheet>
 
-      {/* Crew custom discount */}
-      <Modal visible={discountModalOpen} transparent animationType="fade" onRequestClose={() => setDiscountModalOpen(false)}>
-        <View style={styles.swapBackdrop}>
-          <View style={styles.swapCard}>
-            <Text style={styles.swapEyebrow}>Discount</Text>
-            <Text style={styles.swapTitle}>Give a discount</Text>
-            <Text style={styles.swapSubtitle}>Applies across the table&apos;s unpaid orders.</Text>
-
-            <View style={styles.segToggle}>
-              <TouchableOpacity style={[styles.segBtn, discountType === 'PERCENT' && styles.segBtnActive]} onPress={() => setDiscountType('PERCENT')} activeOpacity={0.85}>
-                <Text style={[styles.segBtnText, discountType === 'PERCENT' && styles.segBtnTextActive]}>Percentage</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.segBtn, discountType === 'FLAT' && styles.segBtnActive]} onPress={() => setDiscountType('FLAT')} activeOpacity={0.85}>
-                <Text style={[styles.segBtnText, discountType === 'FLAT' && styles.segBtnTextActive]}>Flat ₹</Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={[styles.dinerInputWrap, { marginTop: 14 }]}>
-              <View style={styles.dinerCountryCode}>
-                <Text style={styles.dinerCountryCodeText}>{discountType === 'PERCENT' ? '%' : '₹'}</Text>
-              </View>
-              <View style={styles.dinerDivider} />
-              <TextInput
-                style={styles.dinerInput}
-                value={discountValue}
-                onChangeText={v => setDiscountValue(v.replace(/[^0-9.]/g, ''))}
-                placeholder={discountType === 'PERCENT' ? 'e.g. 10' : 'e.g. 50'}
-                placeholderTextColor={QuinckleColors.textMuted}
-                keyboardType="decimal-pad"
-                returnKeyType="done"
-                autoFocus
-              />
-            </View>
-
-            <View style={[styles.dinerInputWrap, { marginTop: 10 }]}>
-              <TextInput
-                style={[styles.dinerInput, { paddingLeft: 14 }]}
-                value={discountNote}
-                onChangeText={setDiscountNote}
-                placeholder="Reason (optional)"
-                placeholderTextColor={QuinckleColors.textMuted}
-                maxLength={200}
-                returnKeyType="done"
-              />
-            </View>
-
-            {/* Zeroing the bill is an exemption, not a discount — say why. A
-                non-admin can still do it; a manager approves with the PIN. */}
-            {discountZeroesBill && (
-              <>
-                <ReasonChips
-                  reasons={EXEMPTION_REASONS}
-                  prompt="This clears the whole bill. Why?"
-                  code={exemptCode}
-                  text={exemptText}
-                  onPickCode={setExemptCode}
-                  onChangeText={setExemptText}
-                  disabled={applyingDiscount}
-                />
-                {!isAdmin && (
-                  <Text style={styles.discountAdminNote}>
-                    A manager will be asked to approve this.
-                  </Text>
-                )}
-              </>
-            )}
-
-            <View style={styles.swapFooter}>
-              <TouchableOpacity style={styles.swapCancel} onPress={() => setDiscountModalOpen(false)} activeOpacity={0.8} disabled={applyingDiscount}>
-                <Text style={styles.swapCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.swapConfirm, !canApplyDiscount && { opacity: 0.4 }]}
-                onPress={handleApplyDiscount}
-                disabled={!canApplyDiscount}
-                activeOpacity={0.85}
-              >
-                {applyingDiscount ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.swapConfirmText}>Apply</Text>}
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
 
       {/* Structured free-table decision (uncollected payment) */}
       <Modal visible={freeModalOpen} transparent animationType="fade" onRequestClose={() => setFreeModalOpen(false)}>
@@ -2416,7 +2261,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     paddingVertical: 10,
   },
-  discountAdminNote: { fontSize: 12, color: QuinckleColors.warning, textAlign: 'center', marginTop: 12, lineHeight: 17 },
   swapConfirmText: {
     color: '#fff',
     fontSize: 13,
