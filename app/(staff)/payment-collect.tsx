@@ -342,6 +342,9 @@ export default function PaymentCollectScreen() {
   const [tipSheetOpen, setTipSheetOpen]   = useState(false);
   const [tipInput, setTipInput]           = useState('');
   const [savingTip, setSavingTip]         = useState(false);
+  // Seeded from the bill, never assumed to be zero: a diner may already have
+  // tipped from their own phone. Showing "None" over an existing tip would let
+  // a biller overwrite it without ever seeing it.
   const [tipAmount, setTipAmount]         = useState(0);
   const [assignTipOpen, setAssignTipOpen] = useState(false);
   const [upiSheetOpen, setUpiSheetOpen] = useState(false);
@@ -437,6 +440,12 @@ export default function PaymentCollectScreen() {
     }
     return breakdown;
   }, [paymentContext, breakdown, isMultiOrder, liveDue]);
+
+  // Keep the tip row honest as the due re-syncs (another device may have added
+  // one, or the diner tipped at checkout).
+  useEffect(() => {
+    if (resolvedBreakdown) setTipAmount(resolvedBreakdown.tip ?? 0);
+  }, [resolvedBreakdown]);
 
   const cashNum    = Number(cashInput || 0);
   const upiNum     = Math.max(0, resolvedTotal - cashNum);
