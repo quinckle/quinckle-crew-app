@@ -32,6 +32,8 @@ type Line = {
   qty: string;
   unit: StockEntryUnit;
   inStock: number;
+  /** Came from a bulk link and was never confirmed for THIS dish. */
+  estimated: boolean;
 };
 
 export default function RecipeScreen() {
@@ -63,6 +65,7 @@ export default function RecipeScreen() {
             qty: String(entry.qty),
             unit: entry.unit,
             inStock: l.inStock,
+            estimated: !!l.isEstimated,
           };
         }));
         setFailed(false);
@@ -78,17 +81,19 @@ export default function RecipeScreen() {
     setError(null);
     setLines((ls) => [...ls, {
       stockItemId: m.id, name: m.name, base: m.unit,
-      qty: '', unit: defaultEntryUnit(m.unit), inStock: m.currentQty,
+      qty: '', unit: defaultEntryUnit(m.unit), inStock: m.currentQty, estimated: false,
     }]);
   };
 
   const save = async () => {
     if (!id) return;
-    const payload: { stockItemId: string; qty: number; unit: StockEntryUnit }[] = [];
+    const payload: { stockItemId: string; qty: number; unit: StockEntryUnit; isEstimated?: boolean }[] = [];
     for (const l of lines) {
       const n = Number(l.qty);
       if (!Number.isFinite(n) || n <= 0) { setError(`Enter how much ${l.name} one plate uses`); return; }
-      payload.push({ stockItemId: l.stockItemId, qty: n, unit: l.unit });
+      // Typing a number for this dish IS the measurement, so the flag only
+      // survives on lines nobody touched.
+      payload.push({ stockItemId: l.stockItemId, qty: n, unit: l.unit, isEstimated: l.estimated });
     }
     setBusy(true); setError(null);
     try {
@@ -140,6 +145,7 @@ export default function RecipeScreen() {
           <View key={l.stockItemId} style={s.line}>
             <View style={s.lineHead}>
               <Text style={s.lineName} numberOfLines={1}>{l.name}</Text>
+              {l.estimated && <Text style={s.estBadge}>ESTIMATE</Text>}
               <TouchableOpacity
                 onPress={() => setLines((ls) => ls.filter((x) => x.stockItemId !== l.stockItemId))}
                 hitSlop={10} activeOpacity={0.7}
@@ -152,7 +158,7 @@ export default function RecipeScreen() {
                 per unit stopped fitting once weight had six of them. */}
             <QtyRow
               value={l.qty}
-              onChange={(v) => setLines((ls) => ls.map((x, j) => (j === i ? { ...x, qty: v } : x)))}
+              onChange={(v) => setLines((ls) => ls.map((x, j) => (j === i ? { ...x, qty: v, estimated: false } : x)))}
               unit={l.unit}
               onUnit={(u) => setLines((ls) => ls.map((x, j) => (j === i ? { ...x, unit: u } : x)))}
               units={entryUnitsFor(l.base)}
@@ -200,6 +206,10 @@ const s = StyleSheet.create({
   line: { borderRadius: Radius.md, borderWidth: 1, borderColor: C.border, padding: Spacing.md, marginBottom: Spacing.sm },
   lineHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: Spacing.sm },
   lineName: { flex: 1, color: C.textPrimary, fontSize: 14.5, fontWeight: '600' },
+  estBadge: {
+    color: C.warning, fontSize: 9, fontWeight: '700', letterSpacing: 0.5,
+    backgroundColor: C.warningSoft, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 2, marginRight: 6,
+  },
   lineMeta: { color: C.textTertiary, fontSize: 11.5, marginTop: 6 },
   add: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,

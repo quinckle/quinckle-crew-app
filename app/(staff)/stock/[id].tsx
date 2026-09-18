@@ -105,11 +105,21 @@ export default function MaterialDetailScreen() {
           </TouchableOpacity>
         </View>
 
-        {data.usedBy.length > 0 && (
-          <Text style={s.usedBy} numberOfLines={2}>
-            Used in {data.usedBy.map((u) => u.name).join(' · ')}
+        {/* The other direction of linking: from here you can put this material
+            into many dishes at once, each with its own amount. */}
+        <TouchableOpacity
+          style={s.linkRow}
+          activeOpacity={0.7}
+          onPress={() => router.push({ pathname: '/(staff)/stock/link/[id]', params: { id: data.id } })}
+        >
+          <Ionicons name="git-branch-outline" size={16} color={C.textSecondary} />
+          <Text style={s.linkText} numberOfLines={2}>
+            {data.usedBy.length > 0
+              ? `Used in ${data.usedBy.map((u) => u.name).join(' · ')}`
+              : 'Not used in any dish yet — selling them takes nothing out of stock'}
           </Text>
-        )}
+          <Ionicons name="chevron-forward" size={15} color={C.textTertiary} />
+        </TouchableOpacity>
 
         <Text style={s.sectionLabel}>History</Text>
         {data.movements.length === 0 && <Text style={s.empty}>Nothing has moved yet.</Text>}
@@ -177,7 +187,12 @@ const s = StyleSheet.create({
   actionPrimary: { backgroundColor: C.primary, borderColor: C.primary },
   actionText: { color: C.textPrimary, fontSize: 14, fontWeight: '600' },
   actionPrimaryText: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  usedBy: { color: C.textTertiary, fontSize: 12.5, marginTop: Spacing.lg, lineHeight: 18 },
+  linkRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginTop: Spacing.lg,
+    paddingVertical: Spacing.md, paddingHorizontal: Spacing.md,
+    borderRadius: Radius.md, borderWidth: 1, borderColor: C.border,
+  },
+  linkText: { flex: 1, color: C.textSecondary, fontSize: 12.5, lineHeight: 18 },
   sectionLabel: {
     color: C.textSecondary, fontSize: 11, fontWeight: '700', letterSpacing: 0.8,
     textTransform: 'uppercase', marginTop: Spacing.xl, marginBottom: Spacing.sm,

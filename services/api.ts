@@ -1387,12 +1387,29 @@ export interface CrewDish {
   menuItemId: string; name: string; category: string | null;
   /** How many materials its recipe uses. 0 = not linked yet. */
   materials: number;
+  /** Of those, how many amounts came from a bulk link and were never confirmed. */
+  estimated: number;
+}
+
+/** One dish as the bulk linker sees it: what it takes of ONE material. */
+export interface CrewDishForMaterial {
+  menuItemId: string; name: string; category: string | null;
+  /** In the material's base unit; null when this dish does not use it. */
+  qty: number | null;
+  isEstimated: boolean;
+}
+
+export interface CrewDishesForMaterial {
+  material: { id: string; name: string; unit: StockBaseUnit };
+  items: CrewDishForMaterial[];
+  counts: { linked: number; unlinked: number; total: number };
+  nextOffset: number | null;
 }
 
 /** A recipe as crew sees it — amounts and stock levels, no money. */
 export interface CrewRecipe {
   menuItemId: string; name: string; category: string | null; stockOut: boolean;
-  lines: { stockItemId: string; name: string; unit: StockBaseUnit; qty: number; inStock: number }[];
+  lines: { stockItemId: string; name: string; unit: StockBaseUnit; qty: number; inStock: number; isEstimated: boolean }[];
 }
 
 /** One line of a multi-line wastage write-off — a material, or whole plates of a dish. */
@@ -1468,19 +1485,43 @@ export const crewStock = {
    * what the wastage picker needs (only they can come off stock as plates).
    * The recipe tab asks for `all` / `without`.
    */
-  dishes: (search?: string, filter?: 'all' | 'with' | 'without') => {
+  dishes: (search?: string, filter?: 'all' | 'with' | 'without' | 'estimated') => {
     const q = new URLSearchParams();
     if (search) q.set('search', search);
     if (filter) q.set('filter', filter);
     const s = q.toString();
-    return request<{ success: true; data: CrewDish[] }>(
-      'GET', `/api/crew/stock/dishes${s ? `?${s}` : ''}`, undefined, true);
+    return request<{
+      success: true; data: CrewDish[];
+      meta?: { withRecipe: number; estimated: number; total: number };
+    }>('GET', `/api/crew/stock/dishes${s ? `?${s}` : ''}`, undefined, true);
   },
+
+  /** Every dish with what it takes of ONE material — the bulk linker's list. */
+  dishesForMaterial: (materialId: string, opts: {
+    search?: string; filter?: 'all' | 'linked' | 'unlinked'; limit?: number; offset?: number;
+  } = {}) => {
+    const q = new URLSearchParams();
+    q.set('limit', String(opts.limit ?? 40));
+    q.set('offset', String(opts.offset ?? 0));
+    if (opts.search) q.set('search', opts.search);
+    if (opts.filter && opts.filter !== 'all') q.set('filter', opts.filter);
+    return request<{ success: true; data: CrewDishesForMaterial }>(
+      'GET', `/api/crew/stock/materials/${materialId}/dishes?${q.toString()}`, undefined, true);
+  },
+
+  /**
+   * Write many dish links for one material in a single transaction. Each line
+   * carries its own amount — portions differ per dish. `qty: null` unlinks.
+   */
+  linkDishes: (materialId: string, lines: {
+    menuItemId: string; qty: number | null; unit?: StockEntryUnit; isEstimated?: boolean;
+  }[]) => request<{ success: true; data: { linked: number; unlinked: number; estimated: number } }>(
+    'POST', `/api/crew/stock/materials/${materialId}/dishes`, { lines }, true),
 
   recipe: (menuItemId: string) =>
     request<{ success: true; data: CrewRecipe }>('GET', `/api/crew/stock/dishes/${menuItemId}/recipe`, undefined, true),
 
-  setRecipe: (menuItemId: string, lines: { stockItemId: string; qty: number; unit: StockEntryUnit }[]) =>
+  setRecipe: (menuItemId: string, lines: { stockItemId: string; qty: number; unit: StockEntryUnit; isEstimated?: boolean }[]) =>
     request<{ success: true; data: CrewRecipe }>('PUT', `/api/crew/stock/dishes/${menuItemId}/recipe`, { lines }, true),
 
   /**
