@@ -1385,6 +1385,8 @@ export interface CrewWastageEntry {
 
 export interface CrewDish {
   menuItemId: string; name: string; category: string | null;
+  /** Null for the many dishes that have no photo — the app draws a placeholder. */
+  imageUrl?: string | null;
   /** How many materials its recipe uses. 0 = not linked yet. */
   materials: number;
   /** Of those, how many amounts came from a bulk link and were never confirmed. */

@@ -24,7 +24,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useResponsive } from '../../../hooks/useResponsive';
 import { router, useFocusEffect } from 'expo-router';
 import {
-  crewMenu, crewStock,
+  crewStock,
   type CrewDish, type CrewLinkingOverview, type CrewMaterial, type CrewWastageEntry,
   type MaterialSort, type MaterialState,
 } from '../../../services/api';
@@ -97,14 +97,6 @@ export default function StockScreen() {
   const [dishFilterOpen, setDishFilterOpen] = useState(false);
   /** Dishes carrying an unconfirmed amount — for the sheet's segment. */
   const [estimatedCount, setEstimatedCount] = useState(0);
-  /**
-   * menuItemId → image, from the menu endpoint the 86 screen and manual
-   * ordering already use. Fetched ONCE per visit to this screen and kept in
-   * memory: the dish list itself stays paged, and no new backend field was
-   * needed for a picture the app can already ask for.
-   */
-  const [dishImages, setDishImages] = useState<Record<string, string>>({});
-  const imagesLoaded = useRef(false);
   const [overview, setOverview] = useState<CrewLinkingOverview | null>(null);
   /** Units sold per dish, from the priority list — shown on unlinked rows. */
   const [soldBy, setSoldBy] = useState<Record<string, number>>({});
@@ -176,22 +168,6 @@ export default function StockScreen() {
       .finally(() => { setDishesLoading(false); setDishesPaging(false); });
   }, [debounced, dishFilter, category]);
 
-  const loadDishImages = useCallback(() => {
-    if (imagesLoaded.current) return;
-    imagesLoaded.current = true;
-    crewMenu.getMenu()
-      .then((r) => {
-        const map: Record<string, string> = {};
-        for (const cat of r.data ?? []) {
-          for (const item of cat.items ?? []) if (item.imageUrl) map[item.id] = item.imageUrl;
-        }
-        setDishImages(map);
-      })
-      // A card without its picture is a card with a placeholder — never a
-      // reason to fail the screen.
-      .catch(() => { imagesLoaded.current = false; });
-  }, []);
-
   const loadOverview = useCallback(() => {
     crewStock.linkingOverview()
       .then((r) => {
@@ -229,18 +205,18 @@ export default function StockScreen() {
    * with the DEFAULTS while the control still showed your choice. That is what
    * made filter and sort look broken.
    */
-  const loaders = useRef({ loadFirstPage, loadDishes, loadWastage, loadOverview, loadDishImages });
-  useEffect(() => { loaders.current = { loadFirstPage, loadDishes, loadWastage, loadOverview, loadDishImages }; });
+  const loaders = useRef({ loadFirstPage, loadDishes, loadWastage, loadOverview });
+  useEffect(() => { loaders.current = { loadFirstPage, loadDishes, loadWastage, loadOverview }; });
 
   useFocusEffect(useCallback(() => {
     if (tab === 'materials') loaders.current.loadFirstPage({ quiet: true });
-    if (tab === 'dishes') { loaders.current.loadDishes(); loaders.current.loadOverview(); loaders.current.loadDishImages(); }
+    if (tab === 'dishes') { loaders.current.loadDishes(); loaders.current.loadOverview(); }
     if (tab === 'wastage') loaders.current.loadWastage(range);
   }, [tab, range]));
 
   const switchTab = (t: Tab) => {
     setTab(t);
-    if (t === 'dishes') { if (dishes.length === 0) loadDishes(); if (!overview) loadOverview(); loadDishImages(); }
+    if (t === 'dishes') { if (dishes.length === 0) loadDishes(); if (!overview) loadOverview(); }
     if (t === 'wastage' && wastage.length === 0) loadWastage(range);
   };
 
@@ -492,7 +468,7 @@ export default function StockScreen() {
                         <DishCard
                           key={d.menuItemId}
                           dish={d}
-                          imageUrl={dishImages[d.menuItemId]}
+                          imageUrl={d.imageUrl}
                           soldUnits={soldBy[d.menuItemId]}
                           width={cardWidth}
                           onPress={() => router.push({ pathname: '/(staff)/stock/dish/[id]', params: { id: d.menuItemId } })}
