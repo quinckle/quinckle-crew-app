@@ -19,6 +19,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -36,6 +38,7 @@ import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Col
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { AssignTipSheet, type Allocation, type Staff } from '../../components/ui/AssignTipSheet';
 import { StaffAvatar } from '../../components/ui/StaffAvatar';
+import { Skeleton } from '../../components/ui/Skeleton';
 
 type VariableCharge = {
   id: string;
@@ -58,6 +61,41 @@ function taxHint(c: VariableCharge): string {
 
 const money = (v: string) => v.replace(/[^0-9.]/g, '');
 
+/**
+ * Loading state shaped like the form it becomes — same gutter, same 48pt field
+ * heights, same section rhythm — so nothing jumps when the data lands. A
+ * spinner here would say "wait" without saying what for, on a screen that
+ * arrives mid-lift and is mostly chrome the crew already knows.
+ *
+ * Charge count is unknown until the fetch returns; two is the common shape
+ * (container, delivery) and guessing low avoids a collapse on arrival.
+ */
+function FormSkeleton() {
+  const field = (key: string, labelWidth: number, hintWidth: number) => (
+    <View key={key} style={s.field}>
+      <View style={s.rowHead}>
+        <Skeleton width={labelWidth} height={12} radius={4} />
+        <Skeleton width={hintWidth} height={10} radius={4} />
+      </View>
+      <Skeleton width="100%" height={48} radius={Radius.md} />
+    </View>
+  );
+
+  return (
+    <View style={[s.scroll, { flex: 1 }]}>
+      <Skeleton width={72} height={10} radius={4} style={{ marginTop: Spacing.xl, marginBottom: Spacing.md }} />
+      {field('a', 78, 96)}
+      <Skeleton width="88%" height={10} radius={4} style={{ marginTop: 2, marginBottom: Spacing.lg }} />
+      {field('b', 68, 118)}
+      {field('c', 58, 52)}
+
+      <Skeleton width={40} height={10} radius={4} style={{ marginTop: Spacing.xl, marginBottom: Spacing.md }} />
+      {field('d', 62, 74)}
+    </View>
+  );
+}
+
+
 export default function AdjustBillScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -77,6 +115,20 @@ export default function AdjustBillScreen() {
   const [staff, setStaff] = useState<Staff[]>([]);
   const [allocations, setAllocations] = useState<Allocation[]>([]);
   const [assignOpen, setAssignOpen] = useState(false);
+
+  // Lift and fade. The stack cross-fades the whole transparent screen in; this
+  // drives the card rising the last few pixels and the backdrop darkening, so
+  // it reads as growing out of the control that was tapped rather than sliding
+  // in from somewhere off-screen.
+  const enter = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(enter, {
+      toValue: 1,
+      duration: 260,
+      easing: Easing.bezier(0.22, 1, 0.36, 1),
+      useNativeDriver: true,
+    }).start();
+  }, [enter]);
 
   const [dialog, setDialog] = useState<{ title: string; message: string } | null>(null);
   const [confirmLeave, setConfirmLeave] = useState(false);
@@ -276,8 +328,34 @@ export default function AdjustBillScreen() {
   );
 
   return (
-    <View style={[s.root, { paddingTop: insets.top }]}>
+    <View style={s.fill}>
       <Stack.Screen options={{ headerShown: false }} />
+
+      {/* The table stays mounted underneath (transparentModal) — this dims the
+          bill being adjusted, not a blank canvas. */}
+      {/* Captures touches rather than passing them through: the card's rounded
+          corners leave slivers of the table below exposed, and a tap there must
+          not reach a screen the crew thinks is covered. */}
+      <Animated.View
+        style={[
+          s.backdrop,
+          { opacity: enter.interpolate({ inputRange: [0, 1], outputRange: [0, 0.55] }) },
+        ]}
+      />
+
+      <Animated.View
+        style={[
+          s.root,
+          { paddingTop: insets.top },
+          {
+            opacity: enter,
+            transform: [
+              { translateY: enter.interpolate({ inputRange: [0, 1], outputRange: [22, 0] }) },
+              { scale: enter.interpolate({ inputRange: [0, 1], outputRange: [0.94, 1] }) },
+            ],
+          },
+        ]}
+      >
 
       <View style={s.header}>
         <TouchableOpacity
@@ -298,7 +376,7 @@ export default function AdjustBillScreen() {
       </View>
 
       {loading ? (
-        <View style={s.center}><ActivityIndicator color={QuinckleColors.primary} /></View>
+        <FormSkeleton />
       ) : (
         <KeyboardAvoidingView
           style={{ flex: 1 }}
@@ -414,6 +492,8 @@ export default function AdjustBillScreen() {
         </KeyboardAvoidingView>
       )}
 
+      </Animated.View>
+
       <AssignTipSheet
         visible={assignOpen}
         tip={tipNum}
@@ -446,8 +526,16 @@ export default function AdjustBillScreen() {
 }
 
 const s = StyleSheet.create({
-  root: { flex: 1, backgroundColor: QuinckleColors.background },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  fill: { flex: 1 },
+  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000' },
+  root: {
+    flex: 1,
+    backgroundColor: QuinckleColors.background,
+    // Rounded while it lifts, so the dimmed table shows at the corners instead
+    // of a hard square edge sliding over it.
+    borderRadius: Radius.xl,
+    overflow: 'hidden',
+  },
 
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
