@@ -12,7 +12,7 @@
  *
  * Tips are not a payroll input. This records who received what; that is all.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -46,6 +46,11 @@ export function TipAssignSheet({ visible, sessionId, onSkip, onDone, onError }: 
   const [selected, setSelected] = useState<string[]>([]);
   const [shares, setShares] = useState<Record<string, string>>({});
 
+  // Same reason as AdjustBillSheet: an inline `onError` from the parent would
+  // re-run the fetch on every parent render and reset a split being edited.
+  const onErrorRef = useRef(onError);
+  useEffect(() => { onErrorRef.current = onError; });
+
   useEffect(() => {
     if (!visible) return;
     let cancelled = false;
@@ -66,10 +71,11 @@ export function TipAssignSheet({ visible, sessionId, onSkip, onDone, onError }: 
           );
         }
       })
-      .catch(() => { if (!cancelled) onError('Could not load', 'Please try again.'); })
+      .catch(() => { if (!cancelled) onErrorRef.current('Could not load', 'Please try again.'); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [visible, sessionId, onError]);
+    // Re-reads only when the sheet OPENS, or for a different session.
+  }, [visible, sessionId]);
 
   const splitting = selected.length > 1;
 
