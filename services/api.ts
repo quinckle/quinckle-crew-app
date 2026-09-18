@@ -1504,10 +1504,13 @@ export const crewStock = {
     search?: string,
     filter?: 'all' | 'with' | 'without' | 'estimated',
     page?: { limit: number; offset: number },
+    /** One category as the coverage list names it; 'Uncategorised' is a real value. */
+    category?: string,
   ) => {
     const q = new URLSearchParams();
     if (search) q.set('search', search);
     if (filter) q.set('filter', filter);
+    if (category) q.set('category', category);
     if (page) { q.set('limit', String(page.limit)); q.set('offset', String(page.offset)); }
     const s = q.toString();
     return request<{

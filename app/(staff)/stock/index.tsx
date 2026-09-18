@@ -17,7 +17,8 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, TextInput, TouchableOpacity, View,
+  ActivityIndicator, FlatList, RefreshControl, ScrollView, StyleSheet, Text, TextInput,
+  TouchableOpacity, View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -83,6 +84,8 @@ export default function StockScreen() {
   const [dishesPaging, setDishesPaging] = useState(false);
   const [dishNext, setDishNext] = useState<number | null>(null);
   const [unlinkedOnly, setUnlinkedOnly] = useState(false);
+  /** null = every course. Values come from the coverage list. */
+  const [category, setCategory] = useState<string | null>(null);
   const [overview, setOverview] = useState<CrewLinkingOverview | null>(null);
   /** Units sold per dish, from the priority list — shown on unlinked rows. */
   const [soldBy, setSoldBy] = useState<Record<string, number>>({});
@@ -143,7 +146,7 @@ export default function StockScreen() {
   const loadDishes = useCallback((opts: { offset?: number } = {}) => {
     const offset = opts.offset ?? 0;
     if (offset === 0) setDishesLoading(true); else setDishesPaging(true);
-    crewStock.dishes(debounced || undefined, unlinkedOnly ? 'without' : 'all', { limit: PAGE, offset })
+    crewStock.dishes(debounced || undefined, unlinkedOnly ? 'without' : 'all', { limit: PAGE, offset }, category ?? undefined)
       .then((r) => {
         const incoming = r.data ?? [];
         setDishes((prev) => (offset === 0 ? incoming : [...prev, ...incoming]));
@@ -151,7 +154,7 @@ export default function StockScreen() {
       })
       .catch(() => { if (offset === 0) { setDishes([]); setDishNext(null); } })
       .finally(() => { setDishesLoading(false); setDishesPaging(false); });
-  }, [debounced, unlinkedOnly]);
+  }, [debounced, unlinkedOnly, category]);
 
   const loadOverview = useCallback(() => {
     crewStock.linkingOverview()
@@ -385,6 +388,41 @@ export default function StockScreen() {
             </TouchableOpacity>
           </View>
 
+          {/* Courses, with how much of each is linked. Built from the coverage
+              list the overview already returns — no extra call. */}
+          {(overview?.coverage.length ?? 0) > 1 && (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={s.catRow}
+            >
+              <TouchableOpacity
+                style={[s.catChip, category === null && s.catChipOn]}
+                onPress={() => setCategory(null)} activeOpacity={0.8}
+              >
+                <Text style={[s.catText, category === null && s.catTextOn]}>
+                  All {overview ? `${overview.linked}/${overview.total}` : ''}
+                </Text>
+              </TouchableOpacity>
+              {overview?.coverage.map((c) => (
+                <TouchableOpacity
+                  key={c.category}
+                  style={[s.catChip, category === c.category && s.catChipOn]}
+                  onPress={() => setCategory((v) => (v === c.category ? null : c.category))}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[s.catText, category === c.category && s.catTextOn]} numberOfLines={1}>
+                    {c.category}
+                  </Text>
+                  <Text style={[s.catCount, c.linked === c.total && { color: C.success }]}>
+                    {c.linked}/{c.total}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          )}
+
           {dishesLoading ? (
             <View style={s.center}><ActivityIndicator color={C.primary} /></View>
           ) : (
@@ -421,7 +459,7 @@ export default function StockScreen() {
                 const cov = overview?.coverage.find((c) => c.category === cat);
                 return (
                   <>
-                    {cat !== prevCat && (
+                    {category === null && cat !== prevCat && (
                       <CoverageRow category={cat} linked={cov?.linked ?? 0} total={cov?.total ?? 0} />
                     )}
                     <TouchableOpacity
@@ -578,6 +616,16 @@ const s = StyleSheet.create({
   rowSub: { color: C.textTertiary, fontSize: 11, marginTop: 2 },
   qty: { width: 82, textAlign: 'right', color: C.textPrimary, fontSize: 14, fontWeight: '600', fontVariant: ['tabular-nums'] },
   state: { width: 34, textAlign: 'right', fontSize: 9.5, fontWeight: '700', letterSpacing: 0.4 },
+  catRow: { gap: 6, paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md },
+  catChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, maxWidth: 190,
+    paddingHorizontal: Spacing.md, paddingVertical: 7,
+    borderRadius: Radius.pill, borderWidth: 1, borderColor: C.border,
+  },
+  catChipOn: { backgroundColor: C.primarySoft, borderColor: C.primarySoftBorder },
+  catText: { color: C.textSecondary, fontSize: 12.5, fontWeight: '600', flexShrink: 1 },
+  catTextOn: { color: C.primary },
+  catCount: { color: C.textTertiary, fontSize: 11, fontVariant: ['tabular-nums'] },
   dishRow: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: C.borderSubtle,
