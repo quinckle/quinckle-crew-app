@@ -343,14 +343,11 @@ export default function AdjustBillScreen() {
               'tip', 'Amount', 'Never taxed',
               <Text style={s.prefixText}>₹</Text>,
               tip,
-              (v) => {
-                setTip(money(v));
-                // A tip that shrinks below what is handed out would save as an
-                // over-assignment; clear rather than silently rescale someone's
-                // share behind their back.
-                const next = Number(money(v)) || 0;
-                if (allocations.length > 0 && assigned > next) setAllocations([]);
-              },
+              // Editing the amount never touches the split. Backspacing ₹50 to
+              // ₹5 on the way to ₹60 would otherwise wipe it, and re-deciding
+              // who gets what is a worse interruption than a red line saying
+              // the shares are over.
+              (v) => setTip(money(v)),
               '0', 'decimal-pad',
             )}
 
@@ -398,14 +395,20 @@ export default function AdjustBillScreen() {
 
           <View style={[s.footer, { paddingBottom: insets.bottom + Spacing.lg }]}>
             <TouchableOpacity
-              style={[s.save, (saving || !dirty) && s.saveOff]}
+              style={[s.save, (saving || !dirty || tipRemainder < 0) && s.saveOff]}
               onPress={() => void handleSave()}
-              disabled={saving || !dirty}
+              disabled={saving || !dirty || tipRemainder < 0}
               activeOpacity={0.85}
             >
               {saving
                 ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={s.saveText}>{dirty ? 'Save changes' : 'Nothing to save'}</Text>}
+                : (
+                  <Text style={s.saveText}>
+                    {tipRemainder < 0 ? 'Shares are over the tip'
+                      : dirty ? 'Save changes'
+                        : 'Nothing to save'}
+                  </Text>
+                )}
             </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
