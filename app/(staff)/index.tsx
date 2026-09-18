@@ -244,10 +244,20 @@ function mapCompletedOrder(order: any): PickupOrder {
   };
 }
 
-const STATUS_META: Record<TableStatus, { label: string; color: string }> = {
-  available: { label: 'Available', color: QuinckleColors.success },
-  occupied: { label: 'Occupied', color: QuinckleColors.primary },
-  offline: { label: 'Offline', color: QuinckleColors.textTertiary },
+/**
+ * The table card wears its status as a solid band across the top rather than a
+ * hairline border: on a rush-hour floor the old 1.5px gradient edge was only a
+ * few dozen lit pixels and every card read the same from arm's length.
+ *
+ * Three states, three colours — deliberately no escalation shades in the band
+ * (the expiry chip in the card body still carries urgency). `onBand` is a dark
+ * stop of the same hue so the table number stays legible on the fill; offline
+ * is the one dark band, so it takes light text instead.
+ */
+const STATUS_META: Record<TableStatus, { label: string; color: string; band: string; onBand: string }> = {
+  available: { label: 'Available', color: QuinckleColors.success, band: QuinckleColors.success, onBand: '#05300F' },
+  occupied: { label: 'Occupied', color: QuinckleColors.danger, band: QuinckleColors.danger, onBand: '#3F0A0A' },
+  offline: { label: 'Offline', color: QuinckleColors.textTertiary, band: '#3F3F46', onBand: 'rgba(255,255,255,0.72)' },
 };
 
 export default function StaffDashboard() {
@@ -2236,13 +2246,6 @@ export default function StaffDashboard() {
                 <View style={styles.tableGrid}>
                   {section.tables.map((item) => {
                     const meta = STATUS_META[item.status] || STATUS_META.available;
-                    const gradColors: [string, string, string, string, string] = [
-                      'transparent',
-                      `${meta.color}55`,
-                      meta.color,
-                      `${meta.color}55`,
-                      'transparent',
-                    ];
                     // Status icons (served + paid) + session countdown for occupied cards.
                     const total = item.itemsTotal ?? 0;
                     const showStatusIcons = item.status === 'occupied';
@@ -2268,13 +2271,15 @@ export default function StaffDashboard() {
                         activeOpacity={0.82}
                         delayLongPress={500}
                       >
-                        {/* Gradient border */}
-                        <LinearGradient
-                          colors={gradColors}
-                          start={{ x: 0, y: 0 }}
-                          end={{ x: 1, y: 1 }}
-                          style={StyleSheet.absoluteFillObject}
-                        />
+                        {/* Solid status band — the card's single colour signal. */}
+                        <View style={[styles.cardBand, { backgroundColor: meta.band }]}>
+                          <Text style={[styles.cardBandTitle, { color: meta.onBand }]}>
+                            T{String(item.number).padStart(2, '0')}
+                          </Text>
+                          <Text style={[styles.cardBandSeats, { color: meta.onBand }]}>
+                            {item.seats} seats
+                          </Text>
+                        </View>
                         {/* Selection tint + check (multi-select mode) */}
                         {selectMode && isOccupied && selected && (
                           <View style={styles.selectedOverlay} pointerEvents="none" />
@@ -2292,30 +2297,26 @@ export default function StaffDashboard() {
                         {recentlyFreedIds.has(item.id) && (
                           <ClearFlash onDone={() => removeFreedId(item.id)} />
                         )}
-                        {/* Dark inner card */}
+                        {/* Card body */}
                         <View style={styles.tableCard}>
-                          <View style={styles.cardHeader}>
-                            <Text style={styles.tableTitle}>T{String(item.number).padStart(2, '0')}</Text>
-                            <View style={styles.headerRightCol}>
-                              <View style={styles.seatsRow}>
-                                <Ionicons name="people-outline" size={11} color={QuinckleColors.textTertiary} />
-                                <Text style={styles.seatsText}>{item.seats} seats</Text>
+                          {/* Kept rendered even when empty: tableCard is a
+                              space-between column, so this is what holds the
+                              bottom row down on an available card. */}
+                          <View style={styles.cardTopRow}>
+                            {showStatusIcons && (
+                              <View style={styles.cardStatusRow}>
+                                <Ionicons
+                                  name={allServed ? 'restaurant' : 'restaurant-outline'}
+                                  size={14}
+                                  color={allServed ? QuinckleColors.success : QuinckleColors.textTertiary}
+                                />
+                                <Ionicons
+                                  name={paid ? 'card' : 'card-outline'}
+                                  size={14}
+                                  color={paid ? QuinckleColors.success : QuinckleColors.textTertiary}
+                                />
                               </View>
-                              {showStatusIcons && (
-                                <View style={styles.cardStatusRow}>
-                                  <Ionicons
-                                    name={allServed ? 'restaurant' : 'restaurant-outline'}
-                                    size={14}
-                                    color={allServed ? QuinckleColors.success : QuinckleColors.textTertiary}
-                                  />
-                                  <Ionicons
-                                    name={paid ? 'card' : 'card-outline'}
-                                    size={14}
-                                    color={paid ? QuinckleColors.success : QuinckleColors.textTertiary}
-                                  />
-                                </View>
-                              )}
-                            </View>
+                            )}
                           </View>
                           <View style={styles.cardBottom}>
                             {item.status === 'occupied' ? (
@@ -3449,23 +3450,44 @@ const styles = StyleSheet.create({
   tableCardOuter: {
     width: '100%',
     minHeight: 130,
-    borderRadius: Radius.lg + 1.5,
-    padding: 1.5,
+    borderRadius: Radius.lg,
     overflow: 'hidden',
+    backgroundColor: QuinckleColors.surface,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+  },
+  // Status band. Fixed height so every card in a row lines up regardless of
+  // what the body holds.
+  cardBand: {
+    height: 28,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.md,
+  },
+  cardBandTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: -0.2,
+  },
+  cardBandSeats: {
+    fontSize: 11,
+    fontWeight: '600',
   },
   // Multi-select overlays.
   selectDim: { opacity: 0.35 },
   selectedOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: QuinckleColors.primarySoft,
-    borderRadius: Radius.lg + 1.5,
+    borderRadius: Radius.lg,
     borderWidth: 1.5,
     borderColor: QuinckleColors.primary,
   },
+  // Sits below the status band, not over it.
   selectCheck: {
     position: 'absolute',
-    top: 6,
-    right: 6,
+    top: 34,
+    right: 8,
     zIndex: 2,
   },
   selectToggleActive: {
@@ -3512,42 +3534,20 @@ const styles = StyleSheet.create({
   },
   tableCard: {
     flex: 1,
-    backgroundColor: QuinckleColors.background,
-    borderRadius: Radius.lg,
-    padding: Spacing.lg,
-    minHeight: 130 - 3,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.lg,
+    minHeight: 130 - 28,
     justifyContent: 'space-between',
   },
   offlineCard: {
     opacity: 0.45,
   },
-  cardHeader: {
+  cardTopRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    justifyContent: 'flex-end',
   },
-  tableTitle: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: QuinckleColors.textPrimary,
-    letterSpacing: -0.4,
-  },
-  headerRightCol: {
-    alignItems: 'flex-end',
-    gap: 5,
-  },
-  seatsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginTop: 2,
-  },
-  seatsText: {
-    color: QuinckleColors.textTertiary,
-    fontSize: 11,
-    fontWeight: '500',
-  },
-  // Two status icons under the seat count: all-served + payment-settled.
+  // Two status icons at the top of the card body: all-served + payment-settled.
   // Dim grey = pending, green = done.
   cardStatusRow: {
     flexDirection: 'row',

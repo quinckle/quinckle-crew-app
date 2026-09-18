@@ -48,29 +48,24 @@ export const ShimmerBlock: React.FC<{
 
 const SkeletonCard: React.FC<{ translateX: Animated.AnimatedInterpolation<number> }> = ({ translateX }) => (
   <View style={styles.card}>
-    <View style={styles.cardHeader}>
-      <View>
-        <ShimmerBlock translateX={translateX} width={56} height={22} radius={6} />
+    {/* Neutral stand-in for the status band, so the real cards don't shift
+        the grid when they land. */}
+    <View style={styles.band} />
+    <View style={styles.cardBody}>
+      <View style={styles.cardHeader}>
+        <ShimmerBlock translateX={translateX} width={40} height={14} radius={4} />
+      </View>
+
+      <View style={styles.cardBottom}>
+        <ShimmerBlock translateX={translateX} width={80} height={18} radius={6} />
         <ShimmerBlock
           translateX={translateX}
-          width={48}
+          width={60}
           height={10}
           radius={4}
-          style={{ marginTop: 8 }}
+          style={{ marginTop: 6 }}
         />
       </View>
-      <ShimmerBlock translateX={translateX} width={72} height={20} radius={Radius.pill} />
-    </View>
-
-    <View style={styles.cardBottom}>
-      <ShimmerBlock translateX={translateX} width={80} height={18} radius={6} />
-      <ShimmerBlock
-        translateX={translateX}
-        width={60}
-        height={10}
-        radius={4}
-        style={{ marginTop: 6 }}
-      />
     </View>
   </View>
 );
@@ -130,14 +125,22 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: QuinckleColors.border,
     borderRadius: Radius.lg,
-    padding: Spacing.lg,
-    justifyContent: 'space-between',
     overflow: 'hidden',
+  },
+  band: {
+    height: 28,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+  },
+  cardBody: {
+    flex: 1,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.lg,
+    justifyContent: 'space-between',
   },
   cardHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    justifyContent: 'flex-end',
   },
   cardBottom: {
     marginTop: Spacing.md,
