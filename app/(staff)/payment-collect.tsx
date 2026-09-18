@@ -26,6 +26,7 @@ import { useAuth } from '../../context/AuthContext';
 import { crewOrders, crewPayments, crewSessions, restaurantApi, type BillBreakdown, type CollectDueOptions, type CollectSplitMethod, type CrewOrderPaymentContext, type SessionCollectible } from '../../services/api';
 import { BillExplainSheet, explainBreakdown, explainSessionBill, type ExplainedBill } from '../../components/ui/BillExplainSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
+import { TipAssignSheet } from '../../components/ui/TipAssignSheet';
 import { playPaymentSuccess } from '../../services/sound';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
@@ -337,6 +338,15 @@ export default function PaymentCollectScreen() {
   const [isLoadingUpi, setIsLoadingUpi] = useState(true);
   const [partnerUpi, setPartnerUpi]     = useState<{ vpa: string | null; merchantName: string | null }>({ vpa: null, merchantName: null });
   const [successInfo, setSuccessInfo]   = useState<SuccessInfo | null>(null);
+  // Tip entry (before paying) and attribution (straight after settling).
+  const [tipSheetOpen, setTipSheetOpen]   = useState(false);
+  const [tipInput, setTipInput]           = useState('');
+  const [savingTip, setSavingTip]         = useState(false);
+  // Seeded from the bill, never assumed to be zero: a diner may already have
+  // tipped from their own phone. Showing "None" over an existing tip would let
+  // a biller overwrite it without ever seeing it.
+  const [tipAmount, setTipAmount]         = useState(0);
+  const [assignTipOpen, setAssignTipOpen] = useState(false);
   const [upiSheetOpen, setUpiSheetOpen] = useState(false);
   const [billOpen, setBillOpen]         = useState(false);
   const [sessionBill, setSessionBill]   = useState<ExplainedBill | null>(null);
@@ -431,6 +441,12 @@ export default function PaymentCollectScreen() {
     return breakdown;
   }, [paymentContext, breakdown, isMultiOrder, liveDue]);
 
+  // Keep the tip row honest as the due re-syncs (another device may have added
+  // one, or the diner tipped at checkout).
+  useEffect(() => {
+    if (resolvedBreakdown) setTipAmount(resolvedBreakdown.tip ?? 0);
+  }, [resolvedBreakdown]);
+
   const cashNum    = Number(cashInput || 0);
   const upiNum     = Math.max(0, resolvedTotal - cashNum);
   const remaining  = resolvedTotal - cashNum;
@@ -469,6 +485,9 @@ export default function PaymentCollectScreen() {
       }
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setSuccessInfo({ tableNumber, locationLabel, total: resolvedTotal, splits });
+      // Ask who the tip was for while the biller still knows. Skippable — an
+      // unassigned tip waits on the dashboard rather than holding up the till.
+      if (tipAmount > 0 && sessionId) setAssignTipOpen(true);
     } catch (err: any) {
       const code = String(err?.code ?? err?.message ?? '');
       if (code.includes('ALREADY_COLLECTED')) {
@@ -720,6 +739,22 @@ export default function PaymentCollectScreen() {
 
         {/* How they're paying. Nothing is recorded from this list — every row
             leads to the same confirm step as before. */}
+        {/* Tip goes in BEFORE the method is chosen: it changes the total, and
+            the amount collected has to be the amount on the bill card above.
+            Whole-table settle only — the only path that owns the session. */}
+        {mode === 'normal' && step === 'choose' && isSessionCollect && !intentId && (
+          <TouchableOpacity
+            style={s.tipRow}
+            onPress={() => { setTipInput(tipAmount > 0 ? String(tipAmount) : ''); setTipSheetOpen(true); }}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="heart-outline" size={17} color={QuinckleColors.textSecondary} />
+            <Text style={s.tipRowText}>{tipAmount > 0 ? 'Tip' : 'Add a tip'}</Text>
+            <Text style={s.tipRowValue}>{tipAmount > 0 ? `₹${tipAmount}` : 'None'}</Text>
+            <Ionicons name="chevron-forward" size={15} color={QuinckleColors.textTertiary} />
+          </TouchableOpacity>
+        )}
+
         {mode === 'normal' && (
           <View style={{ marginTop: Spacing.xl }}>
             <Text style={s.optionsLabel}>How are they paying?</Text>
@@ -985,6 +1020,70 @@ export default function PaymentCollectScreen() {
 
       <BillExplainSheet visible={billOpen && !successInfo} onClose={() => setBillOpen(false)} bill={explainedBill} />
 
+      {/* Setting a tip re-prices the bill server-side and voids any pending
+          payment request, so the due is re-read rather than patched here. */}
+      <BottomSheet visible={tipSheetOpen && !successInfo} onClose={() => setTipSheetOpen(false)} title="Add a tip">
+        <View style={s.tipSheet}>
+          <View style={s.tipInputWrap}>
+            <Text style={s.tipCurrency}>₹</Text>
+            <TextInput
+              style={s.tipInput}
+              value={tipInput}
+              onChangeText={(v) => setTipInput(v.replace(/[^0-9.]/g, ''))}
+              placeholder="0"
+              placeholderTextColor={QuinckleColors.textTertiary}
+              keyboardType="decimal-pad"
+              returnKeyType="done"
+              autoFocus
+            />
+          </View>
+          <Text style={s.tipHint}>Added to this bill. Enter 0 to remove it.</Text>
+          <TouchableOpacity
+            style={[s.tipSave, savingTip && { opacity: 0.6 }]}
+            disabled={savingTip}
+            onPress={async () => {
+              const v = tipInput.trim() === '' ? 0 : Number(tipInput);
+              if (!Number.isFinite(v) || v < 0) {
+                Alert.alert('Check the amount', 'Enter a tip of zero or more.');
+                return;
+              }
+              setSavingTip(true);
+              try {
+                await crewSessions.setTip(sessionId, v);
+                setTipAmount(v);
+                setTipSheetOpen(false);
+                await syncSessionDue();
+              } catch (e: any) {
+                const code = String(e?.code ?? '');
+                Alert.alert(
+                  'Could not add tip',
+                  code.includes('NO_COLLECTIBLE_ORDERS')
+                    ? 'This bill is already paid.'
+                    : (e?.message ?? 'Please try again.'),
+                );
+              } finally {
+                setSavingTip(false);
+              }
+            }}
+            activeOpacity={0.85}
+          >
+            {savingTip
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Text style={s.tipSaveText}>Save tip</Text>}
+          </TouchableOpacity>
+        </View>
+      </BottomSheet>
+
+      {assignTipOpen && !!sessionId && (
+        <TipAssignSheet
+          visible
+          sessionId={sessionId}
+          onSkip={() => setAssignTipOpen(false)}
+          onDone={() => setAssignTipOpen(false)}
+          onError={(title, message) => Alert.alert(title, message)}
+        />
+      )}
+
       {successInfo && <SuccessScreen info={successInfo} onDone={returnToPreviousScreen} />}
     </KeyboardAvoidingView>
   );
@@ -1015,6 +1114,45 @@ const s = StyleSheet.create({
   optionsLabel: { color: QuinckleColors.textTertiary, fontSize: 11, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: Spacing.sm, marginLeft: 2 },
   optionGroup: { borderRadius: Radius.lg, borderWidth: 1, borderColor: QuinckleColors.border, overflow: 'hidden' },
   optionRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, minHeight: 60, paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md },
+  tipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginTop: Spacing.xl,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: Radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surface,
+  },
+  tipRowText: { flex: 1, color: QuinckleColors.textPrimary, fontSize: 14, fontWeight: '600' },
+  tipRowValue: { color: QuinckleColors.textSecondary, fontSize: 14, fontWeight: '600' },
+  tipSheet: { gap: 12, paddingHorizontal: Spacing.xl, paddingBottom: Spacing.lg },
+  tipInputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: QuinckleColors.surfaceElevated,
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: QuinckleColors.border,
+    height: 52,
+    paddingHorizontal: 14,
+  },
+  tipCurrency: { color: QuinckleColors.textSecondary, fontSize: 16, fontWeight: '600' },
+  tipInput: {
+    flex: 1, color: QuinckleColors.textPrimary, fontSize: 17,
+    paddingHorizontal: 10, height: '100%',
+  },
+  tipHint: { color: QuinckleColors.textTertiary, fontSize: 12 },
+  tipSave: {
+    backgroundColor: QuinckleColors.success,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 13,
+  },
+  tipSaveText: { color: '#fff', fontSize: 14, fontWeight: '700' },
   optionRowDivider: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: QuinckleColors.border },
   optionRowSelected: { backgroundColor: QuinckleColors.surfaceElevated },
   optionTitle: { color: QuinckleColors.textPrimary, fontSize: 16, fontWeight: '600' },

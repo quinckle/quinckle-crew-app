@@ -643,6 +643,90 @@ export const crewSessions = {
       true,
     ),
 
+  /**
+   * Bill adjustments the biller enters: party size, and the amounts for charges
+   * that are typed per bill (container, delivery).
+   *
+   * The GET is channel-filtered server-side, so a dine-in bill never offers a
+   * delivery charge.
+   */
+  getAdjustments: (sessionId: string) =>
+    request<{
+      success: boolean;
+      data: {
+        sessionId: string;
+        coverCount: number | null;
+        tableCapacity: number | null;
+        charges: {
+          id: string;
+          name: string;
+          /** Amount already entered on this bill, or null if none yet. */
+          amount: number | null;
+          taxTreatment: 'FOLLOW_ITEMS' | 'FIXED_RATE' | 'EXEMPT';
+          taxRatePercent: number | null;
+          /** null = follows the venue's menu pricing setting. */
+          includesTax: boolean | null;
+        }[];
+      };
+    }>('GET', `/api/crew/sessions/${sessionId}/adjustments`, undefined, true),
+
+  /**
+   * Save them. This re-prices every collectible order and voids any mid-flight
+   * payment intent, so the caller must re-read the bill afterwards rather than
+   * trusting what is on screen.
+   */
+  saveAdjustments: (
+    sessionId: string,
+    body: { coverCount?: number | null; charges?: { chargeId: string; amount: number }[] },
+  ) =>
+    request<{
+      success: boolean;
+      data: {
+        sessionId: string;
+        coverCount: number | null;
+        charges: { chargeId: string; name: string; amount: number }[];
+        chargesTotal: number;
+        sessionTotal: number;
+        intentVoided: boolean;
+      };
+    }>('POST', `/api/crew/sessions/${sessionId}/adjustments`, body, true),
+
+  /**
+   * The tip on a bill, its split, and the staff it can be split between —
+   * one round trip, because the biller opens this while closing a table.
+   */
+  getTip: (sessionId: string) =>
+    request<{
+      success: boolean;
+      data: {
+        sessionId: string;
+        amount: number;
+        allocations: { staffMemberId: string; name: string; amount: number }[];
+        allocated: number;
+        /** amount − allocated. Not a stored flag. */
+        unassigned: number;
+        staff: { id: string; name: string; role: string }[];
+      };
+    }>('GET', `/api/crew/sessions/${sessionId}/tip`, undefined, true),
+
+  /** Set the tip. MONEY: re-prices the bill and voids any pending payment
+   *  request, so re-read afterwards. 0 clears it. */
+  setTip: (sessionId: string, amount: number) =>
+    request<{ success: boolean; data: { sessionId: string; amount: number; sessionTotal: number; intentVoided: boolean } }>(
+      'POST', `/api/crew/sessions/${sessionId}/tip`, { amount }, true,
+    ),
+
+  /** Who the tip is for. Replaces the whole split — an empty list un-assigns
+   *  it. Moves no money. */
+  allocateTip: (sessionId: string, allocations: { staffMemberId: string; amount: number }[]) =>
+    request<{
+      success: boolean;
+      data: {
+        sessionId: string; amount: number; allocated: number; unassigned: number;
+        allocations: { staffMemberId: string; name: string; amount: number }[];
+      };
+    }>('POST', `/api/crew/sessions/${sessionId}/tip/allocations`, { allocations }, true),
+
   /** Order Ledger — paginated session history with filters (STEWARD/ADMIN). */
   getHistory: async (params: {
     range?: LedgerRange;
