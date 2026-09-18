@@ -1375,6 +1375,7 @@ export default function TableDetail() {
           sessionId,
           customerPhone: sessionCustomerPhone ?? '',
           customerName: sessionCustomerName ?? '',
+          zoneName: (paramZoneName ?? '').trim(),
         },
       }), addItemsReason)}
       {actionCard('qr', 'qr-code-outline', 'UPI QR', () => {
@@ -1578,6 +1579,9 @@ export default function TableDetail() {
   const statusText = countdownStr
     ? countdownStr === 'Expired' ? 'Time up' : `${countdownStr} left`
     : elapsed ? `Seated ${elapsed}` : '';
+  // Same shape as the adjust-bill header: the table as the title, where it sits
+  // beneath. A venue without zones gets "Dine-in" so the line never collapses.
+  const zoneLabel = (paramZoneName ?? '').trim() || 'Dine-in';
   const phoneHeaderJsx = (
     <View style={styles.navBar}>
       <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel="Back">
@@ -1589,29 +1593,28 @@ export default function TableDetail() {
         style={styles.navCenter}
         activeOpacity={0.7}
         accessibilityRole="button"
-        accessibilityLabel={`Table T${tableNum}, session details`}
+        accessibilityLabel={`Table T${tableNum}, ${zoneLabel}, session details`}
       >
         <View style={styles.navTitleRow}>
           <Text style={styles.navTitle} numberOfLines={1}>
-            Table T{tableNum}{groupLabel ? ` · ${groupLabel}` : ''}
+            T{tableNum}{groupLabel ? ` · ${groupLabel}` : ''}
           </Text>
           <Ionicons name="chevron-down" size={14} color={QuinckleColors.textTertiary} />
         </View>
-        {(statusText || mergedFrom.length > 0) ? (
-          <View style={styles.navStatusRow}>
-            {!!statusText && (
-              <Text style={[styles.navStatus, countdownStr && expiry !== 'normal' ? { color: expiryFg } : null]}>
-                {statusText}
-              </Text>
-            )}
-            {/* Merged stays visible — it changes how staff read the bill. */}
-            {mergedFrom.length > 0 && (
-              <Text style={[styles.navStatus, { color: QuinckleColors.warning }]}>
-                {statusText ? ' · ' : ''}Merged
-              </Text>
-            )}
-          </View>
-        ) : null}
+        <View style={styles.navStatusRow}>
+          <Text style={styles.navZone} numberOfLines={1}>{zoneLabel}</Text>
+          {!!statusText && (
+            <Text style={[styles.navStatus, countdownStr && expiry !== 'normal' ? { color: expiryFg } : null]}>
+              {' · '}{statusText}
+            </Text>
+          )}
+          {/* Merged stays visible — it changes how staff read the bill. */}
+          {mergedFrom.length > 0 && (
+            <Text style={[styles.navStatus, { color: QuinckleColors.warning }]}>
+              {' · '}Merged
+            </Text>
+          )}
+        </View>
       </TouchableOpacity>
 
       {actionMenuJsx}
@@ -2406,7 +2409,8 @@ const styles = StyleSheet.create({
   navCenter: { flex: 1, minWidth: 0, alignItems: 'center' },
   navTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: '100%' },
   navTitle: { flexShrink: 1, fontSize: 17, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.2 },
-  navStatusRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
+  navStatusRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2, maxWidth: '100%' },
+  navZone: { flexShrink: 1, fontSize: 12, fontWeight: '600', color: QuinckleColors.textTertiary },
   navStatus: { fontSize: 12, fontWeight: '600', color: QuinckleColors.textSecondary, fontVariant: ['tabular-nums'] as any },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.xl },
   // flex + minWidth:0 so a long groupLabel truncates the table title instead of

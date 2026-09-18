@@ -2010,6 +2010,7 @@ export default function StaffDashboard() {
         customerName: '',
         customerPhone: '',
         groupLabel: res.party_slot ? `G${res.party_slot}` : '',
+        zoneName: table.zoneName ?? '',
       } });
     } catch (e: any) {
       setGroupPicker(null);
