@@ -442,6 +442,7 @@ export default function OrderMenuScreen() {
     customerName: paramName,
     channel: paramChannel,
     pickupToken: paramPickupToken,
+    zoneName: paramZoneName,
   } = useLocalSearchParams<{
     tableId: string;
     tableNum: string;
@@ -451,6 +452,7 @@ export default function OrderMenuScreen() {
     customerName: string;
     channel: string;
     pickupToken: string;
+    zoneName?: string;
   }>();
 
   // Off-premise covers TAKEAWAY *and* DELIVERY — both are tableless and both
@@ -908,6 +910,7 @@ export default function OrderMenuScreen() {
               tableId: String(tableId ?? 0),
               sessionId: sessionId ?? '',
               tableDbId: tableDbId ?? '',
+              zoneName: paramZoneName ?? '',
               openBill: '1',
             },
           });
