@@ -26,7 +26,6 @@ import { ReasonSheet, ReasonChips } from '../../components/ui/ReasonSheet';
 import { useManagerApproval } from '../../components/ui/ManagerPinSheet';
 import { WAIVE_REASONS, EXEMPTION_REASONS, isReasonComplete, toReasonPayload, wouldZeroBill, type CancelReason } from '../../constants/adjustmentReasons';
 import { Skeleton } from '../../components/ui/Skeleton';
-import { AdjustBillSheet } from '../../components/ui/AdjustBillSheet';
 import { useResponsive } from '../../hooks/useResponsive';
 
 type ItemStatus = 'prep' | 'ready' | 'served';
@@ -221,7 +220,6 @@ export default function TableDetail() {
   const [upiUri, setUpiUri]         = useState<string | null>(null);
   // Crew custom discount
   const [discountModalOpen, setDiscountModalOpen] = useState(false);
-  const [adjustSheetOpen, setAdjustSheetOpen] = useState(false);
   const [discountType, setDiscountType] = useState<'PERCENT' | 'FLAT'>('PERCENT');
   const [discountValue, setDiscountValue] = useState('');
   const [exemptCode, setExemptCode] = useState<string | null>(null);
@@ -261,6 +259,16 @@ export default function TableDetail() {
   const handleRefresh = async () => {
     setRefreshing(true);
     try { await loadBill(); } finally { setRefreshing(false); }
+  };
+
+  // Adjust bill is a screen, not a sheet: it is a form of number fields with
+  // the keyboard up, and the bill re-reads on focus when it pops back.
+  const openAdjustBill = () => {
+    if (!sessionId) return;
+    router.push({
+      pathname: '/(staff)/adjust-bill',
+      params: { sessionId, subtitle: tablePrintLabel, total: String(grandTotal) },
+    });
   };
 
   const openSwapModal = () => {
@@ -1874,7 +1882,7 @@ export default function TableDetail() {
                     explanation of the bill. */}
                 {!isPaid && orders.length > 0 && (
                   <TouchableOpacity
-                    onPress={() => setAdjustSheetOpen(true)}
+                    onPress={() => openAdjustBill()}
                     style={styles.totalDiscountBtn}
                     hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
                     activeOpacity={0.7}
@@ -1920,17 +1928,6 @@ export default function TableDetail() {
 
       {/* Saving re-prices the session server-side and voids any pending payment
           request, so the bill is re-read rather than patched locally. */}
-      {!!sessionId && (
-        <AdjustBillSheet
-          visible={adjustSheetOpen}
-          onClose={() => setAdjustSheetOpen(false)}
-          sessionId={sessionId}
-          subtitle={tablePrintLabel}
-          onApplied={() => { void loadBill(); }}
-          onError={(title, message) => showDialog(title, message, [{ label: 'OK', onPress: () => {} }])}
-        />
-      )}
-
       <ThemedDialog visible={dialog.visible} title={dialog.title} message={dialog.message} actions={dialog.actions} onClose={closeDialog} />
 
       {/* ── Overlays ──────────────────────────────────────────────────────────
