@@ -6,11 +6,13 @@
  * start. This answers both — a coverage bar per category, and the unlinked
  * dishes that are actually SELLING, because linking the twelfth dessert first is
  * wasted effort.
+ *
+ * The per-row chips that used to live here went with the switch to cards — a
+ * card carries a material count, and you open a dish to see what is in it.
  */
 
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { QuinckleColors as C, Radius, Spacing } from '../../constants/Colors';
 import type { CrewLinkingOverview } from '../../services/api';
 
@@ -54,34 +56,6 @@ export function CoverageRow({ category, linked, total }: { category: string; lin
   );
 }
 
-/** Materials as chips, so a dish's recipe reads without opening it. */
-export function MaterialChips({ lines, total }: {
-  lines: { name: string; qty: number; unit: string }[];
-  total: number;
-}) {
-  return (
-    <View style={s.chips}>
-      {lines.map((l) => (
-        <View key={l.name} style={s.chip}><Text style={s.chipText} numberOfLines={1}>{l.name}</Text></View>
-      ))}
-      {total > lines.length && (
-        <View style={s.chip}><Text style={s.chipText}>+{total - lines.length}</Text></View>
-      )}
-    </View>
-  );
-}
-
-export function NotLinked({ units }: { units?: number }) {
-  return (
-    <View style={s.notLinkedRow}>
-      <Ionicons name="alert-circle-outline" size={13} color={C.warning} />
-      <Text style={s.notLinkedText}>
-        not linked{units ? ` · ${units} sold recently` : ''}
-      </Text>
-    </View>
-  );
-}
-
 const s = StyleSheet.create({
   prio: {
     backgroundColor: C.warningSoft, borderWidth: 1, borderColor: C.warningBorder,
@@ -105,9 +79,4 @@ const s = StyleSheet.create({
   bar: { flex: 1, height: 4, borderRadius: 2, backgroundColor: C.surfaceMutedHover, overflow: 'hidden' },
   barFill: { height: '100%', borderRadius: 2 },
   covCount: { color: C.textTertiary, fontSize: 10.5, fontWeight: '600', fontVariant: ['tabular-nums'] },
-  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 6 },
-  chip: { backgroundColor: C.surfaceMutedHover, borderRadius: 5, paddingHorizontal: 6, paddingVertical: 2 },
-  chipText: { color: C.textSecondary, fontSize: 10.5, maxWidth: 120 },
-  notLinkedRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 5 },
-  notLinkedText: { color: C.warning, fontSize: 11, fontWeight: '600' },
 });

@@ -21,15 +21,17 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useResponsive } from '../../../hooks/useResponsive';
 import { router, useFocusEffect } from 'expo-router';
 import {
-  crewStock,
+  crewMenu, crewStock,
   type CrewDish, type CrewLinkingOverview, type CrewMaterial, type CrewWastageEntry,
   type MaterialSort, type MaterialState,
 } from '../../../services/api';
 import { QuinckleColors as C, Radius, Spacing } from '../../../constants/Colors';
 import { fmtQty, inr, istDate, prettyReason } from '../../../constants/stock';
-import { CoverageRow, MaterialChips, NotLinked, PriorityBanner } from '../../../components/stock/DishCoverage';
+import { CoverageRow, PriorityBanner } from '../../../components/stock/DishCoverage';
+import { DishCard } from '../../../components/stock/DishCard';
 import { StockFilterSheet, type StockStateFilter } from '../../../components/stock/StockFilterSheet';
 import { DishFilterSheet, type DishFilter } from '../../../components/stock/DishFilterSheet';
 
@@ -44,6 +46,7 @@ const RANGES: { value: Range; label: string }[] = [
 ];
 
 const PAGE = 40;
+const CARD_GAP = 9;
 
 /** Raw materials · Wastage · Menu linking — in that order, left to right. */
 const TABS: { value: Tab; label: string }[] = [
@@ -60,6 +63,11 @@ const SECTION: Record<MaterialState, { label: string; color: string }> = {
 
 export default function StockScreen() {
   const insets = useSafeAreaInsets();
+  // Two cards on a phone, four on a tablet — a card narrower than ~150pt puts
+  // the dish name on two lines and stops being scannable.
+  const { width: winWidth, isTablet } = useResponsive();
+  const COLS = isTablet ? 4 : 2;
+  const cardWidth = Math.floor((winWidth - Spacing.lg * 2 - CARD_GAP * (COLS - 1)) / COLS);
   const [tab, setTab] = useState<Tab>('materials');
 
   // ── Materials (grouped, sorted and paged on the server) ──────────────────
@@ -89,6 +97,14 @@ export default function StockScreen() {
   const [dishFilterOpen, setDishFilterOpen] = useState(false);
   /** Dishes carrying an unconfirmed amount — for the sheet's segment. */
   const [estimatedCount, setEstimatedCount] = useState(0);
+  /**
+   * menuItemId → image, from the menu endpoint the 86 screen and manual
+   * ordering already use. Fetched ONCE per visit to this screen and kept in
+   * memory: the dish list itself stays paged, and no new backend field was
+   * needed for a picture the app can already ask for.
+   */
+  const [dishImages, setDishImages] = useState<Record<string, string>>({});
+  const imagesLoaded = useRef(false);
   const [overview, setOverview] = useState<CrewLinkingOverview | null>(null);
   /** Units sold per dish, from the priority list — shown on unlinked rows. */
   const [soldBy, setSoldBy] = useState<Record<string, number>>({});
@@ -160,6 +176,22 @@ export default function StockScreen() {
       .finally(() => { setDishesLoading(false); setDishesPaging(false); });
   }, [debounced, dishFilter, category]);
 
+  const loadDishImages = useCallback(() => {
+    if (imagesLoaded.current) return;
+    imagesLoaded.current = true;
+    crewMenu.getMenu()
+      .then((r) => {
+        const map: Record<string, string> = {};
+        for (const cat of r.data ?? []) {
+          for (const item of cat.items ?? []) if (item.imageUrl) map[item.id] = item.imageUrl;
+        }
+        setDishImages(map);
+      })
+      // A card without its picture is a card with a placeholder — never a
+      // reason to fail the screen.
+      .catch(() => { imagesLoaded.current = false; });
+  }, []);
+
   const loadOverview = useCallback(() => {
     crewStock.linkingOverview()
       .then((r) => {
@@ -197,18 +229,18 @@ export default function StockScreen() {
    * with the DEFAULTS while the control still showed your choice. That is what
    * made filter and sort look broken.
    */
-  const loaders = useRef({ loadFirstPage, loadDishes, loadWastage, loadOverview });
-  useEffect(() => { loaders.current = { loadFirstPage, loadDishes, loadWastage, loadOverview }; });
+  const loaders = useRef({ loadFirstPage, loadDishes, loadWastage, loadOverview, loadDishImages });
+  useEffect(() => { loaders.current = { loadFirstPage, loadDishes, loadWastage, loadOverview, loadDishImages }; });
 
   useFocusEffect(useCallback(() => {
     if (tab === 'materials') loaders.current.loadFirstPage({ quiet: true });
-    if (tab === 'dishes') { loaders.current.loadDishes(); loaders.current.loadOverview(); }
+    if (tab === 'dishes') { loaders.current.loadDishes(); loaders.current.loadOverview(); loaders.current.loadDishImages(); }
     if (tab === 'wastage') loaders.current.loadWastage(range);
   }, [tab, range]));
 
   const switchTab = (t: Tab) => {
     setTab(t);
-    if (t === 'dishes') { if (dishes.length === 0) loadDishes(); if (!overview) loadOverview(); }
+    if (t === 'dishes') { if (dishes.length === 0) loadDishes(); if (!overview) loadOverview(); loadDishImages(); }
     if (t === 'wastage' && wastage.length === 0) loadWastage(range);
   };
 
@@ -438,34 +470,35 @@ export default function StockScreen() {
                 dishesPaging ? <ActivityIndicator color={C.textMuted} style={{ marginVertical: Spacing.lg }} /> : null
               }
               renderItem={({ item, index }) => {
-                // Category headings come from the list's own order (the server
-                // sorts by category, then name), so no second pass is needed.
+                // Cards are laid out two at a time inside a single-column list:
+                // FlatList's own numColumns cannot interleave category headings
+                // between rows, and the headings are what make coverage legible.
+                if (index % COLS !== 0) return null;
+                const group = dishes.slice(index, index + COLS);
                 const cat = item.category || 'Uncategorised';
                 const prevCat = index > 0 ? (dishes[index - 1]?.category || 'Uncategorised') : null;
                 const cov = overview?.coverage.find((c) => c.category === cat);
+                // A heading mid-pair would split it, so only a pair that STARTS
+                // a category gets one — the server orders by category, so a
+                // category never resumes later in the list.
+                const showHeader = category === null && cat !== prevCat;
                 return (
                   <>
-                    {category === null && cat !== prevCat && (
+                    {showHeader && (
                       <CoverageRow category={cat} linked={cov?.linked ?? 0} total={cov?.total ?? 0} />
                     )}
-                    <TouchableOpacity
-                      style={s.dishRow}
-                      activeOpacity={0.7}
-                      onPress={() => router.push({ pathname: '/(staff)/stock/dish/[id]', params: { id: item.menuItemId } })}
-                    >
-                      <View style={{ flex: 1, minWidth: 0 }}>
-                        <View style={s.dishTop}>
-                          <Text style={s.name} numberOfLines={1}>{item.name}</Text>
-                          {item.estimated > 0 && <Text style={s.estTag}>{item.estimated} est</Text>}
-                        </View>
-                        {item.materials > 0 ? (
-                          <MaterialChips lines={item.lines ?? []} total={item.materials} />
-                        ) : (
-                          <NotLinked units={soldBy[item.menuItemId]} />
-                        )}
-                      </View>
-                      <Ionicons name="chevron-forward" size={16} color={C.textTertiary} />
-                    </TouchableOpacity>
+                    <View style={s.cardRow}>
+                      {group.map((d) => (
+                        <DishCard
+                          key={d.menuItemId}
+                          dish={d}
+                          imageUrl={dishImages[d.menuItemId]}
+                          soldUnits={soldBy[d.menuItemId]}
+                          width={cardWidth}
+                          onPress={() => router.push({ pathname: '/(staff)/stock/dish/[id]', params: { id: d.menuItemId } })}
+                        />
+                      ))}
+                    </View>
                   </>
                 );
               }}
@@ -612,6 +645,7 @@ const s = StyleSheet.create({
   rowSub: { color: C.textTertiary, fontSize: 11, marginTop: 2 },
   qty: { width: 82, textAlign: 'right', color: C.textPrimary, fontSize: 14, fontWeight: '600', fontVariant: ['tabular-nums'] },
   state: { width: 34, textAlign: 'right', fontSize: 9.5, fontWeight: '700', letterSpacing: 0.4 },
+  cardRow: { flexDirection: 'row', gap: CARD_GAP, marginBottom: CARD_GAP },
   dishRow: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: C.borderSubtle,
