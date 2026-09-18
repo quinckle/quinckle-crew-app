@@ -1794,7 +1794,12 @@ export default function StaffDashboard() {
       void loadTables();
       pendingSessionNav.current = {
         pathname: '/(staff)/[tableId]',
-        params: { tableId: String(table.number), sessionId: res.session_id, tableDbId: table.id },
+        params: {
+          tableId: String(table.number),
+          sessionId: res.session_id,
+          tableDbId: table.id,
+          zoneName: table.zoneName ?? '',
+        },
       };
       setStartSessionJob({ phase: 'done', tableLabel });
     } catch (e: any) {
@@ -1980,6 +1985,10 @@ export default function StaffDashboard() {
       customerName: (g?.customer_name ?? table.customerName) ?? '',
       customerPhone: (g?.customer_phone ?? table.customerPhone) ?? '',
       groupLabel: g && (opts?.forceLabel || (table.groups?.length ?? 0) > 1) ? g.label : '',
+      // Only the grid knows the seating zone — the table-detail screen fetches
+      // a bill, not a table. Carried so the adjust-bill header can say which
+      // part of the floor this is.
+      zoneName: table.zoneName ?? '',
     } });
   };
 
