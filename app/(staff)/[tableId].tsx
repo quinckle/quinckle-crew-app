@@ -26,6 +26,7 @@ import { ReasonSheet, ReasonChips } from '../../components/ui/ReasonSheet';
 import { useManagerApproval } from '../../components/ui/ManagerPinSheet';
 import { WAIVE_REASONS, EXEMPTION_REASONS, isReasonComplete, toReasonPayload, wouldZeroBill, type CancelReason } from '../../constants/adjustmentReasons';
 import { Skeleton } from '../../components/ui/Skeleton';
+import { AdjustBillSheet } from '../../components/ui/AdjustBillSheet';
 import { useResponsive } from '../../hooks/useResponsive';
 
 type ItemStatus = 'prep' | 'ready' | 'served';
@@ -220,6 +221,7 @@ export default function TableDetail() {
   const [upiUri, setUpiUri]         = useState<string | null>(null);
   // Crew custom discount
   const [discountModalOpen, setDiscountModalOpen] = useState(false);
+  const [adjustSheetOpen, setAdjustSheetOpen] = useState(false);
   const [discountType, setDiscountType] = useState<'PERCENT' | 'FLAT'>('PERCENT');
   const [discountValue, setDiscountValue] = useState('');
   const [exemptCode, setExemptCode] = useState<string | null>(null);
@@ -1866,6 +1868,26 @@ export default function TableDetail() {
                     />
                   </TouchableOpacity>
                 )}
+                {/* Party size and the charges staff type per bill (container,
+                    delivery). Sits beside the discount for the same reason:
+                    billing a parcel shouldn't start by opening a read-only
+                    explanation of the bill. */}
+                {!isPaid && orders.length > 0 && (
+                  <TouchableOpacity
+                    onPress={() => setAdjustSheetOpen(true)}
+                    style={styles.totalDiscountBtn}
+                    hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+                    activeOpacity={0.7}
+                    accessibilityRole="button"
+                    accessibilityLabel="Adjust bill"
+                  >
+                    <MaterialCommunityIcons
+                      name="tune-variant"
+                      size={20}
+                      color={QuinckleColors.textSecondary}
+                    />
+                  </TouchableOpacity>
+                )}
                 <Text style={styles.totalValue}>₹{grandTotal.toFixed(0)}</Text>
                 {/* Chevron signals the row expands the bill breakdown sheet. */}
                 <Ionicons name="chevron-up" size={18} color={QuinckleColors.textTertiary} style={{ marginLeft: Spacing.sm }} />
@@ -1894,6 +1916,19 @@ export default function TableDetail() {
             </TouchableOpacity>
           )}
         </View>
+      )}
+
+      {/* Saving re-prices the session server-side and voids any pending payment
+          request, so the bill is re-read rather than patched locally. */}
+      {!!sessionId && (
+        <AdjustBillSheet
+          visible={adjustSheetOpen}
+          onClose={() => setAdjustSheetOpen(false)}
+          sessionId={sessionId}
+          subtitle={tablePrintLabel}
+          onApplied={() => { void loadBill(); }}
+          onError={(title, message) => showDialog(title, message, [{ label: 'OK', onPress: () => {} }])}
+        />
       )}
 
       <ThemedDialog visible={dialog.visible} title={dialog.title} message={dialog.message} actions={dialog.actions} onClose={closeDialog} />

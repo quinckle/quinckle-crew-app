@@ -643,6 +643,54 @@ export const crewSessions = {
       true,
     ),
 
+  /**
+   * Bill adjustments the biller enters: party size, and the amounts for charges
+   * that are typed per bill (container, delivery).
+   *
+   * The GET is channel-filtered server-side, so a dine-in bill never offers a
+   * delivery charge.
+   */
+  getAdjustments: (sessionId: string) =>
+    request<{
+      success: boolean;
+      data: {
+        sessionId: string;
+        coverCount: number | null;
+        tableCapacity: number | null;
+        charges: {
+          id: string;
+          name: string;
+          /** Amount already entered on this bill, or null if none yet. */
+          amount: number | null;
+          taxTreatment: 'FOLLOW_ITEMS' | 'FIXED_RATE' | 'EXEMPT';
+          taxRatePercent: number | null;
+          /** null = follows the venue's menu pricing setting. */
+          includesTax: boolean | null;
+        }[];
+      };
+    }>('GET', `/api/crew/sessions/${sessionId}/adjustments`, undefined, true),
+
+  /**
+   * Save them. This re-prices every collectible order and voids any mid-flight
+   * payment intent, so the caller must re-read the bill afterwards rather than
+   * trusting what is on screen.
+   */
+  saveAdjustments: (
+    sessionId: string,
+    body: { coverCount?: number | null; charges?: { chargeId: string; amount: number }[] },
+  ) =>
+    request<{
+      success: boolean;
+      data: {
+        sessionId: string;
+        coverCount: number | null;
+        charges: { chargeId: string; name: string; amount: number }[];
+        chargesTotal: number;
+        sessionTotal: number;
+        intentVoided: boolean;
+      };
+    }>('POST', `/api/crew/sessions/${sessionId}/adjustments`, body, true),
+
   /** Order Ledger — paginated session history with filters (STEWARD/ADMIN). */
   getHistory: async (params: {
     range?: LedgerRange;

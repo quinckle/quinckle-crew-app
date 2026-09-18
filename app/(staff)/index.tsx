@@ -59,6 +59,7 @@ import { TableSkeleton } from '../../components/ui/TableSkeleton';
 import { MenuSkeleton } from '../../components/ui/MenuSkeleton';
 import { TakeawaySkeleton } from '../../components/ui/TakeawaySkeleton';
 import { GiveDiscountModal } from '../../components/ui/GiveDiscountModal';
+import { AdjustBillSheet } from '../../components/ui/AdjustBillSheet';
 import { DeliveryBoard } from '../../components/delivery/DeliveryBoard';
 import { RiderRuns } from '../../components/delivery/RiderRuns';
 import { CAP, deliveryViewFor, hasCapability, type Capability } from '../../constants/capabilities';
@@ -460,6 +461,9 @@ export default function StaffDashboard() {
   // so it needs the order's sessionId — absent when the app is running ahead of
   // the backend that started sending it, in which case the action stays hidden.
   const [discountOrder, setDiscountOrder] = useState<TakeawayOrder | null>(null);
+  // Container charges exist mostly FOR takeaway, so the board needs the sheet
+  // the table screen has.
+  const [adjustOrder, setAdjustOrder] = useState<TakeawayOrder | null>(null);
 
   const isTakeawayPaid = (order: TakeawayOrder) =>
     ['PAID_CASH', 'PAID_UPI_DIRECT', 'PAID_ONLINE', 'PAID_MIXED', 'WAIVED'].includes(String(order.paymentStatus ?? '').toUpperCase());
@@ -2725,6 +2729,20 @@ export default function StaffDashboard() {
                 ))}
                 {item.status !== 'SERVED' && (
                   <View style={styles.takeawayActionRow}>
+                    {canDiscountTakeaway(item) && item.sessionId && (
+                      <TouchableOpacity
+                        style={styles.discountTakeawayBtn}
+                        onPress={() => setAdjustOrder(item)}
+                        activeOpacity={0.8}
+                        accessibilityLabel="Adjust bill"
+                      >
+                        <Ionicons
+                          name="options-outline"
+                          size={15}
+                          color={QuinckleColors.textSecondary}
+                        />
+                      </TouchableOpacity>
+                    )}
                     {canDiscountTakeaway(item) && (
                       <TouchableOpacity
                         style={styles.discountTakeawayBtn}
@@ -2981,6 +2999,21 @@ export default function StaffDashboard() {
 
       {/* Tap-to-paper print progress */}
       <PrintProgressOverlay job={printJob} onDismiss={() => setPrintJob(null)} />
+
+      {adjustOrder?.sessionId && (
+        <AdjustBillSheet
+          visible
+          onClose={() => setAdjustOrder(null)}
+          sessionId={adjustOrder.sessionId}
+          subtitle={
+            adjustOrder.pickupToken ? `Order ${adjustOrder.pickupToken}` : 'This order'
+          }
+          onApplied={() => { void loadTakeawayOrders(); }}
+          onError={(title, message) =>
+            showDialog(title, message, [{ label: 'OK', onPress: () => {} }])
+          }
+        />
+      )}
 
       {discountOrder?.sessionId && (
         <GiveDiscountModal
