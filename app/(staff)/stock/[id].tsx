@@ -21,7 +21,6 @@ import { fmtQty, inr, istDate, prettyReason } from '../../../constants/stock';
 import { LevelBadge } from '../../../components/stock/pieces';
 import { RestockSheet } from '../../../components/stock/RestockSheet';
 import { CountSheet } from '../../../components/stock/CountSheet';
-import { RecordWastageSheet } from '../../../components/stock/RecordWastageSheet';
 import { MaterialSettingsSheet } from '../../../components/stock/MaterialSettingsSheet';
 
 /** Movements the kitchen caused vs ones the system did on its own. */
@@ -33,7 +32,7 @@ export default function MaterialDetailScreen() {
   const [data, setData] = useState<CrewMaterialDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
-  const [sheet, setSheet] = useState<'restock' | 'count' | 'wastage' | 'settings' | null>(null);
+  const [sheet, setSheet] = useState<'restock' | 'count' | 'settings' | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   const load = useCallback(() => {
@@ -100,7 +99,11 @@ export default function MaterialDetailScreen() {
           <TouchableOpacity style={s.action} onPress={() => setSheet('count')} activeOpacity={0.85}>
             <Text style={s.actionText}>Count</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={s.action} onPress={() => setSheet('wastage')} activeOpacity={0.85}>
+          <TouchableOpacity
+            style={s.action}
+            onPress={() => router.push({ pathname: '/(staff)/stock/wastage/new', params: { materialId: data.id } })}
+            activeOpacity={0.85}
+          >
             <Text style={s.actionText}>Wastage</Text>
           </TouchableOpacity>
         </View>
@@ -157,13 +160,6 @@ export default function MaterialDetailScreen() {
       <RestockSheet material={data} visible={sheet === 'restock'} onClose={() => setSheet(null)} onDone={done} />
       <CountSheet material={data} visible={sheet === 'count'} onClose={() => setSheet(null)} onDone={done} />
       <MaterialSettingsSheet material={data} visible={sheet === 'settings'} onClose={() => setSheet(null)} onDone={done} />
-      <RecordWastageSheet
-        visible={sheet === 'wastage'}
-        materials={[data]}
-        prefillMaterial={data}
-        onClose={() => setSheet(null)}
-        onDone={done}
-      />
 
       {toast && <View style={[s.toast, { bottom: insets.bottom + 30 }]}><Text style={s.toastText}>{toast}</Text></View>}
     </View>

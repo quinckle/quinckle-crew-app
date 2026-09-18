@@ -29,7 +29,6 @@ import {
 } from '../../../services/api';
 import { QuinckleColors as C, Radius, Spacing } from '../../../constants/Colors';
 import { fmtQty, inr, istDate, prettyReason } from '../../../constants/stock';
-import { RecordWastageSheet } from '../../../components/stock/RecordWastageSheet';
 import { CoverageRow, MaterialChips, NotLinked, PriorityBanner } from '../../../components/stock/DishCoverage';
 import { StockFilterSheet, type StockStateFilter } from '../../../components/stock/StockFilterSheet';
 
@@ -92,13 +91,6 @@ export default function StockScreen() {
   const [wastage, setWastage] = useState<CrewWastageEntry[]>([]);
   const [wastageTotal, setWastageTotal] = useState(0);
   const [wastageLoading, setWastageLoading] = useState(false);
-
-  const [recording, setRecording] = useState(false);
-  /** The wastage picker needs every material, not the page on screen. */
-  const [pickerMaterials, setPickerMaterials] = useState<CrewMaterial[]>([]);
-  const [toast, setToast] = useState<string | null>(null);
-
-  const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2200); };
 
   useEffect(() => {
     const t = setTimeout(() => setDebounced(search.trim()), 300);
@@ -206,13 +198,6 @@ export default function StockScreen() {
     if (tab === 'dishes') { loaders.current.loadDishes(); loaders.current.loadOverview(); }
     if (tab === 'wastage') loaders.current.loadWastage(range);
   }, [tab, range]));
-
-  const openRecordWastage = () => {
-    setRecording(true);
-    if (pickerMaterials.length === 0) {
-      crewStock.materials().then((r) => setPickerMaterials(r.data?.items ?? [])).catch(() => {});
-    }
-  };
 
   const switchTab = (t: Tab) => {
     setTab(t);
@@ -507,7 +492,7 @@ export default function StockScreen() {
 
           <TouchableOpacity
             style={[s.fab, { bottom: insets.bottom + 20 }]}
-            onPress={openRecordWastage}
+            onPress={() => router.push('/(staff)/stock/wastage/new')}
             activeOpacity={0.85}
           >
             <Ionicons name="add" size={20} color="#fff" />
@@ -528,14 +513,6 @@ export default function StockScreen() {
         onApply={(f, o, g) => { setFilter(f); setSort(o); setGrouped(g); setFilterOpen(false); }}
       />
 
-      <RecordWastageSheet
-        visible={recording}
-        materials={pickerMaterials}
-        onClose={() => setRecording(false)}
-        onDone={(m) => { setRecording(false); flash(m); loadWastage(range); loadFirstPage({ quiet: true }); }}
-      />
-
-      {toast && <View style={[s.toast, { bottom: insets.bottom + 90 }]}><Text style={s.toastText}>{toast}</Text></View>}
     </View>
   );
 }
@@ -635,9 +612,4 @@ const s = StyleSheet.create({
     backgroundColor: C.primary, borderRadius: Radius.pill, paddingHorizontal: Spacing.xl, paddingVertical: 13,
   },
   fabText: { color: '#fff', fontSize: 14.5, fontWeight: '700' },
-  toast: {
-    position: 'absolute', alignSelf: 'center', backgroundColor: C.surfaceElevated, borderWidth: 1, borderColor: C.border,
-    borderRadius: 999, paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm,
-  },
-  toastText: { color: C.textPrimary, fontSize: 13, fontWeight: '600' },
 });
