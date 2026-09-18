@@ -24,7 +24,8 @@ import QRCode from 'react-native-qrcode-svg';
 import Svg, { Path } from 'react-native-svg';
 import { useAuth } from '../../context/AuthContext';
 import { crewOrders, crewPayments, crewSessions, restaurantApi, type BillBreakdown, type CollectDueOptions, type CollectSplitMethod, type CrewOrderPaymentContext, type SessionCollectible } from '../../services/api';
-import { BillBreakdownView } from '../../components/ui/BillBreakdownView';
+import { BillExplainSheet, explainBreakdown, explainSessionBill, type ExplainedBill } from '../../components/ui/BillExplainSheet';
+import { BottomSheet } from '../../components/ui/BottomSheet';
 import { playPaymentSuccess } from '../../services/sound';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
@@ -336,6 +337,9 @@ export default function PaymentCollectScreen() {
   const [isLoadingUpi, setIsLoadingUpi] = useState(true);
   const [partnerUpi, setPartnerUpi]     = useState<{ vpa: string | null; merchantName: string | null }>({ vpa: null, merchantName: null });
   const [successInfo, setSuccessInfo]   = useState<SuccessInfo | null>(null);
+  const [upiSheetOpen, setUpiSheetOpen] = useState(false);
+  const [billOpen, setBillOpen]         = useState(false);
+  const [sessionBill, setSessionBill]   = useState<ExplainedBill | null>(null);
 
   // ── Khata (due) mode state ────────────────────────────────────────────────
   // "Received now" is optional — 0 means the whole bill goes on the khata.
@@ -391,6 +395,16 @@ export default function PaymentCollectScreen() {
     void loadPaymentContext();
     return () => { alive = false; };
   }, [orderId, isMultiOrder]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    let alive = true;
+    crewSessions.getBill(sessionId)
+      .then((bill) => { if (alive) setSessionBill(explainSessionBill(bill)); })
+      // Decoration only: without it the sheet falls back to the flat breakdown.
+      .catch(() => { if (alive) setSessionBill(null); });
+    return () => { alive = false; };
+  }, [sessionId, liveDue?.totalAmount]);
 
   // Precedence: the session's live net > the per-order context > the snapshot.
   const resolvedTotal = liveDue
@@ -587,6 +601,77 @@ export default function PaymentCollectScreen() {
   const isVerifyingDue = isSyncingDue && !liveDue && isSessionCollect;
   const paymentReady = resolvedTotal > 0 && !isLoadingPaymentContext && !isVerifyingDue;
 
+  // The itemised bill (items, tagged discounts, CGST/SGST, round off) comes
+  // from the session bill. It is only shown when it adds up to what is being
+  // collected — a session can also hold orders this screen isn't settling,
+  // and a breakdown of a different amount would explain the wrong bill.
+  const explainedBill: ExplainedBill | null =
+    sessionBill && Math.abs(sessionBill.total - resolvedTotal) <= 1 ? sessionBill
+    : resolvedBreakdown ? explainBreakdown(resolvedBreakdown)
+    : null;
+  const hasBreakdown = !!explainedBill;
+
+  const openUpiSheet = () => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    // A cash confirm left open underneath would be confirmed by the wrong button.
+    setPending(null); setStep('choose');
+    setUpiSheetOpen(true);
+  };
+  const closeUpiSheet = () => {
+    setUpiSheetOpen(false);
+    if (pending?.tone === 'upi') cancelPending();
+  };
+
+  const confirmBar = (p: PendingPayment) => (
+    <View style={s.confirmWrap}>
+      <Text style={s.confirmMsg}>{p.question}</Text>
+      <View style={s.btnRow}>
+        <TouchableOpacity style={s.btnGhost} onPress={cancelPending} disabled={loading} activeOpacity={0.7}>
+          <Text style={s.btnGhostLabel}>Cancel</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            p.tone === 'cash' ? s.btnCash
+              : p.tone === 'upi' ? s.btnUpi
+              : p.tone === 'khata' ? s.btnKhata
+              : s.btnPrimary,
+            { flex: 2 },
+            (loading || isLoadingPaymentContext || !paymentReady) && { opacity: 0.5 },
+          ]}
+          onPress={confirmPending}
+          disabled={loading || isLoadingPaymentContext || !paymentReady}
+          activeOpacity={0.8}
+        >
+          {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>Confirm</Text>}
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  const optionRow = (o: {
+    key: string; icon: React.ComponentProps<typeof Ionicons>['name']; tint: string; title: string;
+    sub?: string; disabled?: boolean; busy?: boolean; selected?: boolean; last?: boolean; onPress: () => void;
+  }) => (
+    <TouchableOpacity
+      key={o.key}
+      onPress={o.onPress}
+      disabled={o.disabled}
+      activeOpacity={0.7}
+      accessibilityRole="button"
+      accessibilityLabel={o.title}
+      style={[s.optionRow, !o.last && s.optionRowDivider, o.selected && s.optionRowSelected, o.disabled && { opacity: 0.4 }]}
+    >
+      <Ionicons name={o.icon} size={21} color={o.tint} />
+      <View style={{ flex: 1 }}>
+        <Text style={s.optionTitle}>{o.title}</Text>
+        {!!o.sub && <Text style={s.optionSub} numberOfLines={1}>{o.sub}</Text>}
+      </View>
+      {o.busy
+        ? <ActivityIndicator size="small" color={QuinckleColors.textTertiary} />
+        : <Ionicons name="chevron-forward" size={17} color={QuinckleColors.textTertiary} />}
+    </TouchableOpacity>
+  );
+
   return (
     <KeyboardAvoidingView style={s.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <Stack.Screen options={{ headerShown: false }} />
@@ -596,12 +681,10 @@ export default function PaymentCollectScreen() {
         <TouchableOpacity onPress={() => router.back()} style={s.backBtn} activeOpacity={0.6} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
           <Ionicons name="chevron-back" size={24} color={QuinckleColors.textPrimary} />
         </TouchableOpacity>
-        <Text style={s.headerTitle}>Collect Payment</Text>
-        {mode === 'normal' && !intentId ? (
-          <TouchableOpacity onPress={enterSplitMode} activeOpacity={0.6} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Text style={s.splitLink}>Split</Text>
-          </TouchableOpacity>
-        ) : mode !== 'normal' ? (
+        <Text style={s.headerTitle} numberOfLines={1}>
+          {customerName ? `${locationLabel} · ${customerName}` : locationLabel}
+        </Text>
+        {mode !== 'normal' ? (
           <TouchableOpacity onPress={exitSplitMode} activeOpacity={0.6} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Text style={s.cancelLink}>Cancel</Text>
           </TouchableOpacity>
@@ -610,64 +693,67 @@ export default function PaymentCollectScreen() {
         )}
       </View>
 
-      {/* Order summary */}
-      <View style={[s.summary, { paddingHorizontal: Spacing.xl }]}>
-        <Text style={s.tableLabel}>{locationLabel}</Text>
-        <Text style={s.totalAmount}>₹{resolvedTotal.toLocaleString('en-IN')}</Text>
-        <View style={s.customerRow}>
-          <Text style={s.customerText}>{customerName ?? 'Guest'}</Text>
-          {customerPhone ? (
-            <TouchableOpacity onPress={() => Linking.openURL(`tel:${customerPhone}`).catch(() => {})} activeOpacity={0.6}>
-              <Text style={s.phoneText}>{customerPhone}</Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
-        {resolvedBreakdown && (resolvedBreakdown.chargesTotal !== 0 || resolvedBreakdown.taxAmount > 0 || resolvedBreakdown.discount > 0 || resolvedBreakdown.tip > 0) && (
-          <View style={s.breakdownWrap}>
-            <BillBreakdownView breakdown={resolvedBreakdown} compact />
-          </View>
-        )}
-        {isMultiOrder && (
-          <Text style={s.orderCountNote}>
-            {`Whole table \u00b7 ${effectiveOrderIds.length} orders in one bill`}
-          </Text>
-        )}
-        {paymentContextError && (
-          <Text style={s.contextWarning}>{paymentContextError}</Text>
-        )}
-        {dueSyncError && (
-          <Text style={s.contextWarning}>{dueSyncError}</Text>
-        )}
-      </View>
-
-      <View style={s.divider} />
-
-      {/* Scrollable content */}
       <ScrollView style={{ flex: 1 }} contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
 
-        {/* Normal mode QR */}
+        {/* The bill: what is owed, and the breakdown one tap away. */}
+        <View style={s.billCard}>
+          <Text style={s.billLabel}>
+            {isMultiOrder ? `Amount due · ${effectiveOrderIds.length} orders` : 'Amount due'}
+          </Text>
+          <Text style={s.totalAmount}>₹{resolvedTotal.toLocaleString('en-IN')}</Text>
+          <View style={s.billFoot}>
+            {customerPhone ? (
+              <TouchableOpacity onPress={() => Linking.openURL(`tel:${customerPhone}`).catch(() => {})} activeOpacity={0.6} style={{ flexShrink: 1 }}>
+                <Text style={s.phoneText} numberOfLines={1}>{customerPhone}</Text>
+              </TouchableOpacity>
+            ) : <View />}
+            {hasBreakdown && (
+              <TouchableOpacity onPress={() => setBillOpen(true)} activeOpacity={0.6} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={s.breakdownLink}>
+                <Text style={s.breakdownLinkText}>View breakdown</Text>
+                <Ionicons name="chevron-forward" size={13} color={QuinckleColors.primary} />
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+        {paymentContextError && <Text style={s.contextWarning}>{paymentContextError}</Text>}
+        {dueSyncError && <Text style={s.contextWarning}>{dueSyncError}</Text>}
+
+        {/* How they're paying. Nothing is recorded from this list — every row
+            leads to the same confirm step as before. */}
         {mode === 'normal' && (
-          isLoadingUpi ? <QrSkeleton size={200} /> : (
-            partnerUpi.vpa ? (
-              <View style={s.qrBlock}>
-                <Text style={s.qrHint}>Ask the diner to scan</Text>
-                <View style={s.qrFrame}>
-                  {upiUri ? <QRCode value={upiUri} size={200} backgroundColor="#ffffff" color="#000000" /> : null}
-                </View>
-                <Text style={s.qrAmt}>₹{resolvedTotal.toLocaleString('en-IN')}</Text>
-                <Text style={s.qrVpa}>{partnerUpi.vpa}</Text>
-                <TouchableOpacity onPress={() => Linking.openURL(upiUri).catch(() => {})} activeOpacity={0.6} style={s.openLink}>
-                  <Text style={s.openLinkText}>Open in UPI app</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <View style={s.warningBlock}>
-                <Ionicons name="information-circle-outline" size={16} color={QuinckleColors.textTertiary} />
-                <Text style={s.warningText}>No UPI ID configured. Add one in restaurant settings.</Text>
-              </View>
-            )
-          )
+          <View style={{ marginTop: Spacing.xl }}>
+            <Text style={s.optionsLabel}>How are they paying?</Text>
+            <View style={s.optionGroup}>
+              {intentMethod !== 'UPI_DIRECT' && optionRow({
+                key: 'cash', icon: 'cash-outline', tint: QuinckleColors.success, title: 'Cash',
+                busy: isVerifyingDue,
+                selected: step === 'confirm' && pending?.tone === 'cash',
+                disabled: loading || !paymentReady,
+                onPress: handleCashTap,
+              })}
+              {optionRow({
+                key: 'upi', icon: 'qr-code-outline', tint: '#60A5FA', title: 'UPI',
+                sub: !isLoadingUpi && !partnerUpi.vpa ? 'No UPI ID — add one in restaurant settings' : undefined,
+                disabled: loading || isLoadingUpi || isLoadingPaymentContext || !partnerUpi.vpa || !paymentReady,
+                onPress: openUpiSheet,
+              })}
+              {!intentId && optionRow({
+                key: 'split', icon: 'git-compare-outline', tint: QuinckleColors.textSecondary, title: 'Split',
+                sub: 'Part cash, part UPI',
+                onPress: enterSplitMode,
+              })}
+              {!intentId && optionRow({
+                key: 'later', icon: 'time-outline', tint: QuinckleColors.warning, title: 'Pay later',
+                sub: 'On the guest\'s khata',
+                disabled: loading || !paymentReady,
+                onPress: enterKhataMode,
+                last: true,
+              })}
+            </View>
+          </View>
         )}
+
+        {mode !== 'normal' && <View style={{ height: Spacing.xl }} />}
 
         {/* Split mode */}
         {step === 'choose' && mode === 'split' && (
@@ -818,48 +904,13 @@ export default function PaymentCollectScreen() {
         )}
       </ScrollView>
 
-      {/* Bottom actions */}
+      {/* Bottom actions — only when there is something to press. */}
+      {(step === 'confirm' && pending && !upiSheetOpen) || mode !== 'normal' || (!!intentId && step === 'choose') ? (
       <View style={[s.bottom, { paddingBottom: insets.bottom + 16 }]}>
-
-        {step === 'choose' && mode === 'normal' && (
-          <View style={s.btnRow}>
-            {intentMethod !== 'UPI_DIRECT' && (
-              <TouchableOpacity style={[s.btnCash, !paymentReady && s.btnMuted]} onPress={handleCashTap} disabled={loading || !paymentReady} activeOpacity={0.8}>
-                {loading || isVerifyingDue ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>Cash</Text>}
-              </TouchableOpacity>
-            )}
-            <TouchableOpacity
-              style={[s.btnUpi, (isLoadingUpi || isLoadingPaymentContext || !partnerUpi.vpa || !paymentReady) && s.btnMuted, intentMethod === 'UPI_DIRECT' && { flex: 2 }]}
-              onPress={handleUpiPay}
-              disabled={loading || isLoadingUpi || isLoadingPaymentContext || !partnerUpi.vpa || !paymentReady}
-              activeOpacity={0.8}
-            >
-              {loading
-                ? <ActivityIndicator color="#fff" size="small" />
-                : <Text style={s.btnLabel}>{intentId ? 'Mark as Paid' : 'UPI'}</Text>}
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {/* Khata entry — pay-later isn't available on diner-initiated intents */}
-        {!intentId && mode === 'normal' && step === 'choose' && (
-          <TouchableOpacity
-            style={[s.khataEntryBtn, (loading || !paymentReady) && { opacity: 0.5 }]}
-            onPress={enterKhataMode}
-            disabled={loading || !paymentReady}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="book-outline" size={17} color={QuinckleColors.warning} />
-            {/* "(pay later)" glossed a term the staff already use every shift.
-                If anyone needs the gloss it belongs on the khata screen, not
-                permanently on the button. */}
-            <Text style={s.khataEntryText}>Put on khata</Text>
-          </TouchableOpacity>
-        )}
 
         {intentId && mode === 'normal' && step === 'choose' && (
           <TouchableOpacity
-            style={[s.btnGhost, { marginTop: Spacing.sm }, isRejecting && { opacity: 0.5 }]}
+            style={[s.btnGhost, { flex: 0 }, isRejecting && { opacity: 0.5 }]}
             onPress={handleCancelIntent}
             disabled={isRejecting || loading}
             activeOpacity={0.8}
@@ -870,36 +921,11 @@ export default function PaymentCollectScreen() {
           </TouchableOpacity>
         )}
 
-        {/* One confirmation for every method — cash, UPI, split and khata all
-            land here. The button keeps the colour of the method being
-            confirmed, so the second tap still feels like the one you chose. */}
-        {step === 'confirm' && pending && (
-          <View style={s.confirmWrap}>
-            <Text style={s.confirmMsg}>{pending.question}</Text>
-            <View style={s.btnRow}>
-              <TouchableOpacity style={s.btnGhost} onPress={cancelPending} disabled={loading} activeOpacity={0.7}>
-                <Text style={s.btnGhostLabel}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  pending.tone === 'cash' ? s.btnCash
-                    : pending.tone === 'upi' ? s.btnUpi
-                    : pending.tone === 'khata' ? s.btnKhata
-                    : s.btnPrimary,
-                  { flex: 2 },
-                  (loading || isLoadingPaymentContext || !paymentReady) && { opacity: 0.5 },
-                ]}
-                onPress={confirmPending}
-                disabled={loading || isLoadingPaymentContext || !paymentReady}
-                activeOpacity={0.8}
-              >
-                {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>Confirm</Text>}
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
+        {/* One confirmation for every method — cash, split and khata land here;
+            UPI confirms inside its own sheet, next to the QR. */}
+        {step === 'confirm' && pending && !upiSheetOpen && confirmBar(pending)}
 
-        {mode === 'split' && (
+        {mode === 'split' && step === 'choose' && (
           <TouchableOpacity
             style={[s.btnPrimary, (!splitValid || loading || isLoadingPaymentContext || !paymentReady) && s.btnMuted]}
             onPress={handleSplitPaid}
@@ -910,7 +936,7 @@ export default function PaymentCollectScreen() {
           </TouchableOpacity>
         )}
 
-        {mode === 'khata' && (
+        {mode === 'khata' && step === 'choose' && (
           <TouchableOpacity
             style={[s.btnKhata, (!khataValid || loading || isLoadingPaymentContext || !paymentReady) && s.btnMuted]}
             onPress={handleKhataConfirm}
@@ -923,6 +949,41 @@ export default function PaymentCollectScreen() {
           </TouchableOpacity>
         )}
       </View>
+      ) : null}
+
+      {/* UPI: the QR, the amount under it, and the button. */}
+      <BottomSheet visible={upiSheetOpen && !successInfo} onClose={closeUpiSheet} title="Scan to pay">
+        <View style={s.upiSheet}>
+          {isLoadingUpi || !upiUri ? <QrSkeleton size={200} /> : (
+            <>
+              <View style={s.qrFrame}>
+                <QRCode value={upiUri} size={200} backgroundColor="#ffffff" color="#000000" />
+              </View>
+              {partnerUpi.vpa && <Text style={s.qrVpa}>{partnerUpi.vpa}</Text>}
+            </>
+          )}
+          <Text style={s.upiAmount}>₹{resolvedTotal.toLocaleString('en-IN')}</Text>
+          {!!upiUri && (
+            <TouchableOpacity onPress={() => Linking.openURL(upiUri).catch(() => {})} activeOpacity={0.6}>
+              <Text style={s.openLinkText}>Open in UPI app</Text>
+            </TouchableOpacity>
+          )}
+          <View style={{ alignSelf: 'stretch', marginTop: Spacing.lg }}>
+            {step === 'confirm' && pending?.tone === 'upi' ? confirmBar(pending) : (
+              <TouchableOpacity
+                style={[s.btnUpi, { flex: 0 }, (loading || isLoadingPaymentContext || !paymentReady) && s.btnMuted]}
+                onPress={handleUpiPay}
+                disabled={loading || isLoadingPaymentContext || !paymentReady}
+                activeOpacity={0.8}
+              >
+                {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.btnLabel}>{intentId ? 'Mark as paid' : 'Payment received'}</Text>}
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+      </BottomSheet>
+
+      <BillExplainSheet visible={billOpen && !successInfo} onClose={() => setBillOpen(false)} bill={explainedBill} />
 
       {successInfo && <SuccessScreen info={successInfo} onDone={returnToPreviousScreen} />}
     </KeyboardAvoidingView>
@@ -938,42 +999,41 @@ const s = StyleSheet.create({
     paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md,
   },
   backBtn: { padding: 4 },
-  headerTitle: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '600' },
-  splitLink: { color: QuinckleColors.primary, fontSize: 15, fontWeight: '600' },
+  headerTitle: { flex: 1, textAlign: 'center', marginHorizontal: Spacing.sm, color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '600' },
   cancelLink: { color: QuinckleColors.textSecondary, fontSize: 15, fontWeight: '500' },
 
   // Order summary
-  summary: { paddingTop: Spacing.xl, paddingBottom: Spacing.xl },
-  tableLabel: { color: QuinckleColors.textTertiary, fontSize: 12, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: 6 },
-  totalAmount: { color: QuinckleColors.textPrimary, fontSize: 44, fontWeight: '700', letterSpacing: -1.5, marginBottom: 10 },
-  customerRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  customerText: { color: QuinckleColors.textSecondary, fontSize: 14, fontWeight: '500' },
-  phoneText: { color: QuinckleColors.textTertiary, fontSize: 14 },
-  breakdownWrap: {
-    marginTop: Spacing.md,
-    padding: Spacing.md,
-    backgroundColor: QuinckleColors.surface,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: QuinckleColors.border,
+  totalAmount: { color: QuinckleColors.textPrimary, fontSize: 42, fontWeight: '700', letterSpacing: -1.5, marginTop: 2, marginBottom: 8 },
+  billCard: {
+    backgroundColor: QuinckleColors.surface, borderRadius: Radius.lg,
+    borderWidth: 1, borderColor: QuinckleColors.border, padding: Spacing.lg,
   },
+  billLabel: { color: QuinckleColors.textSecondary, fontSize: 12, fontWeight: '500' },
+  billFoot: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.md },
+  breakdownLink: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  breakdownLinkText: { color: QuinckleColors.primary, fontSize: 13, fontWeight: '600' },
+  optionsLabel: { color: QuinckleColors.textTertiary, fontSize: 11, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: Spacing.sm, marginLeft: 2 },
+  optionGroup: { borderRadius: Radius.lg, borderWidth: 1, borderColor: QuinckleColors.border, overflow: 'hidden' },
+  optionRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, minHeight: 60, paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md },
+  optionRowDivider: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: QuinckleColors.border },
+  optionRowSelected: { backgroundColor: QuinckleColors.surfaceElevated },
+  optionTitle: { color: QuinckleColors.textPrimary, fontSize: 16, fontWeight: '600' },
+  optionSub: { color: QuinckleColors.textTertiary, fontSize: 12, marginTop: 2 },
+  upiSheet: { alignItems: 'center', gap: 10, paddingHorizontal: Spacing.xl },
+  upiAmount: { color: QuinckleColors.textPrimary, fontSize: 34, fontWeight: '700', letterSpacing: -1, marginTop: 4 },
+  phoneText: { color: QuinckleColors.textTertiary, fontSize: 14 },
 
-  divider: { height: StyleSheet.hairlineWidth, backgroundColor: QuinckleColors.border, marginHorizontal: Spacing.xl },
 
   // Scroll
-  scroll: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.xl, paddingBottom: Spacing.xxxl },
+  scroll: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.md, paddingBottom: Spacing.xxxl },
 
   // QR
   qrBlock: { alignItems: 'center', gap: 12 },
   qrHint: { color: QuinckleColors.textTertiary, fontSize: 12, fontWeight: '500', letterSpacing: 0.2 },
   qrFrame: { padding: 16, backgroundColor: '#fff', borderRadius: Radius.md },
-  qrAmt: { color: QuinckleColors.textPrimary, fontSize: 20, fontWeight: '600', letterSpacing: -0.4, marginTop: 4 },
   qrVpa: { color: QuinckleColors.textTertiary, fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-  openLink: { marginTop: 4 },
   openLinkText: { color: QuinckleColors.textTertiary, fontSize: 13, fontWeight: '500', textDecorationLine: 'underline' },
 
-  warningBlock: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: Spacing.md },
-  warningText: { color: QuinckleColors.textTertiary, fontSize: 13, flex: 1, lineHeight: 18 },
 
   // Split
   splitSection: { gap: 20 },
@@ -995,7 +1055,6 @@ const s = StyleSheet.create({
   splitReadonly: { flex: 1, fontSize: 22, fontWeight: '600', letterSpacing: -0.4 },
   splitHint: { fontSize: 13, fontWeight: '500', textAlign: 'right' },
   contextWarning: { color: QuinckleColors.warning, fontSize: 12, fontWeight: '500', marginTop: 10 },
-  orderCountNote: { color: QuinckleColors.textSecondary, fontSize: 12, fontWeight: '600', marginTop: 8 },
 
   // Bottom
   bottom: {
@@ -1033,26 +1092,6 @@ const s = StyleSheet.create({
   confirmMsg: { color: QuinckleColors.textSecondary, fontSize: 14, textAlign: 'center' },
 
   // Khata (due) mode
-  // Khata read as "odd" because it differed from Cash/UPI on four axes at once —
-  // 44 vs 52 tall, 13px vs 16px label, outlined vs filled, plus an icon. It
-  // SHOULD stay subordinate: it isn't a payment method, it's the decision not to
-  // collect, and it's the only path needing a phone number because it's credit
-  // tied to a person. But subordinate is one deliberate difference, not four.
-  // Same height, radius and type size as its neighbours; outlined instead of
-  // filled is the single thing that sets it apart.
-  khataEntryBtn: {
-    marginTop: Spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    height: 52,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: QuinckleColors.warningBorder,
-    backgroundColor: QuinckleColors.warningSoft,
-  },
-  khataEntryText: { color: QuinckleColors.warning, fontSize: 16, fontWeight: '600' },
   btnKhata: {
     height: 52, borderRadius: Radius.lg,
     backgroundColor: '#b45309',

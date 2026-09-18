@@ -1457,7 +1457,13 @@ export interface CrewLadder {
   billSoFar?: number;
   meetsMinBill?: boolean;
   nextVisit: { rewardName: string } | null;
-  steps: { position: number; rewardName: string | null; state: 'done' | 'current' | 'upcoming' }[];
+  steps: {
+    position: number;
+    rewardName: string | null;
+    /** The reward's photo, or the free item's menu photo. Absent on older backends. */
+    imageUrl?: string | null;
+    state: 'done' | 'current' | 'upcoming';
+  }[];
 }
 
 export const loyaltyApi = {

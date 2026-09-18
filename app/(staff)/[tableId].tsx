@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, FlatList, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator } from 'react-native';
+import { Animated, FlatList, Image, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -19,7 +19,7 @@ import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
 import { PrintOptionsSheet, type InvoiceBuyer } from '../../components/ui/PrintOptionsSheet';
 import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintProgressOverlay';
-import { BillDetailsSheet, BillBreakdownContent } from '../../components/ui/BillDetailsSheet';
+import { BillExplainContent, BillExplainSheet, type ExplainedBill } from '../../components/ui/BillExplainSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { HintToast } from '../../components/ui/HintToast';
 import { ReasonSheet, ReasonChips } from '../../components/ui/ReasonSheet';
@@ -173,7 +173,7 @@ export default function TableDetail() {
   const [serviceChargeTotal, setServiceChargeTotal] = useState(0);
   const [chargeLines, setChargeLines] = useState<{ id: string; name: string; amount: number }[]>([]);
   const [discountTotal, setDiscountTotal] = useState(0);
-  const [discountLines, setDiscountLines] = useState<{ name: string; amount: number }[]>([]);
+  const [discountLines, setDiscountLines] = useState<{ kind: string; name: string; amount: number }[]>([]);
   const [tipTotal, setTipTotal] = useState(0);
   const [roundOffTotal, setRoundOffTotal] = useState(0);
   const [payableTotal, setPayableTotal] = useState(0);
@@ -494,6 +494,21 @@ export default function TableDetail() {
 
   const tax = taxTotal;
   const grandTotal = payableTotal;
+
+  const explainedBill = useMemo<ExplainedBill>(() => ({
+    items: billableFlatItems.map((i) => ({ key: `${i.order_id}:${i.key}`, name: i.name, modifiersSummary: i.modifiersSummary, price: i.price })),
+    subtotal: sessionTotal,
+    discountTotal,
+    discountLines,
+    chargesTotal: serviceChargeTotal,
+    chargeLines,
+    taxTotal: tax,
+    taxRate: billTaxRate,
+    taxLines: sessionTaxLines ?? [],
+    tip: tipTotal,
+    roundOff: roundOffTotal,
+    total: grandTotal,
+  }), [billableFlatItems, sessionTotal, discountTotal, discountLines, serviceChargeTotal, chargeLines, tax, billTaxRate, sessionTaxLines, tipTotal, roundOffTotal, grandTotal]);
 
   const handleApplyDiscount = async () => {
     const v = Number(discountValue);
@@ -985,35 +1000,61 @@ export default function TableDetail() {
   if (isLoading) {
     return (
       <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
-        {/* ── Header skeleton ── */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
-            <View style={[styles.iconBtn, { backgroundColor: QuinckleColors.surfaceMuted }]} />
-            <View style={{ gap: 6 }}>
-              <Skeleton width={56} height={22} radius={6} />
-              <Skeleton width={80} height={11} radius={4} />
+        {!isWide ? (
+          <>
+            {/* ── Nav bar skeleton (phone) — same box as the real bar, so nothing shifts ── */}
+            <View style={styles.navBar}>
+              <View style={[styles.iconBtn, { backgroundColor: QuinckleColors.surfaceMuted }]} />
+              <View style={[styles.navCenter, { gap: 6 }]}>
+                <Skeleton width={120} height={17} radius={6} />
+                <Skeleton width={72} height={11} radius={4} />
+              </View>
+              <View style={[styles.iconBtn, { backgroundColor: QuinckleColors.surfaceMuted }]} />
             </View>
-          </View>
-          <View style={styles.headerRight}>
-            {[1, 2, 3].map(i => (
-              <View key={i} style={[styles.iconBtn, { backgroundColor: QuinckleColors.surfaceMuted }]} />
-            ))}
-          </View>
-        </View>
 
-        {/* ── Session group skeleton ── */}
-        <Skeleton width={52} height={10} radius={4} style={{ marginBottom: Spacing.sm }} />
-        <View style={[styles.sessionGroup, { overflow: 'hidden' }]}>
-          {[90, 70, 80].map((w, i) => (
-            <View key={i}>
-              {i > 0 && <View style={styles.sessionInfoSep} />}
-              <View style={styles.sessionInfoRow}>
-                <Skeleton width={40} height={13} radius={4} />
-                <Skeleton width={w} height={13} radius={4} />
+            {/* ── Action cards skeleton ── */}
+            <View style={styles.actionRow}>
+              {[56, 44, 36].map((w, i) => (
+                <View key={i} style={[styles.actionCard, { gap: 8 }]}>
+                  <Skeleton width={22} height={22} radius={11} />
+                  <Skeleton width={w} height={11} radius={4} />
+                </View>
+              ))}
+            </View>
+          </>
+        ) : (
+          <>
+            {/* ── Header skeleton (tablet) ── */}
+            <View style={styles.header}>
+              <View style={styles.headerLeft}>
+                <View style={[styles.iconBtn, { backgroundColor: QuinckleColors.surfaceMuted }]} />
+                <View style={{ gap: 6 }}>
+                  <Skeleton width={56} height={22} radius={6} />
+                  <Skeleton width={80} height={11} radius={4} />
+                </View>
+              </View>
+              <View style={styles.headerRight}>
+                {[1, 2].map(i => (
+                  <View key={i} style={[styles.iconBtn, { backgroundColor: QuinckleColors.surfaceMuted }]} />
+                ))}
               </View>
             </View>
-          ))}
-        </View>
+
+            {/* ── Session group skeleton ── */}
+            <Skeleton width={52} height={10} radius={4} style={{ marginBottom: Spacing.sm }} />
+            <View style={[styles.sessionGroup, { overflow: 'hidden' }]}>
+              {[90, 70, 80].map((w, i) => (
+                <View key={i}>
+                  {i > 0 && <View style={styles.sessionInfoSep} />}
+                  <View style={styles.sessionInfoRow}>
+                    <Skeleton width={40} height={13} radius={4} />
+                    <Skeleton width={w} height={13} radius={4} />
+                  </View>
+                </View>
+              ))}
+            </View>
+          </>
+        )}
 
         {/* ── Active Orders section header skeleton ── */}
         <View style={[styles.sectionHeader, { marginTop: Spacing.md }]}>
@@ -1228,44 +1269,137 @@ export default function TableDetail() {
     </TouchableOpacity>
   ) : null;
 
-  // The ladder, expanded. Ladder only — see the sheet body.
+  // The ladder, expanded, as a stamp card: one stamp per visit so a steward
+  // reads "where is this guest" at a glance, then today's stamp says the job.
+  const ladderStepsDone = ladder ? ladder.steps.filter((st) => st.state === 'done').length : 0;
+  const ladderLast = ladder?.steps[ladder.steps.length - 1] ?? null;
+  const ladderCardKicker = !ladder ? ''
+    : ladderToUnlock > 0 ? 'Qualifying'
+    : ladderDue ? "Today's stamp"
+    : ladder.eligible === false ? 'Already stamped'
+    : "Today's stamp";
+  const ladderCardTitle = !ladder ? ''
+    : ladderToUnlock > 0 ? `${ladderToUnlock} visit${ladderToUnlock === 1 ? '' : 's'} to unlock`
+    : ladderDue ? ladderDue.rewardName
+    : ladder.eligible === false ? 'Visit counted today'
+    : 'No reward this step';
+  const ladderCardDetail = !ladder ? ''
+    : ladderToUnlock > 0 ? 'Rewards start once they qualify'
+    : ladderDue && ladderUnderMin ? `Needs a ₹${Math.round(ladder.minBill!)} bill to count`
+    : ladderDue
+      ? ladderDue.carry
+        ? ladderDue.ordered ? 'On the KOT — free'
+          : ladderDue.claimed ? "In the guest's cart"
+          : 'Not in their cart yet — ask them to add it'
+        : ladderDue.applied ? 'Off this bill' : 'Comes off this bill'
+    : ladder.eligible === false ? 'Nothing more to collect on this visit'
+    : 'They just move up a stamp';
+
+  let stampScroll: ScrollView | null = null;
   const ladderSheetJsx = (
-    <BottomSheet visible={ladderOpen} onClose={() => setLadderOpen(false)} title="Rewards ladder">
+    <BottomSheet visible={ladderOpen} onClose={() => setLadderOpen(false)} title="Stamp card">
       {/* The ladder itself, and nothing else. No visit history in v1: it would
           let any steward read a regular's pattern, and it is far easier to add
           later than to walk back. */}
       {ladder && (
-        <View>
-          {ladderDue && (
-            <Text style={{ fontSize: 13, fontWeight: '700', color: ladderNudge ? QuinckleColors.warning : QuinckleColors.textPrimary, marginBottom: Spacing.sm }}>
-              {ladderLine}
+        <View style={{ paddingHorizontal: Spacing.xl }}>
+          <Text style={styles.stampCount}>
+            {ladderToUnlock > 0 ? 'Not on the card yet' : `${ladderStepsDone} of ${ladder.totalSteps} stamped`}
+          </Text>
+
+          {/* One row, swiped sideways — a ladder can run to 10+ steps and a
+              wrapped grid loses the left-to-right "journey". The row opens
+              scrolled to today's stamp. No hook here (this sits below the
+              loading return), so the scroll handle is a plain render local. */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            ref={(r) => { stampScroll = r; }}
+            contentContainerStyle={styles.stampRow}
+            style={styles.stampScroller}
+          >
+            {ladder.steps.map((st, i) => {
+              const isLast = i === ladder.steps.length - 1;
+              const img = st.imageUrl || null;
+              const ring = st.state === 'done' ? styles.stampDone
+                : st.state === 'current' ? styles.stampCurrent
+                : styles.stampUpcoming;
+              return (
+                <View
+                  key={st.position}
+                  style={styles.stampCell}
+                  onLayout={st.state === 'current'
+                    ? (e) => stampScroll?.scrollTo({ x: Math.max(0, e.nativeEvent.layout.x - 96), animated: false })
+                    : undefined}
+                >
+                  <View style={[styles.stamp, ring]}>
+                    {img ? (
+                      <Image
+                        source={{ uri: img }}
+                        style={[styles.stampImg, st.state === 'upcoming' && { opacity: 0.45 }]}
+                      />
+                    ) : st.state === 'done' ? (
+                      <Ionicons name="checkmark" size={22} color={QuinckleColors.background} />
+                    ) : st.state === 'current' ? (
+                      <Ionicons name={st.rewardName ? 'gift-outline' : 'arrow-up'} size={22} color={QuinckleColors.primary} />
+                    ) : isLast ? (
+                      <Ionicons name="trophy-outline" size={20} color={QuinckleColors.textTertiary} />
+                    ) : (
+                      <Text style={styles.stampNum}>{st.position}</Text>
+                    )}
+                    {img && st.state === 'done' && (
+                      <View style={styles.stampDoneVeil}>
+                        <Ionicons name="checkmark" size={22} color={QuinckleColors.textPrimary} />
+                      </View>
+                    )}
+                  </View>
+                  <Text
+                    style={[styles.stampLabel, st.state === 'current' && styles.stampLabelCurrent]}
+                    numberOfLines={1}
+                  >
+                    {st.state === 'current' ? 'Today' : st.rewardName ?? `Step ${st.position}`}
+                  </Text>
+                </View>
+              );
+            })}
+          </ScrollView>
+
+          <View style={[styles.stampToday, ladderNudge && styles.stampTodayNudge]}>
+            <Text style={styles.stampKicker}>{ladderCardKicker}</Text>
+            <Text style={styles.stampTitle} numberOfLines={2}>{ladderCardTitle}</Text>
+            <Text style={[styles.stampDetail, (ladderNudge || ladderUnderMin) && { color: QuinckleColors.warning }]}>
+              {ladderCardDetail}
             </Text>
-          )}
+          </View>
+
           {!ladder.optedIn && (
-            <Text style={{ fontSize: 12, color: QuinckleColors.textTertiary, marginBottom: Spacing.sm }}>
+            <Text style={styles.stampNote}>
               This guest hasn&apos;t joined yet — nothing is being collected.
             </Text>
           )}
-          {ladder.steps.map((st) => (
-            <View key={st.position} style={styles.ladderSheetRow}>
-              <Text style={styles.ladderSheetNum}>{st.position}</Text>
-              <Text style={styles.ladderSheetName}>
-                {st.rewardName ?? 'Nothing — they just move up'}
-              </Text>
-              <Text style={[styles.ladderSheetState, {
-                color: st.state === 'current' ? QuinckleColors.warning
-                     : st.state === 'done' ? QuinckleColors.textTertiary
-                     : QuinckleColors.borderSubtle,
-              }]}>
-                {st.state === 'current' ? 'Today' : st.state === 'done' ? 'Done' : ''}
-              </Text>
-            </View>
-          ))}
-          {ladder.nextVisit && (
-            <Text style={{ fontSize: 12, color: QuinckleColors.textTertiary, marginTop: Spacing.sm }}>
-              Next visit: {ladder.nextVisit.rewardName}
-            </Text>
-          )}
+
+          <View style={styles.stampFacts}>
+            {ladder.nextVisit && (
+              <View style={styles.stampFactRow}>
+                <Text style={styles.stampFactLabel}>Next visit</Text>
+                <Text style={styles.stampFactValue} numberOfLines={1}>{ladder.nextVisit.rewardName}</Text>
+              </View>
+            )}
+            {ladderLast?.rewardName && ladderLast.state === 'upcoming' && (
+              <View style={styles.stampFactRow}>
+                <Text style={styles.stampFactLabel}>Card complete</Text>
+                <Text style={styles.stampFactValue} numberOfLines={1}>{ladderLast.rewardName}</Text>
+              </View>
+            )}
+            {!!ladder.minBill && (
+              <View style={styles.stampFactRow}>
+                <Text style={styles.stampFactLabel}>Min. bill</Text>
+                <Text style={styles.stampFactValue}>
+                  ₹{Math.round(ladder.minBill)}{ladder.meetsMinBill ? ' · met' : ''}
+                </Text>
+              </View>
+            )}
+          </View>
         </View>
       )}
     </BottomSheet>
@@ -1417,8 +1551,117 @@ export default function TableDetail() {
     </>
   );
 
+  // ── Three-dot menu ── shared by the phone and tablet headers.
+  // ── Three-dot button ── shared by the phone and tablet headers. The actions
+  // open in a bottom sheet (thumb reach, full-width targets) rather than a
+  // small dropdown in the top corner.
+  const actionMenuJsx = (
+    <TouchableOpacity
+      onPress={() => { setPrintMenuOpen(false); setActionMenuOpen(true); }}
+      style={styles.iconBtn}
+      activeOpacity={0.7}
+      accessibilityRole="button"
+      accessibilityLabel="Table actions"
+    >
+      <Ionicons name="ellipsis-horizontal" size={18} color={QuinckleColors.textPrimary} />
+    </TouchableOpacity>
+  );
+
+  const actionSheetRow = (o: {
+    key: string; icon: React.ComponentProps<typeof Ionicons>['name']; label: string;
+    color?: string; onPress: () => void; disabled?: boolean; last?: boolean;
+  }) => (
+    <TouchableOpacity
+      key={o.key}
+      onPress={o.onPress}
+      disabled={o.disabled}
+      activeOpacity={0.7}
+      accessibilityRole="button"
+      style={[styles.actionSheetRow, !o.last && styles.actionSheetRowDivider, o.disabled && { opacity: 0.5 }]}
+    >
+      <Ionicons name={o.icon} size={20} color={o.color ?? QuinckleColors.textPrimary} />
+      <Text style={[styles.actionSheetText, o.color ? { color: o.color } : null]}>{o.label}</Text>
+    </TouchableOpacity>
+  );
+
+  const actionSheetJsx = (
+    <BottomSheet
+      visible={actionMenuOpen}
+      onClose={() => setActionMenuOpen(false)}
+      title={`Table T${tableNum}${groupLabel ? ` · ${groupLabel}` : ''}`}
+    >
+      <View style={styles.actionSheetGroup}>
+        {actionSheetRow({ key: 'swap', icon: 'swap-horizontal', label: 'Swap table', onPress: () => { void openSwapModal(); } })}
+        {actionSheetRow({ key: 'extend', icon: 'time-outline', label: 'Extend time', onPress: openExtendMenu, last: isPaid })}
+        {!isPaid && actionSheetRow({
+          key: 'collect', icon: 'checkmark-circle-outline',
+          label: isRequestingCollection ? 'Requesting...' : 'Send to Payment Collection',
+          color: QuinckleColors.success,
+          disabled: isRequestingCollection,
+          onPress: () => { setActionMenuOpen(false); void requestCollection(); },
+          last: true,
+        })}
+      </View>
+      {/* Destructive, so it sits apart from the everyday actions. */}
+      <View style={[styles.actionSheetGroup, { marginTop: Spacing.md }]}>
+        {actionSheetRow({
+          key: 'end', icon: 'log-out-outline', label: 'End session', color: QuinckleColors.danger,
+          onPress: () => { setActionMenuOpen(false); handleEndSession(); },
+          last: true,
+        })}
+      </View>
+    </BottomSheet>
+  );
+
+  // Phone header: a centred nav bar. The title opens session details (it
+  // replaces the separate ⓘ target), and the timer is a status line under it —
+  // grey with time to spare, amber running low, red overdue.
+  const statusText = countdownStr
+    ? countdownStr === 'Expired' ? 'Time up' : `${countdownStr} left`
+    : elapsed ? `Seated ${elapsed}` : '';
+  const phoneHeaderJsx = (
+    <View style={styles.navBar}>
+      <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel="Back">
+        <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        onPress={() => setSessionInfoOpen(true)}
+        style={styles.navCenter}
+        activeOpacity={0.7}
+        accessibilityRole="button"
+        accessibilityLabel={`Table T${tableNum}, session details`}
+      >
+        <View style={styles.navTitleRow}>
+          <Text style={styles.navTitle} numberOfLines={1}>
+            Table T{tableNum}{groupLabel ? ` · ${groupLabel}` : ''}
+          </Text>
+          <Ionicons name="chevron-down" size={14} color={QuinckleColors.textTertiary} />
+        </View>
+        {(statusText || mergedFrom.length > 0) ? (
+          <View style={styles.navStatusRow}>
+            {!!statusText && (
+              <Text style={[styles.navStatus, countdownStr && expiry !== 'normal' ? { color: expiryFg } : null]}>
+                {statusText}
+              </Text>
+            )}
+            {/* Merged stays visible — it changes how staff read the bill. */}
+            {mergedFrom.length > 0 && (
+              <Text style={[styles.navStatus, { color: QuinckleColors.warning }]}>
+                {statusText ? ' · ' : ''}Merged
+              </Text>
+            )}
+          </View>
+        ) : null}
+      </TouchableOpacity>
+
+      {actionMenuJsx}
+    </View>
+  );
+
   return (
     <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
+      {!isWide ? phoneHeaderJsx : (
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} activeOpacity={0.7}>
@@ -1468,63 +1711,10 @@ export default function TableDetail() {
               bigger targets than 18px glyphs in the worst corner of the screen
               for someone working one-handed. Only the overflow stays here. */}
 
-          {/* ── Three-dot menu ── */}
-          <View style={{ position: 'relative' }}>
-            <TouchableOpacity onPress={() => { setPrintMenuOpen(false); setActionMenuOpen(o => !o); }} style={styles.iconBtn} activeOpacity={0.7}>
-              <Ionicons name="ellipsis-horizontal" size={18} color={QuinckleColors.textPrimary} />
-            </TouchableOpacity>
-            {actionMenuOpen && (
-              <View style={styles.actionMenu}>
-                <TouchableOpacity
-                  onPress={() => { void openSwapModal(); }}
-                  style={styles.actionMenuItem}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="swap-horizontal" size={14} color={QuinckleColors.textPrimary} />
-                  <Text style={styles.actionMenuText}>Swap table</Text>
-                </TouchableOpacity>
-                <View style={styles.actionMenuDivider} />
-                <TouchableOpacity
-                  onPress={openExtendMenu}
-                  style={styles.actionMenuItem}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="time-outline" size={14} color={QuinckleColors.textPrimary} />
-                  <Text style={styles.actionMenuText}>Extend time</Text>
-                </TouchableOpacity>
-              {!isPaid && (
-                <>
-                  <View style={styles.actionMenuDivider} />
-                  <TouchableOpacity
-                    onPress={() => {
-                      setActionMenuOpen(false);
-                      void requestCollection();
-                    }}
-                    style={styles.actionMenuItem}
-                    disabled={isRequestingCollection}
-                    activeOpacity={0.7}
-                  >
-                    <Ionicons name="checkmark-circle-outline" size={14} color={QuinckleColors.success} />
-                    <Text style={[styles.actionMenuText, { color: QuinckleColors.success }]}>
-                      {isRequestingCollection ? 'Requesting...' : 'Send to Payment Collection'}
-                    </Text>
-                  </TouchableOpacity>
-                </>
-              )}
-              <View style={styles.actionMenuDivider} />
-              <TouchableOpacity
-                onPress={() => { setActionMenuOpen(false); handleEndSession(); }}
-                style={styles.actionMenuItem}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="log-out-outline" size={14} color={QuinckleColors.danger} />
-                <Text style={[styles.actionMenuText, { color: QuinckleColors.danger }]}>End session</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-          </View>{/* end three-dot position:relative */}
+          {actionMenuJsx}
         </View>{/* end headerRight */}
-      </View>{/* end header */}
+      </View>
+      )}{/* end header */}
 
       {isWide ? (
         // ── POS layout: order ticket fills the main pane, a fixed receipt rail
@@ -1556,19 +1746,11 @@ export default function TableDetail() {
             {actionRowJsx}
 
             <View style={styles.railBillWrap}>
-              <BillBreakdownContent
-                items={billableFlatItems}
-                subtotal={sessionTotal}
-                discountTotal={discountTotal}
-                serviceChargeTotal={serviceChargeTotal}
-                tax={tax}
-                taxRate={billTaxRate}
-                tipTotal={tipTotal}
-                grandTotal={grandTotal}
-                canGiveDiscount={!isPaid && orders.length > 0}
-                onGiveDiscount={() => setDiscountModalOpen(true)}
-                showItems
-                variant="receipt"
+              <BillExplainContent
+                bill={explainedBill}
+                pinned
+                inset={false}
+                onGiveDiscount={!isPaid && orders.length > 0 ? () => setDiscountModalOpen(true) : undefined}
               />
             </View>
 
@@ -1724,22 +1906,15 @@ export default function TableDetail() {
           top of the sheet. Keep new sheets and toasts in this block. */}
       {sessionInfoSheetJsx}
       {ladderSheetJsx}
+      {actionSheetJsx}
 
       <HintToast message={hint} onDismiss={() => setHint(null)} bottomOffset={isWide ? 24 : 96} />
 
-      <BillDetailsSheet
+      {/* The full bill, explained — the same sheet Collect Payment opens. */}
+      <BillExplainSheet
         visible={isExpanded}
-        items={billableFlatItems}
-        subtotal={sessionTotal}
-        discountTotal={discountTotal}
-        serviceChargeTotal={serviceChargeTotal}
-        tax={tax}
-        taxRate={billTaxRate}
-        tipTotal={tipTotal}
-        grandTotal={grandTotal}
-        canGiveDiscount={!isPaid && orders.length > 0}
-        onGiveDiscount={() => { setIsExpanded(false); setDiscountModalOpen(true); }}
         onClose={() => setIsExpanded(false)}
+        bill={explainedBill}
       />
 
       <QrChoiceSheet
@@ -2111,40 +2286,6 @@ const styles = StyleSheet.create({
   },
   freeOptDangerText: { color: '#fca5a5', fontSize: 14, fontWeight: '700' },
   freeHint: { color: QuinckleColors.textTertiary, fontSize: 11, marginTop: 10, textAlign: 'center' },
-  actionMenu: {
-    position: 'absolute',
-    top: 44,
-    right: 0,
-    minWidth: 180,
-    backgroundColor: QuinckleColors.surface,
-    borderColor: QuinckleColors.border,
-    borderWidth: 1,
-    borderRadius: Radius.md,
-    paddingVertical: 4,
-    zIndex: 50,
-    shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 6,
-  },
-  actionMenuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 10,
-  },
-  actionMenuText: {
-    color: QuinckleColors.textPrimary,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  actionMenuDivider: {
-    height: 1,
-    backgroundColor: QuinckleColors.border,
-    marginVertical: 2,
-  },
   swapBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.6)',
@@ -2372,6 +2513,25 @@ const styles = StyleSheet.create({
   },
   railPaidText: { fontSize: 14, fontWeight: '700' },
   railEmptyHint: { ...Typography.caption, color: QuinckleColors.textMuted, textAlign: 'center', paddingVertical: 12 },
+  actionSheetGroup: {
+    marginHorizontal: Spacing.xl,
+    backgroundColor: QuinckleColors.surfaceMuted,
+    borderRadius: Radius.lg, borderWidth: 1, borderColor: QuinckleColors.border,
+    overflow: 'hidden',
+  },
+  actionSheetRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, minHeight: 54, paddingHorizontal: Spacing.lg },
+  actionSheetRowDivider: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: QuinckleColors.border },
+  actionSheetText: { fontSize: 15, fontWeight: '600', color: QuinckleColors.textPrimary },
+  navBar: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingBottom: Spacing.md, marginBottom: Spacing.lg,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: QuinckleColors.border,
+  },
+  navCenter: { flex: 1, minWidth: 0, alignItems: 'center' },
+  navTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: '100%' },
+  navTitle: { flexShrink: 1, fontSize: 17, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.2 },
+  navStatusRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
+  navStatus: { fontSize: 12, fontWeight: '600', color: QuinckleColors.textSecondary, fontVariant: ['tabular-nums'] as any },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.xl },
   // flex + minWidth:0 so a long groupLabel truncates the table title instead of
   // pushing the timer and overflow menu off the right edge.
@@ -2419,14 +2579,36 @@ const styles = StyleSheet.create({
   // Something has to be carried to the table — the only state worth colour.
   ladderStripCarry: { borderColor: QuinckleColors.warning },
   ladderStripText: { flex: 1, fontSize: 13, fontWeight: '600', color: QuinckleColors.textPrimary },
-  ladderSheetRow: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    paddingVertical: Spacing.sm,
-    borderBottomWidth: 1, borderBottomColor: QuinckleColors.borderSubtle,
+  stampCount: { fontSize: 12, color: QuinckleColors.textTertiary, marginBottom: Spacing.md },
+  stampScroller: { marginHorizontal: -Spacing.xl, marginBottom: Spacing.lg },
+  stampRow: { paddingHorizontal: Spacing.xl, gap: Spacing.sm },
+  stampCell: { width: 64, alignItems: 'center' },
+  stamp: { width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+  stampDone: { backgroundColor: QuinckleColors.primary, borderWidth: 2, borderColor: QuinckleColors.primary },
+  stampCurrent: { borderWidth: 2, borderStyle: 'dashed', borderColor: QuinckleColors.primary, backgroundColor: QuinckleColors.primarySoft },
+  stampUpcoming: { borderWidth: 1, borderColor: QuinckleColors.borderStrong, backgroundColor: QuinckleColors.surfaceMuted },
+  stampImg: { width: '100%', height: '100%' },
+  stampDoneVeil: {
+    ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(243,93,59,0.72)',
   },
-  ladderSheetNum: { width: 26, fontSize: 12, fontWeight: '700', color: QuinckleColors.textTertiary, fontVariant: ['tabular-nums'] as any },
-  ladderSheetName: { flex: 1, fontSize: 13, color: QuinckleColors.textSecondary },
-  ladderSheetState: { fontSize: 10, fontWeight: '700', letterSpacing: 0.4, textTransform: 'uppercase' },
+  stampLabel: { marginTop: 6, fontSize: 10, color: QuinckleColors.textTertiary, maxWidth: 64 },
+  stampLabelCurrent: { color: QuinckleColors.primary, fontWeight: '700' },
+  stampNum: { fontSize: 13, fontWeight: '600', color: QuinckleColors.textTertiary, fontVariant: ['tabular-nums'] as any },
+  stampToday: {
+    backgroundColor: QuinckleColors.surfaceElevated, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: QuinckleColors.border,
+    padding: Spacing.md, marginBottom: Spacing.md,
+  },
+  stampTodayNudge: { borderColor: QuinckleColors.primarySoftBorder },
+  stampKicker: { fontSize: 10, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase', color: QuinckleColors.primary },
+  stampTitle: { fontSize: 19, fontWeight: '700', color: QuinckleColors.textPrimary, marginTop: 4, marginBottom: 2 },
+  stampDetail: { fontSize: 13, color: QuinckleColors.textSecondary },
+  stampNote: { fontSize: 12, color: QuinckleColors.textTertiary, marginBottom: Spacing.md },
+  stampFacts: { gap: Spacing.sm },
+  stampFactRow: { flexDirection: 'row', justifyContent: 'space-between', gap: Spacing.md },
+  stampFactLabel: { fontSize: 13, color: QuinckleColors.textSecondary },
+  stampFactValue: { flexShrink: 1, fontSize: 13, fontWeight: '600', color: QuinckleColors.textPrimary, textAlign: 'right' },
 
   actionRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.lg },
   actionCard: {
