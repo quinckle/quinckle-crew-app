@@ -26,7 +26,6 @@ import { useAuth } from '../../context/AuthContext';
 import { crewOrders, crewPayments, crewSessions, restaurantApi, type BillBreakdown, type CollectDueOptions, type CollectSplitMethod, type CrewOrderPaymentContext, type SessionCollectible } from '../../services/api';
 import { BillExplainSheet, explainBreakdown, explainSessionBill, type ExplainedBill } from '../../components/ui/BillExplainSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
-import { AdjustBillSheet } from '../../components/ui/AdjustBillSheet';
 import { playPaymentSuccess } from '../../services/sound';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
@@ -304,6 +303,17 @@ export default function PaymentCollectScreen() {
 
   useFocusEffect(useCallback(() => { void syncSessionDue(); }, [syncSessionDue]));
 
+  // Adjust bill is a screen. Saving there re-prices server-side and voids any
+  // pending payment request, so the due is re-read by the focus effect above
+  // when it pops back — never patched on screen.
+  const openAdjustBill = () => {
+    if (!sessionId) return;
+    router.push({
+      pathname: '/(staff)/adjust-bill',
+      params: { sessionId, subtitle: locationLabel, total: String(resolvedTotal) },
+    });
+  };
+
   /** Server truth when we have it; the navigation snapshot until then. */
   const effectiveOrderIds = liveDue?.orderIds.length ? liveDue.orderIds : orderIds;
   // Multi-order ⇒ settle the session; the single-order payment context (fetched
@@ -340,7 +350,6 @@ export default function PaymentCollectScreen() {
   const [successInfo, setSuccessInfo]   = useState<SuccessInfo | null>(null);
   // One sheet holds everything that changes the bill — charges, party size and
   // the tip — so a biller does it in one go instead of three surfaces.
-  const [adjustOpen, setAdjustOpen] = useState(false);
   // Read from the bill, never assumed to be zero: a diner may already have
   // tipped from their own phone, and showing "None" over that would invite a
   // biller to overwrite it unseen.
@@ -740,7 +749,7 @@ export default function PaymentCollectScreen() {
         {mode === 'normal' && step === 'choose' && isSessionCollect && !intentId && (
           <TouchableOpacity
             style={s.tipRow}
-            onPress={() => setAdjustOpen(true)}
+            onPress={() => openAdjustBill()}
             activeOpacity={0.7}
           >
             <Ionicons name="options-outline" size={17} color={QuinckleColors.textSecondary} />
@@ -1016,20 +1025,6 @@ export default function PaymentCollectScreen() {
       </BottomSheet>
 
       <BillExplainSheet visible={billOpen && !successInfo} onClose={() => setBillOpen(false)} bill={explainedBill} />
-
-      {/* Everything that changes the bill, in one sheet. Saving re-prices
-          server-side and voids any pending payment request, so the due is
-          re-read rather than patched here. */}
-      {!!sessionId && (
-        <AdjustBillSheet
-          visible={adjustOpen && !successInfo}
-          onClose={() => setAdjustOpen(false)}
-          sessionId={sessionId}
-          subtitle={locationLabel}
-          onApplied={() => { void syncSessionDue(); }}
-          onError={(title, message) => Alert.alert(title, message)}
-        />
-      )}
 
       {successInfo && <SuccessScreen info={successInfo} onDone={returnToPreviousScreen} />}
     </KeyboardAvoidingView>

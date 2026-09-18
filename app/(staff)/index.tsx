@@ -29,7 +29,7 @@ import type { InvoiceBill } from '../../services/invoiceTemplate';
 import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded } from '../../services/printSink';
 import { getPrintDeviceId } from '../../services/printDevice';
 import type { TakeawayOrder } from '../../services/api';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
@@ -59,7 +59,6 @@ import { TableSkeleton } from '../../components/ui/TableSkeleton';
 import { MenuSkeleton } from '../../components/ui/MenuSkeleton';
 import { TakeawaySkeleton } from '../../components/ui/TakeawaySkeleton';
 import { GiveDiscountModal } from '../../components/ui/GiveDiscountModal';
-import { AdjustBillSheet } from '../../components/ui/AdjustBillSheet';
 import { DeliveryBoard } from '../../components/delivery/DeliveryBoard';
 import { RiderRuns } from '../../components/delivery/RiderRuns';
 import { CAP, deliveryViewFor, hasCapability, type Capability } from '../../constants/capabilities';
@@ -463,7 +462,6 @@ export default function StaffDashboard() {
   const [discountOrder, setDiscountOrder] = useState<TakeawayOrder | null>(null);
   // Container charges exist mostly FOR takeaway, so the board needs the sheet
   // the table screen has.
-  const [adjustOrder, setAdjustOrder] = useState<TakeawayOrder | null>(null);
 
   const isTakeawayPaid = (order: TakeawayOrder) =>
     ['PAID_CASH', 'PAID_UPI_DIRECT', 'PAID_ONLINE', 'PAID_MIXED', 'WAIVED'].includes(String(order.paymentStatus ?? '').toUpperCase());
@@ -1318,6 +1316,29 @@ export default function StaffDashboard() {
     if (activeTab === 'orders') void loadPickupOrders();
     if (activeTab === 'takeaway') void loadTakeawayOrders();
   }, [activeTab, loadPickupOrders, loadTakeawayOrders]);
+
+  // Coming back from the adjust-bill screen: it re-prices server-side and the
+  // push events that keep this list fresh don't cover a charge or tip edit, so
+  // the takeaway card would still show the old total.
+  useFocusEffect(
+    useCallback(() => {
+      if (activeTab === 'takeaway') void loadTakeawayOrders();
+    }, [activeTab, loadTakeawayOrders]),
+  );
+
+  // Adjust bill is a screen: a form of number fields with the keyboard up, and
+  // it pops back into the focus refetch above.
+  const openAdjustBill = (order: TakeawayOrder) => {
+    if (!order.sessionId) return;
+    router.push({
+      pathname: '/(staff)/adjust-bill',
+      params: {
+        sessionId: order.sessionId,
+        subtitle: order.pickupToken ? `Order ${order.pickupToken}` : 'This order',
+        total: String(order.total ?? 0),
+      },
+    });
+  };
 
   // Takeaway list stays fresh via the waiter:{restaurantId} Ably push below
   // (new_order / cash events call loadTakeawayOrders) plus the tab-switch load
@@ -2732,7 +2753,7 @@ export default function StaffDashboard() {
                     {canDiscountTakeaway(item) && item.sessionId && (
                       <TouchableOpacity
                         style={styles.discountTakeawayBtn}
-                        onPress={() => setAdjustOrder(item)}
+                        onPress={() => openAdjustBill(item)}
                         activeOpacity={0.8}
                         accessibilityLabel="Adjust bill"
                       >
@@ -2999,21 +3020,6 @@ export default function StaffDashboard() {
 
       {/* Tap-to-paper print progress */}
       <PrintProgressOverlay job={printJob} onDismiss={() => setPrintJob(null)} />
-
-      {adjustOrder?.sessionId && (
-        <AdjustBillSheet
-          visible
-          onClose={() => setAdjustOrder(null)}
-          sessionId={adjustOrder.sessionId}
-          subtitle={
-            adjustOrder.pickupToken ? `Order ${adjustOrder.pickupToken}` : 'This order'
-          }
-          onApplied={() => { void loadTakeawayOrders(); }}
-          onError={(title, message) =>
-            showDialog(title, message, [{ label: 'OK', onPress: () => {} }])
-          }
-        />
-      )}
 
       {discountOrder?.sessionId && (
         <GiveDiscountModal

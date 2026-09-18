@@ -701,11 +701,12 @@ export const crewSessions = {
       data: {
         sessionId: string;
         amount: number;
-        allocations: { staffMemberId: string; name: string; amount: number }[];
+        allocations: { staffMemberId: string; name: string; photoUrl: string | null; amount: number }[];
         allocated: number;
         /** amount − allocated. Not a stored flag. */
         unassigned: number;
-        staff: { id: string; name: string; role: string }[];
+        /** photoUrl is self-serve from the profile screen — usually null. */
+        staff: { id: string; name: string; role: string; photoUrl: string | null }[];
       };
     }>('GET', `/api/crew/sessions/${sessionId}/tip`, undefined, true),
 
