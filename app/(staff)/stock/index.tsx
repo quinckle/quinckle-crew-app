@@ -24,11 +24,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
 import {
   crewStock,
-  type CrewDish, type CrewMaterial, type CrewWastageEntry, type MaterialSort, type MaterialState,
+  type CrewDish, type CrewLinkingOverview, type CrewMaterial, type CrewWastageEntry,
+  type MaterialSort, type MaterialState,
 } from '../../../services/api';
 import { QuinckleColors as C, Radius, Spacing } from '../../../constants/Colors';
 import { fmtQty, inr, istDate, prettyReason } from '../../../constants/stock';
 import { RecordWastageSheet } from '../../../components/stock/RecordWastageSheet';
+import { CoverageRow, MaterialChips, NotLinked, PriorityBanner } from '../../../components/stock/DishCoverage';
 import { StockFilterSheet, type StockStateFilter } from '../../../components/stock/StockFilterSheet';
 
 type Tab = 'materials' | 'dishes' | 'wastage';
@@ -79,7 +81,12 @@ export default function StockScreen() {
 
   const [dishes, setDishes] = useState<CrewDish[]>([]);
   const [dishesLoading, setDishesLoading] = useState(false);
+  const [dishesPaging, setDishesPaging] = useState(false);
+  const [dishNext, setDishNext] = useState<number | null>(null);
   const [unlinkedOnly, setUnlinkedOnly] = useState(false);
+  const [overview, setOverview] = useState<CrewLinkingOverview | null>(null);
+  /** Units sold per dish, from the priority list — shown on unlinked rows. */
+  const [soldBy, setSoldBy] = useState<Record<string, number>>({});
 
   const [range, setRange] = useState<Range>('today');
   const [wastage, setWastage] = useState<CrewWastageEntry[]>([]);
@@ -136,12 +143,33 @@ export default function StockScreen() {
       .finally(() => setPaging(false));
   }, [nextOffset, paging, debounced, filter, sort, grouped]);
 
-  const loadDishes = useCallback(() => {
-    setDishesLoading(true);
-    crewStock.dishes(undefined, 'all')
-      .then((r) => setDishes(r.data ?? []))
-      .catch(() => setDishes([]))
-      .finally(() => setDishesLoading(false));
+  /**
+   * Searched and paged on the server. It used to fetch every dish in one
+   * response and filter on the phone, which is the thing that fell over at a
+   * few hundred dishes.
+   */
+  const loadDishes = useCallback((opts: { offset?: number } = {}) => {
+    const offset = opts.offset ?? 0;
+    if (offset === 0) setDishesLoading(true); else setDishesPaging(true);
+    crewStock.dishes(debounced || undefined, unlinkedOnly ? 'without' : 'all', { limit: PAGE, offset })
+      .then((r) => {
+        const incoming = r.data ?? [];
+        setDishes((prev) => (offset === 0 ? incoming : [...prev, ...incoming]));
+        setDishNext(r.meta?.nextOffset ?? null);
+      })
+      .catch(() => { if (offset === 0) { setDishes([]); setDishNext(null); } })
+      .finally(() => { setDishesLoading(false); setDishesPaging(false); });
+  }, [debounced, unlinkedOnly]);
+
+  const loadOverview = useCallback(() => {
+    crewStock.linkingOverview()
+      .then((r) => {
+        setOverview(r.data ?? null);
+        const map: Record<string, number> = {};
+        for (const d of r.data?.priority?.dishes ?? []) map[d.menuItemId] = d.units;
+        setSoldBy(map);
+      })
+      .catch(() => setOverview(null));
   }, []);
 
   const loadWastage = useCallback((r: Range) => {
@@ -158,6 +186,8 @@ export default function StockScreen() {
   // Search, filter and sort each reset to page 1 — they change the ordering, so
   // the rows already on screen no longer belong to the same list.
   useEffect(() => { if (tab === 'materials') loadFirstPage(); }, [tab, loadFirstPage]);
+  // Search and the unlinked filter re-query rather than filtering on the phone.
+  useEffect(() => { if (tab === 'dishes') loadDishes(); }, [tab, loadDishes]);
 
   /**
    * The focus refetch reads the loaders through a ref, NOT through the closure.
@@ -168,12 +198,12 @@ export default function StockScreen() {
    * with the DEFAULTS while the control still showed your choice. That is what
    * made filter and sort look broken.
    */
-  const loaders = useRef({ loadFirstPage, loadDishes, loadWastage });
-  useEffect(() => { loaders.current = { loadFirstPage, loadDishes, loadWastage }; });
+  const loaders = useRef({ loadFirstPage, loadDishes, loadWastage, loadOverview });
+  useEffect(() => { loaders.current = { loadFirstPage, loadDishes, loadWastage, loadOverview }; });
 
   useFocusEffect(useCallback(() => {
     if (tab === 'materials') loaders.current.loadFirstPage({ quiet: true });
-    if (tab === 'dishes') loaders.current.loadDishes();
+    if (tab === 'dishes') { loaders.current.loadDishes(); loaders.current.loadOverview(); }
     if (tab === 'wastage') loaders.current.loadWastage(range);
   }, [tab, range]));
 
@@ -186,7 +216,7 @@ export default function StockScreen() {
 
   const switchTab = (t: Tab) => {
     setTab(t);
-    if (t === 'dishes' && dishes.length === 0) loadDishes();
+    if (t === 'dishes') { if (dishes.length === 0) loadDishes(); if (!overview) loadOverview(); }
     if (t === 'wastage' && wastage.length === 0) loadWastage(range);
   };
 
@@ -209,6 +239,11 @@ export default function StockScreen() {
             <Text style={s.headerSub}>
               {counts.total} material{counts.total === 1 ? '' : 's'}
               {counts.out + counts.low > 0 ? ` · ${counts.out + counts.low} need attention` : ''}
+            </Text>
+          )}
+          {tab === 'dishes' && overview && (
+            <Text style={s.headerSub}>
+              {overview.linked} of {overview.total} dishes linked
             </Text>
           )}
         </View>
@@ -369,34 +404,62 @@ export default function StockScreen() {
             <View style={s.center}><ActivityIndicator color={C.primary} /></View>
           ) : (
             <FlatList
-              data={dishes.filter((d) =>
-                (!q || d.name.toLowerCase().includes(q)) && (!unlinkedOnly || d.materials === 0))}
+              data={dishes}
               keyExtractor={(d) => d.menuItemId}
               contentContainerStyle={{ paddingHorizontal: Spacing.lg, paddingBottom: insets.bottom + 40 }}
               keyboardShouldPersistTaps="handled"
+              onEndReachedThreshold={0.4}
+              onEndReached={() => { if (dishNext != null && !dishesPaging) loadDishes({ offset: dishNext }); }}
               ListHeaderComponent={
-                unlinkedOnly || dishes.length === 0 ? null : (
-                  <Text style={s.dishHint}>
-                    {dishes.filter((d) => d.materials === 0).length} of {dishes.length} dishes take nothing out of stock when they sell.
-                  </Text>
-                )
+                // The banner is about the WHOLE menu, so it stays put while a
+                // search narrows the list below it.
+                overview && !q ? (
+                  <View style={{ paddingTop: Spacing.sm }}>
+                    <PriorityBanner
+                      priority={overview.priority}
+                      onPick={(id) => router.push({ pathname: '/(staff)/stock/dish/[id]', params: { id } })}
+                    />
+                  </View>
+                ) : null
               }
-              ListEmptyComponent={<Text style={s.empty}>{unlinkedOnly ? 'Every dish is linked.' : 'No dishes.'}</Text>}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={s.row}
-                  activeOpacity={0.7}
-                  onPress={() => router.push({ pathname: '/(staff)/stock/dish/[id]', params: { id: item.menuItemId } })}
-                >
-                  <Text style={[s.name, { flex: 1 }]} numberOfLines={1}>{item.name}</Text>
-                  {item.materials > 0 ? (
-                    <Text style={s.qty}>{item.materials} material{item.materials === 1 ? '' : 's'}</Text>
-                  ) : (
-                    <Text style={s.notLinked}>not linked</Text>
-                  )}
-                  <Ionicons name="chevron-forward" size={16} color={C.textTertiary} />
-                </TouchableOpacity>
-              )}
+              ListEmptyComponent={
+                <Text style={s.empty}>{unlinkedOnly ? 'Every dish is linked.' : 'No dishes.'}</Text>
+              }
+              ListFooterComponent={
+                dishesPaging ? <ActivityIndicator color={C.textMuted} style={{ marginVertical: Spacing.lg }} /> : null
+              }
+              renderItem={({ item, index }) => {
+                // Category headings come from the list's own order (the server
+                // sorts by category, then name), so no second pass is needed.
+                const cat = item.category || 'Uncategorised';
+                const prevCat = index > 0 ? (dishes[index - 1]?.category || 'Uncategorised') : null;
+                const cov = overview?.coverage.find((c) => c.category === cat);
+                return (
+                  <>
+                    {cat !== prevCat && (
+                      <CoverageRow category={cat} linked={cov?.linked ?? 0} total={cov?.total ?? 0} />
+                    )}
+                    <TouchableOpacity
+                      style={s.dishRow}
+                      activeOpacity={0.7}
+                      onPress={() => router.push({ pathname: '/(staff)/stock/dish/[id]', params: { id: item.menuItemId } })}
+                    >
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <View style={s.dishTop}>
+                          <Text style={s.name} numberOfLines={1}>{item.name}</Text>
+                          {item.estimated > 0 && <Text style={s.estTag}>{item.estimated} est</Text>}
+                        </View>
+                        {item.materials > 0 ? (
+                          <MaterialChips lines={item.lines ?? []} total={item.materials} />
+                        ) : (
+                          <NotLinked units={soldBy[item.menuItemId]} />
+                        )}
+                      </View>
+                      <Ionicons name="chevron-forward" size={16} color={C.textTertiary} />
+                    </TouchableOpacity>
+                  </>
+                );
+              }}
             />
           )}
         </>
@@ -538,8 +601,15 @@ const s = StyleSheet.create({
   rowSub: { color: C.textTertiary, fontSize: 11, marginTop: 2 },
   qty: { width: 82, textAlign: 'right', color: C.textPrimary, fontSize: 14, fontWeight: '600', fontVariant: ['tabular-nums'] },
   state: { width: 34, textAlign: 'right', fontSize: 9.5, fontWeight: '700', letterSpacing: 0.4 },
-  notLinked: { color: C.warning, fontSize: 12.5, fontWeight: '600' },
-  dishHint: { color: C.textTertiary, fontSize: 12.5, lineHeight: 18, paddingVertical: Spacing.md },
+  dishRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: C.borderSubtle,
+  },
+  dishTop: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  estTag: {
+    color: C.warning, fontSize: 9.5, fontWeight: '700', letterSpacing: 0.4,
+    backgroundColor: C.warningSoft, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1,
+  },
   empty: { color: C.textMuted, textAlign: 'center', marginTop: 40, fontSize: 14 },
   endNote: { color: C.textMuted, textAlign: 'center', fontSize: 11.5, marginTop: Spacing.lg },
   emptyAdd: {

@@ -1389,6 +1389,21 @@ export interface CrewDish {
   materials: number;
   /** Of those, how many amounts came from a bulk link and were never confirmed. */
   estimated: number;
+  /** The first few recipe lines, for chips on the row. */
+  lines?: { name: string; qty: number; unit: StockBaseUnit }[];
+}
+
+/** What the Menu linking tab opens on. */
+export interface CrewLinkingOverview {
+  coverage: { category: string; linked: number; total: number }[];
+  linked: number;
+  total: number;
+  priority: {
+    days: number;
+    dishes: { menuItemId: string; name: string; units: number }[];
+    /** Share of everything sold that these unlinked dishes account for. */
+    sharePct: number;
+  };
 }
 
 /** One dish as the bulk linker sees it: what it takes of ONE material. */
@@ -1485,16 +1500,25 @@ export const crewStock = {
    * what the wastage picker needs (only they can come off stock as plates).
    * The recipe tab asks for `all` / `without`.
    */
-  dishes: (search?: string, filter?: 'all' | 'with' | 'without' | 'estimated') => {
+  dishes: (
+    search?: string,
+    filter?: 'all' | 'with' | 'without' | 'estimated',
+    page?: { limit: number; offset: number },
+  ) => {
     const q = new URLSearchParams();
     if (search) q.set('search', search);
     if (filter) q.set('filter', filter);
+    if (page) { q.set('limit', String(page.limit)); q.set('offset', String(page.offset)); }
     const s = q.toString();
     return request<{
       success: true; data: CrewDish[];
-      meta?: { withRecipe: number; estimated: number; total: number };
+      meta?: { withRecipe: number; estimated: number; total: number; matched: number; nextOffset: number | null };
     }>('GET', `/api/crew/stock/dishes${s ? `?${s}` : ''}`, undefined, true);
   },
+
+  /** Coverage per category + the unlinked dishes that are actually selling. */
+  linkingOverview: () =>
+    request<{ success: true; data: CrewLinkingOverview }>('GET', '/api/crew/stock/dishes/overview', undefined, true),
 
   /** Every dish with what it takes of ONE material — the bulk linker's list. */
   dishesForMaterial: (materialId: string, opts: {
