@@ -41,7 +41,7 @@ import { normalizeChannel, isOffPremise, channelLabel } from '../../constants/ch
 import {
   crewSessions, crewOrders, crewDiners, crewMemberships, restaurantApi, crewOffers,
 } from '../../services/api';
-import type { MenuItem, ModifierGroup, CrewOffer } from '../../services/api';
+import type { MenuItem, ModifierGroup, CrewOffer, CrewOrderPreview } from '../../services/api';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { CartReviewSheet, type CartLine } from '../../components/ui/CartReviewSheet';
 import { Skeleton } from '../../components/ui/Skeleton';
@@ -822,27 +822,57 @@ export default function OrderMenuScreen() {
     if (digits.length === 10) void lookupGuest(digits);
   };
 
+  // The exact payload placeOrder sends — the bill preview posts the same one,
+  // so the projection is priced from what will actually be ordered.
+  const buildOrderItems = useCallback(() => Object.entries(cart).map(([item_id, qty]) => {
+    const mods = cartModifiers[item_id];
+    const menuItem = menuItems.find(m => m.id === item_id);
+    const modSummary = mods?.length
+      ? mods.map(({ groupId, optionId }) => {
+        const g = menuItem?.modifierGroups?.find(g => g.id === groupId);
+        return g?.options.find(o => o.id === optionId)?.name;
+      }).filter(Boolean).join(', ')
+      : undefined;
+    return {
+      item_id, qty,
+      ...(cartNotes[item_id]?.trim() ? { note: cartNotes[item_id].trim() } : {}),
+      ...(mods?.length ? { selectedModifiers: mods, modifiers_summary: modSummary } : {}),
+    };
+  }), [cart, cartModifiers, cartNotes, menuItems]);
+
+  // Projected bill for the order summary (dine-in): this order plus what the
+  // table already owes, CGST/SGST split, priced by the server with the same
+  // code that places the order. Nothing is computed here. Debounced, and a
+  // late answer for an older cart never overwrites a newer one.
+  const [billPreview, setBillPreview] = useState<CrewOrderPreview | null>(null);
+  const [billPreviewState, setBillPreviewState] = useState<'idle' | 'loading' | 'error'>('idle');
+  const previewSeq = useRef(0);
+  const showBillPreview = !isTakeaway && !!sessionId;
+  useEffect(() => {
+    if (!reviewOpen || !showBillPreview) return;
+    const items = buildOrderItems();
+    if (items.length === 0) { setBillPreview(null); return; }
+    const seq = ++previewSeq.current;
+    setBillPreviewState('loading');
+    const t = setTimeout(() => {
+      crewOrders.previewOrder(sessionId!, items)
+        .then((res) => {
+          if (seq !== previewSeq.current) return;
+          setBillPreview(res.data);
+          setBillPreviewState('idle');
+        })
+        .catch(() => { if (seq === previewSeq.current) setBillPreviewState('error'); });
+    }, 300);
+    return () => clearTimeout(t);
+  }, [reviewOpen, showBillPreview, sessionId, buildOrderItems]);
+
   const confirmAndPlace = async () => {
     const phone = coPhone.replace(/\D/g, '');
     if (phone.length > 0 && phone.length !== 10) {
       setCoError('Enter a valid 10-digit number, or leave blank for a walk-in guest.');
       return;
     }
-    const items = Object.entries(cart).map(([item_id, qty]) => {
-      const mods = cartModifiers[item_id];
-      const menuItem = menuItems.find(m => m.id === item_id);
-      const modSummary = mods?.length
-        ? mods.map(({ groupId, optionId }) => {
-          const g = menuItem?.modifierGroups?.find(g => g.id === groupId);
-          return g?.options.find(o => o.id === optionId)?.name;
-        }).filter(Boolean).join(', ')
-        : undefined;
-      return {
-        item_id, qty,
-        ...(cartNotes[item_id]?.trim() ? { note: cartNotes[item_id].trim() } : {}),
-        ...(mods?.length ? { selectedModifiers: mods, modifiers_summary: modSummary } : {}),
-      };
-    });
+    const items = buildOrderItems();
     if (items.length === 0) { setCoError('Cart is empty.'); return; }
     if (!sessionId) { setCoError('No active session. Go back and try again.'); return; }
 
@@ -1241,6 +1271,7 @@ export default function OrderMenuScreen() {
       onInc={addToCart}
       onDec={removeFromCart}
       onCheckout={() => { setReviewOpen(false); openCheckout(); }}
+      bill={showBillPreview ? { data: billPreview, state: billPreviewState } : undefined}
     />
   );
 

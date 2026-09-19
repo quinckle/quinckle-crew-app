@@ -900,6 +900,23 @@ export const crewOffers = {
     ),
 };
 
+export interface PreviewTaxLine { rate: number; taxableValue: number; cgst: number; sgst: number; amount: number }
+export interface PreviewChargeLine { id: string; name: string; amount: number }
+export interface CrewOrderPreview {
+  order: {
+    subtotal: number; discount: number; discount_note: string | null;
+    charge_lines: PreviewChargeLine[]; tax_lines: PreviewTaxLine[];
+    tax_total: number; round_off: number; total: number;
+  };
+  /** The bill before this order. 0 on a table's first order. */
+  current_total: number;
+  projected: {
+    subtotal: number; discount: number;
+    charge_lines: PreviewChargeLine[]; tax_lines: PreviewTaxLine[];
+    tax_total: number; tip: number; round_off: number; total: number;
+  };
+}
+
 export const crewOrders = {
   getActive: () =>
     request<{ orders: ActiveOrder[] }>('GET', '/api/crew/orders/active', undefined, true),
@@ -971,6 +988,18 @@ export const crewOrders = {
 
   // Response `total` is the order's full payable amount (breakdown.total, tax
   // included) — no follow-up payment-context fetch is needed to display it.
+  /**
+   * Price an order WITHOUT placing it: this order alone, and the whole bill once
+   * it lands (CGST/SGST by rate). Same body as placeOrder; read-only.
+   */
+  previewOrder: (sessionId: string, items: { item_id: string; qty: number; note?: string; selectedModifiers?: { groupId: string; optionId: string }[]; modifiers_summary?: string }[]) =>
+    request<{ success: boolean; data: CrewOrderPreview }>(
+      'POST',
+      '/api/crew/orders/preview',
+      { session_id: sessionId, items },
+      true,
+    ),
+
   placeOrder: (sessionId: string, items: { item_id: string; qty: number; note?: string; selectedModifiers?: { groupId: string; optionId: string }[]; modifiers_summary?: string }[]) =>
     request<{ success: boolean; order_id: string; status: string; total: number }>(
       'POST',
