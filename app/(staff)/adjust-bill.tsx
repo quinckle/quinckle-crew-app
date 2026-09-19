@@ -32,6 +32,7 @@ import { Stack, useLocalSearchParams, useNavigation, useRouter } from 'expo-rout
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { crewSessions, type BillBreakdown } from '../../services/api';
+import { splitBillTax } from '../../services/billTax';
 import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { AssignTipSheet, type Allocation, type Staff } from '../../components/ui/AssignTipSheet';
@@ -143,6 +144,13 @@ function ProjectedBill({
   const multiRate = taxLines.length > 1;
   const taxable = taxLines.reduce((n, l) => n + l.taxableValue, 0);
   const hasRoundOff = Math.abs(b.roundOff ?? 0) >= 0.005;
+  // GST already inside the prices is not added, so it leaves the lines that
+  // sum to the total and prints as a breakup under it (see billTax.ts).
+  const taxSplit = splitBillTax({
+    subtotal: b.subtotal, discount: b.discount, charges: b.chargesTotal,
+    tip: b.tip, roundOff: b.roundOff, tax: b.taxAmount, total: b.total,
+  });
+  const taxIncluded = taxSplit.included > 0;
   const changeCount =
     (changed.discount ? 1 : 0) + (changed.tip ? 1 : 0) + changed.charges.size;
 
@@ -163,6 +171,32 @@ function ProjectedBill({
         opts?.tone === 'muted' && s.projMuted,
       ]}>{value}</Text>
     </View>
+  );
+
+  const gstRows = (tone?: 'muted') => (
+    taxLines.length > 0 ? (
+      <>
+        {row('taxable', 'Taxable value', rupees(taxable, true), { tone })}
+        {taxLines.map((l) => (
+          <React.Fragment key={l.rate}>
+            {row(
+              `c${l.rate}`,
+              multiRate ? `CGST ${l.rate / 2}% on ${rupees(l.taxableValue)}` : `CGST ${l.rate / 2}%`,
+              rupees(l.cgst, true),
+              { tone },
+            )}
+            {row(
+              `s${l.rate}`,
+              multiRate ? `SGST ${l.rate / 2}% on ${rupees(l.taxableValue)}` : `SGST ${l.rate / 2}%`,
+              rupees(l.sgst, true),
+              { tone },
+            )}
+          </React.Fragment>
+        ))}
+      </>
+    ) : b.taxAmount > 0 ? (
+      row('tax', 'Tax', rupees(b.taxAmount, true), { tone })
+    ) : null
   );
 
   return (
@@ -188,34 +222,16 @@ function ProjectedBill({
           </>
         )}
 
-        {(preview.chargeLines.length > 0 || b.taxAmount > 0 || b.tip > 0 || hasRoundOff) && (
+        {(preview.chargeLines.length > 0 || taxSplit.added > 0 || b.tip > 0 || hasRoundOff) && (
           <>
             <View style={s.projRule} />
             {preview.chargeLines.map((c) =>
               row(c.id, c.name, rupees(c.amount, true), { mark: changed.charges.has(c.id) }),
             )}
 
-            {taxLines.length > 0 ? (
-              <>
-                {row('taxable', 'Taxable value', rupees(taxable, true))}
-                {taxLines.map((l) => (
-                  <React.Fragment key={l.rate}>
-                    {row(
-                      `c${l.rate}`,
-                      multiRate ? `CGST ${l.rate / 2}% on ${rupees(l.taxableValue)}` : `CGST ${l.rate / 2}%`,
-                      rupees(l.cgst, true),
-                    )}
-                    {row(
-                      `s${l.rate}`,
-                      multiRate ? `SGST ${l.rate / 2}% on ${rupees(l.taxableValue)}` : `SGST ${l.rate / 2}%`,
-                      rupees(l.sgst, true),
-                    )}
-                  </React.Fragment>
-                ))}
-              </>
-            ) : b.taxAmount > 0 ? (
-              row('tax', 'Tax', rupees(b.taxAmount, true))
-            ) : null}
+            {taxIncluded
+              ? taxSplit.added > 0 && row('gstAdded', 'GST added', rupees(taxSplit.added, true))
+              : gstRows()}
 
             {b.tip > 0 && row('tip', 'Tip', rupees(b.tip, true), { mark: changed.tip })}
             {hasRoundOff && row(
@@ -241,6 +257,14 @@ function ProjectedBill({
               {preview.delta < 0 ? '−' : '+'}{rupees(Math.abs(preview.delta))}
             </Text>
           </View>
+        )}
+        {taxIncluded && (
+          <>
+            <View style={s.projRule} />
+            <Text style={s.projGroup}>{taxSplit.added > 0 ? 'GST breakup' : 'GST included in total'}</Text>
+            {gstRows('muted')}
+            {taxSplit.added > 0 && row('gstIncl', 'Already in prices', rupees(taxSplit.included, true), { tone: 'muted' })}
+          </>
         )}
       </View>
 

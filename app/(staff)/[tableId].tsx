@@ -338,13 +338,17 @@ export default function TableDetail() {
       const tax     = bd?.taxAmount ?? bill.tax_total ?? (subt * (rate / 100));
       const charges = bd?.chargesTotal ?? bill.service_charge_total ?? 0;
       const tipV    = bd?.tip ?? bill.tip_total ?? 0;
-      const explicitDisc = bd?.discount ?? bill.discount_total ?? 0;
+      const explicitDisc = bd?.discount ?? bill.discount_total;
       const explicitGrand = bd?.total ?? bill.total_payable;
       // Rupee round-off. 0 on older backends and on legacy bills, where the tax
       // was already whole rupees and nothing needed rounding.
       const roundV  = bd?.roundOff ?? bill.round_off ?? 0;
-      const inferredDisc = explicitDisc > 0 || explicitGrand == null
-        ? explicitDisc
+      // Inferred ONLY when the backend reports no discount at all. A reported 0
+      // is a real 0: at a tax-inclusive venue the GST is inside the prices, so
+      // "subtotal + tax − total" is the embedded GST, not a discount — this
+      // used to print a phantom "Discount −48" on every inclusive bill.
+      const inferredDisc = explicitDisc != null || explicitGrand == null
+        ? (explicitDisc ?? 0)
         : Math.max(0, Math.round((subt + tax + charges + tipV + roundV - explicitGrand) * 100) / 100);
       const disc    = inferredDisc;
       const grand   = explicitGrand ?? (subt + tax + charges + tipV - disc + roundV);

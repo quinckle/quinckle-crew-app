@@ -11,6 +11,7 @@
 import { profileFromWidth, type PaperProfile } from './paperProfile';
 import { isOffPremise, channelLabel } from '../constants/channel';
 import type { CrewLadder } from './api';
+import { splitBillTax } from './billTax';
 
 export interface InvoiceItem {
   name: string;
@@ -73,8 +74,9 @@ export interface InvoiceBill {
   /** Rate-wise GST grouping (Phase 2). When present, one GST block is printed per
    *  rate; falls back to the single `tax`/`taxRate` line when absent (legacy). */
   taxLines?: Array<{ rate: number; taxableValue: number; cgst: number; sgst: number; amount: number }>;
-  /** When true, menu prices already include GST — a note clarifies the tax is
-   *  shown for information and not added on top (Phase 4). */
+  /** Unused by the layout: whether GST was added or already inside the prices
+   *  is derived from the totals (see billTax.ts), which also covers a charge
+   *  whose own setting differs from the venue's. Kept so callers still compile. */
   pricesIncludeTax?: boolean;
   /** Signed rupee rounding that reconciles the paise-precision GST lines to the
    *  whole-rupee `grandTotal` (e.g. -0.30). Printed as its own line when non-zero
@@ -545,28 +547,51 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   // line when no per-rate data is present (legacy bills).
   const rateLines = (bill.taxLines ?? []).filter((l) => l.amount > 0);
   const half = (rate: number) => (rate / 2).toFixed(1).replace(/\.0$/, '');
-  if (rateLines.length > 0) {
-    for (const l of rateLines) {
-      if (bill.taxDisplayMode === 'split') {
-        lines.push(`[L]${leftRight(`CGST (${half(l.rate)}%)`, fmt2(l.cgst), W)}`);
-        lines.push(`[L]${leftRight(`SGST (${half(l.rate)}%)`, fmt2(l.sgst), W)}`);
+  const gstRows = (): string[] => {
+    const out: string[] = [];
+    if (rateLines.length > 0) {
+      for (const l of rateLines) {
+        if (bill.taxDisplayMode === 'split') {
+          out.push(`[L]${leftRight(`CGST (${half(l.rate)}%)`, fmt2(l.cgst), W)}`);
+          out.push(`[L]${leftRight(`SGST (${half(l.rate)}%)`, fmt2(l.sgst), W)}`);
+        } else {
+          out.push(`[L]${leftRight(`GST (${l.rate}%)`, fmt2(l.amount), W)}`);
+        }
+      }
+    } else if (bill.tax > 0) {
+      if (bill.gstRegistered && bill.taxDisplayMode === 'split' && bill.taxRate) {
+        // Legacy bills (whole-rupee stored tax, no rate lines) keep the old
+        // round-then-halve split so a reprint matches the paper the diner got.
+        const cgst = Math.round(bill.tax / 2);
+        out.push(`[L]${leftRight(`CGST (${half(bill.taxRate)}%)`, fmt(cgst), W)}`);
+        out.push(`[L]${leftRight(`SGST (${half(bill.taxRate)}%)`, fmt(bill.tax - cgst), W)}`);
       } else {
-        lines.push(`[L]${leftRight(`GST (${l.rate}%)`, fmt2(l.amount), W)}`);
+        const taxLabel = bill.gstRegistered
+          ? (bill.taxRate ? `GST (${bill.taxRate}%)` : 'GST')
+          : 'Tax';
+        out.push(`[L]${leftRight(taxLabel, fmt(bill.tax), W)}`);
       }
     }
-  } else if (bill.tax > 0) {
-    if (bill.gstRegistered && bill.taxDisplayMode === 'split' && bill.taxRate) {
-      // Legacy bills (whole-rupee stored tax, no rate lines) keep the old
-      // round-then-halve split so a reprint matches the paper the diner got.
-      const cgst = Math.round(bill.tax / 2);
-      lines.push(`[L]${leftRight(`CGST (${half(bill.taxRate)}%)`, fmt(cgst), W)}`);
-      lines.push(`[L]${leftRight(`SGST (${half(bill.taxRate)}%)`, fmt(bill.tax - cgst), W)}`);
-    } else {
-      const taxLabel = bill.gstRegistered
-        ? (bill.taxRate ? `GST (${bill.taxRate}%)` : 'GST')
-        : 'Tax';
-      lines.push(`[L]${leftRight(taxLabel, fmt(bill.tax), W)}`);
-    }
+    return out;
+  };
+  // Inclusive prices: that GST is already inside the lines above, so it must
+  // not sit in the column that sums to TOTAL. Only the part actually added
+  // (e.g. an exclusive charge at an inclusive venue) goes in the column; the
+  // full breakup prints under TOTAL. All-exclusive bills print exactly as before.
+  const taxSplit = splitBillTax({
+    subtotal: bill.subtotal,
+    discount: bill.discount,
+    charges: bill.charges,
+    tip: bill.tip,
+    roundOff: bill.roundOff,
+    tax: bill.tax,
+    total: bill.grandTotal,
+  });
+  const taxIncluded = taxSplit.included > 0;
+  if (!taxIncluded) {
+    lines.push(...gstRows());
+  } else if (taxSplit.added > 0) {
+    lines.push(`[L]${leftRight('GST added', fmt2(taxSplit.added), W)}`);
   }
   // Tip sits after tax: it is never taxed and never charged on.
   if ((bill.tip ?? 0) > 0) {
@@ -579,14 +604,21 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
     const shown = roundOff < 0 ? `-${fmt2(Math.abs(roundOff))}` : `+${fmt2(roundOff)}`;
     lines.push(`[L]${leftRight('Round off', shown, W)}`);
   }
-  // Inclusive pricing: the GST above is embedded in the prices, not added — say
-  // so, otherwise the unchanged TOTAL reads like a mistake (Phase 4).
-  if (bill.pricesIncludeTax && bill.tax > 0) {
-    lines.push('[L](GST included in the prices above)');
-  }
   lines.push(`[L]${D}`);
   lines.push(`[L]<b>${leftRight('TOTAL', fmt(bill.grandTotal), W)}</b>`);
   lines.push(`[L]${D}`);
+
+  // ── GST breakup (inclusive prices) ────────────────────────────────────────
+  // Informational: none of this is added — it is the tax inside TOTAL.
+  if (taxIncluded) {
+    lines.push(`[L]${taxSplit.added > 0 ? 'GST breakup' : 'GST included in total'}`);
+    const taxable = rateLines.reduce((n, l) => n + l.taxableValue, 0);
+    if (taxable > 0) lines.push(`[L]${leftRight('Taxable value', fmt2(taxable), W)}`);
+    lines.push(...gstRows());
+    if (taxSplit.added > 0) {
+      lines.push(`[L]${leftRight('Incl. in prices', fmt2(taxSplit.included), W)}`);
+    }
+  }
 
   // ── Khata (pay later) ─────────────────────────────────────────────────────
   // The bill is settled at the table but the money is owed on the customer's
