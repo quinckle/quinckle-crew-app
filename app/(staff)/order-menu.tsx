@@ -6,7 +6,8 @@
  *
  * Features:
  *  - Category dropdown next to search bar (not a chips row)
- *  - Item image + veg/non-veg icon + real & discounted price + discount % badge
+ *  - Full-bleed photo tiles: name/price on a scrim over the item photo,
+ *    veg/non-veg icon, real & discounted price, discount % badge
  *  - Collapsible per-item note input
  *  - KeyboardAvoidingView so search bar never hides behind keyboard
  *  - Modifier bottom sheet (BottomSheet component)
@@ -32,6 +33,7 @@ import {
   View,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -83,14 +85,18 @@ const vegStyles = StyleSheet.create({
 
 // media.quinckle.com uploads have Sharp-generated R2 variants (same convention
 // as the diner web themes): `<base>.webp-thumb.webp` is the 400px thumb —
-// plenty for this 76px render at 3x DPR. Legacy uploads without variants fall
+// enough for a ~170dp tile at 2-3x DPR. Legacy uploads without variants fall
 // back to the base URL via onError.
 const menuThumbUrl = (url: string) =>
   url.includes('media.quinckle.com') && url.endsWith('.webp') ? `${url}-thumb.webp` : url;
 
-// One card for every width — phone gets two columns, wider screens more.
-// Tapping anywhere on the card adds one (items with options open the options
-// sheet, same as before); the − qty + control under the price takes one off.
+// One tile for every width — phone gets two columns, wider screens more.
+// The photo IS the card: it fills the tile and the name/price sit on a scrim
+// over its bottom edge, so a grid of food reads as food and not as a grid of
+// buttons. Tapping anywhere adds one (items with options open the options
+// sheet, same as before); the - qty + control appears on the scrim once
+// something is in the order. Items with no photo keep the same tile shape and
+// fall back to a watermark glyph, so rows never go ragged.
 // Memoized: every prop is a per-card slice and every callback is identity-
 // stable in the parent, so a tap re-renders only the card that changed.
 const MenuItemCard = React.memo(function MenuItemCard({
@@ -123,8 +129,8 @@ const MenuItemCard = React.memo(function MenuItemCard({
       accessibilityRole="button"
       accessibilityLabel={`Add ${item.name}, ₹${price.toFixed(0)}${qty > 0 ? `, ${qty} in order` : ''}`}
     >
-      <View style={cardStyles.imgWrap}>
-        {hasImage ? (
+      {hasImage ? (
+        <>
           <Image
             source={{ uri: imgFailed ? item.imageUrl! : menuThumbUrl(item.imageUrl!) }}
             style={cardStyles.img}
@@ -133,28 +139,38 @@ const MenuItemCard = React.memo(function MenuItemCard({
             transition={0}
             onError={() => setImgFailed(true)}
           />
-        ) : (
-          <View style={[cardStyles.img, cardStyles.imgPlaceholder]}>
-            <Ionicons name="fast-food-outline" size={26} color={QuinckleColors.textMuted} />
-          </View>
-        )}
-        {discountPct > 0 && (
-          <View style={cardStyles.discountBadge}>
-            <Text style={cardStyles.discountText}>{discountPct}% OFF</Text>
-          </View>
-        )}
-        {/* How many are in the order, readable from across the grid. */}
-        {qty > 0 && (
-          <View style={cardStyles.qtyBadge}>
-            <Text style={cardStyles.qtyBadgeText}>{qty}</Text>
-          </View>
-        )}
-      </View>
+          {/* Keeps the name legible over a bright photo without dimming the dish. */}
+          <LinearGradient
+            colors={['transparent', 'rgba(10,10,11,0.55)', 'rgba(10,10,11,0.94)']}
+            locations={[0, 0.45, 1]}
+            style={cardStyles.scrim}
+            pointerEvents="none"
+          />
+        </>
+      ) : (
+        <View style={cardStyles.watermark} pointerEvents="none">
+          <Ionicons name="fast-food-outline" size={34} color={QuinckleColors.textMuted} />
+        </View>
+      )}
 
-      <View style={cardStyles.body}>
-        <Text style={cardStyles.name} numberOfLines={2}>{item.name}</Text>
-        <View style={cardStyles.priceRow}>
+      {discountPct > 0 && (
+        <View style={cardStyles.discountBadge}>
+          <Text style={cardStyles.discountText}>{discountPct}% OFF</Text>
+        </View>
+      )}
+      {/* How many are in the order, readable from across the grid. */}
+      {qty > 0 && (
+        <View style={cardStyles.qtyBadge}>
+          <Text style={cardStyles.qtyBadgeText}>{qty}</Text>
+        </View>
+      )}
+
+      <View style={cardStyles.info}>
+        <View style={cardStyles.nameRow}>
           <VegIcon isVeg={item.isVeg} />
+          <Text style={cardStyles.name} numberOfLines={2}>{item.name}</Text>
+        </View>
+        <View style={cardStyles.priceRow}>
           <Text style={cardStyles.price}>₹{price.toFixed(0)}</Text>
           {origPrice && discountPct > 0 && (
             <Text style={cardStyles.originalPrice}>₹{origPrice.toFixed(0)}</Text>
@@ -163,18 +179,17 @@ const MenuItemCard = React.memo(function MenuItemCard({
         </View>
         {!!note && <Text style={cardStyles.note} numberOfLines={1}>{note}</Text>}
 
-        {/* Docked to the bottom so every card in a row lines up. With nothing
-            in the order the slot says what a tap does; the buttons inside
-            take their own presses, so − never also adds. */}
-        {qty > 0 ? (
+        {/* Only once something is in the order — an empty tile stays all photo.
+            The buttons take their own presses, so - never also adds. */}
+        {qty > 0 && (
           <View style={cardStyles.controls}>
             <View style={cardStyles.qtyControl}>
               <TouchableOpacity onPress={() => onRemove(item.id)} style={cardStyles.qtyBtn} hitSlop={6} accessibilityLabel={`One less ${item.name}`}>
-                <Ionicons name="remove" size={18} color={QuinckleColors.primary} />
+                <Ionicons name="remove" size={17} color={QuinckleColors.primary} />
               </TouchableOpacity>
               <Text style={cardStyles.qtyText}>{qty}</Text>
               <TouchableOpacity onPress={add} style={cardStyles.qtyBtn} hitSlop={6} accessibilityLabel={`One more ${item.name}`}>
-                <Ionicons name="add" size={18} color={QuinckleColors.primary} />
+                <Ionicons name="add" size={17} color={QuinckleColors.primary} />
               </TouchableOpacity>
             </View>
             <TouchableOpacity
@@ -183,13 +198,8 @@ const MenuItemCard = React.memo(function MenuItemCard({
               hitSlop={4}
               accessibilityLabel={note ? `Edit note for ${item.name}` : `Add note for ${item.name}`}
             >
-              <Ionicons name="create-outline" size={16} color={note ? QuinckleColors.primary : QuinckleColors.textSecondary} />
+              <Ionicons name="create-outline" size={15} color={note ? QuinckleColors.primary : QuinckleColors.textSecondary} />
             </TouchableOpacity>
-          </View>
-        ) : (
-          <View style={cardStyles.addHint}>
-            <Ionicons name="add" size={15} color={QuinckleColors.primary} />
-            <Text style={cardStyles.addHintText}>Add</Text>
           </View>
         )}
       </View>
@@ -198,69 +208,64 @@ const MenuItemCard = React.memo(function MenuItemCard({
 });
 
 function CardSkeleton() {
+  // Darker than the tile so the pulsing block reads against it.
   return (
-    <View style={cardStyles.card}>
-      <Skeleton width="100%" height={96} radius={0} />
-      <View style={[cardStyles.body, { gap: 8 }]}>
-        <Skeleton width="80%" height={13} />
-        <Skeleton width="45%" height={13} />
-        <Skeleton width="100%" height={36} radius={Radius.md} />
-      </View>
+    <View style={[cardStyles.card, { backgroundColor: QuinckleColors.surface }]}>
+      <Skeleton radius={0} style={StyleSheet.absoluteFillObject} />
     </View>
   );
 }
 
 const cardStyles = StyleSheet.create({
+  // Portrait tile: tall enough for the photo to carry the card, short enough
+  // that two rows still fit on a phone screen.
   card: {
     flex: 1,
-    backgroundColor: QuinckleColors.surface,
+    aspectRatio: 0.82,
+    backgroundColor: QuinckleColors.surfaceElevated,
     borderRadius: Radius.lg,
     borderWidth: 1,
     borderColor: QuinckleColors.border,
     overflow: 'hidden',
+    justifyContent: 'flex-end',
   },
-  cardActive: { borderColor: QuinckleColors.primary },
+  cardActive: { borderColor: QuinckleColors.primary, borderWidth: 2 },
   cardPressed: { opacity: 0.85 },
-  imgWrap: { width: '100%', aspectRatio: 1.6, backgroundColor: QuinckleColors.surfaceElevated },
-  img: { width: '100%', height: '100%' },
-  imgPlaceholder: { alignItems: 'center', justifyContent: 'center' },
+  img: { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%' },
+  scrim: { position: 'absolute', left: 0, right: 0, bottom: 0, height: '62%' },
+  watermark: { position: 'absolute', left: 0, right: 0, top: 0, height: '58%', alignItems: 'center', justifyContent: 'center' },
   discountBadge: {
-    position: 'absolute', top: 6, left: 6,
-    backgroundColor: QuinckleColors.successSoft, borderRadius: Radius.pill,
-    paddingHorizontal: 6, paddingVertical: 2, borderWidth: 1, borderColor: QuinckleColors.successBorder,
+    position: 'absolute', top: 7, left: 7,
+    backgroundColor: QuinckleColors.success, borderRadius: Radius.pill,
+    paddingHorizontal: 7, paddingVertical: 3,
   },
-  discountText: { fontSize: 10, fontWeight: '700', color: QuinckleColors.success },
+  discountText: { fontSize: 10, fontWeight: '700', color: '#0A0A0B' },
   qtyBadge: {
-    position: 'absolute', top: 6, right: 6, minWidth: 26, height: 26, paddingHorizontal: 7,
+    position: 'absolute', top: 7, right: 7, minWidth: 26, height: 26, paddingHorizontal: 7,
     borderRadius: 13, backgroundColor: QuinckleColors.primary, alignItems: 'center', justifyContent: 'center',
   },
   qtyBadgeText: { color: '#fff', fontSize: 13, fontWeight: '800', fontVariant: ['tabular-nums'] },
-  body: { padding: Spacing.sm + 2, gap: 5, flex: 1 },
-  name: { ...Typography.caption, color: QuinckleColors.textPrimary, fontWeight: '600', lineHeight: 17, minHeight: 34 },
-  priceRow: { flexDirection: 'row', alignItems: 'center', gap: 5, flexWrap: 'wrap' },
-  price: { fontSize: 15, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.3 },
-  originalPrice: { fontSize: 12, color: QuinckleColors.textMuted, textDecorationLine: 'line-through' },
-  optionsLabel: { fontSize: 10, fontWeight: '600', color: QuinckleColors.primary },
-  note: { fontSize: 11, color: QuinckleColors.textMuted, fontStyle: 'italic' },
-  controls: { marginTop: 'auto', flexDirection: 'row', alignItems: 'center', gap: 6 },
+  info: { padding: Spacing.sm + 2, gap: 4 },
+  nameRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 5 },
+  name: { flex: 1, ...Typography.caption, color: '#FAFAFA', fontWeight: '600', lineHeight: 16 },
+  priceRow: { flexDirection: 'row', alignItems: 'baseline', gap: 5, flexWrap: 'wrap' },
+  price: { fontSize: 15, fontWeight: '700', color: '#FAFAFA', letterSpacing: -0.3 },
+  originalPrice: { fontSize: 11, color: 'rgba(255,255,255,0.55)', textDecorationLine: 'line-through' },
+  optionsLabel: { fontSize: 10, fontWeight: '600', color: QuinckleColors.primaryLight },
+  note: { fontSize: 11, color: 'rgba(255,255,255,0.6)', fontStyle: 'italic' },
+  controls: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
   qtyControl: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: QuinckleColors.primarySoft, borderRadius: Radius.md,
-    borderWidth: 1, borderColor: QuinckleColors.primarySoftBorder, height: 36, overflow: 'hidden',
+    backgroundColor: 'rgba(10,10,11,0.72)', borderRadius: Radius.md,
+    borderWidth: 1, borderColor: QuinckleColors.primarySoftBorder, height: 32, overflow: 'hidden',
   },
-  qtyBtn: { width: 38, height: '100%', alignItems: 'center', justifyContent: 'center' },
-  qtyText: { ...Typography.body, color: QuinckleColors.primary, fontWeight: '700', minWidth: 18, textAlign: 'center' },
+  qtyBtn: { width: 34, height: '100%', alignItems: 'center', justifyContent: 'center' },
+  qtyText: { fontSize: 14, color: QuinckleColors.primary, fontWeight: '700', minWidth: 16, textAlign: 'center' },
   noteBtn: {
-    width: 36, height: 36, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: QuinckleColors.border,
+    width: 32, height: 32, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: QuinckleColors.borderStrong, backgroundColor: 'rgba(10,10,11,0.72)',
   },
-  noteBtnOn: { borderColor: QuinckleColors.primarySoftBorder, backgroundColor: QuinckleColors.primarySoft },
-  addHint: {
-    marginTop: 'auto', height: 36, borderRadius: Radius.md, flexDirection: 'row', gap: 4,
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: QuinckleColors.primarySoftBorder,
-  },
-  addHintText: { fontSize: 14, color: QuinckleColors.primary, fontWeight: '700' },
+  noteBtnOn: { borderColor: QuinckleColors.primarySoftBorder },
 });
 
 // ── Modifier bottom sheet ─────────────────────────────────────────────────────
