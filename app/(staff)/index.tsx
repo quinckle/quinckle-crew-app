@@ -2177,6 +2177,19 @@ export default function StaffDashboard() {
           )}
         </View>
 
+        {/* The splash wordmark, centred between the burger and the cash icon.
+            A flex slot rather than absolute centring: on tablet the table
+            controls sit beside the burger, so the logo takes the gap left
+            over and shrinks instead of overlapping them. */}
+        <View style={styles.headerLogoSlot} pointerEvents="none">
+          <Image
+            source={require('../../assets/images/logo/quinckle crew logo header.webp')}
+            style={styles.headerLogo}
+            resizeMode="contain"
+            accessibilityLabel="Quinckle Crew"
+          />
+        </View>
+
         <View style={styles.headerActions}>
           {/* Cash-collection icon: tap to see pending requests + today's history.
                 Red dot appears when there's at least one unresolved request. */}
@@ -3167,6 +3180,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
+  },
+  headerLogoSlot: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.sm,
+  },
+  headerLogo: {
+    width: '100%',
+    maxWidth: 102,
+    height: 30,
   },
   burgerBtn: {
     width: 42,
