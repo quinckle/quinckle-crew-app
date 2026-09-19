@@ -261,7 +261,8 @@ export default function TableDetail() {
       params: {
         sessionId,
         subtitle: `Table T${tableNum}`,
-        zone: (paramZoneName ?? '').trim(),
+        // Same placeholder as this screen's own header, so the two read alike.
+        zone: (paramZoneName ?? '').trim() || 'Dine-in',
         total: String(grandTotal),
       },
     });

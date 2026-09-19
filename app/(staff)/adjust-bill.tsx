@@ -19,8 +19,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Animated,
-  Easing,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -30,7 +28,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { crewSessions, type BillBreakdown } from '../../services/api';
@@ -268,9 +266,9 @@ export default function AdjustBillScreen() {
   }>();
   const sessionId = String(params.sessionId ?? '');
   const zone = (params.zone ?? '').trim();
-  // The zone only earns a place in the header when the venue actually uses
-  // zones. "No zone" on every table of a venue that has none is noise about a
-  // feature they don't have.
+  // Callers pass the zone, or "Dine-in" for a table in a venue without zones
+  // (matching the table screen's header). Takeaway passes nothing — its order
+  // label already says what it is.
   const subtitle = [params.subtitle ? String(params.subtitle) : '', zone]
     .filter(Boolean)
     .join(' · ');
@@ -306,19 +304,21 @@ export default function AdjustBillScreen() {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewing, setPreviewing] = useState(false);
 
-  // Lift and fade. The stack cross-fades the whole transparent screen in; this
-  // drives the card rising the last few pixels and the backdrop darkening, so
-  // it reads as growing out of the control that was tapped rather than sliding
-  // in from somewhere off-screen.
-  const enter = useRef(new Animated.Value(0)).current;
+  // The slide itself is the native stack's (see _layout.tsx) — it runs on the
+  // UI thread, so nothing here can make it stutter. What CAN is mounting the
+  // form mid-slide: charges, inputs and the staff list landing in one commit
+  // while the screen is still moving. So the skeleton holds until the slide has
+  // settled, even if the data came back first. The timer is a floor in case
+  // transitionEnd never arrives (it is not guaranteed on every platform).
+  const navigation = useNavigation();
+  const [settled, setSettled] = useState(false);
   useEffect(() => {
-    Animated.timing(enter, {
-      toValue: 1,
-      duration: 260,
-      easing: Easing.bezier(0.22, 1, 0.36, 1),
-      useNativeDriver: true,
-    }).start();
-  }, [enter]);
+    const fallback = setTimeout(() => setSettled(true), 450);
+    const unsub = navigation.addListener('transitionEnd' as any, (e: any) => {
+      if (!e?.data?.closing) setSettled(true);
+    });
+    return () => { clearTimeout(fallback); unsub(); };
+  }, [navigation]);
 
   const [dialog, setDialog] = useState<{ title: string; message: string } | null>(null);
   const [confirmLeave, setConfirmLeave] = useState(false);
@@ -630,40 +630,16 @@ export default function AdjustBillScreen() {
     <View style={s.fill}>
       <Stack.Screen options={{ headerShown: false }} />
 
-      {/* The table stays mounted underneath (transparentModal) — this dims the
-          bill being adjusted, not a blank canvas. */}
-      {/* Captures touches rather than passing them through: the card's rounded
-          corners leave slivers of the table below exposed, and a tap there must
-          not reach a screen the crew thinks is covered. */}
-      <Animated.View
-        style={[
-          s.backdrop,
-          { opacity: enter.interpolate({ inputRange: [0, 1], outputRange: [0, 0.55] }) },
-        ]}
-      />
-
-      <Animated.View
-        style={[
-          s.root,
-          { paddingTop: insets.top },
-          {
-            opacity: enter,
-            transform: [
-              { translateY: enter.interpolate({ inputRange: [0, 1], outputRange: [22, 0] }) },
-              { scale: enter.interpolate({ inputRange: [0, 1], outputRange: [0.94, 1] }) },
-            ],
-          },
-        ]}
-      >
+      <View style={[s.root, { paddingTop: insets.top }]}>
 
       <View style={s.header}>
         <TouchableOpacity
           onPress={onBack}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           accessibilityRole="button"
-          accessibilityLabel="Back"
+          accessibilityLabel="Close"
         >
-          <Ionicons name="chevron-back" size={24} color={QuinckleColors.textPrimary} />
+          <Ionicons name="chevron-down" size={24} color={QuinckleColors.textPrimary} />
         </TouchableOpacity>
         <View>
           <Text style={s.headerTitle}>Adjust bill</Text>
@@ -674,7 +650,7 @@ export default function AdjustBillScreen() {
           : <View style={s.headerSpacer} />}
       </View>
 
-      {loading ? (
+      {loading || !settled ? (
         <FormSkeleton />
       ) : (
         <KeyboardAvoidingView
@@ -878,7 +854,7 @@ export default function AdjustBillScreen() {
         </KeyboardAvoidingView>
       )}
 
-      </Animated.View>
+      </View>
 
       {/* Outside the animated card: it is its own overlay, and inheriting the
           lift's scale would shrink the keypad someone is typing a PIN into. */}
@@ -917,15 +893,7 @@ export default function AdjustBillScreen() {
 
 const s = StyleSheet.create({
   fill: { flex: 1 },
-  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000' },
-  root: {
-    flex: 1,
-    backgroundColor: QuinckleColors.background,
-    // Rounded while it lifts, so the dimmed table shows at the corners instead
-    // of a hard square edge sliding over it.
-    borderRadius: Radius.xl,
-    overflow: 'hidden',
-  },
+  root: { flex: 1, backgroundColor: QuinckleColors.background },
 
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',

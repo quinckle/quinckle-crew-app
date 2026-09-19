@@ -39,22 +39,22 @@ export default function StaffLayout() {
         <Stack.Screen name="[tableId]" />
         <Stack.Screen name="order-menu" />
         <Stack.Screen name="payment-collect" />
-        {/* Lift-and-fade: the screen grows out of the control that opened it.
-            transparentModal keeps the table underneath mounted and visible, so
-            the backdrop the screen draws dims the bill you are adjusting rather
-            than a blank canvas. The stack only cross-fades; the lift itself is
-            an Animated value inside the screen.
+        {/* Slides up over the table, entirely native: the screen owns no
+            Animated values, so a busy JS thread (the fetch, the form mounting)
+            can't drop a frame. The old lift-and-fade layered a JS-started card
+            animation over the stack's own cross-fade and read as choppy.
+            fullScreenModal, not 'modal': an iOS page sheet can be flicked away.
 
             No gesture: this is a form, and a stray swipe that discards a
             half-typed bill is the reason it stopped being a bottom sheet. */}
         <Stack.Screen
           name="adjust-bill"
           options={{
-            presentation: 'transparentModal',
-            animation: 'fade',
-            animationDuration: 200,
+            presentation: 'fullScreenModal',
+            animation: 'slide_from_bottom',
+            animationDuration: 300,
             gestureEnabled: false,
-            contentStyle: { backgroundColor: 'transparent' },
+            contentStyle: { backgroundColor: QuinckleColors.background },
           }}
         />
         <Stack.Screen name="menu" options={{ presentation: 'card' }} />

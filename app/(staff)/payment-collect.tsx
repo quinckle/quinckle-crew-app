@@ -310,7 +310,13 @@ export default function PaymentCollectScreen() {
     if (!sessionId) return;
     router.push({
       pathname: '/(staff)/adjust-bill',
-      params: { sessionId, subtitle: locationLabel, total: String(resolvedTotal) },
+      params: {
+        sessionId,
+        subtitle: locationLabel,
+        // No zone reaches this screen; a table bill still says where it is.
+        zone: isOffPremise(channel) ? '' : 'Dine-in',
+        total: String(resolvedTotal),
+      },
     });
   };
 
