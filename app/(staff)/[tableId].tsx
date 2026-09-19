@@ -732,10 +732,12 @@ export default function TableDetail() {
     const buyerChanged = buyerGstin !== sessionBuyerGstin || buyerName !== sessionBuyerName;
 
     const prep = (async () => {
-      const [brandingRes, buyerRes, finalizeRes] = await Promise.allSettled([
+      const [brandingRes, buyerRes, finalizeRes, ladderRes] = await Promise.allSettled([
         staffInfo?.restaurantId ? restaurantApi.getBranding(staffInfo.restaurantId) : Promise.resolve(null),
         buyerChanged ? crewSessions.saveBuyer(sessionId, buyerGstin, buyerName) : Promise.resolve(null),
         crewSessions.finalizeInvoice(sessionId),
+        // Fresh, not the screen's copy: the bill-so-far decides the min-bill line.
+        loyaltyApi.balance(sessionId),
       ]);
 
       let invoiceMeta = restaurantInvoiceMeta;
@@ -777,7 +779,10 @@ export default function TableDetail() {
         setSessionInvoiceNumber(invoiceNumber);
       }
 
-      return { invoiceMeta, invoiceNumber, loyalty };
+      // Stands in for the snapshot on a bill printed before payment.
+      const liveLadder = ladderRes.status === 'fulfilled' ? (ladderRes.value?.data?.ladder ?? null) : null;
+
+      return { invoiceMeta, invoiceNumber, loyalty, liveLadder };
     })();
 
     // upiOmitAmount = true → static restaurant QR (diner types amount);
@@ -786,7 +791,7 @@ export default function TableDetail() {
       // Usually resolved already (prep ran while the QR sheet was up), so the
       // preparing phase is a flash at most.
       setPrintJob({ phase: 'preparing', label: 'Invoice' });
-      const { invoiceMeta, invoiceNumber, loyalty } = await prep;
+      const { invoiceMeta, invoiceNumber, loyalty, liveLadder } = await prep;
       setPrintJob({ phase: 'printing', label: 'Invoice' });
       const result = await printBill({
         restaurantName: staffInfo?.restaurantName ?? '',
@@ -828,6 +833,7 @@ export default function TableDetail() {
         thankYouMessage: invoiceMeta?.billThankYouMsg ?? null,
         footerNote: invoiceMeta?.billFooterNote ?? null,
         loyalty,
+        liveLadder,
       });
 
       if (result === 'failed') {

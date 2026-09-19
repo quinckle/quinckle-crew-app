@@ -10,6 +10,7 @@
 
 import { profileFromWidth, type PaperProfile } from './paperProfile';
 import { isOffPremise, channelLabel } from '../constants/channel';
+import type { CrewLadder } from './api';
 
 export interface InvoiceItem {
   name: string;
@@ -108,6 +109,9 @@ export interface InvoiceBill {
    *  restaurant without an active loyalty program, in which case the block
    *  simply does not print. */
   loyalty?: LoyaltyNudge | null;
+  /** The table's live stamp ladder (loyaltyApi.balance). Printed as a stamp
+   *  card on bills that have no loyalty snapshot yet — i.e. before payment. */
+  liveLadder?: CrewLadder | null;
 }
 
 /** Mirror of the backend's LoyaltyBillSnapshot (services/loyalty/bill-nudge.service.ts).
@@ -216,62 +220,109 @@ function wrapText(text: string, width: number): string[] {
 }
 
 /**
- * The ladder block (§22).
+ * The ladder block (§22), as a stamp card.
  *
- *     Chaarpai Club
- *     Step 3 of 5
- *     [######----] 60%
- *     Free cappuccino - on us today
- *     Next visit: 8% off
+ *          YOUR STAMPS  3 of 8
+ *     [X]  [X]  [3]  [ ]  [ ]  +3
+ *     Pay this bill to collect stamp 3
+ *     Your reward: Free Chai
+ *     Stamp 5: 10% off your bill
+ *     Share your number next visit.
  *
- * Uses the SAME [#####-----] bar the points nudge below already prints, rather
- * than the filled circles the screens use. That bar is proven on this hardware
- * and is pure ASCII; ● and ○ depend on the printer's active codepage and would
- * become mojibake on anything that does not carry them. A diner's bill is the
- * wrong place to discover which printers those are.
+ * Five stamps: the last one collected, this visit's, and the next three — one
+ * filled stamp reads as progress, a row of empties as starting over. "+3" is
+ * how many are left beyond the row. Pure ASCII: ✓ and ● depend on the printer's
+ * codepage and come out as mojibake on heads that lack them.
  *
- * Width-aware like everything else here: this prints at 32, 42, 48 and 69
- * characters depending on the roll the partner loaded.
+ * Two sources. A PAID bill prints Session.loyaltySnapshot, written when the
+ * visit was counted — the stamp is collected. An UNPAID bill (most bills: they
+ * print before payment, with the UPI QR) has no snapshot yet, so it prints the
+ * live ladder as a promise it can keep: "pay this bill to collect", or how much
+ * more the bill needs to reach the owner's minimum.
  */
+const STAMPS_SHOWN = 5;
+
+function stampRow(step: number, total: number, currentCollected: boolean): string {
+  const end = Math.min(total, Math.max(1, step - 1) + STAMPS_SHOWN - 1);
+  const start = Math.max(1, end - STAMPS_SHOWN + 1);
+  const cells: string[] = [];
+  for (let p = start; p <= end; p++) {
+    if (p < step || (p === step && currentCollected)) cells.push('[X]');
+    else if (p === step) cells.push(`[${p}]`);
+    else cells.push('[ ]');
+  }
+  const more = total - end;
+  return cells.join('  ') + (more > 0 ? `  +${more}` : '');
+}
+
+function stampHeader(step: number, total: number): string[] {
+  return [`[C]<b>YOUR STAMPS  ${step} of ${total}</b>`, `[C]${stampRow(step, total, false)}`];
+}
+
+function wrapped(text: string, W: number): string[] {
+  return wrapText(text, W).map((ln) => `[L]${ln}`);
+}
+
+function unlockLines(visitsToUnlock: number, minBill: number | null | undefined, W: number): string[] {
+  const out = [`[C]<b>YOUR STAMPS</b>`];
+  out.push(...wrapped(`${visitsToUnlock} more visit${visitsToUnlock === 1 ? '' : 's'} to unlock your stamp card`, W));
+  if (minBill) out.push(...wrapped(`Visits count on bills of Rs.${Math.round(minBill)}+`, W));
+  return out;
+}
+
+const COME_BACK = 'Share your number next visit.';
+
+/** Paid bill: the stamp is collected. Read verbatim from the snapshot. */
 function ladderLines(ladder: NonNullable<LoyaltyNudge['ladder']>, W: number): string[] {
   const total = Math.max(1, Math.trunc(ladder.totalSteps ?? 1));
   const step = Math.max(1, Math.min(total, Math.trunc(ladder.step ?? 1)));
 
-  const out: string[] = [];
-  out.push(`[C]<b>Rewards</b>`);
-
-  // Still qualifying: no step, no bar — just how far to go.
   const toUnlock = Math.max(0, Math.trunc(ladder.visitsToUnlock ?? 0));
-  if (toUnlock > 0) {
-    const msg = `${toUnlock} more visit${toUnlock === 1 ? '' : 's'} to unlock your rewards`;
-    for (const ln of wrapText(msg, W)) out.push(`[L]${ln}`);
-    if (ladder.minBill) {
-      for (const ln of wrapText(`Visits count on bills of Rs.${Math.round(ladder.minBill)}+`, W)) out.push(`[L]${ln}`);
-    }
-    return out;
-  }
+  if (toUnlock > 0) return unlockLines(toUnlock, ladder.minBill, W);
 
-  out.push(`[L]${leftRight('Your progress', `Step ${step} of ${total}`, W)}`);
+  const out = [`[C]<b>YOUR STAMPS  ${step} of ${total}</b>`, `[C]${stampRow(step, total, true)}`];
+  if (ladder.rewardName) out.push(...wrapped(`Today: ${ladder.rewardName}`, W));
+  // Finishing wins over "next visit": under RESET the next step is 1 again.
+  if (ladder.completesLadder) out.push(...wrapped(`Card complete - well done!`, W));
+  else if (ladder.nextRewardName) out.push(...wrapped(`Next visit: ${ladder.nextRewardName}`, W));
+  out.push(...wrapped(COME_BACK, W));
+  return out;
+}
 
-  const barW = Math.min(20, Math.max(8, W - 8));
-  const pct = Math.max(0, Math.min(100, Math.round((step / total) * 100)));
-  const filled = Math.round((pct / 100) * barW);
-  out.push(`[L][${'#'.repeat(filled)}${'-'.repeat(barW - filled)}] ${pct}%`);
+/**
+ * Unpaid bill: the live ladder for this table (the view the crew table screen
+ * shows). Prints nothing when there's no stamp to promise — not joined, or
+ * this guest's visit already counted today.
+ */
+function liveLadderLines(ladder: CrewLadder, W: number): string[] {
+  if (!ladder.optedIn) return [];
+  const toUnlock = Math.max(0, Math.trunc(ladder.visitsToUnlock ?? 0));
+  if (toUnlock > 0) return unlockLines(toUnlock, ladder.minBill, W);
+  if (ladder.eligible === false) return [];
 
-  // What they got today. An empty step prints nothing here rather than a line
-  // saying nothing happened — they still advanced, which the bar already shows.
-  if (ladder.rewardName) {
-    for (const ln of wrapText(`${ladder.rewardName} - on us today`, W)) out.push(`[L]${ln}`);
-  }
+  const total = Math.max(1, Math.trunc(ladder.totalSteps ?? 1));
+  const step = Math.max(1, Math.min(total, Math.trunc(ladder.step ?? 1)));
+  const out = stampHeader(step, total);
 
-  // Finishing wins over "next visit": under RESET the next step is 1 again, and
-  // "Next visit: 2% off" would bury the fact that they just completed a lap.
+  const shortBy = ladder.minBill && ladder.meetsMinBill === false && ladder.billSoFar != null
+    ? Math.ceil(ladder.minBill - ladder.billSoFar)
+    : 0;
+  out.push(...wrapped(
+    shortBy > 0 ? `Add Rs.${shortBy} more for stamp ${step}` : `Pay this bill to collect stamp ${step}`,
+    W,
+  ));
+  if (ladder.thisVisit?.rewardName) out.push(...wrapped(`Your reward: ${ladder.thisVisit.rewardName}`, W));
+
   if (ladder.completesLadder) {
-    for (const ln of wrapText(`You've finished the ladder!`, W)) out.push(`[L]${ln}`);
-  } else if (ladder.nextRewardName) {
-    for (const ln of wrapText(`Next visit: ${ladder.nextRewardName}`, W)) out.push(`[L]${ln}`);
+    out.push(...wrapped(`This visit completes your card!`, W));
+  } else {
+    // Name the next reward even when it sits beyond the five stamps shown —
+    // it's the line that brings them back.
+    const next = ladder.steps.find((s) => s.position > step && s.rewardName);
+    if (next) out.push(...wrapped(`Stamp ${next.position}: ${next.rewardName}`, W));
+    else if (ladder.nextVisit?.rewardName) out.push(...wrapped(`Next visit: ${ladder.nextVisit.rewardName}`, W));
   }
-
+  out.push(...wrapped(COME_BACK, W));
   return out;
 }
 
@@ -585,10 +636,14 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   // ── Loyalty nudge (§2.1) ──────────────────────────────────────────────────
   // Prints only for restaurants running an active program, and only when the
   // diner actually has something to be told.
-  if (bill.loyalty) {
-    const nudge = loyaltyLines(bill.loyalty, W);
+  // A paid bill's snapshot wins; before payment there is none, so the live
+  // ladder stands in with "pay to collect" wording.
+  {
+    let nudge = bill.loyalty ? loyaltyLines(bill.loyalty, W) : [];
+    if (nudge.length === 0 && bill.liveLadder) nudge = liveLadderLines(bill.liveLadder, W);
     if (nudge.length > 0) {
-      lines.push(`[L]${d}`);
+      // No dashed rule straight under the TOTAL's closing rule.
+      if (!lines[lines.length - 1]?.startsWith(`[L]${D}`)) lines.push(`[L]${d}`);
       for (const ln of nudge) lines.push(ln);
     }
   }

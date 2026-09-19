@@ -21,7 +21,7 @@ import QRCode from 'react-native-qrcode-svg';
 
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
-import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewTakeaway, crewDelivery, restaurantApi, printerApi, type ClosedSessionInfo } from '../../services/api';
+import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewTakeaway, crewDelivery, restaurantApi, printerApi, loyaltyApi, type ClosedSessionInfo } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { invalidateCache } from '../../services/dataCache';
 import { printKot, printBill, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
@@ -593,6 +593,11 @@ export default function StaffDashboard() {
     // an app restart. Offline/failure falls back to the mount-time snapshot.
     // Not awaited here: when the QR-choice sheet is shown, the refresh runs
     // behind it so choosing a QR overlaps the round-trip.
+    // The takeaway's stamp card, printed as "pay to collect" before payment.
+    const ladderPrep = order.sessionId
+      ? loyaltyApi.balance(order.sessionId).then((r) => r?.data?.ladder ?? null).catch(() => null)
+      : Promise.resolve(null);
+
     const prep = (async () => {
       let meta = restaurantInvoiceMeta;
       if (staffInfo?.restaurantId) {
@@ -625,7 +630,7 @@ export default function StaffDashboard() {
       // Usually resolved already (prep ran while the QR sheet was up), so the
       // preparing phase is a flash at most.
       setPrintJob({ phase: 'preparing', label: 'Invoice' });
-      const meta = await prep;
+      const [meta, liveLadder] = await Promise.all([prep, ladderPrep]);
       setPrintJob({ phase: 'printing', label: 'Invoice' });
       const result = await printBill({
         restaurantName: staffInfo?.restaurantName ?? '',
@@ -661,6 +666,7 @@ export default function StaffDashboard() {
         customerName: order.customerName,
         customerPhone: order.customerPhone,
         billerName: staffInfo?.name ?? null,
+        liveLadder,
         upiVpa: upiId,
         upiName: upiName || null,
         upiOmitAmount,
