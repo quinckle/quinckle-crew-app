@@ -1256,7 +1256,6 @@ export default function OrderMenuScreen() {
       </TouchableOpacity>
       <TouchableOpacity style={styles.placeBtn} onPress={openCheckout} activeOpacity={0.85}>
         <Text style={styles.placeBtnText}>Place Order</Text>
-        <Ionicons name="arrow-forward" size={16} color="#fff" />
       </TouchableOpacity>
     </Animated.View>
   );

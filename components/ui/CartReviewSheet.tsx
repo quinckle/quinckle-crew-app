@@ -234,7 +234,6 @@ export function CartReviewSheet({
         activeOpacity={0.85}
       >
         <Text style={styles.ctaText}>{ctaLabel}</Text>
-        <Ionicons name="arrow-forward" size={16} color="#fff" />
       </TouchableOpacity>
     </View>
   );
