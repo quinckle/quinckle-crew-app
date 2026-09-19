@@ -330,6 +330,8 @@ export default function OrderDetail() {
         grandTotal: session.billTotal,
         isPaid: session.statusView === 'PAID',
         paymentMethod,
+        customerName: session.customerName ?? null,
+        customerPhone: session.customerPhone ?? null,
         upiVpa: m?.upiId ?? null,
         upiName: m?.upiName ?? null,
         orderDateTime: session.openedAt,

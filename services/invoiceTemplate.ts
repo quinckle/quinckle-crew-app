@@ -31,8 +31,14 @@ export interface InvoiceBill {
   buyerGstin?: string | null;
   /** Recipient business/legal name printed alongside the buyer GSTIN. */
   buyerName?: string | null;
-  /** Khata: the customer the pay-later amount is recorded under. */
+  /** The diner on this bill. Printed under the header on every bill, and again
+   *  on a khata bill as the name the pay-later amount is recorded under. */
   customerName?: string | null;
+  /** Printed masked (98xxxxx210) — a bill gets left on tables and binned. */
+  customerPhone?: string | null;
+  /** Venue logo as a data: URI, already black-on-white at print size (from
+   *  /crew/print/bill-logo). Printed above the restaurant name. */
+  logoDataUri?: string | null;
   tableNumber: number | string;
   /** DINE_IN (default) prints "Table TNN"; off-premise channels print their own
    *  banner + order token. */
@@ -340,6 +346,17 @@ function formatDateTime(iso: string): string {
   }
 }
 
+/**
+ * 9876543210 → 98xxxxx210. Only a longer-than-10-digit number is treated as
+ * carrying a country code: a real 10-digit number can itself start with 91.
+ */
+export function maskPhone(raw: string): string {
+  let digits = raw.replace(/\D/g, '');
+  if (digits.length > 10) digits = digits.slice(-10);
+  if (digits.length < 6) return digits;
+  return `${digits.slice(0, 2)}${'x'.repeat(digits.length - 5)}${digits.slice(-3)}`;
+}
+
 // ── buildInvoiceText ───────────────────────────────────────────────────────────
 
 /**
@@ -360,6 +377,8 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   const tableStr = String(bill.tableNumber).padStart(2, '0');
 
   // ── Header ────────────────────────────────────────────────────────────────
+  // DantSu wants an image alone on its line, with a single alignment tag.
+  if (bill.logoDataUri) lines.push(`[C]<img>${bill.logoDataUri}</img>`);
   lines.push(`[C]<b><font size="big">${bill.restaurantName}</font></b>`);
   lines.push(`[C]${D}`);
   lines.push(bill.gstRegistered ? '[C]<b>TAX INVOICE</b>' : '[C]<b>BILL</b>');
@@ -388,6 +407,17 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   if (bill.gstRegistered && bill.gstin) lines.push(`[C]GSTIN: ${bill.gstin}`);
   lines.push(`[C]Printed: ${formatDateTime(now)}`);
   lines.push(`[L]${d}`);
+
+  // ── Customer ──────────────────────────────────────────────────────────────
+  const customerName = bill.customerName?.trim();
+  const customerPhone = bill.customerPhone?.trim() ? maskPhone(bill.customerPhone) : '';
+  if (customerName || customerPhone) {
+    if (customerName) {
+      for (const ln of wrapText(`Customer: ${customerName}`, W)) lines.push(`[L]${ln}`);
+    }
+    if (customerPhone) lines.push(`[L]Phone: ${customerPhone}`);
+    lines.push(`[L]${d}`);
+  }
 
   // ── Bill To (recipient GSTIN, B2B only) ───────────────────────────────────
   if (bill.buyerGstin) {

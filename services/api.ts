@@ -1668,6 +1668,19 @@ export const printerApi = {
     ),
 
   /**
+   * The venue logo for the top of the bill, already black-on-white and sized
+   * to `widthDots`. `data` is null when Bill Settings "Show logo" is off or the
+   * venue has no logo.
+   */
+  getBillLogo: (widthDots: number) =>
+    request<{ success: true; data: { dataUri: string } | null }>(
+      'GET',
+      `/api/crew/print/bill-logo?width=${Math.round(widthDots)}`,
+      undefined,
+      true,
+    ),
+
+  /**
    * Durable pull queue. `deviceId` identifies this device as the sink — the
    * server answers 403 PRINTER_SINK_MISMATCH if another device has since
    * paired, so the caller can clear its stale local pairing.

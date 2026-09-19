@@ -437,13 +437,69 @@ export async function printKot(
 export async function printBill(bill: InvoiceBill): Promise<'printed' | 'failed'> {
   // Honour the on-device QR toggle by dropping the VPA the template gates on.
   const billToPrint = _printUpiQr ? bill : { ...bill, upiVpa: null };
-  const text = buildInvoiceText(billToPrint, currentProfile());
+  const profile = currentProfile();
+  const logoDataUri = await billLogoFor(profile);
   try {
-    await printRaw(text);
+    await printRaw(buildInvoiceText({ ...billToPrint, logoDataUri }, profile));
     return 'printed';
   } catch {
-    return 'failed';
+    if (!logoDataUri) return 'failed';
+    // The logo is the least-proven part of the bill — never let it cost the
+    // customer their bill. The image is converted before anything is sent, so
+    // a logo failure has printed nothing yet.
+    try {
+      await printRaw(buildInvoiceText({ ...billToPrint, logoDataUri: null }, profile));
+      return 'printed';
+    } catch {
+      return 'failed';
+    }
   }
+}
+
+// ── Bill logo ────────────────────────────────────────────────────────────────
+// The server renders the venue logo black-on-white at the size it prints and
+// returns it as a data: URI, which the native layer (Glide) decodes without
+// touching the network. Kept in memory per paper width; a stale copy prints
+// straight away while a fresh one loads, so a Bill Settings change lands
+// within LOGO_TTL_MS without ever making a bill wait twice.
+
+const LOGO_TTL_MS = 10 * 60_000;
+/** Longest a bill waits for a logo it has never loaded; after this it prints without one. */
+const LOGO_FIRST_WAIT_MS = 2500;
+/** Share of the printable width the logo may take. */
+const LOGO_WIDTH_SHARE = 0.6;
+
+let _logo: { widthDots: number; dataUri: string | null; at: number } | null = null;
+let _logoFetch: Promise<string | null> | null = null;
+
+function fetchBillLogo(widthDots: number): Promise<string | null> {
+  if (!_logoFetch) {
+    _logoFetch = printerApi
+      .getBillLogo(widthDots)
+      .then((res) => {
+        const dataUri = res?.data?.dataUri ?? null;
+        _logo = { widthDots, dataUri, at: Date.now() };
+        return dataUri;
+      })
+      // Offline or an older server: keep whatever we had rather than forgetting it.
+      .catch(() => (_logo?.widthDots === widthDots ? _logo.dataUri : null))
+      .finally(() => { _logoFetch = null; });
+  }
+  return _logoFetch;
+}
+
+async function billLogoFor(profile: PaperProfile): Promise<string | null> {
+  // iOS's printer bridge has no <img> support; the tag would print as text.
+  if (Platform.OS !== 'android') return null;
+  const widthDots = Math.floor(((profile.printableWidthMM * profile.dpi) / 25.4) * LOGO_WIDTH_SHARE);
+  if (_logo && _logo.widthDots === widthDots) {
+    if (Date.now() - _logo.at > LOGO_TTL_MS) void fetchBillLogo(widthDots);
+    return _logo.dataUri;
+  }
+  return Promise.race([
+    fetchBillLogo(widthDots),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), LOGO_FIRST_WAIT_MS)),
+  ]);
 }
 
 export async function printZReport(z: ZReport): Promise<'printed' | 'failed'> {

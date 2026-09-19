@@ -658,6 +658,8 @@ export default function StaffDashboard() {
         grandTotal: order.total,
         isPaid,
         paymentMethod: order.paymentMethod ?? undefined,
+        customerName: order.customerName,
+        customerPhone: order.customerPhone,
         upiVpa: upiId,
         upiName: upiName || null,
         upiOmitAmount,
