@@ -533,7 +533,8 @@ export default function TableDetail() {
     tip: tipTotal,
     roundOff: roundOffTotal,
     total: grandTotal,
-  }), [billableFlatItems, sessionTotal, discountTotal, discountLines, serviceChargeTotal, chargeLines, tax, billTaxRate, sessionTaxLines, tipTotal, roundOffTotal, grandTotal]);
+    pricesIncludeTax: restaurantInvoiceMeta?.pricesIncludeTax,
+  }), [billableFlatItems, sessionTotal, discountTotal, discountLines, serviceChargeTotal, chargeLines, tax, billTaxRate, sessionTaxLines, tipTotal, roundOffTotal, grandTotal, restaurantInvoiceMeta?.pricesIncludeTax]);
 
 
   // `nextQty` is the ABSOLUTE served count the line should stand at. A tap
@@ -817,6 +818,9 @@ export default function TableDetail() {
         charges: serviceChargeTotal,
         chargeLines,
         tax: taxTotal,
+        // Its own line after GST, never taxed. Without it TOTAL carried money
+        // no line explained (and the inclusive-GST split read it as GST).
+        tip: tipTotal > 0 ? tipTotal : undefined,
         taxRate: billTaxRate,
         taxDisplayMode: invoiceMeta?.displayMode,
         taxLines: sessionTaxLines,

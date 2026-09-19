@@ -74,9 +74,9 @@ export interface InvoiceBill {
   /** Rate-wise GST grouping (Phase 2). When present, one GST block is printed per
    *  rate; falls back to the single `tax`/`taxRate` line when absent (legacy). */
   taxLines?: Array<{ rate: number; taxableValue: number; cgst: number; sgst: number; amount: number }>;
-  /** Unused by the layout: whether GST was added or already inside the prices
-   *  is derived from the totals (see billTax.ts), which also covers a charge
-   *  whose own setting differs from the venue's. Kept so callers still compile. */
+  /** The venue's inclusive-pricing setting. false → all GST prints in the
+   *  column as it always has; true → the GST inside the prices prints as a
+   *  breakup under TOTAL (see billTax.ts). */
   pricesIncludeTax?: boolean;
   /** Signed rupee rounding that reconciles the paise-precision GST lines to the
    *  whole-rupee `grandTotal` (e.g. -0.30). Printed as its own line when non-zero
@@ -586,6 +586,7 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
     roundOff: bill.roundOff,
     tax: bill.tax,
     total: bill.grandTotal,
+    pricesIncludeTax: bill.pricesIncludeTax,
   });
   const taxIncluded = taxSplit.included > 0;
   if (!taxIncluded) {

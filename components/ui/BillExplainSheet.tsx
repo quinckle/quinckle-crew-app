@@ -37,6 +37,10 @@ export interface ExplainedBill {
   tip: number;
   roundOff: number;
   total: number;
+  /** Venue's inclusive-pricing setting, when known (see billTax.ts). */
+  pricesIncludeTax?: boolean;
+  /** Built from a bare breakdown whose tip/discount may be missing. */
+  partialFigures?: boolean;
 }
 
 /**
@@ -100,6 +104,9 @@ export function explainBreakdown(bd: BillBreakdown): ExplainedBill {
     tip: bd.tip,
     roundOff: bd.roundOff ?? 0,
     total: bd.total,
+    // Some callers build this from a payment context that zeroes tip and
+    // discount — never let those gaps be read as GST.
+    partialFigures: true,
   };
 }
 
@@ -200,6 +207,8 @@ export function BillExplainContent({ bill, pinned = false, inset = true, onGiveD
     roundOff: bill.roundOff,
     tax: bill.taxTotal,
     total: bill.total,
+    pricesIncludeTax: bill.pricesIncludeTax,
+    partialFigures: bill.partialFigures,
   });
   const taxIncluded = taxSplit.included > 0;
 

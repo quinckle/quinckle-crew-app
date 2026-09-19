@@ -390,6 +390,9 @@ export default function PaymentCollectScreen() {
   const [isRejecting, setIsRejecting] = useState(false);
   const [isLoadingUpi, setIsLoadingUpi] = useState(true);
   const [partnerUpi, setPartnerUpi]     = useState<{ vpa: string | null; merchantName: string | null }>({ vpa: null, merchantName: null });
+  // Venue's inclusive-pricing setting — decides whether the bill's GST sits in
+  // the column or under the total. Unknown until branding loads.
+  const [pricesIncludeTax, setPricesIncludeTax] = useState<boolean | undefined>(undefined);
   const [successInfo, setSuccessInfo]   = useState<SuccessInfo | null>(null);
   // One sheet holds everything that changes the bill — charges, party size and
   // the tip — so a biller does it in one go instead of three surfaces.
@@ -430,6 +433,7 @@ export default function PaymentCollectScreen() {
           vpa: fromBrandingVpa ?? fallbackVpa,
           merchantName: fromDisplayName ?? fromRestaurantName ?? fallbackName,
         });
+        setPricesIncludeTax(r?.data?.taxConfig?.pricesIncludeTax);
       })
       .catch(() => {
         setPartnerUpi({ vpa: fallbackVpa, merchantName: fallbackName });
@@ -693,10 +697,11 @@ export default function PaymentCollectScreen() {
   // from the session bill. It is only shown when it adds up to what is being
   // collected — a session can also hold orders this screen isn't settling,
   // and a breakdown of a different amount would explain the wrong bill.
-  const explainedBill: ExplainedBill | null =
+  const explainedBase: ExplainedBill | null =
     sessionBill && Math.abs(sessionBill.total - resolvedTotal) <= 1 ? sessionBill
     : resolvedBreakdown ? explainBreakdown(resolvedBreakdown)
     : null;
+  const explainedBill: ExplainedBill | null = explainedBase && { ...explainedBase, pricesIncludeTax };
   const hasBreakdown = !!explainedBill;
 
   const openUpiSheet = () => {

@@ -30,12 +30,28 @@ export function splitBillTax(b: {
   roundOff?: number | null;
   tax: number;
   total: number;
+  /**
+   * The venue's "menu prices include GST" setting, when the caller has it.
+   * false → every rupee of GST was added (the answer is known, no arithmetic).
+   * The subtraction below is only trusted at an inclusive venue, because it
+   * attributes ANY unexplained money to GST: a caller that forgets to pass the
+   * tip or a discount would otherwise see it printed as "GST added".
+   */
+  pricesIncludeTax?: boolean | null;
+  /**
+   * The caller knows its tip/discount/round-off are incomplete. At an inclusive
+   * venue that means the added part can't be derived — treat it all as
+   * included, which is exact unless a charge overrides the venue to exclusive.
+   */
+  partialFigures?: boolean;
 }): BillTaxSplit {
   const tax = r2(Math.max(0, b.tax));
   if (tax === 0) return { added: 0, included: 0 };
+  if (b.pricesIncludeTax === false) return { added: tax, included: 0 };
+  if (b.pricesIncludeTax === true && b.partialFigures) return { added: 0, included: tax };
   const beforeTax = b.subtotal - (b.discount ?? 0) + (b.charges ?? 0) + (b.tip ?? 0) + (b.roundOff ?? 0);
-  // Clamped: a bill whose columns don't reconcile (legacy data) degrades to
-  // "all added" — exactly how every bill printed before this existed.
+  // Clamped to [0, tax]: money the columns don't explain is never shown as
+  // more GST than the bill actually carries.
   const added = Math.min(tax, Math.max(0, r2(b.total - beforeTax)));
   const included = r2(tax - added);
   // Paise of float noise are not an inclusive venue.
