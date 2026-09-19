@@ -1,4 +1,4 @@
-import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
+import { useLocalSearchParams, useNavigation, useRouter, useFocusEffect } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, FlatList, Image, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
@@ -394,10 +394,19 @@ export default function TableDetail() {
 
   // Refresh bill whenever screen regains focus — ensures the "Collect Payment"
   // button and paid badge settle immediately after returning from payment-collect.
+  // The session ended while another screen covered this one (see the
+  // session_ended handler below) — leave now that we're visible again.
+  const navigation = useNavigation();
+  const endedWhileCoveredRef = useRef(false);
   useFocusEffect(
     useCallback(() => {
+      if (endedWhileCoveredRef.current) {
+        endedWhileCoveredRef.current = false;
+        router.back();
+        return;
+      }
       void loadBill();
-    }, [loadBill]),
+    }, [loadBill, router]),
   );
 
 
@@ -454,10 +463,15 @@ export default function TableDetail() {
       subscribeChannel(`waiter:${restaurantId}`, 'payment_confirmed', refetch),
       // If this session ends from another device (or via diner/partner),
       // pop the modal so the waiter isn't left staring at a stale bill.
+      // Only while this screen is on top: router.back() pops whatever IS on
+      // top, so firing it under the payment sheet (which auto-frees the table
+      // and fires this very event) would yank the sheet away mid-success.
+      // Covered, it waits and pops on the next focus instead.
       subscribeChannel(`waiter:${restaurantId}`, 'session_ended', (data: any) => {
         const endedId = data?.sessionId as string | undefined;
         if (endedId && endedId === sessionId) {
-          router.back();
+          if (navigation.isFocused()) router.back();
+          else endedWhileCoveredRef.current = true;
         }
       }),
     ];
@@ -465,7 +479,7 @@ export default function TableDetail() {
       if (refetchTimer) clearTimeout(refetchTimer);
       unsubs.forEach(u => u());
     };
-  }, [staffInfo?.restaurantId, sessionId, router, loadBill]);
+  }, [staffInfo?.restaurantId, sessionId, router, navigation, loadBill]);
 
 
   // Flat list of all items across all orders

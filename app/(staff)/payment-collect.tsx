@@ -10,12 +10,13 @@ import {
   Platform,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -69,6 +70,10 @@ type SuccessInfo = {
   locationLabel: string;
   total: number;
   splits: { method: CollectSplitMethod; amount: number }[];
+  /** The table was auto-freed after this collection. */
+  freed?: boolean;
+  /** Auto-free was on but did not happen — say so, don't leave staff guessing. */
+  freeFailed?: boolean;
 };
 
 // ── Shimmer (matches TableSkeleton) ─────────────────────────────────────────
@@ -188,6 +193,16 @@ function SuccessScreen({ info, onDone }: { info: SuccessInfo; onDone: () => void
         ) : (
           <Text style={sc.methodSingle}>{isDueOnly ? 'on khata (pay later)' : isUpiOnly ? 'via UPI' : 'via Cash'}</Text>
         )}
+
+        {info.freed && (
+          <View style={sc.freedPill}>
+            <Ionicons name="checkmark-circle" size={16} color="#fff" />
+            <Text style={sc.freedText}>{info.locationLabel.replace(/^Table /, '')} is free</Text>
+          </View>
+        )}
+        {info.freeFailed && (
+          <Text style={sc.freeFailed}>Couldn&apos;t free the table — free it from the floor.</Text>
+        )}
       </Animated.View>
     </Animated.View>
   );
@@ -242,12 +257,28 @@ const sc = StyleSheet.create({
   methodAmt: { color: '#fff', fontSize: 20, fontWeight: '700', letterSpacing: -0.5 },
   methodLabel: { color: 'rgba(255,255,255,0.6)', fontSize: 12, fontWeight: '500' },
   methodSingle: { color: 'rgba(255,255,255,0.65)', fontSize: 16, fontWeight: '500' },
+  freedPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 28,
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+  },
+  freedText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  freeFailed: { color: 'rgba(255,255,255,0.8)', fontSize: 14, fontWeight: '500', marginTop: 24, textAlign: 'center' },
 });
 
 // ── Main screen ──────────────────────────────────────────────────────────────
 export default function PaymentCollectScreen() {
   const router  = useRouter();
-  const returnToPreviousScreen = useCallback(() => router.back(), [router]);
+  const navigation = useNavigation();
+  // Set when this collection auto-freed the table. Going "back" would land on
+  // the table screen of a session that no longer exists, so skip past it.
+  const freedRef = useRef(false);
+  const returnToPreviousScreen = useCallback(() => {
+    const st = navigation.getState();
+    const prev = st?.routes?.[(st?.index ?? 0) - 1]?.name;
+    if (freedRef.current && prev === '[tableId]') router.dismissTo('/(staff)');
+    else router.back();
+  }, [router, navigation]);
   const insets  = useSafeAreaInsets();
   const { staffInfo } = useAuth();
   const params  = useLocalSearchParams<{
@@ -260,6 +291,8 @@ export default function PaymentCollectScreen() {
     upiVpa?: string;
     upiName?: string;
     breakdown?: string;
+    /** Session already closed (Outstanding) — nothing to free. */
+    closed?: string;
     channel?: string;
     pickupToken?: string;
   }>();
@@ -331,7 +364,11 @@ export default function PaymentCollectScreen() {
   const pickupToken   = params.pickupToken ?? null;
   const locationLabel = isOffPremise(channel)
     ? (pickupToken ?? channelLabel(channel))
-    : `Table ${tableNumber}`;
+    : `Table T${String(tableNumber).padStart(2, '0')}`;
+  // Only a live dine-in table can be freed. Outstanding bills are collected on
+  // sessions that are already closed (the caller says so), and takeaway has
+  // no table to free.
+  const canAutoFree = !isOffPremise(channel) && !!sessionId && tableNumber > 0 && params.closed !== '1';
   const snapshotTotal = Number(params.amount ?? 0);
   const customerName  = params.customerName && params.customerName.length > 0 ? params.customerName : null;
   const customerPhone = params.customerPhone ?? '';
@@ -362,6 +399,10 @@ export default function PaymentCollectScreen() {
   const [tipAmount, setTipAmount]   = useState(0);
   const [upiSheetOpen, setUpiSheetOpen] = useState(false);
   const [billOpen, setBillOpen]         = useState(false);
+  // On every time the sheet opens — collecting is almost always the end of the
+  // visit. Not remembered per device: a switch that silently stays off after
+  // one odd table is how "why didn't it free?" happens.
+  const [autoFree, setAutoFree]         = useState(true);
   const [sessionBill, setSessionBill]   = useState<ExplainedBill | null>(null);
 
   // ── Khata (due) mode state ────────────────────────────────────────────────
@@ -496,8 +537,26 @@ export default function PaymentCollectScreen() {
       } else {
         await crewPayments.collectPayment(orderId, staffId, splits, buildCollectIdempotencyKey(splits), null, dueOptions ?? null);
       }
+      // Auto-free: only once the server says nothing is left on the session —
+      // a single-order collect, or a round that landed mid-collect, leaves
+      // money owed, and freeing then would push it to Outstanding. A failure
+      // here never undoes the payment; staff just free it by hand as before.
+      let freed = false;
+      let freeFailed = false;
+      if (autoFree && canAutoFree) {
+        try {
+          const left = await crewSessions.getCollectible(sessionId);
+          if ((left?.data?.orderCount ?? 1) === 0) {
+            await crewSessions.end(sessionId);
+            freed = true;
+            freedRef.current = true;
+          }
+        } catch {
+          freeFailed = true;
+        }
+      }
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setSuccessInfo({ tableNumber, locationLabel, total: resolvedTotal, splits });
+      setSuccessInfo({ tableNumber, locationLabel, total: resolvedTotal, splits, freed, freeFailed });
     } catch (err: any) {
       const code = String(err?.code ?? err?.message ?? '');
       if (code.includes('ALREADY_COLLECTED')) {
@@ -730,19 +789,24 @@ export default function PaymentCollectScreen() {
             {isMultiOrder ? `Amount due · ${effectiveOrderIds.length} orders` : 'Amount due'}
           </Text>
           <Text style={s.totalAmount}>₹{resolvedTotal.toLocaleString('en-IN')}</Text>
-          <View style={s.billFoot}>
-            {customerPhone ? (
-              <TouchableOpacity onPress={() => Linking.openURL(`tel:${customerPhone}`).catch(() => {})} activeOpacity={0.6} style={{ flexShrink: 1 }}>
-                <Text style={s.phoneText} numberOfLines={1}>{customerPhone}</Text>
-              </TouchableOpacity>
-            ) : <View />}
-            {hasBreakdown && (
-              <TouchableOpacity onPress={() => setBillOpen(true)} activeOpacity={0.6} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={s.breakdownLink}>
-                <Text style={s.breakdownLinkText}>View breakdown</Text>
-                <Ionicons name="chevron-forward" size={13} color={QuinckleColors.primary} />
-              </TouchableOpacity>
-            )}
-          </View>
+          {customerPhone ? (
+            <TouchableOpacity onPress={() => Linking.openURL(`tel:${customerPhone}`).catch(() => {})} activeOpacity={0.6}>
+              <Text style={s.phoneText} numberOfLines={1}>{customerPhone}</Text>
+            </TouchableOpacity>
+          ) : null}
+          {hasBreakdown && (
+            <TouchableOpacity
+              onPress={() => setBillOpen(true)}
+              activeOpacity={0.6}
+              hitSlop={{ top: 8, bottom: 8, left: 12, right: 12 }}
+              style={s.breakdownLink}
+              accessibilityRole="button"
+              accessibilityLabel="Show bill breakdown"
+            >
+              <Text style={s.breakdownLinkText}>Breakdown</Text>
+              <Ionicons name="chevron-down" size={14} color={QuinckleColors.primary} />
+            </TouchableOpacity>
+          )}
         </View>
         {paymentContextError && <Text style={s.contextWarning}>{paymentContextError}</Text>}
         {dueSyncError && <Text style={s.contextWarning}>{dueSyncError}</Text>}
@@ -765,6 +829,29 @@ export default function PaymentCollectScreen() {
             </Text>
             <Ionicons name="chevron-forward" size={15} color={QuinckleColors.textTertiary} />
           </TouchableOpacity>
+        )}
+
+        {/* Collecting is usually the end of the visit, so free the table with
+            it. Visible in every mode — it applies to split and khata too. */}
+        {canAutoFree && (
+          <View style={[s.freeRow, !(mode === 'normal' && step === 'choose' && isSessionCollect && !intentId) && { marginTop: Spacing.xl }]}>
+            <Ionicons name="exit-outline" size={17} color={QuinckleColors.textSecondary} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.tipRowText}>Free table after payment</Text>
+              <Text style={s.freeRowSub}>
+                {autoFree ? `${locationLabel.replace(/^Table /, '')} closes once it's collected` : 'Table stays occupied'}
+              </Text>
+            </View>
+            <Switch
+              value={autoFree}
+              onValueChange={setAutoFree}
+              disabled={loading}
+              trackColor={{ false: QuinckleColors.border, true: QuinckleColors.success }}
+              thumbColor="#fff"
+              ios_backgroundColor={QuinckleColors.border}
+              accessibilityLabel="Free table after payment"
+            />
+          </View>
         )}
 
         {mode === 'normal' && (
@@ -1054,10 +1141,10 @@ const s = StyleSheet.create({
   billCard: {
     backgroundColor: QuinckleColors.surface, borderRadius: Radius.lg,
     borderWidth: 1, borderColor: QuinckleColors.border, padding: Spacing.lg,
+    alignItems: 'center',
   },
   billLabel: { color: QuinckleColors.textSecondary, fontSize: 12, fontWeight: '500' },
-  billFoot: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.md },
-  breakdownLink: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  breakdownLink: { flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: Spacing.sm },
   breakdownLinkText: { color: QuinckleColors.primary, fontSize: 13, fontWeight: '600' },
   optionsLabel: { color: QuinckleColors.textTertiary, fontSize: 11, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: Spacing.sm, marginLeft: 2 },
   optionGroup: { borderRadius: Radius.lg, borderWidth: 1, borderColor: QuinckleColors.border, overflow: 'hidden' },
@@ -1076,6 +1163,13 @@ const s = StyleSheet.create({
   },
   tipRowText: { flex: 1, color: QuinckleColors.textPrimary, fontSize: 14, fontWeight: '600' },
   tipRowValue: { color: QuinckleColors.textSecondary, fontSize: 14, fontWeight: '600' },
+  freeRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    marginTop: Spacing.sm, paddingVertical: 10, paddingHorizontal: 14,
+    borderRadius: Radius.lg, borderWidth: StyleSheet.hairlineWidth,
+    borderColor: QuinckleColors.border, backgroundColor: QuinckleColors.surface,
+  },
+  freeRowSub: { color: QuinckleColors.textTertiary, fontSize: 12, marginTop: 1 },
   optionRowDivider: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: QuinckleColors.border },
   optionRowSelected: { backgroundColor: QuinckleColors.surfaceElevated },
   optionTitle: { color: QuinckleColors.textPrimary, fontSize: 16, fontWeight: '600' },
