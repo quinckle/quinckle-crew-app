@@ -404,7 +404,6 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   } else if (bill.sessionRef) {
     lines.push(`[C]Session ${bill.sessionRef}`);
   }
-  lines.push(`[C]Order: ${formatDateTime(orderTime)}`);
   if (bill.restaurantAddress) {
     for (const ln of wrapText(bill.restaurantAddress, W)) lines.push(`[C]${ln}`);
   }
@@ -412,8 +411,18 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   if (bill.restaurantEmail) lines.push(`[C]Email: ${bill.restaurantEmail}`);
   if (bill.fssaiLicenseNumber) lines.push(`[C]FSSAI: ${bill.fssaiLicenseNumber}`);
   if (bill.gstRegistered && bill.gstin) lines.push(`[C]GSTIN: ${bill.gstin}`);
-  lines.push(`[C]Printed: ${formatDateTime(now)}`);
-  if (bill.billerName?.trim()) lines.push(`[C]Biller: ${bill.billerName.trim()}`);
+  lines.push(`[L]${d}`);
+
+  // ── When + who ────────────────────────────────────────────────────────────
+  // Its own ruled section, laid out like the customer block below it.
+  lines.push(`[L]Order:   ${formatDateTime(orderTime)}`);
+  lines.push(`[L]Printed: ${formatDateTime(now)}`);
+  if (bill.billerName?.trim()) {
+    // Wrap only the name so it stays aligned under the Order/Printed values.
+    wrapText(bill.billerName.trim(), W - 9).forEach((ln, i) => {
+      lines.push(`[L]${i === 0 ? 'Biller:  ' : '         '}${ln}`);
+    });
+  }
   lines.push(`[L]${d}`);
 
   // ── Customer ──────────────────────────────────────────────────────────────
