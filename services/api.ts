@@ -1581,6 +1581,9 @@ export interface CrewLadder {
   step: number;
   totalSteps: number;
   completesLadder: boolean;
+  /** After the last step: RESET starts again at step 1; HOLD_LAST / CUSTOM
+   *  never do. Absent on older backends. */
+  policy?: 'RESET' | 'HOLD_LAST' | 'CUSTOM';
   optedIn: boolean;
   /**
    * What this visit earns. Null when the diner has not joined or the step is

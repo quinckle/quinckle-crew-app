@@ -280,18 +280,31 @@ function liveLadderLines(ladder: CrewLadder, W: number): string[] {
   if (ladder.eligible === false) return [];
 
   const step = Math.max(1, Math.trunc(ladder.step ?? 1));
+  const total = Math.max(step, Math.trunc(ladder.totalSteps ?? step));
   const rewarded = ladder.steps.filter((s) => s.rewardName);
-  const next = rewarded.find((s) => s.position > step);
   const top = rewarded[rewarded.length - 1];
 
-  const out = [LADDER_TITLE];
-  if (ladder.completesLadder) out.push(...wrapped(`You've reached the top reward!`, W));
-  if (next) {
-    out.push(...wrapped(`Next reward: ${next.rewardName}`, W));
-    out.push(`[L]${visitsAway(next.position - step)}`);
+  // The next reward after this visit. Later on this lap first; failing that,
+  // the server's own next-visit reward (covers HOLD_LAST and CUSTOM); failing
+  // that, under RESET only, the first reward of the next lap — counted across
+  // the end of the card. Maniqueen (5 steps, 5 empty, RESET) needs the last.
+  let next: { name: string; visits: number } | null = null;
+  const ahead = rewarded.find((s) => s.position > step);
+  if (ahead) next = { name: ahead.rewardName!, visits: ahead.position - step };
+  else if (ladder.nextVisit?.rewardName) next = { name: ladder.nextVisit.rewardName, visits: 1 };
+  else if (ladder.policy === 'RESET' && rewarded[0]) {
+    next = { name: rewarded[0].rewardName!, visits: total - step + rewarded[0].position };
   }
-  // The reward the card builds to — unless it's the one just named.
-  if (top && top.position > step && top.position !== next?.position) {
+
+  const out = [LADDER_TITLE];
+  if (ladder.completesLadder) out.push(...wrapped(`You've completed the card!`, W));
+  if (next) {
+    out.push(...wrapped(`Next reward: ${next.name}`, W));
+    out.push(`[L]${visitsAway(next.visits)}`);
+  }
+  // The reward the card builds to, while it's still ahead on this lap —
+  // unless it's the one just named.
+  if (top && top.position > step && top.position !== ahead?.position) {
     out.push(...wrapped(`Rewards up to: ${top.rewardName}`, W));
     out.push(`[L]  on visit ${top.position}`);
   }
