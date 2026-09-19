@@ -37,6 +37,7 @@ const KEY_QUEUE_LEGACY = 'pendingPrintQueue';
 const KEY_ACK_OUTBOX = 'printAckOutbox';
 const KEY_UPI_QR = 'printUpiQrOnBill';
 const KEY_UPI_QR_MODE = 'printUpiQrMode';
+const KEY_BILL_LOGO = 'printLogoOnBill';
 
 // End-of-ticket paper feed (mm). Drives DantSu's pre-disconnect flush wait so
 // long tickets don't lose their tail — see the note in printRaw(). 40mm is a
@@ -109,6 +110,10 @@ let _printUpiQr = true;
 export type UpiQrMode = 'amount' | 'static';
 let _upiQrMode: UpiQrMode = 'amount';
 
+// Venue logo on printed bills. OFF until someone turns it on for this device:
+// not every uploaded logo prints well, so it's opt-in per printer station.
+let _printBillLogo = false;
+
 // ── Print de-duplication guard ────────────────────────────────────────────────
 // KOT auto-print is driven by TWO independent triggers that can both fire for
 // the same order: the live Ably `new_order` push (fast path) and the 15s server
@@ -165,6 +170,24 @@ export async function initPrinter(): Promise<void> {
     const raw = await AsyncStorage.getItem(KEY_UPI_QR_MODE);
     if (raw === 'static' || raw === 'amount') _upiQrMode = raw;
   } catch { /* keep default 'amount' */ }
+  try {
+    _printBillLogo = (await AsyncStorage.getItem(KEY_BILL_LOGO)) === 'true';
+  } catch { /* keep default OFF */ }
+}
+
+// ── Logo-on-bill preference ───────────────────────────────────────────────────
+
+export function isBillLogoEnabled(): boolean {
+  return _printBillLogo;
+}
+
+export async function setBillLogoEnabled(enabled: boolean): Promise<void> {
+  _printBillLogo = enabled;
+  // Load it now so the first bill after switching on doesn't wait for it.
+  if (enabled) void billLogoFor(currentProfile());
+  try {
+    await AsyncStorage.setItem(KEY_BILL_LOGO, enabled ? 'true' : 'false');
+  } catch { /* non-fatal — in-memory value still applies this session */ }
 }
 
 // ── UPI QR-on-bill preference ─────────────────────────────────────────────────
@@ -489,6 +512,7 @@ function fetchBillLogo(widthDots: number): Promise<string | null> {
 }
 
 async function billLogoFor(profile: PaperProfile): Promise<string | null> {
+  if (!_printBillLogo) return null;
   // iOS's printer bridge has no <img> support; the tag would print as text.
   if (Platform.OS !== 'android') return null;
   const widthDots = Math.floor(((profile.printableWidthMM * profile.dpi) / 25.4) * LOGO_WIDTH_SHARE);

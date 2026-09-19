@@ -14,6 +14,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   TextInput,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -33,6 +34,8 @@ import {
   getConfig,
   isUpiQrEnabled,
   setUpiQrEnabled,
+  isBillLogoEnabled,
+  setBillLogoEnabled,
   isUsbSupported,
   listUsbPrinters,
   type BluetoothDevice,
@@ -76,6 +79,7 @@ export default function PrinterScreen() {
   const [showScanView, setShowScanView] = useState(false);
   const [toast, setToast] = useState<{ message: string; ok: boolean } | null>(null);
   const [upiQr, setUpiQr] = useState(isUpiQrEnabled());
+  const [billLogo, setBillLogo] = useState(isBillLogoEnabled());
 
   // Network (LAN/WiFi) printer entry
   const [showNetworkForm, setShowNetworkForm] = useState(false);
@@ -94,6 +98,12 @@ export default function PrinterScreen() {
     setUpiQr(next);
     Haptics.selectionAsync();
     void setUpiQrEnabled(next);
+  }, []);
+
+  const handleBillLogoToggle = useCallback((next: boolean) => {
+    setBillLogo(next);
+    Haptics.selectionAsync();
+    void setBillLogoEnabled(next);
   }, []);
 
   const [dialog, setDialog] = useState<{
@@ -447,6 +457,24 @@ export default function PrinterScreen() {
               <View style={[styles.toggleThumb, upiQr && styles.toggleThumbOn]} />
             </TouchableOpacity>
           </View>
+
+          {/* Venue logo at the top of bills — Android only, the iOS printer
+              bridge can't print images. */}
+          {Platform.OS === 'android' && (
+            <View style={styles.autoPrintRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.autoPrintLabel}>Print logo on bills</Text>
+                <Text style={styles.autoPrintSub}>Your restaurant logo at the top of every bill from this device</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => handleBillLogoToggle(!billLogo)}
+                activeOpacity={0.8}
+                style={[styles.toggleTrack, billLogo && styles.toggleTrackOn]}
+              >
+                <View style={[styles.toggleThumb, billLogo && styles.toggleThumbOn]} />
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
 
         {/* Actions */}
