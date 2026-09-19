@@ -332,6 +332,7 @@ export default function OrderDetail() {
         paymentMethod,
         customerName: session.customerName ?? null,
         customerPhone: session.customerPhone ?? null,
+        billerName: staffInfo?.name ?? null,
         upiVpa: m?.upiId ?? null,
         upiName: m?.upiName ?? null,
         orderDateTime: session.openedAt,

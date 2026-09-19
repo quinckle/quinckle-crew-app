@@ -818,6 +818,7 @@ export default function TableDetail() {
         paymentMethod: billPaymentMethod,
         customerName: sessionCustomerName,
         customerPhone: sessionCustomerPhone,
+        billerName: staffInfo?.name ?? null,
         upiVpa: upiId,
         upiName: upiName || null,
         upiOmitAmount,

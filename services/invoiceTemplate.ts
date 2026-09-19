@@ -39,6 +39,8 @@ export interface InvoiceBill {
   /** Venue logo as a data: URI, already black-on-white at print size (from
    *  /crew/print/bill-logo). Printed above the restaurant name. */
   logoDataUri?: string | null;
+  /** Staff member producing the bill (the logged-in crew user). */
+  billerName?: string | null;
   tableNumber: number | string;
   /** DINE_IN (default) prints "Table TNN"; off-premise channels print their own
    *  banner + order token. */
@@ -378,7 +380,12 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
 
   // ── Header ────────────────────────────────────────────────────────────────
   // DantSu wants an image alone on its line, with a single alignment tag.
-  if (bill.logoDataUri) lines.push(`[C]<img>${bill.logoDataUri}</img>`);
+  // The blank line after it keeps the big restaurant name off the logo's
+  // bottom edge — printed flush, they touched.
+  if (bill.logoDataUri) {
+    lines.push(`[C]<img>${bill.logoDataUri}</img>`);
+    lines.push('[L]');
+  }
   lines.push(`[C]<b><font size="big">${bill.restaurantName}</font></b>`);
   lines.push(`[C]${D}`);
   lines.push(bill.gstRegistered ? '[C]<b>TAX INVOICE</b>' : '[C]<b>BILL</b>');
@@ -406,6 +413,7 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   if (bill.fssaiLicenseNumber) lines.push(`[C]FSSAI: ${bill.fssaiLicenseNumber}`);
   if (bill.gstRegistered && bill.gstin) lines.push(`[C]GSTIN: ${bill.gstin}`);
   lines.push(`[C]Printed: ${formatDateTime(now)}`);
+  if (bill.billerName?.trim()) lines.push(`[C]Biller: ${bill.billerName.trim()}`);
   lines.push(`[L]${d}`);
 
   // ── Customer ──────────────────────────────────────────────────────────────

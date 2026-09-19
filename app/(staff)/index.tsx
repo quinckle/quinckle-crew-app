@@ -660,6 +660,7 @@ export default function StaffDashboard() {
         paymentMethod: order.paymentMethod ?? undefined,
         customerName: order.customerName,
         customerPhone: order.customerPhone,
+        billerName: staffInfo?.name ?? null,
         upiVpa: upiId,
         upiName: upiName || null,
         upiOmitAmount,
