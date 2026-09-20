@@ -1,0 +1,19 @@
+{
+  "name": "quinckle-crew-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Desktop shell for the Quinckle crew app \u2014 serves the Metro web build and owns thermal printing.",
+  "main": "main.js",
+  "scripts": {
+    "export": "node export.js",
+    "start": "electron .",
+    "dev": "npm run export && npm start",
+    "test": "node --test print/"
+  },
+  "devDependencies": {
+    "electron": "^44.0.0"
+  },
+  "optionalDependencies": {
+    "usb": "^2.14.0"
+  }
+}

@@ -10,6 +10,7 @@
 // Ably's free-tier 200-connection limit at ~12 connections per open screen.
 
 import { API_BASE_URL } from '../constants/env';
+import { httpFetch } from './httpClient';
 
 let _crewToken: string | null = null;
 let _clientId: string | null = null;
@@ -21,7 +22,7 @@ export function setRealtimeAuth(crewToken: string | null, clientId: string | nul
 
 async function fetchTokenRequest(channel: string): Promise<unknown> {
 	if (!_crewToken || !_clientId) throw new Error('REALTIME_NOT_AUTHED');
-	const res = await fetch(`${API_BASE_URL}/api/v1/realtime/token`, {
+	const res = await httpFetch(`${API_BASE_URL}/api/v1/realtime/token`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${_crewToken}` },
 		body: JSON.stringify({ channel, clientId: _clientId }),

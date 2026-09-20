@@ -1,3 +1,4 @@
+import { httpFetch } from './httpClient';
 import type { LoyaltyNudge } from './invoiceTemplate';
 import { API_BASE_URL } from '../constants/env';
 import type { CancelReason } from '../constants/adjustmentReasons';
@@ -64,7 +65,7 @@ async function request<T>(
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(extraHeaders ?? {}) };
   if (useAuth && _crewToken) headers['Authorization'] = `Bearer ${_crewToken}`;
 
-  const res = await fetch(`${API_BASE_URL}${path}`, {
+  const res = await httpFetch(`${API_BASE_URL}${path}`, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,

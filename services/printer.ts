@@ -12,8 +12,7 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { PermissionsAndroid, Platform } from 'react-native';
-import ThermalPrinter from 'react-native-thermal-printer';
+import { Platform } from 'react-native';
 import { buildKotText, type KotOrder } from './kotTemplate';
 import { buildInvoiceText, type InvoiceBill } from './invoiceTemplate';
 import { buildZReportText } from './zReportTemplate';
@@ -21,13 +20,21 @@ import type { ZReport } from './api';
 import { profileFromWidth, DEFAULT_PAPER_WIDTH, type PaperProfile } from './paperProfile';
 import { printerApi } from './api';
 import {
+  capabilities as transportCapabilities,
+  initTransport,
+  isDesktop,
   isUsbSupported,
   listUsbPrinters,
-  printUsb as printOverUsb,
-  type UsbPrinterDevice,
-} from './usbPrinter';
+  scanBluetooth,
+  sendToPrinter,
+} from './printTransport';
+import type {
+  BluetoothDevice, TransportJob, TransportKind, UsbPrinterDevice,
+} from './printTypes';
 
-export { isUsbSupported, listUsbPrinters, type UsbPrinterDevice };
+// Re-exported so every existing call site keeps importing these from here.
+export { isUsbSupported, listUsbPrinters, transportCapabilities as printerCapabilities, isDesktop };
+export type { BluetoothDevice, TransportKind, UsbPrinterDevice };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
@@ -47,15 +54,7 @@ const KOT_END_FEED_MM = 40;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export interface BluetoothDevice {
-  name: string;
-  address: string;
-}
-
 export type PrinterStatus = 'connected' | 'disconnected' | 'unpaired' | 'error';
-
-/** How this device reaches the printer. */
-export type TransportKind = 'bluetooth' | 'network' | 'usb';
 
 export interface PrinterConfig {
   /** Reach method. Defaults to 'bluetooth' for pre-existing (pre-network) pairings. */
@@ -144,6 +143,10 @@ function purgeExpiredRecent(): void {
 // ── Init (call on app launch) ─────────────────────────────────────────────────
 
 export async function initPrinter(): Promise<void> {
+  // Let the transport discover what this platform can reach a printer over.
+  // No-op natively; on desktop it probes the Electron shell for USB support.
+  await initTransport();
+
   // One-time cleanup: the legacy failed-print queue was appended to but never
   // drained (the server pull-queue is the real retry path), so stale entries
   // accumulated forever. Remove the key.
@@ -215,50 +218,11 @@ export async function setUpiQrMode(mode: UpiQrMode): Promise<void> {
   } catch { /* non-fatal — in-memory value still applies this session */ }
 }
 
-// ── Runtime Bluetooth permissions ────────────────────────────────────────────
-
-async function requestBluetoothPermissions(): Promise<boolean> {
-  if (Platform.OS !== 'android') return true;
-  if ((Platform.Version as number) >= 31) {
-    // Android 12+ needs BLUETOOTH_SCAN + BLUETOOTH_CONNECT at runtime
-    const results = await PermissionsAndroid.requestMultiple([
-      PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-      PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-    ]);
-    return (
-      results[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN] === PermissionsAndroid.RESULTS.GRANTED &&
-      results[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT] === PermissionsAndroid.RESULTS.GRANTED
-    );
-  } else {
-    // Android < 12 needs ACCESS_FINE_LOCATION for BT discovery
-    const result = await PermissionsAndroid.request(
-      PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-    );
-    return result === PermissionsAndroid.RESULTS.GRANTED;
-  }
-}
-
 // ── scan ──────────────────────────────────────────────────────────────────────
 
+/** Discover Bluetooth printers. Returns [] where the platform has no Bluetooth. */
 export async function scan(): Promise<BluetoothDevice[]> {
-  const hasPermission = await requestBluetoothPermissions();
-  if (!hasPermission) throw new Error('BLUETOOTH_PERMISSION_DENIED');
-
-  try {
-    // Timeout guard — getBluetoothDeviceList can hang if BT is off or denied
-    const devices = await Promise.race([
-      (ThermalPrinter as any).getBluetoothDeviceList(),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('SCAN_TIMEOUT')), 10_000),
-      ),
-    ]);
-    return (devices as any[]).map((d: any) => ({
-      name: d.name ?? d.deviceName ?? 'Unknown',
-      address: d.address ?? d.macAddress ?? '',
-    }));
-  } catch {
-    return [];
-  }
+  return scanBluetooth();
 }
 
 // ── pair ──────────────────────────────────────────────────────────────────────
@@ -359,37 +323,27 @@ async function printRaw(text: string): Promise<void> {
   // profile, not the raw roll width. The profile guarantees 58→48mm/32ch and
   // 80→72mm/48ch (byte-identical to the old hard-coded values) and derives any
   // other width the same way.
-  const common = {
+  const job: TransportJob = {
+    transport: _config.transport ?? 'bluetooth',
     payload: text,
-    printerDpi: profile.dpi,
-    printerWidthMM: profile.printableWidthMM,
-    printerNbrCharactersPerLine: profile.charsPerLine,
+    profile,
     autoCut: true,
-    // Extra end-of-ticket paper feed. DantSu (the native ESC/POS layer) ties its
-    // post-send wait — the pause BEFORE it closes the Bluetooth socket — to this
-    // feed length. Omitting it defaults to 20mm, whose wait is too short for a
-    // long ticket: the socket closes while the printer is still draining its
-    // buffer, so the TAIL (last items + footer) never renders. This is why a big
+    openCashbox: false,
+    // Extra end-of-ticket paper feed. On Android, DantSu ties its post-send
+    // wait — the pause BEFORE it closes the Bluetooth socket — to this feed
+    // length. Omitting it defaults to 20mm, whose wait is too short for a long
+    // ticket: the socket closes while the printer is still draining its buffer,
+    // so the TAIL (last items + footer) never renders. This is why a big
     // (~6-item) KOT printed only its first few lines. A larger feed buys the
     // flush time so the whole ticket prints. Tune KOT_END_FEED_MM if needed.
     mmFeedPaper: KOT_END_FEED_MM,
+    address: _config.address,
+    ip: _config.ip ?? undefined,
+    port: _config.port ?? undefined,
+    vendorId: _config.usbVendorId ?? undefined,
+    productId: _config.usbProductId ?? undefined,
   };
-  if (_config.transport === 'network') {
-    if (!_config.ip) throw new Error('PRINTER_NO_IP');
-    await ThermalPrinter.printTcp({ ip: _config.ip, port: _config.port ?? 9100, ...common });
-  } else if (_config.transport === 'usb') {
-    // A USB pairing can outlive the build that created it — an OTA rollback to
-    // a pre-USB APK would leave the config pointing at a bridge method that no
-    // longer exists. Fail with a clear code instead of a native crash.
-    if (!isUsbSupported()) throw new Error('PRINTER_USB_UNSUPPORTED');
-    await printOverUsb({
-      vendorId: _config.usbVendorId ?? 0,
-      productId: _config.usbProductId ?? 0,
-      ...common,
-    });
-  } else {
-    await ThermalPrinter.printBluetooth({ macAddress: _config.address, ...common });
-  }
+  await sendToPrinter(job);
 }
 
 // ── printKot ─────────────────────────────────────────────────────────────────
