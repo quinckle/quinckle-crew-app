@@ -12,7 +12,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { crewSessions, crewOrders, restaurantApi, type LedgerSession, type LedgerOrder } from '../../services/api';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
-import { printBill, getStatus as getPrinterStatus } from '../../services/printer';
+import { getStatus as getPrinterStatus } from '../../services/printer';
+import { printBillFromHere } from '../../services/billPrint';
 import type { InvoiceBill, InvoiceItem } from '../../services/invoiceTemplate';
 import { useAuth } from '../../context/AuthContext';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
@@ -259,13 +260,7 @@ export default function OrderDetail() {
 
   const handleReprint = useCallback(async () => {
     if (!session || printing) return;
-    if (getPrinterStatus() !== 'connected') {
-      showDialog('No printer paired', 'Pair a Bluetooth printer to print the invoice.', [
-        { label: 'Set up printer', variant: 'primary', onPress: () => router.push('/printer') },
-        { label: 'Cancel', onPress: () => {} },
-      ]);
-      return;
-    }
+    // No local-printer gate — see the note in [tableId].tsx handlePrintInvoice.
     setPrinting(true);
     setPrintJob({ phase: 'preparing', label: 'Invoice' });
     try {
@@ -342,16 +337,24 @@ export default function OrderDetail() {
       };
 
       setPrintJob({ phase: 'printing', label: 'Invoice' });
-      const result = await printBill(bill);
-      if (result === 'failed') {
+      // Local when this device drives a bill printer, otherwise dispatched to
+      // the one that does — see services/billPrint.ts.
+      const outcome = await printBillFromHere({
+        restaurantId: staffInfo?.restaurantId ?? '',
+        sessionId: session.id,
+        bill,
+        onDispatched: (printerName) => setPrintJob({ phase: 'printing', label: `Invoice → ${printerName}` }),
+      });
+      if (outcome.status === 'printed') {
+        setPrintJob({ phase: 'done', label: 'Invoice' });
+      } else {
         setPrintJob({
           phase: 'failed',
           label: 'Invoice',
-          message: 'Could not print. Check that the printer is nearby and powered on.',
+          message: outcome.message
+            ?? 'Could not print. Check that the printer is nearby and powered on.',
           onRetry: () => { void handleReprint(); },
         });
-      } else {
-        setPrintJob({ phase: 'done', label: 'Invoice' });
       }
     } finally {
       setPrinting(false);

@@ -28,8 +28,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { kitchen, printerApi, restaurantApi } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
-import { printKot, getStatus as getPrinterStatus } from '../../services/printer';
-import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded } from '../../services/printSink';
+import { printKot, getStatus as getPrinterStatus, getPrinters } from '../../services/printer';
+import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded, watchPrintDispatch } from '../../services/printSink';
 import { getPrintDeviceId } from '../../services/printDevice';
 import { useAuth } from '../../context/AuthContext';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
@@ -369,15 +369,22 @@ export default function CookDashboard() {
     // Sink handover — another device paired (or the pairing was cleared).
     // Clear the stale local pairing so this device can never dual-print
     // against the new sink (critical for LAN/tcp printers).
+    // Registry-managed printers are exempt from both: these events come from
+    // the legacy /print/pair route, where "another device paired" meant "you are
+    // no longer the sink". Under the registry two devices legitimately hold a
+    // printer each, and standing down here would wipe a correct setup.
     const unsubPrinterPaired = subscribeChannel(`partner:${restaurantId}`, 'printer_paired', (data: any) => {
       void (async () => {
         if (getPrinterStatus() !== 'connected') return;
+        if (getPrinters().some((p) => p.id)) return;
         const myDeviceId = await getPrintDeviceId();
         if (data?.deviceId !== myDeviceId) await handleSinkSuperseded();
       })();
     });
     const unsubPrinterUnpaired = subscribeChannel(`partner:${restaurantId}`, 'printer_unpaired', () => {
-      if (getPrinterStatus() === 'connected') void handleSinkSuperseded();
+      if (getPrinterStatus() !== 'connected') return;
+      if (getPrinters().some((p) => p.id)) return;
+      void handleSinkSuperseded();
     });
 
     // Keep the auto-print toggle in sync when changed from any device/dashboard.
@@ -388,6 +395,10 @@ export default function CookDashboard() {
       }
     });
 
+    // Registry changes + bills dispatched to a printer this device drives —
+    // the SAME shared implementation the staff dashboard uses.
+    const unsubDispatch = watchPrintDispatch(restaurantId);
+
     return () => {
       unsubNew();
       unsubBumped();
@@ -397,6 +408,7 @@ export default function CookDashboard() {
       unsubAutoPrint();
       unsubPrinterPaired();
       unsubPrinterUnpaired();
+      unsubDispatch();
     };
   }, [staffInfo?.restaurantId, staffInfo?.restaurantName, staffInfo?.id, loadOrders]);
 

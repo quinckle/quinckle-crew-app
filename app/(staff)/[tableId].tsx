@@ -8,7 +8,8 @@ import { QuinckleColors, Radius, Spacing , Typography } from '../../constants/Co
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { crewSessions, crewTables, crewOrders, restaurantApi, printerApi } from '../../services/api';
 import type { SessionBill, BillOrderItem, BillOrder } from '../../services/api';
-import { printBill, printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
+import { printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
+import { printBillFromHere } from '../../services/billPrint';
 import { loyaltyApi, type CrewLadder } from '../../services/api';
 import type { InvoiceBill, LoyaltyNudge } from '../../services/invoiceTemplate';
 import { useAuth } from '../../context/AuthContext';
@@ -701,14 +702,10 @@ export default function TableDetail() {
 
   const handlePrintInvoice = async (buyer?: InvoiceBuyer) => {
     setPrintMenuOpen(false);
-    if (getPrinterStatus() !== 'connected') {
-      showDialog(
-        'No Printer Paired',
-        'No Bluetooth printer is connected to this device. Go to Profile → Printer Settings to pair one.',
-        [{ label: 'OK', onPress: () => {} }],
-      );
-      return;
-    }
+    // No local-printer gate: a bill no longer needs one. When this device
+    // drives no bill printer the request goes to the venue's, and the failure
+    // path below reports the real reason (no bill printer configured, host
+    // offline) instead of this device guessing from its own pairing.
 
     const invoiceItems: InvoiceBill['items'] = orders.flatMap(order =>
       order.items.filter(item => item.item_status !== 'cancelled').map(item => ({
@@ -798,7 +795,15 @@ export default function TableDetail() {
       setPrintJob({ phase: 'preparing', label: 'Invoice' });
       const { invoiceMeta, invoiceNumber, loyalty, liveLadder } = await prep;
       setPrintJob({ phase: 'printing', label: 'Invoice' });
-      const result = await printBill({
+      // Prints here when this device drives a bill printer; otherwise the
+      // server builds the bill and the counter device prints it. The `bill`
+      // below is used only on the local path — see services/billPrint.ts.
+      const outcome = await printBillFromHere({
+        restaurantId: staffInfo?.restaurantId ?? '',
+        sessionId,
+        upiOmitAmount,
+        onDispatched: (printerName) => setPrintJob({ phase: 'printing', label: `Invoice → ${printerName}` }),
+        bill: {
         restaurantName: staffInfo?.restaurantName ?? '',
         restaurantAddress: invoiceMeta?.address ?? null,
         restaurantPhone: invoiceMeta?.phone ?? null,
@@ -842,17 +847,19 @@ export default function TableDetail() {
         footerNote: invoiceMeta?.billFooterNote ?? null,
         loyalty,
         liveLadder,
+        },
       });
 
-      if (result === 'failed') {
+      if (outcome.status === 'printed') {
+        setPrintJob({ phase: 'done', label: 'Invoice' });
+      } else {
         setPrintJob({
           phase: 'failed',
           label: 'Invoice',
-          message: 'Could not print the invoice. Check that the printer is nearby and powered on.',
+          message: outcome.message
+            ?? 'Could not print the invoice. Check that the printer is nearby and powered on.',
           onRetry: () => { void runPrint(upiOmitAmount); },
         });
-      } else {
-        setPrintJob({ phase: 'done', label: 'Invoice' });
       }
     };
 

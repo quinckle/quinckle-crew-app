@@ -24,9 +24,13 @@ import { Audio } from 'expo-av';
 import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewTakeaway, crewDelivery, restaurantApi, printerApi, loyaltyApi, type ClosedSessionInfo } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { invalidateCache } from '../../services/dataCache';
-import { printKot, printBill, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
+import {
+  printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode,
+  getPrinters,
+} from '../../services/printer';
+import { printBillFromHere } from '../../services/billPrint';
 import type { InvoiceBill } from '../../services/invoiceTemplate';
-import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded } from '../../services/printSink';
+import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded, watchPrintDispatch } from '../../services/printSink';
 import { getPrintDeviceId } from '../../services/printDevice';
 import type { TakeawayOrder } from '../../services/api';
 import { router, useFocusEffect } from 'expo-router';
@@ -571,14 +575,10 @@ export default function StaffDashboard() {
 
   const handlePrintTakeawayInvoice = async (order: TakeawayOrder, buyer?: InvoiceBuyer) => {
     setPrintTakeawayOrder(null);
-    if (getPrinterStatus() !== 'connected') {
-      showDialog(
-        'No Printer Paired',
-        'No Bluetooth printer is connected to this device. Go to Profile → Printer Settings to pair one.',
-        [{ label: 'OK', onPress: () => {} }],
-      );
-      return;
-    }
+    // No local-printer gate: a bill no longer needs one. When this device
+    // drives no bill printer the request goes to the venue's, and the failure
+    // path below reports the real reason (no bill printer configured, host
+    // offline) instead of this device guessing from its own pairing.
 
     const isPaid = isTakeawayPaid(order);
     const invoiceItems: InvoiceBill['items'] = order.items.map((item) => ({
@@ -632,7 +632,14 @@ export default function StaffDashboard() {
       setPrintJob({ phase: 'preparing', label: 'Invoice' });
       const [meta, liveLadder] = await Promise.all([prep, ladderPrep]);
       setPrintJob({ phase: 'printing', label: 'Invoice' });
-      const result = await printBill({
+      // Local when this device drives a bill printer, otherwise dispatched to
+      // the one that does — see services/billPrint.ts.
+      const outcome = await printBillFromHere({
+        restaurantId: staffInfo?.restaurantId ?? '',
+        sessionId: order.sessionId ?? '',
+        upiOmitAmount,
+        onDispatched: (printerName) => setPrintJob({ phase: 'printing', label: `Invoice → ${printerName}` }),
+        bill: {
         restaurantName: staffInfo?.restaurantName ?? '',
         restaurantAddress: meta?.address ?? null,
         restaurantPhone: meta?.phone ?? null,
@@ -672,16 +679,18 @@ export default function StaffDashboard() {
         upiOmitAmount,
         orderDateTime: order.createdAt,
         generatedAt: new Date().toISOString(),
+        },
       });
-      if (result === 'failed') {
+      if (outcome.status === 'printed') {
+        setPrintJob({ phase: 'done', label: 'Invoice' });
+      } else {
         setPrintJob({
           phase: 'failed',
           label: 'Invoice',
-          message: 'Could not print the invoice. Check that the printer is nearby and powered on.',
+          message: outcome.message
+            ?? 'Could not print the invoice. Check that the printer is nearby and powered on.',
           onRetry: () => { void runPrint(upiOmitAmount); },
         });
-      } else {
-        setPrintJob({ phase: 'done', label: 'Invoice' });
       }
     };
 
@@ -1559,20 +1568,35 @@ export default function StaffDashboard() {
     // Sink handover — another device paired (or the pairing was cleared).
     // Clear the stale local pairing so this device can never dual-print
     // against the new sink (critical for LAN/tcp printers).
+    //
+    // Registry-managed printers are exempt: these two events come from the
+    // legacy /print/pair route, where "someone else paired" genuinely meant
+    // "you are no longer the sink". Under the registry a device can hold the
+    // counter printer while another holds the kitchen one, and standing down on
+    // a legacy pairing would silently wipe a correct setup.
     const offPrinterPaired = subscribeChannel(`partner:${restaurantId}`, 'printer_paired', (data: any) => {
       void (async () => {
         if (getPrinterStatus() !== 'connected') return; // we don't hold a pairing
+        if (getPrinters().some((p) => p.id)) return;    // registry-managed
         const myDeviceId = await getPrintDeviceId();
         if (data?.deviceId !== myDeviceId) await handleSinkSuperseded();
       })();
     });
     const offPrinterUnpaired = subscribeChannel(`partner:${restaurantId}`, 'printer_unpaired', () => {
-      if (getPrinterStatus() === 'connected') void handleSinkSuperseded();
+      if (getPrinterStatus() !== 'connected') return;
+      if (getPrinters().some((p) => p.id)) return;
+      void handleSinkSuperseded();
     });
+
+    // Registry changes + bills dispatched to a printer we drive. One shared
+    // implementation (see printSink.watchPrintDispatch) so the two dashboards
+    // cannot drift apart.
+    const offDispatch = watchPrintDispatch(restaurantId);
 
     return () => {
       Object.values(timers).forEach(clearTimeout);
       off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off6d(); off7(); off7b(); off7c(); off8(); off9(); offReprint(); offAutoPrint(); offPrinterPaired(); offPrinterUnpaired();
+      offDispatch();
     };
   }, [
     staffInfo?.restaurantId,

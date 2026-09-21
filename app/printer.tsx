@@ -23,11 +23,9 @@ import { router } from 'expo-router';
 import { QuinckleColors, Radius, Spacing } from '../constants/Colors';
 import { ThemedDialog } from '../components/ui/themed-dialog';
 import { WidthPickerSheet } from '../components/ui/WidthPickerSheet';
+import { RolePickerSheet } from '../components/ui/RolePickerSheet';
 import {
   scan,
-  pair,
-  pairNetwork,
-  pairUsb,
   unpair,
   printTest,
   getStatus,
@@ -42,12 +40,22 @@ import {
   type PrinterStatus,
   type UsbPrinterDevice,
 } from '../services/printer';
-import { printerApi } from '../services/api';
+import {
+  printerApi, printersApi,
+  type RegisteredPrinter, type PrinterRole, type PrinterInputBody,
+} from '../services/api';
+import { refreshLocalPrinters } from '../services/printSink';
 import { getPrintDeviceId } from '../services/printDevice';
 import { useAuth } from '../context/AuthContext';
 
 /** Suffix shown after the paper width on the status card. Bluetooth is the
  *  historical default and stays unlabelled. */
+const ROLE_LABEL: Record<string, string> = {
+  KOT: 'Kitchen tickets',
+  BILL: 'Bills',
+  BOTH: 'Kitchen tickets + bills',
+};
+
 const TRANSPORT_LABEL: Record<string, string> = {
   network: ' · Network',
   usb: ' · USB',
@@ -196,37 +204,160 @@ export default function PrinterScreen() {
     cb?.(widthMM);
   }
 
+  // ── The venue's printer registry ────────────────────────────────────────────
+
+  const [registered, setRegistered] = useState<RegisteredPrinter[]>([]);
+  const [myDeviceId, setMyDeviceId] = useState<string>('');
+  const [busyPrinterId, setBusyPrinterId] = useState<string | null>(null);
+
+  const [rolePickerVisible, setRolePickerVisible] = useState(false);
+  const [rolePickerCurrent, setRolePickerCurrent] = useState<PrinterRole | undefined>();
+  const rolePickerCallback = useRef<((role: PrinterRole) => void) | null>(null);
+
+  function chooseRole(onPick: (role: PrinterRole) => void, current?: PrinterRole) {
+    rolePickerCallback.current = onPick;
+    setRolePickerCurrent(current);
+    setRolePickerVisible(true);
+  }
+
+  function handleRolePick(role: PrinterRole) {
+    setRolePickerVisible(false);
+    const cb = rolePickerCallback.current;
+    rolePickerCallback.current = null;
+    cb?.(role);
+  }
+
+  const loadPrinters = useCallback(async () => {
+    try {
+      const [res, deviceId] = await Promise.all([printersApi.list(), getPrintDeviceId()]);
+      setRegistered(res?.data ?? []);
+      setMyDeviceId(deviceId);
+      // Keep what this device actually drives in step with what the server says.
+      await refreshLocalPrinters();
+      setLocalStatus(getStatus());
+      setConfig(getConfig());
+    } catch {
+      /* offline — the cached local list still prints */
+    }
+  }, []);
+
+  useEffect(() => { void loadPrinters(); }, [loadPrinters]);
+
+  /** Register a printer this device can physically reach, and take its host slot. */
+  const registerPrinter = useCallback(async (body: PrinterInputBody, label: string) => {
+    const deviceId = await getPrintDeviceId();
+    await printersApi.create({ ...body, hostDeviceId: deviceId });
+    await loadPrinters();
+    showToast(`${label} added`, true);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  }, [loadPrinters]);
+
+  const handleChangeRole = useCallback((printer: RegisteredPrinter) => {
+    chooseRole((role) => {
+      void (async () => {
+        setBusyPrinterId(printer.id);
+        try {
+          await printersApi.update(printer.id, { role });
+          await loadPrinters();
+        } catch {
+          showToast('Could not change what this printer prints', false);
+        } finally {
+          setBusyPrinterId(null);
+        }
+      })();
+    }, printer.role);
+  }, [loadPrinters]);
+
+  const handleTakeOverHost = useCallback(async (printer: RegisteredPrinter) => {
+    setBusyPrinterId(printer.id);
+    try {
+      await printersApi.claimHost(printer.id, await getPrintDeviceId());
+      await loadPrinters();
+      showToast(`This device now drives ${printer.name}`, true);
+    } catch (err: any) {
+      showToast(
+        typeof err?.message === 'string' && err.message.includes('PRINTER_BLUETOOTH_HOST_TAKEN')
+          ? 'This device already has a Bluetooth printer. A phone can only drive one.'
+          : `Could not take over ${printer.name}`,
+        false,
+      );
+    } finally {
+      setBusyPrinterId(null);
+    }
+  }, [loadPrinters]);
+
+  const handleTestPrinter = useCallback(async (printer: RegisteredPrinter) => {
+    setBusyPrinterId(printer.id);
+    try {
+      const result = await printTest({ printerId: printer.id });
+      showToast(result === 'printed' ? `Test sent to ${printer.name}` : `${printer.name} did not respond`, result === 'printed');
+    } finally {
+      setBusyPrinterId(null);
+    }
+  }, []);
+
+  const handleRemovePrinter = useCallback((printer: RegisteredPrinter) => {
+    setDialog({
+      visible: true,
+      title: `Remove ${printer.name}?`,
+      message: printer.role === 'BILL'
+        ? 'Bills will stop printing here.'
+        : 'Kitchen tickets will stop printing here.',
+      actions: [
+        { label: 'Cancel', onPress: () => {} },
+        {
+          label: 'Remove',
+          variant: 'danger' as const,
+          onPress: () => {
+            void (async () => {
+              setBusyPrinterId(printer.id);
+              try {
+                await printersApi.remove(printer.id);
+                await loadPrinters();
+                showToast(`${printer.name} removed`, true);
+              } catch {
+                showToast(`Could not remove ${printer.name}`, false);
+              } finally {
+                setBusyPrinterId(null);
+              }
+            })();
+          },
+        },
+      ],
+    });
+  }, [loadPrinters]);
+
   // ── Pair (Bluetooth) ─────────────────────────────────────────────────────────
 
   function handlePair(device: BluetoothDevice) {
-    // Ask for the paper width first, then pair — fixes the old always-58mm bug.
-    chooseWidth((width) => void doPairBluetooth(device, width));
+    // Width first (fixes the old always-58mm bug), then what it prints.
+    chooseWidth((width) => chooseRole((role) => void doPairBluetooth(device, width, role)));
   }
 
-  async function doPairBluetooth(device: BluetoothDevice, width: number) {
-    if (!staffInfo?.id) return;
+  // Registered on the SERVER first, then mirrored locally by loadPrinters. The
+  // registry is the source of truth now, so a local-only pairing would just be
+  // wiped by the next sync — and a venue with two printers needs both devices
+  // to agree on which one drives what.
+  async function doPairBluetooth(device: BluetoothDevice, width: number, role: PrinterRole) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setSelectedDevice(device);
     setIsPairing(true);
     try {
-      await pair(device, width);
-      // Also register on backend — deviceId marks THIS device as the sink so
-      // any previously-paired device stands down (see printSink self-heal).
-      await printerApi.setPairing({
-        pairedTo: staffInfo.id,
-        name: device.name,
+      await registerPrinter({
+        name: device.name || 'Bluetooth printer',
+        role,
+        transport: 'BLUETOOTH',
         address: device.address,
         paperWidth: width,
-        deviceId: await getPrintDeviceId(),
-      });
-      setLocalStatus(getStatus());
-      setConfig(getConfig());
-      await loadServerStatus();
+      }, `${device.name} · ${width}mm`);
       setShowScanView(false);
-      showToast(`Paired with ${device.name} · ${width}mm`, true);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch {
-      showToast(`Failed to pair with ${device.name}`, false);
+    } catch (err: any) {
+      showToast(
+        typeof err?.message === 'string' && err.message.includes('PRINTER_BLUETOOTH_HOST_TAKEN')
+          ? 'This device already drives a Bluetooth printer. Bluetooth printers pair one-to-one — use a second device, or a network/USB printer.'
+          : `Failed to pair with ${device.name}`,
+        false,
+      );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setIsPairing(false);
@@ -242,33 +373,27 @@ export default function PrinterScreen() {
       showToast('Enter the printer IP address', false);
       return;
     }
-    chooseWidth((width) => void doPairNetwork(ip, width));
+    chooseWidth((width) => chooseRole((role) => void doPairNetwork(ip, width, role)));
   }
 
-  async function doPairNetwork(ip: string, width: number) {
-    if (!staffInfo?.id) return;
+  async function doPairNetwork(ip: string, width: number, role: PrinterRole) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     const port = parseInt(networkPort, 10) || 9100;
     const name = `Network printer (${ip})`;
     setIsPairing(true);
     try {
-      await pairNetwork({ ip, port, name }, width);
-      await printerApi.setPairing({
-        pairedTo: staffInfo.id,
-        name,
-        address: `tcp://${ip}:${port}`,
-        paperWidth: width,
-        deviceId: await getPrintDeviceId(),
-      });
-      setLocalStatus(getStatus());
-      setConfig(getConfig());
-      await loadServerStatus();
+      await registerPrinter({
+        name, role, transport: 'NETWORK', ip, port, paperWidth: width,
+      }, `${name} · ${width}mm`);
       setShowScanView(false);
       setShowNetworkForm(false);
-      showToast(`Paired with ${name} · ${width}mm`, true);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch {
-      showToast('Failed to reach the network printer. Check the IP and that it is on the same WiFi.', false);
+    } catch (err: any) {
+      showToast(
+        typeof err?.message === 'string' && err.message.includes('PRINTER_DUPLICATE')
+          ? 'That printer is already in the list.'
+          : 'Failed to reach the network printer. Check the IP and that it is on the same WiFi.',
+        false,
+      );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setIsPairing(false);
@@ -288,33 +413,33 @@ export default function PrinterScreen() {
   }, [usbAvailable]);
 
   function handlePairUsb(device: UsbPrinterDevice) {
-    chooseWidth((width) => void doPairUsb(device, width));
+    chooseWidth((width) => chooseRole((role) => void doPairUsb(device, width, role)));
   }
 
-  async function doPairUsb(device: UsbPrinterDevice, width: number) {
-    if (!staffInfo?.id) return;
+  async function doPairUsb(device: UsbPrinterDevice, width: number, role: PrinterRole) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setSelectedUsb(device);
     setIsPairing(true);
     try {
-      await pairUsb(device, width);
-      await printerApi.setPairing({
-        pairedTo: staffInfo.id,
-        name: device.deviceName,
-        // Mirrors the tcp:// convention so the server keeps one address column
-        // that encodes the transport.
-        address: `usb://${device.vendorId}:${device.productId}`,
+      await registerPrinter({
+        name: device.deviceName || 'USB printer',
+        role,
+        transport: 'USB',
+        usbVendorId: device.vendorId,
+        usbProductId: device.productId,
         paperWidth: width,
-        deviceId: await getPrintDeviceId(),
-      });
-      setLocalStatus(getStatus());
-      setConfig(getConfig());
-      await loadServerStatus();
+      }, `${device.deviceName} · ${width}mm`);
       setShowScanView(false);
-      showToast(`Paired with ${device.deviceName} · ${width}mm`, true);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch {
-      showToast(`Failed to pair with ${device.deviceName}`, false);
+    } catch (err: any) {
+      showToast(
+        typeof err?.message === 'string' && err.message.includes('PRINTER_DUPLICATE')
+          // Two printers of the SAME MODEL report identical vendor/product ids,
+          // and neither platform can currently tell them apart. Say so rather
+          // than adding a second row that silently drives the first printer.
+          ? 'A printer with these USB ids is already in the list. Two identical USB printers cannot be told apart yet — use different models, or connect one over the network.'
+          : `Failed to pair with ${device.deviceName}`,
+        false,
+      );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setIsPairing(false);
@@ -393,9 +518,93 @@ export default function PrinterScreen() {
         contentContainerStyle={{ paddingBottom: insets.bottom + Spacing.xl }}
         showsVerticalScrollIndicator={false}
       >
+        {/* The venue's printers. Every device sees the same list; the ones this
+            device physically drives are marked, and only those can be tested
+            from here. */}
+        <View style={styles.card}>
+          <Text style={styles.sectionLabel}>PRINTERS</Text>
+
+          {registered.length === 0 && (
+            <Text style={styles.emptyText}>
+              No printers yet. Add one below and choose what it prints.
+            </Text>
+          )}
+
+          {registered.map((printer) => {
+            const mine = printer.hostDeviceId === myDeviceId;
+            const busy = busyPrinterId === printer.id;
+            return (
+              <View key={printer.id} style={styles.printerRow}>
+                <View style={styles.printerHead}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.printerName} numberOfLines={1}>{printer.name}</Text>
+                    <Text style={styles.printerMeta}>
+                      {ROLE_LABEL[printer.role]} · {printer.paperWidth}mm
+                      {TRANSPORT_LABEL[printer.transport.toLowerCase()] ?? ''}
+                    </Text>
+                    <Text style={[styles.printerHost, mine && styles.printerHostMine]}>
+                      {mine
+                        ? 'Connected to this device'
+                        : printer.hostDeviceId
+                          ? 'Connected to another device'
+                          : 'Not connected to any device'}
+                      {printer.lastError ? ' · last print failed' : ''}
+                    </Text>
+                  </View>
+                  {busy && <ActivityIndicator size="small" color={QuinckleColors.primary} />}
+                </View>
+
+                <View style={styles.printerActions}>
+                  <TouchableOpacity
+                    style={styles.printerAction}
+                    onPress={() => handleChangeRole(printer)}
+                    disabled={busy}
+                    activeOpacity={0.75}
+                  >
+                    <Ionicons name="swap-horizontal-outline" size={16} color={QuinckleColors.textPrimary} />
+                    <Text style={styles.printerActionText}>Prints</Text>
+                  </TouchableOpacity>
+
+                  {mine ? (
+                    <TouchableOpacity
+                      style={styles.printerAction}
+                      onPress={() => void handleTestPrinter(printer)}
+                      disabled={busy}
+                      activeOpacity={0.75}
+                    >
+                      <Ionicons name="print-outline" size={16} color={QuinckleColors.primary} />
+                      <Text style={[styles.printerActionText, { color: QuinckleColors.primary }]}>Test</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.printerAction}
+                      onPress={() => void handleTakeOverHost(printer)}
+                      disabled={busy}
+                      activeOpacity={0.75}
+                    >
+                      <Ionicons name="phone-portrait-outline" size={16} color={QuinckleColors.primary} />
+                      <Text style={[styles.printerActionText, { color: QuinckleColors.primary }]}>Use this device</Text>
+                    </TouchableOpacity>
+                  )}
+
+                  <TouchableOpacity
+                    style={styles.printerAction}
+                    onPress={() => handleRemovePrinter(printer)}
+                    disabled={busy}
+                    activeOpacity={0.75}
+                  >
+                    <Ionicons name="trash-outline" size={16} color={QuinckleColors.danger} />
+                    <Text style={[styles.printerActionText, { color: QuinckleColors.danger }]}>Remove</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            );
+          })}
+        </View>
+
         {/* Status card */}
         <View style={styles.card}>
-          <Text style={styles.sectionLabel}>PRINTER STATUS</Text>
+          <Text style={styles.sectionLabel}>THIS DEVICE</Text>
 
           <View style={styles.statusRow}>
             <View style={[
@@ -693,6 +902,13 @@ export default function PrinterScreen() {
         onPick={handleWidthPick}
         onClose={() => setWidthPickerVisible(false)}
       />
+
+      <RolePickerSheet
+        visible={rolePickerVisible}
+        current={rolePickerCurrent}
+        onPick={handleRolePick}
+        onClose={() => setRolePickerVisible(false)}
+      />
     </View>
   );
 }
@@ -700,6 +916,39 @@ export default function PrinterScreen() {
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
+  printerRow: {
+    paddingVertical: Spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: QuinckleColors.border,
+  },
+  printerHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  printerName: { fontSize: 15, fontWeight: '600', color: QuinckleColors.textPrimary },
+  printerMeta: { fontSize: 12, color: QuinckleColors.textSecondary, marginTop: 2 },
+  printerHost: { fontSize: 12, color: QuinckleColors.textMuted, marginTop: 2 },
+  printerHostMine: {
+    color: QuinckleColors.success,
+  },
+  printerActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  printerAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+  },
+  printerActionText: { fontSize: 12, fontWeight: '600', color: QuinckleColors.textPrimary },
   root: { flex: 1, backgroundColor: QuinckleColors.background },
   header: {
     flexDirection: 'row',
