@@ -23,10 +23,15 @@ import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
 import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewTakeaway, crewDelivery, restaurantApi, printerApi, loyaltyApi, type ClosedSessionInfo } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
-import { invalidateCache } from '../../services/dataCache';
-import { printKot, printBill, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
+import { invalidateCache, writeCache, cacheKeys } from '../../services/dataCache';
+import { startTableSession, isTableSessionStarting } from '../../services/tableSessionStart';
+import {
+  printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode,
+  getPrinters,
+} from '../../services/printer';
+import { printBillFromHere } from '../../services/billPrint';
 import type { InvoiceBill } from '../../services/invoiceTemplate';
-import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded } from '../../services/printSink';
+import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded, watchPrintDispatch } from '../../services/printSink';
 import { getPrintDeviceId } from '../../services/printDevice';
 import type { TakeawayOrder } from '../../services/api';
 import { router, useFocusEffect } from 'expo-router';
@@ -38,6 +43,9 @@ import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Col
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { CenteredModal } from '../../components/ui/CenteredModal';
+import { SlideDrawer } from '../../components/ui/SlideDrawer';
+import { MenuPanel } from '../../components/menu/MenuPanel';
+import { isDesktop } from '../../services/platform';
 import { StartSessionOverlay, type StartSessionJob } from '../../components/ui/StartSessionOverlay';
 import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { MergeTableSheet } from '../../components/ui/MergeTableSheet';
@@ -260,6 +268,9 @@ export default function StaffDashboard() {
   const tableColumns = isTablet ? Math.max(3, Math.floor(winWidth / 240)) : 2;
   const tableCellWidth = `${(100 - 2 * (tableColumns - 1)) / tableColumns}%` as `${number}%`;
   const [activeTab, setActiveTab] = useState<NavItem>('tables');
+  // Desktop opens the menu as a left-hand drawer over this screen; phones and
+  // tablets keep pushing the full-screen /more sheet.
+  const [menuOpen, setMenuOpen] = useState(false);
   // Delivery is a channel on the navbar, not a row in the burger menu — but
   // only at venues where it is actually switched on. `can` answers yes when the
   // capability list is unknown (older backend / restored session), so the
@@ -571,14 +582,10 @@ export default function StaffDashboard() {
 
   const handlePrintTakeawayInvoice = async (order: TakeawayOrder, buyer?: InvoiceBuyer) => {
     setPrintTakeawayOrder(null);
-    if (getPrinterStatus() !== 'connected') {
-      showDialog(
-        'No Printer Paired',
-        'No Bluetooth printer is connected to this device. Go to Profile → Printer Settings to pair one.',
-        [{ label: 'OK', onPress: () => {} }],
-      );
-      return;
-    }
+    // No local-printer gate: a bill no longer needs one. When this device
+    // drives no bill printer the request goes to the venue's, and the failure
+    // path below reports the real reason (no bill printer configured, host
+    // offline) instead of this device guessing from its own pairing.
 
     const isPaid = isTakeawayPaid(order);
     const invoiceItems: InvoiceBill['items'] = order.items.map((item) => ({
@@ -632,7 +639,14 @@ export default function StaffDashboard() {
       setPrintJob({ phase: 'preparing', label: 'Invoice' });
       const [meta, liveLadder] = await Promise.all([prep, ladderPrep]);
       setPrintJob({ phase: 'printing', label: 'Invoice' });
-      const result = await printBill({
+      // Local when this device drives a bill printer, otherwise dispatched to
+      // the one that does — see services/billPrint.ts.
+      const outcome = await printBillFromHere({
+        restaurantId: staffInfo?.restaurantId ?? '',
+        sessionId: order.sessionId ?? '',
+        upiOmitAmount,
+        onDispatched: (printerName) => setPrintJob({ phase: 'printing', label: `Invoice → ${printerName}` }),
+        bill: {
         restaurantName: staffInfo?.restaurantName ?? '',
         restaurantAddress: meta?.address ?? null,
         restaurantPhone: meta?.phone ?? null,
@@ -672,16 +686,18 @@ export default function StaffDashboard() {
         upiOmitAmount,
         orderDateTime: order.createdAt,
         generatedAt: new Date().toISOString(),
+        },
       });
-      if (result === 'failed') {
+      if (outcome.status === 'printed') {
+        setPrintJob({ phase: 'done', label: 'Invoice' });
+      } else {
         setPrintJob({
           phase: 'failed',
           label: 'Invoice',
-          message: 'Could not print the invoice. Check that the printer is nearby and powered on.',
+          message: outcome.message
+            ?? 'Could not print the invoice. Check that the printer is nearby and powered on.',
           onRetry: () => { void runPrint(upiOmitAmount); },
         });
-      } else {
-        setPrintJob({ phase: 'done', label: 'Invoice' });
       }
     };
 
@@ -1559,20 +1575,35 @@ export default function StaffDashboard() {
     // Sink handover — another device paired (or the pairing was cleared).
     // Clear the stale local pairing so this device can never dual-print
     // against the new sink (critical for LAN/tcp printers).
+    //
+    // Registry-managed printers are exempt: these two events come from the
+    // legacy /print/pair route, where "someone else paired" genuinely meant
+    // "you are no longer the sink". Under the registry a device can hold the
+    // counter printer while another holds the kitchen one, and standing down on
+    // a legacy pairing would silently wipe a correct setup.
     const offPrinterPaired = subscribeChannel(`partner:${restaurantId}`, 'printer_paired', (data: any) => {
       void (async () => {
         if (getPrinterStatus() !== 'connected') return; // we don't hold a pairing
+        if (getPrinters().some((p) => p.id)) return;    // registry-managed
         const myDeviceId = await getPrintDeviceId();
         if (data?.deviceId !== myDeviceId) await handleSinkSuperseded();
       })();
     });
     const offPrinterUnpaired = subscribeChannel(`partner:${restaurantId}`, 'printer_unpaired', () => {
-      if (getPrinterStatus() === 'connected') void handleSinkSuperseded();
+      if (getPrinterStatus() !== 'connected') return;
+      if (getPrinters().some((p) => p.id)) return;
+      void handleSinkSuperseded();
     });
+
+    // Registry changes + bills dispatched to a printer we drive. One shared
+    // implementation (see printSink.watchPrintDispatch) so the two dashboards
+    // cannot drift apart.
+    const offDispatch = watchPrintDispatch(restaurantId);
 
     return () => {
       Object.values(timers).forEach(clearTimeout);
       off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off6d(); off7(); off7b(); off7c(); off8(); off9(); offReprint(); offAutoPrint(); offPrinterPaired(); offPrinterUnpaired();
+      offDispatch();
     };
   }, [
     staffInfo?.restaurantId,
@@ -1821,6 +1852,33 @@ export default function StaffDashboard() {
     }
   };
 
+  // Desktop: open a free table straight into the order menu. The session is
+  // created in the background (services/tableSessionStart.ts) and the menu picks
+  // its id up when it lands — no overlay, no waiting on the POST, no table
+  // screen in between. A failure shows on the menu with a Retry; back out at any
+  // point and the grid refreshes itself (focus + the session_started event).
+  const lastOpenAt = useRef(0);
+  const openTableToOrder = (table: Table) => {
+    // A double tap must not push two menus. (A second start for the same table
+    // is already refused by the store; this stops the second navigation.)
+    const now = Date.now();
+    if (now - lastOpenAt.current < 800) return;
+    lastOpenAt.current = now;
+
+    if (!isTableSessionStarting(table.id)) {
+      void startTableSession(table.id, { onSettled: () => { void loadTables(); } }).catch(() => {});
+    }
+    router.push({
+      pathname: '/(staff)/order-menu',
+      params: {
+        tableId: String(table.number),
+        tableDbId: table.id,
+        pendingStart: '1',
+        zoneName: table.zoneName ?? '',
+      },
+    });
+  };
+
   const onDismissStartSession = () => {
     const nav = pendingSessionNav.current;
     pendingSessionNav.current = null;
@@ -1928,6 +1986,20 @@ export default function StaffDashboard() {
     }
   };
 
+  // Desktop opens a free table straight into the order menu, which paints from
+  // this cache and refreshes behind it. Warm it now so even the first tap of the
+  // day shows the menu instantly instead of a skeleton.
+  useEffect(() => {
+    const rid = staffInfo?.restaurantId;
+    if (!rid || !isDesktop()) return;
+    restaurantApi.getMenu(rid, 'CREW')
+      .then((res) => {
+        const cats = (res as any)?.data;
+        if (Array.isArray(cats)) writeCache(cacheKeys.crewOrderMenu(rid, 'CREW'), cats);
+      })
+      .catch(() => {});
+  }, [staffInfo?.restaurantId]);
+
   const handleTablePress = (tableNum: number, currentStatus: TableStatus) => {
     if (currentStatus === 'offline') {
       showDialog(
@@ -1944,7 +2016,11 @@ export default function StaffDashboard() {
     if (currentStatus === 'available') {
       const table = tables.find(t => t.number === tableNum);
       if (!table) return;
-      void startSessionForTable(table);
+      // Desktop is a till: opening a free table means taking its order, so go
+      // straight to the menu and let the session start behind it. Phones keep
+      // the overlay flow for now.
+      if (isDesktop()) openTableToOrder(table);
+      else void startSessionForTable(table);
     } else {
       const table = tables.find(t => t.number === tableNum);
       if (!table) return;
@@ -2172,7 +2248,7 @@ export default function StaffDashboard() {
         <View style={styles.topBarLeft}>
           <TouchableOpacity
             style={styles.burgerBtn}
-            onPress={() => router.push('/(staff)/more')}
+            onPress={() => { if (isDesktop()) setMenuOpen(true); else router.push('/(staff)/more'); }}
             activeOpacity={0.7}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
@@ -3114,6 +3190,21 @@ export default function StaffDashboard() {
           <Text style={styles.takeawayQrHint}>Ask the customer to scan this to order takeaway themselves</Text>
         </View>
       </BottomSheet>
+
+      {/* Desktop menu drawer. Last child, so it stacks above everything else on
+          this screen. Navigating from it starts the push and the slide-out
+          together — the incoming screen covers the panel as it leaves. */}
+      {menuOpen && (
+        <SlideDrawer width={460} onClosed={() => setMenuOpen(false)}>
+          {(close) => (
+            <MenuPanel
+              variant="drawer"
+              onClose={close}
+              onNavigate={(route) => { close(); router.push(route as any); }}
+            />
+          )}
+        </SlideDrawer>
+      )}
     </View>
   );
 }
@@ -3333,8 +3424,13 @@ const styles = StyleSheet.create({
   },
   // Inline in the tablet top bar, next to the burger icon — kept narrow so
   // it doesn't crowd out the avatar/cash icons on the right.
+  // NOT `flex: 0`: react-native-web emits CSS `flex: 0` (= 0 1 0%), whose zero
+  // flex-basis beats `width` and collapses the box to icon size on desktop.
+  // The longhands mean "fixed 220" on every platform.
   searchBoxCompact: {
-    flex: 0,
+    flexGrow: 0,
+    flexShrink: 0,
+    flexBasis: 'auto',
     width: 220,
   },
   searchBoxFull: {
@@ -3361,6 +3457,7 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
+    minWidth: 0,
     color: QuinckleColors.textPrimary,
     fontSize: 14,
   },

@@ -1641,11 +1641,17 @@ export const printerApi = {
   /**
    * Report a print result to the backend (printed or failed).
    */
-  ack: (orderId: string, status: 'printed' | 'failed', errorMessage?: string, isAddOn?: boolean) =>
+  ack: (
+    orderId: string,
+    status: 'printed' | 'failed',
+    errorMessage?: string,
+    isAddOn?: boolean,
+    printerId?: string,
+  ) =>
     request<{ success: true; data: any }>(
       'POST',
       '/api/crew/print/ack',
-      { orderId, status, errorMessage, isAddOn },
+      { orderId, status, errorMessage, isAddOn, printerId },
       true,
     ),
 
@@ -1690,7 +1696,7 @@ export const printerApi = {
    * paired, so the caller can clear its stale local pairing.
    */
   getPending: (limit = 25, deviceId?: string) =>
-    request<{ success: true; data: Array<{
+    request<{ success: true; bills?: BillPrintJob[]; data: Array<{
       id: string;
       orderNumber?: string | number;
       sessionId: string;
@@ -1703,6 +1709,11 @@ export const printerApi = {
       isAddOn: boolean;
       isReprint?: boolean;
       reprintRequestedAt?: number | null;
+      /** Which registered printer this ticket is addressed to. */
+      printerId?: string;
+      printerName?: string;
+      paperWidth?: number;
+      dpi?: number;
       items: Array<{
         name: string;
         quantity: number;
@@ -1713,6 +1724,37 @@ export const printerApi = {
       'GET',
       `/api/crew/print/pending?limit=${Math.max(1, Math.min(limit, 100))}`,
       undefined,
+      true,
+      deviceId
+        // x-print-registry tells the server we understand per-printer
+        // addressing. Without it we would be served the legacy single-sink
+        // queue — which is exactly what an older bundle should get.
+        ? { 'x-print-device': deviceId, 'x-print-registry': '1' }
+        : { 'x-print-registry': '1' },
+    ),
+
+  /**
+   * Ask the venue's bill printer to print a session's bill — from ANY crew
+   * device, whether or not it can reach a printer itself. The server builds the
+   * bill; we never send totals.
+   */
+  requestBillPrint: (body: { sessionId: string; printerId?: string; upiOmitAmount?: boolean }) =>
+    request<{ success: true; data: { jobId: string; printerId: string; printerName: string } }>(
+      'POST',
+      '/api/crew/print/bill',
+      body,
+      true,
+    ),
+
+  /** The host device reports how a dispatched bill job went. */
+  ackBillPrint: (
+    body: { jobId: string; status: 'printed' | 'failed'; errorMessage?: string; printerId?: string; sessionId?: string },
+    deviceId?: string,
+  ) =>
+    request<{ success: true; data: any }>(
+      'POST',
+      '/api/crew/print/bill-ack',
+      body,
       true,
       deviceId ? { 'x-print-device': deviceId } : undefined,
     ),
@@ -1743,6 +1785,97 @@ export const printerApi = {
       '/api/crew/print/autoprint',
       { enabled },
       true,
+    ),
+};
+
+// ── Printer registry (PRINTER_STATIONS_PLAN.md) ──────────────────────────────
+
+export type PrinterRole = 'KOT' | 'BILL' | 'BOTH';
+export type PrinterTransportServer = 'BLUETOOTH' | 'NETWORK' | 'USB';
+
+/** One registered printer, as the server holds it. */
+export interface RegisteredPrinter {
+  id: string;
+  name: string;
+  role: PrinterRole;
+  transport: PrinterTransportServer;
+  address?: string | null;
+  ip?: string | null;
+  port?: number | null;
+  usbVendorId?: number | null;
+  usbProductId?: number | null;
+  usbSerial?: string | null;
+  usbPath?: string | null;
+  paperWidth: number;
+  dpi: number;
+  /** App-install UUID of the device that physically drives this printer. */
+  hostDeviceId?: string | null;
+  hostStaffId?: string | null;
+  isDefaultBill: boolean;
+  enabled: boolean;
+  lastSeenAt?: string | null;
+  lastError?: string | null;
+  lastErrorAt?: string | null;
+  createdAt?: string | null;
+}
+
+/** A bill the server wants this device's printer to put on paper. */
+export interface BillPrintJob {
+  jobId: string;
+  printerId: string;
+  printerName: string;
+  sessionId: string;
+  requestedBy: string;
+  requestedAt: number;
+  paperWidth: number;
+  dpi?: number;
+  /** The fully-built invoice — shaped for printBill, never recomputed here. */
+  bill: any;
+}
+
+export interface PrinterInputBody {
+  name: string;
+  role: PrinterRole;
+  transport: PrinterTransportServer;
+  address?: string | null;
+  ip?: string | null;
+  port?: number | null;
+  usbVendorId?: number | null;
+  usbProductId?: number | null;
+  usbSerial?: string | null;
+  usbPath?: string | null;
+  paperWidth?: number;
+  dpi?: number;
+  hostDeviceId?: string | null;
+  isDefaultBill?: boolean;
+  enabled?: boolean;
+}
+
+export const printersApi = {
+  list: () =>
+    request<{ success: true; data: RegisteredPrinter[] }>(
+      'GET', '/api/crew/printers', undefined, true,
+    ),
+
+  create: (body: PrinterInputBody) =>
+    request<{ success: true; data: RegisteredPrinter }>(
+      'POST', '/api/crew/printers', body, true,
+    ),
+
+  update: (printerId: string, body: Partial<PrinterInputBody>) =>
+    request<{ success: true; data: RegisteredPrinter }>(
+      'PATCH', `/api/crew/printers/${printerId}`, body, true,
+    ),
+
+  remove: (printerId: string) =>
+    request<{ success: true }>(
+      'DELETE', `/api/crew/printers/${printerId}`, undefined, true,
+    ),
+
+  /** Declare this device the one that physically drives the printer. */
+  claimHost: (printerId: string, deviceId: string) =>
+    request<{ success: true; data: RegisteredPrinter }>(
+      'POST', `/api/crew/printers/${printerId}/claim-host`, { deviceId }, true,
     ),
 };
 

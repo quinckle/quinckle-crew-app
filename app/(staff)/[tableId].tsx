@@ -8,7 +8,8 @@ import { QuinckleColors, Radius, Spacing , Typography } from '../../constants/Co
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { crewSessions, crewTables, crewOrders, restaurantApi, printerApi } from '../../services/api';
 import type { SessionBill, BillOrderItem, BillOrder } from '../../services/api';
-import { printBill, printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
+import { printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
+import { printBillFromHere } from '../../services/billPrint';
 import { loyaltyApi, type CrewLadder } from '../../services/api';
 import type { InvoiceBill, LoyaltyNudge } from '../../services/invoiceTemplate';
 import { useAuth } from '../../context/AuthContext';
@@ -93,7 +94,11 @@ export default function TableDetail() {
   // Tablet-landscape: session details + a permanently-visible bill breakdown
   // sit in a left pane, ordered items alone fill the right pane. Phone and
   // tablet-portrait keep the original single-column stack.
-  const { isWide } = useResponsive();
+  const { isWide, width: winWidth } = useResponsive();
+  // The receipt rail grows with the window rather than staying a fixed 340: a
+  // third of the width, kept between 400 and 520 so it is roomy on a big screen
+  // and still leaves the order ticket enough room on the smallest one.
+  const railWidth = Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, Math.round(winWidth * RAIL_WIDTH_RATIO)));
   const { tableId, sessionId: paramSessionId, tableDbId, occupiedSince, expiresAt: paramExpiresAt, customerName: paramCustomerName, customerPhone: paramCustomerPhone, groupLabel: paramGroupLabel, zoneName: paramZoneName, openBill } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string; occupiedSince: string; expiresAt: string; customerName: string; customerPhone: string; groupLabel?: string; zoneName?: string; openBill?: string }>();
   const router = useRouter();
   const { staffInfo } = useAuth();
@@ -701,14 +706,10 @@ export default function TableDetail() {
 
   const handlePrintInvoice = async (buyer?: InvoiceBuyer) => {
     setPrintMenuOpen(false);
-    if (getPrinterStatus() !== 'connected') {
-      showDialog(
-        'No Printer Paired',
-        'No Bluetooth printer is connected to this device. Go to Profile → Printer Settings to pair one.',
-        [{ label: 'OK', onPress: () => {} }],
-      );
-      return;
-    }
+    // No local-printer gate: a bill no longer needs one. When this device
+    // drives no bill printer the request goes to the venue's, and the failure
+    // path below reports the real reason (no bill printer configured, host
+    // offline) instead of this device guessing from its own pairing.
 
     const invoiceItems: InvoiceBill['items'] = orders.flatMap(order =>
       order.items.filter(item => item.item_status !== 'cancelled').map(item => ({
@@ -798,7 +799,15 @@ export default function TableDetail() {
       setPrintJob({ phase: 'preparing', label: 'Invoice' });
       const { invoiceMeta, invoiceNumber, loyalty, liveLadder } = await prep;
       setPrintJob({ phase: 'printing', label: 'Invoice' });
-      const result = await printBill({
+      // Prints here when this device drives a bill printer; otherwise the
+      // server builds the bill and the counter device prints it. The `bill`
+      // below is used only on the local path — see services/billPrint.ts.
+      const outcome = await printBillFromHere({
+        restaurantId: staffInfo?.restaurantId ?? '',
+        sessionId,
+        upiOmitAmount,
+        onDispatched: (printerName) => setPrintJob({ phase: 'printing', label: `Invoice → ${printerName}` }),
+        bill: {
         restaurantName: staffInfo?.restaurantName ?? '',
         restaurantAddress: invoiceMeta?.address ?? null,
         restaurantPhone: invoiceMeta?.phone ?? null,
@@ -842,17 +851,19 @@ export default function TableDetail() {
         footerNote: invoiceMeta?.billFooterNote ?? null,
         loyalty,
         liveLadder,
+        },
       });
 
-      if (result === 'failed') {
+      if (outcome.status === 'printed') {
+        setPrintJob({ phase: 'done', label: 'Invoice' });
+      } else {
         setPrintJob({
           phase: 'failed',
           label: 'Invoice',
-          message: 'Could not print the invoice. Check that the printer is nearby and powered on.',
+          message: outcome.message
+            ?? 'Could not print the invoice. Check that the printer is nearby and powered on.',
           onRetry: () => { void runPrint(upiOmitAmount); },
         });
-      } else {
-        setPrintJob({ phase: 'done', label: 'Invoice' });
       }
     };
 
@@ -1660,20 +1671,28 @@ export default function TableDetail() {
           <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} activeOpacity={0.7}>
             <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
           </TouchableOpacity>
-          <Text style={styles.tableTitle} numberOfLines={1}>
-            T{tableNum}{groupLabel ? ` · ${groupLabel}` : ''}
-          </Text>
+          {/* Table number with its seating zone beside it, read as one label.
+              Tables without a zone show the number alone. */}
+          <View style={styles.titleGroup}>
+            <Text style={styles.tableTitle} numberOfLines={1}>
+              T{tableNum}{groupLabel ? ` · ${groupLabel}` : ''}
+            </Text>
+            {(paramZoneName ?? '').trim() ? (
+              <Text style={styles.zoneLabel} numberOfLines={1}>{(paramZoneName ?? '').trim()}</Text>
+            ) : null}
+          </View>
 
-          {/* Session identity moved into this sheet — the ref used to be printed
+          {/* Session identity lives in this sheet — the ref used to be printed
               under the table number AND again as a "Ref" row, twice over. */}
           <TouchableOpacity
             onPress={() => setSessionInfoOpen(true)}
-            style={styles.infoBtn}
+            style={styles.sessionBtn}
             activeOpacity={0.7}
             accessibilityRole="button"
             accessibilityLabel="Session details"
           >
-            <Ionicons name="information-circle-outline" size={18} color={QuinckleColors.textSecondary} />
+            <Ionicons name="information-circle-outline" size={16} color={QuinckleColors.textSecondary} />
+            <Text style={styles.sessionBtnText}>Session details</Text>
           </TouchableOpacity>
 
           {/* Merged tables stay visible. Which sessions this table absorbed
@@ -1718,7 +1737,7 @@ export default function TableDetail() {
             {orderListJsx}
           </View>
 
-          <View style={styles.railPane}>
+          <View style={[styles.railPane, { width: railWidth }]}>
             {/* Compact session header. T{num}, the ref and the timer all live in
                 the screen header now, so the rail carries only the guest
                 identity the bill is handed to. */}
@@ -1736,13 +1755,17 @@ export default function TableDetail() {
             {/* Same three actions as the phone layout, so behaviour doesn't
                 diverge by form factor. */}
             {ladderStripJsx}
-            {actionRowJsx}
+            {/* The row has no side padding of its own — on a phone the screen
+                supplies it — so inside the rail it takes the rail's inset. */}
+            <View style={styles.railActions}>{actionRowJsx}</View>
 
             <View style={styles.railBillWrap}>
               <BillExplainContent
                 bill={explainedBill}
                 pinned
                 inset={false}
+                // Same rule as the phone layout's tune icon: any unpaid bill with items.
+                onAdjust={!isPaid && orders.length > 0 ? () => openAdjustBill() : undefined}
               />
             </View>
 
@@ -2161,6 +2184,10 @@ export default function TableDetail() {
   );
 }
 
+const RAIL_MIN_WIDTH = 400;
+const RAIL_MAX_WIDTH = 520;
+const RAIL_WIDTH_RATIO = 0.34;
+
 const styles = StyleSheet.create({
   toast: { position: 'absolute', alignSelf: 'center', backgroundColor: QuinckleColors.surfaceElevated, borderWidth: 1, borderColor: QuinckleColors.borderStrong, borderRadius: 12, paddingHorizontal: 18, paddingVertical: 12 },
   toastText: { color: QuinckleColors.textPrimary, fontSize: 13.5, fontWeight: '700' },
@@ -2394,7 +2421,8 @@ const styles = StyleSheet.create({
   // ── POS layout: order ticket (main) + receipt rail (right) ──
   wideMainPane: { flex: 1 },
   railPane: {
-    width: 340,
+    // Width is set at render time (see railWidth); this is the fallback.
+    width: RAIL_MIN_WIDTH,
     backgroundColor: QuinckleColors.surface,
     borderRadius: Radius.xl,
     borderWidth: 1,
@@ -2405,6 +2433,7 @@ const styles = StyleSheet.create({
   railHeaderTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.sm },
   railGuest: { ...Typography.subtitle, color: QuinckleColors.textPrimary, flex: 1 },
   railPhone: { ...Typography.caption, color: QuinckleColors.textSecondary, marginTop: 2 },
+  railActions: { paddingHorizontal: Spacing.lg },
   railBillWrap: {
     flex: 1,
     paddingHorizontal: Spacing.lg,
@@ -2453,7 +2482,16 @@ const styles = StyleSheet.create({
   sinceText: { fontSize: 11, color: QuinckleColors.textTertiary, fontWeight: '500', marginTop: 1 },
 
   // ── Header: session info affordance, merged badge, live timer ──────────────
-  infoBtn: { padding: 4, marginLeft: -2 },
+  // Wide header: "T01  Rooftop" as one baseline-aligned label, then a labelled button.
+  titleGroup: { flexDirection: 'row', alignItems: 'baseline', gap: Spacing.sm, flexShrink: 1, minWidth: 0 },
+  zoneLabel: { fontSize: 15, fontWeight: '600', color: QuinckleColors.textTertiary, flexShrink: 1 },
+  sessionBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0,
+    height: 34, paddingHorizontal: Spacing.md,
+    borderRadius: Radius.md, borderWidth: 1, borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surfaceMuted,
+  },
+  sessionBtnText: { fontSize: 13, fontWeight: '600', color: QuinckleColors.textSecondary },
   mergedBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 3,
     backgroundColor: QuinckleColors.surfaceMuted, borderRadius: Radius.pill,
