@@ -13,7 +13,8 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { crewSessions, crewOrders, restaurantApi, type LedgerSession, type LedgerOrder } from '../../services/api';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { getStatus as getPrinterStatus } from '../../services/printer';
-import { printBillFromHere } from '../../services/billPrint';
+import { printBillFromHere, type InvoicePrinterChoice } from '../../services/billPrint';
+import { useInvoicePrinterPicker } from '../../hooks/useInvoicePrinterPicker';
 import type { InvoiceBill, InvoiceItem } from '../../services/invoiceTemplate';
 import { useAuth } from '../../context/AuthContext';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
@@ -258,8 +259,17 @@ export default function OrderDetail() {
     });
   }, [closeDialog]);
 
-  const handleReprint = useCallback(async () => {
+  const { chooseInvoicePrinters, invoicePrinterSheet } = useInvoicePrinterPicker();
+
+  // `only` narrows a retry to the printers that failed. It is checked for shape
+  // because a handler like this is one `onPress={handleReprint}` away from
+  // receiving a press event as its first argument.
+  const handleReprint = useCallback(async (only?: InvoicePrinterChoice) => {
     if (!session || printing) return;
+    const retryTargets = only && Array.isArray(only.ids) ? only : undefined;
+    // Which invoice printer(s) — asked only with two or more, never on a retry.
+    const targets = retryTargets ?? await chooseInvoicePrinters();
+    if (targets === null) return; // sheet dismissed — print nothing
     // No local-printer gate — see the note in [tableId].tsx handlePrintInvoice.
     setPrinting(true);
     setPrintJob({ phase: 'preparing', label: 'Invoice' });
@@ -343,6 +353,7 @@ export default function OrderDetail() {
         restaurantId: staffInfo?.restaurantId ?? '',
         sessionId: session.id,
         bill,
+        targets,
         onDispatched: (printerName) => setPrintJob({ phase: 'printing', label: `Invoice → ${printerName}` }),
       });
       if (outcome.status === 'printed') {
@@ -353,13 +364,19 @@ export default function OrderDetail() {
           label: 'Invoice',
           message: outcome.message
             ?? 'Could not print. Check that the printer is nearby and powered on.',
-          onRetry: () => { void handleReprint(); },
+          onRetry: () => {
+            void handleReprint(
+              targets && outcome.failedPrinterIds?.length
+                ? { ids: outcome.failedPrinterIds, names: targets.names }
+                : targets,
+            );
+          },
         });
       }
     } finally {
       setPrinting(false);
     }
-  }, [session, printing, meta, staffInfo, showDialog]);
+  }, [session, printing, meta, staffInfo, showDialog, chooseInvoicePrinters]);
 
   const st = session ? statusMeta(session) : null;
 
@@ -450,7 +467,7 @@ export default function OrderDetail() {
           {/* Reprint invoice */}
           <TouchableOpacity
             style={[styles.reprintBtn, printing && styles.reprintBtnDisabled]}
-            onPress={handleReprint}
+            onPress={() => { void handleReprint(); }}
             disabled={printing}
             activeOpacity={0.85}
           >
@@ -482,6 +499,7 @@ export default function OrderDetail() {
 
       {managerPinSheet}
 
+      {invoicePrinterSheet}
       <PrintProgressOverlay job={printJob} onDismiss={() => setPrintJob(null)} />
     </View>
   );

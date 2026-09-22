@@ -9,7 +9,8 @@ import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { crewSessions, crewTables, crewOrders, restaurantApi, printerApi } from '../../services/api';
 import type { SessionBill, BillOrderItem, BillOrder } from '../../services/api';
 import { printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
-import { printBillFromHere } from '../../services/billPrint';
+import { printBillFromHere, type InvoicePrinterChoice } from '../../services/billPrint';
+import { useInvoicePrinterPicker } from '../../hooks/useInvoicePrinterPicker';
 import { loyaltyApi, type CrewLadder } from '../../services/api';
 import type { InvoiceBill, LoyaltyNudge } from '../../services/invoiceTemplate';
 import { useAuth } from '../../context/AuthContext';
@@ -787,9 +788,17 @@ export default function TableDetail() {
       return { invoiceMeta, invoiceNumber, loyalty, liveLadder };
     })();
 
+    // Which invoice printer(s) — asked only when the venue has two or more, so
+    // a one-printer venue never sees an extra tap. prep keeps running behind
+    // the sheet, exactly as it does behind the QR sheet below.
+    const targets = await chooseInvoicePrinters();
+    if (targets === null) return; // sheet dismissed — print nothing
+
     // upiOmitAmount = true → static restaurant QR (diner types amount);
     // false → exact-amount QR. Ignored when no QR prints (paid / no VPA / toggle off).
-    const runPrint = async (upiOmitAmount: boolean) => {
+    // `only` narrows a retry to the printers that failed, so the ones that
+    // worked don't get a second copy.
+    const runPrint = async (upiOmitAmount: boolean, only?: InvoicePrinterChoice) => {
       // Usually resolved already (prep ran while the QR sheet was up), so the
       // preparing phase is a flash at most.
       setPrintJob({ phase: 'preparing', label: 'Invoice' });
@@ -802,6 +811,7 @@ export default function TableDetail() {
         restaurantId: staffInfo?.restaurantId ?? '',
         sessionId,
         upiOmitAmount,
+        targets: only ?? targets,
         onDispatched: (printerName) => setPrintJob({ phase: 'printing', label: `Invoice → ${printerName}` }),
         bill: {
         restaurantName: staffInfo?.restaurantName ?? '',
@@ -858,7 +868,15 @@ export default function TableDetail() {
           label: 'Invoice',
           message: outcome.message
             ?? 'Could not print the invoice. Check that the printer is nearby and powered on.',
-          onRetry: () => { void runPrint(upiOmitAmount); },
+          onRetry: () => {
+            const chosen = only ?? targets;
+            void runPrint(
+              upiOmitAmount,
+              chosen && outcome.failedPrinterIds?.length
+                ? { ids: outcome.failedPrinterIds, names: chosen.names }
+                : chosen,
+            );
+          },
         });
       }
     };
@@ -978,6 +996,9 @@ export default function TableDetail() {
   // is context; "bring a cappuccino" is the job.
   const [ladder, setLadder] = useState<CrewLadder | null>(null);
   const [ladderOpen, setLadderOpen] = useState(false);
+  // Above every early return — a hook below `if (isLoading) return` crashed
+  // every table screen once (2026-09-16).
+  const { chooseInvoicePrinters, invoicePrinterSheet } = useInvoicePrinterPicker();
 
   useEffect(() => {
     if (!sessionId) { setLadder(null); return; }
@@ -2036,6 +2057,7 @@ export default function TableDetail() {
       />
 
       {/* Tap-to-paper print progress */}
+      {invoicePrinterSheet}
       <PrintProgressOverlay job={printJob} onDismiss={() => setPrintJob(null)} />
 
       {/* Swap-table bottom sheet */}

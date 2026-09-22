@@ -37,6 +37,7 @@ import {
 } from './printer';
 import { printerApi, printersApi, type RegisteredPrinter } from './api';
 import { subscribeChannel } from './realtime';
+import { invalidateInvoicePrinters } from './billPrint';
 import { getPrintDeviceId } from './printDevice';
 
 const CHANNEL_ID = 'kot-print-sink';
@@ -172,7 +173,12 @@ export function watchPrintDispatch(restaurantId: string): () => void {
   const offPrintersChanged = subscribeChannel(
     `partner:${restaurantId}`,
     'printers_changed',
-    () => { void refreshLocalPrinters(); },
+    () => {
+      // The invoice-printer picker caches the venue's list; a printer added,
+      // re-roled or moved must show up on the very next Print Invoice.
+      invalidateInvoicePrinters();
+      void refreshLocalPrinters();
+    },
   );
 
   // Another staffer asked for a bill on a printer this device drives. The

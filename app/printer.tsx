@@ -45,6 +45,7 @@ import {
   type RegisteredPrinter, type PrinterRole, type PrinterInputBody,
 } from '../services/api';
 import { refreshLocalPrinters } from '../services/printSink';
+import { invalidateInvoicePrinters } from '../services/billPrint';
 import { getPrintDeviceId } from '../services/printDevice';
 import { useAuth } from '../context/AuthContext';
 
@@ -234,6 +235,9 @@ export default function PrinterScreen() {
       setMyDeviceId(deviceId);
       // Keep what this device actually drives in step with what the server says.
       await refreshLocalPrinters();
+      // The Print Invoice picker caches this list — a change made here must
+      // show up on the very next bill, not five minutes later.
+      invalidateInvoicePrinters();
       setLocalStatus(getStatus());
       setConfig(getConfig());
     } catch {
@@ -266,6 +270,24 @@ export default function PrinterScreen() {
         }
       })();
     }, printer.role);
+  }, [loadPrinters]);
+
+  /**
+   * Where a bill goes when nobody picks: the live app's Print Invoice, and any
+   * phone at a venue with only one invoice printer. The server keeps exactly one
+   * default per venue, so setting it here clears the old one.
+   */
+  const handleMakeDefault = useCallback(async (printer: RegisteredPrinter) => {
+    setBusyPrinterId(printer.id);
+    try {
+      await printersApi.update(printer.id, { isDefaultBill: true });
+      await loadPrinters();
+      showToast(`Bills print on ${printer.name} unless someone picks another`, true);
+    } catch {
+      showToast(`Could not make ${printer.name} the default`, false);
+    } finally {
+      setBusyPrinterId(null);
+    }
   }, [loadPrinters]);
 
   const handleTakeOverHost = useCallback(async (printer: RegisteredPrinter) => {
@@ -326,6 +348,11 @@ export default function PrinterScreen() {
       ],
     });
   }, [loadPrinters]);
+
+  // A default only means something once there's a choice to make.
+  const invoicePrinterCount = registered.filter(
+    (p) => p.enabled && (p.role === 'BILL' || p.role === 'BOTH'),
+  ).length;
 
   // ── Pair (Bluetooth) ─────────────────────────────────────────────────────────
 
@@ -550,6 +577,9 @@ export default function PrinterScreen() {
                           : 'Not connected to any device'}
                       {printer.lastError ? ' · last print failed' : ''}
                     </Text>
+                    {invoicePrinterCount >= 2 && printer.isDefaultBill && (
+                      <Text style={styles.printerDefault}>Default for bills</Text>
+                    )}
                   </View>
                   {busy && <ActivityIndicator size="small" color={QuinckleColors.primary} />}
                 </View>
@@ -564,6 +594,20 @@ export default function PrinterScreen() {
                     <Ionicons name="swap-horizontal-outline" size={16} color={QuinckleColors.textPrimary} />
                     <Text style={styles.printerActionText}>Prints</Text>
                   </TouchableOpacity>
+
+                  {invoicePrinterCount >= 2
+                    && (printer.role === 'BILL' || printer.role === 'BOTH')
+                    && !printer.isDefaultBill && (
+                    <TouchableOpacity
+                      style={styles.printerAction}
+                      onPress={() => void handleMakeDefault(printer)}
+                      disabled={busy}
+                      activeOpacity={0.75}
+                    >
+                      <Ionicons name="star-outline" size={16} color={QuinckleColors.textPrimary} />
+                      <Text style={styles.printerActionText}>Make default</Text>
+                    </TouchableOpacity>
+                  )}
 
                   {mine ? (
                     <TouchableOpacity
@@ -932,6 +976,7 @@ const styles = StyleSheet.create({
   printerHostMine: {
     color: QuinckleColors.success,
   },
+  printerDefault: { fontSize: 12, fontWeight: '600', color: QuinckleColors.primary, marginTop: 2 },
   printerActions: {
     flexDirection: 'row',
     flexWrap: 'wrap',

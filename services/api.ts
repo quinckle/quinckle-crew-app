@@ -1737,8 +1737,25 @@ export const printerApi = {
    * device, whether or not it can reach a printer itself. The server builds the
    * bill; we never send totals.
    */
-  requestBillPrint: (body: { sessionId: string; printerId?: string; upiOmitAmount?: boolean }) =>
-    request<{ success: true; data: { jobId: string; printerId: string; printerName: string } }>(
+  requestBillPrint: (body: {
+    sessionId: string;
+    printerId?: string;
+    /** One, all, or a chosen subset of invoice printers. Absent → venue default. */
+    printerIds?: string[];
+    upiOmitAmount?: boolean;
+  }) =>
+    request<{
+      success: true;
+      data: {
+        jobId: string;
+        printerId: string;
+        printerName: string;
+        /** One per printer the bill was sent to (older backends: absent). */
+        jobs?: { jobId: string; printerId: string; printerName: string }[];
+        /** Asked for but unusable, with the reason. */
+        skipped?: { printerId: string; printerName: string | null; reason: string }[];
+      };
+    }>(
       'POST',
       '/api/crew/print/bill',
       body,

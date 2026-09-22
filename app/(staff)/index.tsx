@@ -28,7 +28,8 @@ import {
   printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode,
   getPrinters,
 } from '../../services/printer';
-import { printBillFromHere } from '../../services/billPrint';
+import { printBillFromHere, type InvoicePrinterChoice } from '../../services/billPrint';
+import { useInvoicePrinterPicker } from '../../hooks/useInvoicePrinterPicker';
 import type { InvoiceBill } from '../../services/invoiceTemplate';
 import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded, watchPrintDispatch } from '../../services/printSink';
 import { getPrintDeviceId } from '../../services/printDevice';
@@ -506,6 +507,7 @@ export default function StaffDashboard() {
   // Tap-to-paper progress overlay for the manual takeaway prints; null = hidden.
   const [printJob, setPrintJob] = useState<PrintJob | null>(null);
   const [qrSheet, setQrSheet] = useState<{ grandTotal: number } | null>(null);
+  const { chooseInvoicePrinters, invoicePrinterSheet } = useInvoicePrinterPicker();
   const qrRunRef = useRef<((omitAmount: boolean) => void) | null>(null);
 
   useEffect(() => {
@@ -626,7 +628,13 @@ export default function StaffDashboard() {
       return meta;
     })();
 
-    const runPrint = async (upiOmitAmount: boolean) => {
+    // Which invoice printer(s) — asked only when the venue has two or more.
+    // prep keeps running behind the sheet, as it does behind the QR sheet.
+    const targets = await chooseInvoicePrinters();
+    if (targets === null) return; // sheet dismissed — print nothing
+
+    // `only` narrows a retry to the printers that failed.
+    const runPrint = async (upiOmitAmount: boolean, only?: InvoicePrinterChoice) => {
       // Usually resolved already (prep ran while the QR sheet was up), so the
       // preparing phase is a flash at most.
       setPrintJob({ phase: 'preparing', label: 'Invoice' });
@@ -638,6 +646,7 @@ export default function StaffDashboard() {
         restaurantId: staffInfo?.restaurantId ?? '',
         sessionId: order.sessionId ?? '',
         upiOmitAmount,
+        targets: only ?? targets,
         onDispatched: (printerName) => setPrintJob({ phase: 'printing', label: `Invoice → ${printerName}` }),
         bill: {
         restaurantName: staffInfo?.restaurantName ?? '',
@@ -689,7 +698,15 @@ export default function StaffDashboard() {
           label: 'Invoice',
           message: outcome.message
             ?? 'Could not print the invoice. Check that the printer is nearby and powered on.',
-          onRetry: () => { void runPrint(upiOmitAmount); },
+          onRetry: () => {
+            const chosen = only ?? targets;
+            void runPrint(
+              upiOmitAmount,
+              chosen && outcome.failedPrinterIds?.length
+                ? { ids: outcome.failedPrinterIds, names: chosen.names }
+                : chosen,
+            );
+          },
         });
       }
     };
@@ -3075,6 +3092,7 @@ export default function StaffDashboard() {
       />
 
       {/* Tap-to-paper print progress */}
+      {invoicePrinterSheet}
       <PrintProgressOverlay job={printJob} onDismiss={() => setPrintJob(null)} />
 
       {discountOrder?.sessionId && (
