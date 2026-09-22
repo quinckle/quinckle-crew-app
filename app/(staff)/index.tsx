@@ -158,6 +158,8 @@ type TableGroup = {
   items_served?: number;
   items_total?: number;
   payment_settled?: boolean;
+  // Items the diner has put in their cart but not ordered yet.
+  cart_item_count?: number;
 };
 
 const MENU_DATA_INITIAL = [
@@ -1864,11 +1866,29 @@ export default function StaffDashboard() {
   // Manage-sheet → Free: close the sheet and free the whole table immediately.
   // No confirm dialog — the Undo snackbar is the safety net. Frees every party
   // on a shared table in one go.
+  //
+  // The one exception is a party mid-order on their phone: their order lands
+  // minutes later, long after the Undo snackbar is gone, and it would be
+  // refused. Freeing then looks harmless (no bill yet) but is the one case that
+  // actually costs a sale, so it asks first.
   const onPressFreeFromManage = () => {
     const t = manageTable;
     setManageTable(null);
     if (!t) return;
-    void freeWholeTable({ id: t.id, number: t.number });
+    const free = () => { void freeWholeTable({ id: t.id, number: t.number }); };
+    const ordering = (t.groups ?? []).reduce((sum, g) => sum + (g.cart_item_count ?? 0), 0);
+    if (ordering > 0) {
+      setTimeout(() => showDialog(
+        'Guest is still ordering',
+        `T${String(t.number).padStart(2, '0')} has ${ordering} item${ordering === 1 ? '' : 's'} in the guest's cart. Freeing the table now will cancel their session and their order will not come through.`,
+        [
+          { label: 'Keep table', onPress: () => { } },
+          { label: 'Free anyway', variant: 'danger', onPress: free },
+        ],
+      ), 220);
+      return;
+    }
+    free();
   };
 
   // Swap from the grid — same API + UX as the detail screen, but refreshes the
