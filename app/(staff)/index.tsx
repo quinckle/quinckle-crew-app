@@ -167,6 +167,31 @@ type TableGroup = {
   cart_item_count?: number;
 };
 
+// A table whose guest just sat down looks like the safest one to free — no
+// bill, nothing owed — and is the only one where freeing costs a sale. Their
+// order arrives minutes after the tap, by which time the session it needed is
+// gone. Ten minutes covers the real losses seen so far, which all landed within
+// five of the table being freed.
+const RECENTLY_SEATED_MS = 10 * 60_000;
+
+/**
+ * Why freeing this table is worth a confirm, or null when it is routine.
+ * A party that has already ordered is an ordinary end-of-meal free.
+ */
+function freeTableWarning(table: Table, now = Date.now()): string | null {
+  for (const g of table.groups ?? []) {
+    if ((g.items_total ?? 0) > 0) continue;
+    const cart = g.cart_item_count ?? 0;
+    if (cart > 0) return `has ${cart} item${cart === 1 ? '' : 's'} sitting in the guest's cart.`;
+    const seated = g.occupied_since ? Date.parse(g.occupied_since) : NaN;
+    if (Number.isFinite(seated) && now - seated < RECENTLY_SEATED_MS) {
+      const mins = Math.max(1, Math.round((now - seated) / 60_000));
+      return `was scanned ${mins} minute${mins === 1 ? '' : 's'} ago and no order has come through yet.`;
+    }
+  }
+  return null;
+}
+
 const MENU_DATA_INITIAL = [
   { id: '1', name: 'Chicken Biryani', price: 250, category: 'Mains', available: true, image: 'https://images.unsplash.com/photo-1563379091339-03b21bc4a4f8?q=80&w=200&h=200&auto=format&fit=crop' },
   { id: '2', name: 'Butter Chicken', price: 320, category: 'Mains', available: true, image: 'https://images.unsplash.com/photo-1603894584202-93826e796a39?q=80&w=200&h=200&auto=format&fit=crop' },
@@ -1917,20 +1942,22 @@ export default function StaffDashboard() {
   // No confirm dialog — the Undo snackbar is the safety net. Frees every party
   // on a shared table in one go.
   //
-  // The one exception is a party mid-order on their phone: their order lands
-  // minutes later, long after the Undo snackbar is gone, and it would be
-  // refused. Freeing then looks harmless (no bill yet) but is the one case that
-  // actually costs a sale, so it asks first.
+  // The exception is a party who has NOT ordered yet. Their order lands minutes
+  // later, long after the Undo snackbar is gone, and freeing now kills the
+  // session it would have arrived on. That looks like the safest table on the
+  // floor — no bill, nothing to lose — and is the only one that costs a sale,
+  // so it asks first. A party that has already ordered is the normal
+  // end-of-meal free and stays one tap.
   const onPressFreeFromManage = () => {
     const t = manageTable;
     setManageTable(null);
     if (!t) return;
     const free = () => { void freeWholeTable({ id: t.id, number: t.number }); };
-    const ordering = (t.groups ?? []).reduce((sum, g) => sum + (g.cart_item_count ?? 0), 0);
-    if (ordering > 0) {
+    const warning = freeTableWarning(t);
+    if (warning) {
       setTimeout(() => showDialog(
-        'Guest is still ordering',
-        `T${String(t.number).padStart(2, '0')} has ${ordering} item${ordering === 1 ? '' : 's'} in the guest's cart. Freeing the table now will cancel their session and their order will not come through.`,
+        'Guest has not ordered yet',
+        `T${String(t.number).padStart(2, '0')} ${warning} Freeing the table now ends their session, and anything they send after that will not reach the kitchen.`,
         [
           { label: 'Keep table', onPress: () => { } },
           { label: 'Free anyway', variant: 'danger', onPress: free },
