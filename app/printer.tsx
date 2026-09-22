@@ -24,6 +24,7 @@ import { QuinckleColors, Radius, Spacing } from '../constants/Colors';
 import { ThemedDialog } from '../components/ui/themed-dialog';
 import { WidthPickerSheet } from '../components/ui/WidthPickerSheet';
 import { RolePickerSheet } from '../components/ui/RolePickerSheet';
+import { NamePrinterSheet } from '../components/ui/NamePrinterSheet';
 import {
   scan,
   unpair,
@@ -51,6 +52,25 @@ import { useAuth } from '../context/AuthContext';
 
 /** Suffix shown after the paper width on the status card. Bluetooth is the
  *  historical default and stays unlabelled. */
+/** The reason lives in the error's `code`; its text is only a fallback. */
+function hasCode(err: any, code: string): boolean {
+  return [err?.code, err?.message].some((v) => typeof v === 'string' && v.includes(code));
+}
+
+/**
+ * The hardware's own name, numbered if another printer already has it. Five of
+ * the venues' printers report exactly "BlueTooth Printer"; a second one added
+ * with "Keep this name" would otherwise be refused as a duplicate.
+ */
+function uniqueName(base: string, taken: string[]): string {
+  const used = new Set(taken.map((n) => n.trim().toLowerCase()));
+  if (!used.has(base.trim().toLowerCase())) return base;
+  for (let i = 2; ; i++) {
+    const candidate = `${base} ${i}`;
+    if (!used.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
 const ROLE_LABEL: Record<string, string> = {
   KOT: 'Kitchen tickets',
   BILL: 'Bills',
@@ -228,6 +248,50 @@ export default function PrinterScreen() {
     cb?.(role);
   }
 
+  // Name sheet. `nameOpen` is separate from its content so the text doesn't
+  // blank out while the sheet slides away.
+  const [nameOpen, setNameOpen] = useState(false);
+  const [nameSheet, setNameSheet] = useState<{
+    title: string;
+    initialName: string;
+    systemName?: string | null;
+    takenNames: string[];
+    skipLabel?: string;
+  }>({ title: '', initialName: '', takenNames: [] });
+  const nameCallback = useRef<((name: string | null) => void) | null>(null);
+
+  function chooseName(opts: typeof nameSheet, onDone: (name: string | null) => void) {
+    nameCallback.current = onDone;
+    setNameSheet(opts);
+    setNameOpen(true);
+  }
+
+  function finishName(name: string | null) {
+    setNameOpen(false);
+    const cb = nameCallback.current;
+    nameCallback.current = null;
+    cb?.(name);
+  }
+
+  /**
+   * Last step of adding a printer: what staff will call it. Skipping keeps the
+   * hardware's own name — numbered if another printer already has it.
+   */
+  function askNameThen(systemName: string, go: (name: string) => void) {
+    const taken = registered.map((p) => p.name);
+    const fallback = uniqueName(systemName, taken);
+    chooseName(
+      {
+        title: 'Name this printer',
+        initialName: fallback,
+        systemName,
+        takenNames: taken,
+        skipLabel: `Keep “${fallback}”`,
+      },
+      (name) => go(name ?? fallback),
+    );
+  }
+
   const loadPrinters = useCallback(async () => {
     try {
       const [res, deviceId] = await Promise.all([printersApi.list(), getPrintDeviceId()]);
@@ -255,6 +319,40 @@ export default function PrinterScreen() {
     showToast(`${label} added`, true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   }, [loadPrinters]);
+
+  const handleRename = useCallback((printer: RegisteredPrinter) => {
+    const others = registered.filter((p) => p.id !== printer.id).map((p) => p.name);
+    chooseName(
+      {
+        title: 'Rename printer',
+        initialName: printer.name,
+        systemName: printer.systemName ?? null,
+        takenNames: others,
+      },
+      (name) => {
+        if (!name || name === printer.name) return;
+        void (async () => {
+          setBusyPrinterId(printer.id);
+          try {
+            await printersApi.update(printer.id, { name });
+            await loadPrinters();
+            showToast(`Renamed to ${name}`, true);
+          } catch (err: any) {
+            showToast(
+              hasCode(err, 'PRINTER_NAME_TAKEN')
+                ? `Another printer is already called “${name}”.`
+                : 'Could not rename this printer',
+              false,
+            );
+          } finally {
+            setBusyPrinterId(null);
+          }
+        })();
+      },
+    );
+  // chooseName only touches setters and a ref, so it is stable in practice.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [registered, loadPrinters]);
 
   const handleChangeRole = useCallback((printer: RegisteredPrinter) => {
     chooseRole((role) => {
@@ -298,7 +396,7 @@ export default function PrinterScreen() {
       showToast(`This device now drives ${printer.name}`, true);
     } catch (err: any) {
       showToast(
-        typeof err?.message === 'string' && err.message.includes('PRINTER_BLUETOOTH_HOST_TAKEN')
+        hasCode(err, 'PRINTER_BLUETOOTH_HOST_TAKEN')
           ? 'This device already has a Bluetooth printer. A phone can only drive one.'
           : `Could not take over ${printer.name}`,
         false,
@@ -358,31 +456,35 @@ export default function PrinterScreen() {
 
   function handlePair(device: BluetoothDevice) {
     // Width first (fixes the old always-58mm bug), then what it prints.
-    chooseWidth((width) => chooseRole((role) => void doPairBluetooth(device, width, role)));
+    chooseWidth((width) => chooseRole((role) =>
+      askNameThen(device.name || 'Bluetooth printer', (name) => void doPairBluetooth(device, width, role, name))));
   }
 
   // Registered on the SERVER first, then mirrored locally by loadPrinters. The
   // registry is the source of truth now, so a local-only pairing would just be
   // wiped by the next sync — and a venue with two printers needs both devices
   // to agree on which one drives what.
-  async function doPairBluetooth(device: BluetoothDevice, width: number, role: PrinterRole) {
+  async function doPairBluetooth(device: BluetoothDevice, width: number, role: PrinterRole, name: string) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setSelectedDevice(device);
     setIsPairing(true);
     try {
       await registerPrinter({
-        name: device.name || 'Bluetooth printer',
+        name,
+        systemName: device.name || 'Bluetooth printer',
         role,
         transport: 'BLUETOOTH',
         address: device.address,
         paperWidth: width,
-      }, `${device.name} · ${width}mm`);
+      }, `${name} · ${width}mm`);
       setShowScanView(false);
     } catch (err: any) {
       showToast(
-        typeof err?.message === 'string' && err.message.includes('PRINTER_BLUETOOTH_HOST_TAKEN')
+        hasCode(err, 'PRINTER_BLUETOOTH_HOST_TAKEN')
           ? 'This device already drives a Bluetooth printer. Bluetooth printers pair one-to-one — use a second device, or a network/USB printer.'
-          : `Failed to pair with ${device.name}`,
+          : hasCode(err, 'PRINTER_NAME_TAKEN')
+            ? `Another printer is already called “${name}”.`
+            : `Failed to pair with ${device.name}`,
         false,
       );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -400,25 +502,29 @@ export default function PrinterScreen() {
       showToast('Enter the printer IP address', false);
       return;
     }
-    chooseWidth((width) => chooseRole((role) => void doPairNetwork(ip, width, role)));
+    chooseWidth((width) => chooseRole((role) =>
+      askNameThen(`Network printer (${ip})`, (name) => void doPairNetwork(ip, width, role, name))));
   }
 
-  async function doPairNetwork(ip: string, width: number, role: PrinterRole) {
+  async function doPairNetwork(ip: string, width: number, role: PrinterRole, name: string) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     const port = parseInt(networkPort, 10) || 9100;
-    const name = `Network printer (${ip})`;
     setIsPairing(true);
     try {
       await registerPrinter({
-        name, role, transport: 'NETWORK', ip, port, paperWidth: width,
+        name,
+        systemName: `Network printer (${ip})`,
+        role, transport: 'NETWORK', ip, port, paperWidth: width,
       }, `${name} · ${width}mm`);
       setShowScanView(false);
       setShowNetworkForm(false);
     } catch (err: any) {
       showToast(
-        typeof err?.message === 'string' && err.message.includes('PRINTER_DUPLICATE')
+        hasCode(err, 'PRINTER_DUPLICATE')
           ? 'That printer is already in the list.'
-          : 'Failed to reach the network printer. Check the IP and that it is on the same WiFi.',
+          : hasCode(err, 'PRINTER_NAME_TAKEN')
+            ? `Another printer is already called “${name}”.`
+            : 'Failed to reach the network printer. Check the IP and that it is on the same WiFi.',
         false,
       );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -440,31 +546,35 @@ export default function PrinterScreen() {
   }, [usbAvailable]);
 
   function handlePairUsb(device: UsbPrinterDevice) {
-    chooseWidth((width) => chooseRole((role) => void doPairUsb(device, width, role)));
+    chooseWidth((width) => chooseRole((role) =>
+      askNameThen(device.deviceName || 'USB printer', (name) => void doPairUsb(device, width, role, name))));
   }
 
-  async function doPairUsb(device: UsbPrinterDevice, width: number, role: PrinterRole) {
+  async function doPairUsb(device: UsbPrinterDevice, width: number, role: PrinterRole, name: string) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setSelectedUsb(device);
     setIsPairing(true);
     try {
       await registerPrinter({
-        name: device.deviceName || 'USB printer',
+        name,
+        systemName: device.deviceName || 'USB printer',
         role,
         transport: 'USB',
         usbVendorId: device.vendorId,
         usbProductId: device.productId,
         paperWidth: width,
-      }, `${device.deviceName} · ${width}mm`);
+      }, `${name} · ${width}mm`);
       setShowScanView(false);
     } catch (err: any) {
       showToast(
-        typeof err?.message === 'string' && err.message.includes('PRINTER_DUPLICATE')
+        hasCode(err, 'PRINTER_DUPLICATE')
           // Two printers of the SAME MODEL report identical vendor/product ids,
           // and neither platform can currently tell them apart. Say so rather
           // than adding a second row that silently drives the first printer.
           ? 'A printer with these USB ids is already in the list. Two identical USB printers cannot be told apart yet — use different models, or connect one over the network.'
-          : `Failed to pair with ${device.deviceName}`,
+          : hasCode(err, 'PRINTER_NAME_TAKEN')
+            ? `Another printer is already called “${name}”.`
+            : `Failed to pair with ${device.deviceName}`,
         false,
       );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -565,6 +675,9 @@ export default function PrinterScreen() {
                 <View style={styles.printerHead}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.printerName} numberOfLines={1}>{printer.name}</Text>
+                    {!!printer.systemName && printer.systemName !== printer.name && (
+                      <Text style={styles.printerSystem} numberOfLines={1}>{printer.systemName}</Text>
+                    )}
                     <Text style={styles.printerMeta}>
                       {ROLE_LABEL[printer.role]} · {printer.paperWidth}mm
                       {TRANSPORT_LABEL[printer.transport.toLowerCase()] ?? ''}
@@ -585,6 +698,16 @@ export default function PrinterScreen() {
                 </View>
 
                 <View style={styles.printerActions}>
+                  <TouchableOpacity
+                    style={styles.printerAction}
+                    onPress={() => handleRename(printer)}
+                    disabled={busy}
+                    activeOpacity={0.75}
+                  >
+                    <Ionicons name="pencil-outline" size={16} color={QuinckleColors.textPrimary} />
+                    <Text style={styles.printerActionText}>Rename</Text>
+                  </TouchableOpacity>
+
                   <TouchableOpacity
                     style={styles.printerAction}
                     onPress={() => handleChangeRole(printer)}
@@ -947,6 +1070,17 @@ export default function PrinterScreen() {
         onClose={() => setWidthPickerVisible(false)}
       />
 
+      <NamePrinterSheet
+        visible={nameOpen}
+        title={nameSheet.title}
+        initialName={nameSheet.initialName}
+        systemName={nameSheet.systemName}
+        takenNames={nameSheet.takenNames}
+        skipLabel={nameSheet.skipLabel}
+        onSave={(name) => finishName(name)}
+        onClose={() => finishName(null)}
+      />
+
       <RolePickerSheet
         visible={rolePickerVisible}
         current={rolePickerCurrent}
@@ -971,6 +1105,7 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
   },
   printerName: { fontSize: 15, fontWeight: '600', color: QuinckleColors.textPrimary },
+  printerSystem: { fontSize: 12, color: QuinckleColors.textMuted, marginTop: 1 },
   printerMeta: { fontSize: 12, color: QuinckleColors.textSecondary, marginTop: 2 },
   printerHost: { fontSize: 12, color: QuinckleColors.textMuted, marginTop: 2 },
   printerHostMine: {

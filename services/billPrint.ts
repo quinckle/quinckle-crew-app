@@ -47,7 +47,10 @@ export interface BillPrintOutcome {
 /** One printer the crew can choose for a bill. */
 export interface InvoicePrinterOption {
   id: string;
+  /** What staff call it — "Counter". */
   name: string;
+  /** What the hardware calls itself, when that differs from `name`. */
+  systemName: string | null;
   isDefault: boolean;
   /** This phone drives it — prints with no round trip. */
   here: boolean;
@@ -91,6 +94,7 @@ export async function listInvoicePrinters(): Promise<InvoicePrinterOption[] | nu
       .map((p) => ({
         id: p.id,
         name: p.name,
+        systemName: p.systemName && p.systemName !== p.name ? p.systemName : null,
         isDefault: !!p.isDefaultBill,
         here: !!p.hostDeviceId && p.hostDeviceId === deviceId,
         connected: !!p.hostDeviceId,

@@ -1812,7 +1812,10 @@ export type PrinterTransportServer = 'BLUETOOTH' | 'NETWORK' | 'USB';
 /** One registered printer, as the server holds it. */
 export interface RegisteredPrinter {
   id: string;
+  /** What staff call it — "Counter". Shown everywhere. */
   name: string;
+  /** What the hardware reported at pairing — shown underneath. */
+  systemName?: string | null;
   role: PrinterRole;
   transport: PrinterTransportServer;
   address?: string | null;
@@ -1851,6 +1854,8 @@ export interface BillPrintJob {
 
 export interface PrinterInputBody {
   name: string;
+  /** Create only — what the hardware reported. */
+  systemName?: string | null;
   role: PrinterRole;
   transport: PrinterTransportServer;
   address?: string | null;

@@ -33,7 +33,11 @@ interface Props {
 
 function whereLabel(p: InvoicePrinterOption): string {
   const where = !p.connected ? 'Not connected to any device' : p.here ? 'This device' : 'Another device';
-  return p.isDefault ? `${where} · Default` : where;
+  const parts = [where];
+  if (p.isDefault) parts.push('Default');
+  // The hardware name tells two renamed printers apart at a glance.
+  if (p.systemName) parts.push(p.systemName);
+  return parts.join(' · ');
 }
 
 export function InvoicePrinterSheet({ visible, printers, lastChoice, onPick, onClose }: Props) {
