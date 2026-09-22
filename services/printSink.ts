@@ -37,7 +37,7 @@ import {
 } from './printer';
 import { printerApi, printersApi, type RegisteredPrinter } from './api';
 import { subscribeChannel } from './realtime';
-import { invalidateInvoicePrinters } from './billPrint';
+import { invalidateInvoicePrinters, primeInvoicePrinters } from './billPrint';
 import { getPrintDeviceId } from './printDevice';
 
 const CHANNEL_ID = 'kot-print-sink';
@@ -217,6 +217,9 @@ export async function refreshLocalPrinters(): Promise<void> {
   } catch {
     return; // offline — the cached list keeps printing until the next refresh
   }
+  // Same list the invoice picker needs — warm its cache for free, so Print
+  // Invoice doesn't have to fetch it at the moment someone is waiting.
+  primeInvoicePrinters(rows, deviceId);
 
   const hostedByUs = rows.filter((r) => r.enabled !== false && r.hostDeviceId === deviceId);
 
@@ -247,6 +250,7 @@ export async function refreshLocalPrinters(): Promise<void> {
     }
   }
 
+  primeInvoicePrinters(rows, deviceId); // rows may have been re-read after a host claim
   await syncLocalPrinters(rows, deviceId);
 }
 

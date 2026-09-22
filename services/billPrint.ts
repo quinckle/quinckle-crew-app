@@ -18,7 +18,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { printBill, billPrinter, findPrinter } from './printer';
-import { printerApi, printersApi } from './api';
+import { printerApi, printersApi, type RegisteredPrinter } from './api';
 import { subscribeChannel } from './realtime';
 import { getPrintDeviceId } from './printDevice';
 import type { InvoiceBill } from './invoiceTemplate';
@@ -69,42 +69,100 @@ const KEY_LAST_CHOICE = 'invoicePrinterChoice';
 const LIST_TTL_MS = 5 * 60_000;
 let _invoicePrinters: { at: number; list: InvoicePrinterOption[] } | null = null;
 
+/**
+ * Every write to the cache bumps this; a fetch only stores its result if no
+ * newer write happened meanwhile, so a slow old response can never overwrite a
+ * fresher list (from a prime, or a printers_changed refresh).
+ */
+let _generation = 0;
+
 /** Drop the cached list — called when the venue's printers change. */
 export function invalidateInvoicePrinters(): void {
   _invoicePrinters = null;
+  _inflight = null;
+  _generation++;
+}
+
+/** Turn registry rows into picker options — shared by the fetch and the primer. */
+function toInvoiceOptions(rows: RegisteredPrinter[], deviceId: string): InvoicePrinterOption[] {
+  return rows
+    .filter((p) => p.enabled !== false && (p.role === 'BILL' || p.role === 'BOTH'))
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      systemName: p.systemName && p.systemName !== p.name ? p.systemName : null,
+      isDefault: !!p.isDefaultBill,
+      here: !!p.hostDeviceId && p.hostDeviceId === deviceId,
+      connected: !!p.hostDeviceId,
+    }))
+    .sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
+}
+
+/**
+ * Fill the cache from a registry read that already happened. printSink's
+ * refreshLocalPrinters fetches this exact list on every drain (mount, return to
+ * foreground, socket reconnect), so priming from it costs no request and means
+ * the list is almost always ready BEFORE anyone taps Print Invoice.
+ */
+export function primeInvoicePrinters(rows: RegisteredPrinter[], deviceId: string): void {
+  _generation++;
+  _inflight = null;
+  _invoicePrinters = { at: Date.now(), list: toInvoiceOptions(rows, deviceId) };
+}
+
+/**
+ * Longest a bill waits for the printer list when the cache is cold. The crew
+ * API has no request timeout, so without this a bad connection would park EVERY
+ * Print Invoice — at single-printer venues too, which never even see a picker —
+ * behind a request it doesn't need. Past this, the bill goes the old way and the
+ * fetch finishes in the background for next time.
+ */
+const LIST_WAIT_MS = 1500;
+/**
+ * A request older than this is treated as hung and a fresh one is started.
+ * Requests have no timeout, so without this one request lost on a bad
+ * connection would be reused — and waited on — by every tap after it.
+ */
+const INFLIGHT_MAX_MS = 10_000;
+let _inflight: { promise: Promise<InvoicePrinterOption[] | null>; at: number; generation: number } | null = null;
+
+function fetchInvoicePrinters(): Promise<InvoicePrinterOption[] | null> {
+  if (_inflight && Date.now() - _inflight.at < INFLIGHT_MAX_MS) return _inflight.promise;
+
+  const generation = ++_generation;
+  const promise = (async () => {
+    try {
+      const [res, deviceId] = await Promise.all([printersApi.list(), getPrintDeviceId()]);
+      const list = toInvoiceOptions(res?.data ?? [], deviceId);
+      if (generation === _generation) _invoicePrinters = { at: Date.now(), list };
+      return list;
+    } catch {
+      return null;
+    } finally {
+      if (_inflight?.generation === generation) _inflight = null;
+    }
+  })();
+  _inflight = { promise, at: Date.now(), generation };
+  return promise;
 }
 
 /**
  * The venue's invoice printers (role Invoice or Both), default first.
  *
- * Cached, because this sits in front of every Print Invoice tap and a venue
- * with one printer must not pay a round trip for a question it never asks.
- * `printers_changed` drops the cache (see printSink.watchPrintDispatch).
- * Returns null when the list cannot be read (offline) — the caller then falls
- * back to the old single-printer behaviour rather than blocking the bill.
+ * Fresh cache → instant. Otherwise a fetch, but never waited on for more than
+ * LIST_WAIT_MS: on a slow link the caller gets the stale list if there is one,
+ * else null — and null means "don't ask, print the old way", so the bill never
+ * blocks on this. `printers_changed` drops the cache (printSink).
  */
 export async function listInvoicePrinters(): Promise<InvoicePrinterOption[] | null> {
   if (_invoicePrinters && Date.now() - _invoicePrinters.at < LIST_TTL_MS) {
     return _invoicePrinters.list;
   }
-  try {
-    const [res, deviceId] = await Promise.all([printersApi.list(), getPrintDeviceId()]);
-    const list: InvoicePrinterOption[] = (res?.data ?? [])
-      .filter((p) => p.enabled !== false && (p.role === 'BILL' || p.role === 'BOTH'))
-      .map((p) => ({
-        id: p.id,
-        name: p.name,
-        systemName: p.systemName && p.systemName !== p.name ? p.systemName : null,
-        isDefault: !!p.isDefaultBill,
-        here: !!p.hostDeviceId && p.hostDeviceId === deviceId,
-        connected: !!p.hostDeviceId,
-      }))
-      .sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
-    _invoicePrinters = { at: Date.now(), list };
-    return list;
-  } catch {
-    return _invoicePrinters?.list ?? null;
-  }
+  const stale = _invoicePrinters?.list ?? null;
+  const timeout = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), LIST_WAIT_MS));
+  const result = await Promise.race([fetchInvoicePrinters(), timeout]);
+  if (result === 'timeout') return stale;
+  return result ?? stale;
 }
 
 /** The printers this phone printed its last bill on — preselected next time. */
