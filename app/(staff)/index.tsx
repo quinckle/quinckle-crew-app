@@ -68,6 +68,7 @@ import { DeliveryBoard } from '../../components/delivery/DeliveryBoard';
 import { RiderRuns } from '../../components/delivery/RiderRuns';
 import { CAP, deliveryViewFor, hasCapability, type Capability } from '../../constants/capabilities';
 import { useResponsive } from '../../hooks/useResponsive';
+import { useResyncOnReturn } from '../../hooks/useResyncOnReturn';
 import { expiryLevel, expiryColor, expiryChipStyle, type ExpiryLevel } from '../../constants/sessionExpiry';
 import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
 
@@ -1350,6 +1351,16 @@ export default function StaffDashboard() {
       unwatchConn();
     };
   }, [staffInfo?.restaurantId, refreshPrintSinkOwnership]);
+
+  // The same gaps lose the grid's pushes too — reload every list the waiter
+  // events keep fresh once the phone is back.
+  useResyncOnReturn(staffInfo?.restaurantId ? `waiter:${staffInfo.restaurantId}` : null, () => {
+    void loadTables();
+    void loadPickupOrders();
+    void loadTakeawayOrders();
+    void loadServedToday(1);
+    void loadPendingCashCount();
+  });
 
   // Keep the screen awake while this device holds the printer, so Android can't
   // suspend the JS runtime and miss prints when the screen would sleep.

@@ -29,6 +29,7 @@ import { useManagerApproval } from '../../components/ui/ManagerPinSheet';
 import { WAIVE_REASONS, isReasonComplete, toReasonPayload, type CancelReason } from '../../constants/adjustmentReasons';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { useResponsive } from '../../hooks/useResponsive';
+import { useResyncOnReturn } from '../../hooks/useResyncOnReturn';
 
 type ItemStatus = 'prep' | 'ready' | 'served';
 
@@ -486,6 +487,13 @@ export default function TableDetail() {
       unsubs.forEach(u => u());
     };
   }, [staffInfo?.restaurantId, sessionId, router, navigation, loadBill]);
+
+  // Pushes missed while the phone was locked or offline never arrive — reload
+  // the bill once it's back.
+  useResyncOnReturn(
+    staffInfo?.restaurantId && sessionId ? `waiter:${staffInfo.restaurantId}` : null,
+    () => void loadBill(),
+  );
 
 
   // Flat list of all items across all orders

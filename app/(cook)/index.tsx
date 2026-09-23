@@ -28,6 +28,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { kitchen, printerApi, restaurantApi } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
+import { useResyncOnReturn } from '../../hooks/useResyncOnReturn';
 import { printKot, getStatus as getPrinterStatus, getPrinters } from '../../services/printer';
 import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded, watchPrintDispatch } from '../../services/printSink';
 import { getPrintDeviceId } from '../../services/printDevice';
@@ -258,6 +259,13 @@ export default function CookDashboard() {
       unwatchConn?.();
     };
   }, [staffInfo?.restaurantId]);
+
+  // The same gaps lose the ticket pushes — reload the board once the tablet is
+  // back. loadOrders chimes if tickets arrived meanwhile.
+  useResyncOnReturn(
+    staffInfo?.restaurantId ? `kitchen:${staffInfo.restaurantId}` : null,
+    () => void loadOrders(),
+  );
 
   // Keep the screen awake while this device is the print sink, so Android can't
   // suspend the JS runtime (and miss the live Ably push) when the kitchen
