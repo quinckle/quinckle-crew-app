@@ -798,6 +798,8 @@ export default function StaffDashboard() {
       return 'This order is already paid and can no longer be changed.';
     if (code === 'ITEM_ALREADY_CANCELLED' || code === 'ORDER_CANCELLED')
       return 'This has already been removed.';
+    if (code === 'AUTHORIZATION_REQUIRED')
+      return 'The bill for this order is already printed. Ask a manager to remove it.';
     return (typeof err?.message === 'string' && err.message) || 'Something went wrong. Please try again.';
   };
 

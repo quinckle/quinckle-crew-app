@@ -25,7 +25,7 @@ import { BillExplainContent, BillExplainSheet, type ExplainedBill } from '../../
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { HintToast } from '../../components/ui/HintToast';
 import { ReasonSheet, ReasonChips } from '../../components/ui/ReasonSheet';
-import { useManagerApproval } from '../../components/ui/ManagerPinSheet';
+import { useManagerApproval, type MintGrant } from '../../components/ui/ManagerPinSheet';
 import { WAIVE_REASONS, isReasonComplete, toReasonPayload, type CancelReason } from '../../constants/adjustmentReasons';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { useResponsive } from '../../hooks/useResponsive';
@@ -46,6 +46,12 @@ type FlatItem = {
   qty: number;
   /** Units of `qty` already handed over. status === 'served' iff servedQty >= qty. */
   servedQty: number;
+  /** The dish name alone — `name` carries the "3× " prefix. */
+  label: string;
+  unitPrice: number;
+  /** What "+" re-orders; absent on a backend that predates the stepper. */
+  menuItemId?: string;
+  selectedModifiers?: { groupId: string; optionId: string }[];
 };
 
 // In DUAL_CHANNEL mode the kitchen's per-item "done" marking surfaces to the
@@ -512,6 +518,10 @@ export default function TableDetail() {
         qty: item.qty,
         // Fall back for a backend that predates partial ticking.
         servedQty: item.served_qty ?? (item.served ? item.qty : 0),
+        label: item.name,
+        unitPrice: item.price,
+        menuItemId: item.menu_item_id,
+        selectedModifiers: item.selected_modifiers,
       }))
     ), [orders, dinerStatusMode]);
 
@@ -578,36 +588,149 @@ export default function TableDetail() {
   const [cancelTarget, setCancelTarget] = useState<FlatItem | null>(null);
   const [cancelling, setCancelling] = useState(false);
 
+  // The backend returns a 409 with a specific code/message for states where a
+  // cancel is not allowed (paid, collection in progress, etc.).
+  const cancelErrorMessage = (e: any): string => {
+    const code = e?.code as string | undefined;
+    return code === 'COLLECTION_IN_PROGRESS'
+      ? 'The diner is paying for this online right now. Wait for it to finish (or have them cancel), then remove the item.'
+      : code === 'ORDER_ALREADY_PAID'
+      ? 'This order is already paid and can no longer be changed.'
+      : code === 'ITEM_ALREADY_CANCELLED' || code === 'ORDER_CANCELLED'
+      ? 'This item has already been cancelled.'
+      : code === 'INVALID_QTY'
+      ? 'This item changed on another phone. Check the list and try again.'
+      : (typeof e?.message === 'string' && e.message) || 'Something went wrong. Please try again.';
+  };
+
+  // Once the bill is printed the server wants a manager for any cancel; the
+  // approval hook asks for the PIN only when the server says so.
   const handleCancelItem = async (reason: CancelReason) => {
     if (!cancelTarget || cancelling) return;
+    const target = cancelTarget;
     setCancelling(true);
     try {
-      const res = await crewOrders.cancelItem(cancelTarget.order_id, cancelTarget.item_id, reason);
-      if (!res?.success) {
-        setCancelTarget(null);
-        showDialog('Could not cancel', 'This item could not be cancelled. The order may already be paid.', [{ label: 'OK', onPress: () => {} }]);
-        return;
-      }
-      await loadBill(); // refresh totals + the new collection amount
-      setCancelTarget(null);
+      await runWithApproval({ action: 'VOID_AFTER_BILL', amount: target.price }, async (mint) => {
+        const grantId = mint ? await mint(target.order_id, target.unitPrice * target.qty) : undefined;
+        await crewOrders.cancelItem(target.order_id, target.item_id, reason, { grantId });
+        await loadBill(); // refresh totals + the new collection amount
+      });
     } catch (e: any) {
-      setCancelTarget(null);
-      // The backend returns a 409 with a specific code/message for states
-      // where a cancel is not allowed (paid, collection in progress, etc.).
-      const code = e?.code as string | undefined;
-      const message =
-        code === 'COLLECTION_IN_PROGRESS'
-          ? 'The diner is paying for this online right now. Wait for it to finish (or have them cancel), then remove the item.'
-          : code === 'ORDER_ALREADY_PAID'
-          ? 'This order is already paid and can no longer be changed.'
-          : code === 'ITEM_ALREADY_CANCELLED' || code === 'ORDER_CANCELLED'
-          ? 'This item has already been cancelled.'
-          : (typeof e?.message === 'string' && e.message) || 'Something went wrong. Please try again.';
-      showDialog('Could not cancel', message, [{ label: 'OK', onPress: () => {} }]);
+      showDialog('Could not cancel', cancelErrorMessage(e), [{ label: 'OK', onPress: () => {} }]);
     } finally {
+      setCancelTarget(null);
       setCancelling(false);
     }
   };
+
+  // ── Edit quantities (− qty + ×) ───────────────────────────────────────────
+  // Changes are a DRAFT until Save: tapping "−" three times must not fire
+  // three voids, three reason prompts and — after the bill is printed — three
+  // PIN prompts. Save sends one reason for every removal and one new order
+  // for every addition. "+" is a new order (its own ADD-ON KOT), never a
+  // bigger number on a line the kitchen has already printed.
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<Record<string, number>>({});
+  const [editReasonOpen, setEditReasonOpen] = useState(false);
+  const [savingEdits, setSavingEdits] = useState(false);
+
+  const draftQty = (item: FlatItem) => draft[item.key] ?? item.qty;
+  const setDraftQty = (item: FlatItem, qty: number) => {
+    setDraft((d) => {
+      const next = { ...d };
+      if (qty === item.qty) delete next[item.key];
+      else next[item.key] = Math.max(0, Math.min(item.qty + 50, qty));
+      return next;
+    });
+  };
+
+  const editPlan = useMemo(() => {
+    const removals: { item: FlatItem; units: number }[] = [];
+    const additions: { item: FlatItem; units: number }[] = [];
+    for (const item of flatItems) {
+      if (item.cancelled || draft[item.key] == null) continue;
+      const target = draft[item.key]!;
+      if (target < item.qty) removals.push({ item, units: item.qty - target });
+      else if (target > item.qty && item.menuItemId) additions.push({ item, units: target - item.qty });
+    }
+    const removedValue = removals.reduce((s, r) => s + r.item.unitPrice * r.units, 0);
+    return { removals, additions, removedValue };
+  }, [flatItems, draft]);
+  const editCount = editPlan.removals.length + editPlan.additions.length;
+  // `menu_item_id` ships in the same backend release that understands `qty`.
+  // An older backend ignores `qty` and would cancel the WHOLE line on one "−",
+  // so without that marker the stepper is not offered at all.
+  const stepperSupported = flatItems.some((i) => !!i.menuItemId);
+  const canEdit = stepperSupported && !!sessionId && !isPaid && sessionStatus === 'active' && flatItems.some((i) => !i.cancelled);
+
+  const exitEditing = () => { setEditing(false); setDraft({}); };
+
+  const saveEdits = () => {
+    if (savingEdits || editCount === 0) return;
+    if (editPlan.removals.length > 0) setEditReasonOpen(true);
+    else void applyEdits(null);
+  };
+
+  const applyEdits = async (reason: CancelReason | null) => {
+    if (!sessionId || savingEdits) return;
+    const { removals, additions, removedValue } = editPlan;
+    // Survive the PIN retry: the approval hook re-runs `attempt` from the top,
+    // so anything that already went through must not go again.
+    const done = new Set<string>();
+    let added = additions.length === 0;
+    const dropDone = () => setDraft((d) => {
+      const next = { ...d };
+      for (const key of done) delete next[key];
+      return next;
+    });
+
+    const attempt = async (mint?: MintGrant) => {
+      try {
+        for (const r of removals) {
+          if (done.has(r.item.key)) continue;
+          const grantId = mint ? await mint(r.item.order_id, r.item.unitPrice * r.units) : undefined;
+          await crewOrders.cancelItem(r.item.order_id, r.item.item_id, reason ?? undefined, { qty: r.units, grantId });
+          done.add(r.item.key);
+        }
+        if (!added) {
+          await crewOrders.placeOrder(sessionId, additions.map((a) => ({
+            item_id: a.item.menuItemId!,
+            qty: a.units,
+            ...(a.item.selectedModifiers?.length ? { selectedModifiers: a.item.selectedModifiers } : {}),
+            ...(a.item.modifiersSummary ? { modifiers_summary: a.item.modifiersSummary } : {}),
+          })));
+          added = true;
+          for (const a of additions) done.add(a.item.key);
+        }
+      } catch (e) {
+        // Some lines may have gone through before this one failed — take them
+        // out of the draft so a second Save does not repeat them.
+        dropDone();
+        void loadBill();
+        throw e;
+      }
+      exitEditing();
+      await loadBill();
+    };
+
+    setSavingEdits(true);
+    try {
+      await runWithApproval({ action: 'VOID_AFTER_BILL', amount: removedValue }, attempt);
+    } catch (e: any) {
+      showDialog('Could not save changes', cancelErrorMessage(e), [{ label: 'OK', onPress: () => {} }]);
+    } finally {
+      setSavingEdits(false);
+    }
+  };
+
+  // Paid or closed from another phone mid-edit: nothing left to edit.
+  useEffect(() => {
+    if (editing && !canEdit) exitEditing();
+  }, [editing, canEdit]);
+
+  const editSummary = editPlan.removals
+    .map((r) => `${r.units}× ${r.item.label}`)
+    .join(', ');
 
   // Cash collection lives in app/(staff)/cash-collection.tsx now — accessible
   // via the cash icon in the staff dashboard header. The table screen no
@@ -1459,8 +1582,41 @@ export default function TableDetail() {
       <View style={styles.sectionHeader}>
         <View style={styles.sectionTitleRow}>
           <Text style={styles.sectionTitle}>Active Orders</Text>
-          <Text style={styles.progressText}>{servedCount}/{totalCount} served</Text>
+          {editing ? (
+            <View style={styles.editBar}>
+              <TouchableOpacity onPress={exitEditing} disabled={savingEdits} activeOpacity={0.7} hitSlop={8}>
+                <Text style={styles.editBarCancel}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={saveEdits}
+                disabled={savingEdits || editCount === 0}
+                activeOpacity={0.8}
+                style={[styles.editBarSave, (savingEdits || editCount === 0) && styles.editBarSaveOff]}
+              >
+                {savingEdits
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <Text style={styles.editBarSaveText}>{editCount > 0 ? `Save (${editCount})` : 'Save'}</Text>}
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.editBar}>
+              <Text style={styles.progressText}>{servedCount}/{totalCount} served</Text>
+              {canEdit ? (
+                <TouchableOpacity onPress={() => setEditing(true)} activeOpacity={0.7} hitSlop={8} accessibilityRole="button" accessibilityLabel="Edit quantities">
+                  <Text style={styles.editLink}>Edit</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          )}
         </View>
+        {editing && sessionInvoiceNumber ? (
+          <View style={styles.billPrintedNote}>
+            <Ionicons name="lock-closed-outline" size={12} color={QuinckleColors.warning} />
+            <Text style={styles.billPrintedNoteText}>
+              The bill is printed. Taking anything off needs a manager&apos;s PIN, and the owner is told.
+            </Text>
+          </View>
+        ) : null}
         <View style={styles.serviceProgressTrack}>
           <Animated.View
             style={[styles.serviceProgressFill, {
@@ -1473,6 +1629,9 @@ export default function TableDetail() {
       <FlatList
         style={isWide ? styles.wideFlatList : undefined}
         data={flatItems}
+        // Edit mode and its draft change what a row draws without changing
+        // `data` — without this the list keeps showing the old rows.
+        extraData={`${editing}|${savingEdits}|${JSON.stringify(draft)}`}
         keyExtractor={item => item.key}
         // Tablet's list is not overlaid by the docked bar — it lives in its own
         // pane — so it keeps the base clearance.
@@ -1505,6 +1664,58 @@ export default function TableDetail() {
                 <View style={styles.cancelledBadge}>
                   <Ionicons name="close" size={11} color={QuinckleColors.danger} />
                   <Text style={styles.cancelledBadgeText}>Cancelled</Text>
+                </View>
+              </View>
+            );
+          }
+          if (editing) {
+            const q = draftQty(item);
+            const removed = q === 0;
+            const changed = q !== item.qty;
+            const canAdd = !!item.menuItemId;
+            return (
+              <View style={[styles.orderItemRow, removed && { opacity: 0.5 }]}>
+                <View style={styles.orderItemLeft}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.itemName, removed && styles.itemNameCancelled]} numberOfLines={2}>{item.label}</Text>
+                    {item.modifiersSummary ? (
+                      <Text style={styles.itemModifiers} numberOfLines={1}>{item.modifiersSummary}</Text>
+                    ) : null}
+                    <View style={styles.itemMetaRow}>
+                      <Text style={styles.itemPrice}>₹{(item.unitPrice * q).toFixed(0)}</Text>
+                      {changed ? <Text style={styles.stepWas}>was {item.qty}</Text> : null}
+                    </View>
+                  </View>
+                </View>
+                <View style={styles.stepper}>
+                  <TouchableOpacity
+                    style={[styles.stepBtn, q === 0 && styles.stepBtnOff]}
+                    onPress={() => setDraftQty(item, q - 1)}
+                    disabled={q === 0 || savingEdits}
+                    activeOpacity={0.7}
+                    accessibilityLabel={`One less ${item.label}`}
+                  >
+                    <Ionicons name="remove" size={16} color={QuinckleColors.textPrimary} />
+                  </TouchableOpacity>
+                  <Text style={[styles.stepQty, changed && styles.stepQtyChanged]}>{q}</Text>
+                  <TouchableOpacity
+                    style={[styles.stepBtn, !canAdd && styles.stepBtnOff]}
+                    onPress={() => setDraftQty(item, q + 1)}
+                    disabled={!canAdd || savingEdits}
+                    activeOpacity={0.7}
+                    accessibilityLabel={`One more ${item.label}`}
+                  >
+                    <Ionicons name="add" size={16} color={QuinckleColors.textPrimary} />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.stepRemove, removed && styles.stepRemoveOn]}
+                    onPress={() => setDraftQty(item, removed ? item.qty : 0)}
+                    disabled={savingEdits}
+                    activeOpacity={0.7}
+                    accessibilityLabel={removed ? `Keep ${item.label}` : `Remove ${item.label}`}
+                  >
+                    <Ionicons name={removed ? 'arrow-undo' : 'close'} size={15} color={QuinckleColors.danger} />
+                  </TouchableOpacity>
                 </View>
               </View>
             );
@@ -1971,6 +2182,24 @@ export default function TableDetail() {
         busy={cancelling}
         onConfirm={(reason) => void handleCancelItem(reason)}
         onClose={() => setCancelTarget(null)}
+      />
+
+      {/* ── Edit quantities: one reason for every removal on Save ── */}
+      <ReasonSheet
+        visible={editReasonOpen}
+        title="Take these off the bill?"
+        subject={editSummary}
+        note={`₹${Math.round(editPlan.removedValue)} will be removed from the bill.${
+          editPlan.additions.length > 0 ? ' The added items go to the kitchen as a new order.' : ''
+        }${sessionInvoiceNumber ? ' The bill is already printed, so a manager must approve.' : ''}`}
+        confirmLabel="Remove"
+        busy={savingEdits}
+        onConfirm={(reason) => {
+          setEditReasonOpen(false);
+          // Let the sheet close before a PIN sheet can open over it.
+          setTimeout(() => void applyEdits(reason), 220);
+        }}
+        onClose={() => setEditReasonOpen(false)}
       />
 
       {/* ── UPI QR modal ── */}
@@ -2618,6 +2847,31 @@ const styles = StyleSheet.create({
   serviceProgressTrack: { height: 3, backgroundColor: QuinckleColors.surfaceMutedHover, borderRadius: 2, overflow: 'hidden' },
   serviceProgressFill: { height: '100%', backgroundColor: QuinckleColors.success },
   listContent: { paddingBottom: 290 },
+  editBar: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  editLink: { color: QuinckleColors.primary, fontSize: 13, fontWeight: '700' },
+  editBarCancel: { color: QuinckleColors.textSecondary, fontSize: 13, fontWeight: '600' },
+  editBarSave: { minWidth: 72, alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: QuinckleColors.primary },
+  editBarSaveOff: { opacity: 0.4 },
+  editBarSaveText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  billPrintedNote: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginBottom: Spacing.sm,
+    paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, backgroundColor: QuinckleColors.warningSoft,
+  },
+  billPrintedNoteText: { flex: 1, color: QuinckleColors.warning, fontSize: 12, fontWeight: '600', lineHeight: 16 },
+  stepper: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: Spacing.sm },
+  stepBtn: {
+    width: 32, height: 32, borderRadius: 8, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: QuinckleColors.borderSubtle, backgroundColor: QuinckleColors.surfaceMuted,
+  },
+  stepBtnOff: { opacity: 0.3 },
+  stepQty: { minWidth: 22, textAlign: 'center', color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  stepQtyChanged: { color: QuinckleColors.primary },
+  stepWas: { color: QuinckleColors.textTertiary, fontSize: 11, fontWeight: '500' },
+  stepRemove: {
+    width: 32, height: 32, borderRadius: 8, alignItems: 'center', justifyContent: 'center', marginLeft: 2,
+    backgroundColor: QuinckleColors.dangerSoft,
+  },
+  stepRemoveOn: { borderWidth: 1, borderColor: QuinckleColors.danger },
   orderItemRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: Spacing.md, borderBottomWidth: 1, borderBottomColor: QuinckleColors.borderSubtle },
   orderItemLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, flex: 1 },
   checkCircle: { width: 22, height: 22, borderRadius: 11, borderWidth: 1.5, borderColor: QuinckleColors.borderStrong, alignItems: 'center', justifyContent: 'center' },
