@@ -1336,18 +1336,22 @@ export default function TableDetail() {
    * withheld. Screen readers get the reason via accessibilityHint and still hear
    * "disabled", so they never need the toast at all.
    */
+  const billPrintedUnpaid = !!sessionInvoiceNumber && !isPaid;
+
   const actionCard = (
     key: string,
     icon: React.ComponentProps<typeof Ionicons>['name'],
     label: string,
     onPress: () => void,
     disabledReason: string | null,
+    tone?: 'warning',
   ) => {
     const enabled = !disabledReason;
+    const warn = enabled && tone === 'warning';
     return (
       <TouchableOpacity
         key={key}
-        style={[styles.actionCard, !enabled && styles.actionCardDisabled]}
+        style={[styles.actionCard, warn && styles.actionCardWarning, !enabled && styles.actionCardDisabled]}
         onPress={enabled ? onPress : () => setHint(disabledReason)}
         activeOpacity={enabled ? 0.75 : 0.9}
         accessibilityRole="button"
@@ -1358,9 +1362,9 @@ export default function TableDetail() {
         <Ionicons
           name={icon}
           size={20}
-          color={enabled ? QuinckleColors.textPrimary : QuinckleColors.textTertiary}
+          color={warn ? QuinckleColors.warning : enabled ? QuinckleColors.textPrimary : QuinckleColors.textTertiary}
         />
-        <Text style={[styles.actionCardLabel, !enabled && styles.actionCardLabelDisabled]} numberOfLines={1}>
+        <Text style={[styles.actionCardLabel, warn && styles.actionCardLabelWarning, !enabled && styles.actionCardLabelDisabled]} numberOfLines={1}>
           {label}
         </Text>
       </TouchableOpacity>
@@ -1571,9 +1575,11 @@ export default function TableDetail() {
       {actionCard('qr', 'qr-code-outline', 'UPI QR', () => {
         setUpiAmount(''); setUpiUri(null); setShowUpiModal(true);
       }, upiQrReason)}
-      {actionCard('print', 'print-outline', 'Print', () => {
+      {/* Printed and not yet paid: amber, so anyone can see the guest already
+          holds this bill — and that cutting it now needs a manager. */}
+      {actionCard('print', billPrintedUnpaid ? 'receipt' : 'print-outline', billPrintedUnpaid ? 'Printed' : 'Print', () => {
         setActionMenuOpen(false); setPrintMenuOpen(true);
-      }, null)}
+      }, null, billPrintedUnpaid ? 'warning' : undefined)}
     </View>
   );
 
@@ -2802,6 +2808,8 @@ const styles = StyleSheet.create({
   actionCardDisabled: { opacity: 0.4, borderColor: QuinckleColors.borderSubtle },
   actionCardLabel: { fontSize: 12, fontWeight: '600', color: QuinckleColors.textPrimary },
   actionCardLabelDisabled: { color: QuinckleColors.textTertiary },
+  actionCardWarning: { borderColor: 'rgba(245,158,11,0.45)', backgroundColor: QuinckleColors.warningSoft },
+  actionCardLabelWarning: { color: QuinckleColors.warning },
 
   sessionGroup: {
     backgroundColor: QuinckleColors.surface,
