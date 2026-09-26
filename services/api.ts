@@ -215,7 +215,7 @@ export const kitchen = {
 // ── Manager authorization (POS adjustments C2) ────────────────────────────────
 
 /** Actions a manager PIN can approve. Must match the backend's PrivilegedAction. */
-export type PrivilegedAction = 'VOID_POST_KOT' | 'COMP_ORDER' | 'EXEMPT_SESSION' | 'REFUND';
+export type PrivilegedAction = 'VOID_POST_KOT' | 'VOID_AFTER_BILL' | 'COMP_ORDER' | 'EXEMPT_SESSION' | 'REFUND';
 
 export const crewAuthorization = {
   /**
@@ -373,7 +373,12 @@ export const crewMenu = {
 
 // ── Crew Sessions (STEWARD/ADMIN) ─────────────────────────────────────────────
 
-export interface BillOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done' | 'cancelled'; served: boolean; served_qty?: number; modifiers_summary?: string | null; }
+export interface BillOrderItem {
+  item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done' | 'cancelled'; served: boolean; served_qty?: number; modifiers_summary?: string | null;
+  /** What the table screen's "+" re-orders. Absent from backends before the qty stepper. */
+  menu_item_id?: string;
+  selected_modifiers?: { groupId: string; optionId: string }[];
+}
 export interface BillOrder { order_id: string; placed_at: string; status: 'received' | 'preparing' | 'ready' | 'served'; items: BillOrderItem[]; order_total: number; }
 /**
  * Canonical bill breakdown — same shape returned by /dine/cart/preview and
@@ -950,16 +955,22 @@ export const crewOrders = {
   // total server-side; returns the new total + whether the order is now empty.
   // `reason` is optional on the wire so older builds keep working; the picker
   // always supplies one. An unknown code is rejected 400 INVALID_REASON.
-  cancelItem: (orderId: string, itemId: string, reason?: CancelReason) =>
-    request<{ success: boolean; order_id: string; session_id: string; item_id: string; new_order_total: number; order_cancelled: boolean }>(
-      'PATCH', `/api/crew/orders/${orderId}/items/${itemId}/cancel`, reason, true,
+  //
+  // `qty` cancels only that many units of the line (the table screen's "−");
+  // omitted, the whole line goes. Once the bill has been printed the server
+  // answers AUTHORIZATION_REQUIRED until a manager-PIN `grantId` comes along.
+  cancelItem: (orderId: string, itemId: string, reason?: CancelReason, opts?: { qty?: number; grantId?: string | null }) =>
+    request<{ success: boolean; order_id: string; session_id: string; item_id: string; new_order_total: number; order_cancelled: boolean; units_cancelled?: number }>(
+      'PATCH', `/api/crew/orders/${orderId}/items/${itemId}/cancel`,
+      { ...(reason ?? {}), ...(opts?.qty ? { qty: opts.qty } : {}), ...(opts?.grantId ? { grantId: opts.grantId } : {}) },
+      true,
     ),
 
   // Delete a whole order (all lines) before payment is settled — takeaway
   // "delete order". Marks the order CANCELLED server-side; it drops off the list.
-  cancelOrder: (orderId: string, reason?: CancelReason) =>
+  cancelOrder: (orderId: string, reason?: CancelReason, grantId?: string | null) =>
     request<{ success: boolean; order_id: string; session_id: string; intent_voided: boolean; reverted_order_ids: string[] }>(
-      'PATCH', `/api/crew/orders/${orderId}/cancel`, reason, true,
+      'PATCH', `/api/crew/orders/${orderId}/cancel`, { ...(reason ?? {}), ...(grantId ? { grantId } : {}) }, true,
     ),
 
   /**
