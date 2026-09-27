@@ -30,6 +30,8 @@ export interface CenteredModalProps {
   title?: string;
   /** Max width of the card, in dp. Defaults to 420. */
   maxWidth?: number;
+  /** Scrim colour behind the card. Darker pulls the eye to the card. */
+  backdropColor?: string;
   children: React.ReactNode;
 }
 
@@ -38,6 +40,7 @@ export function CenteredModal({
   onClose,
   title,
   maxWidth = 420,
+  backdropColor,
   children,
 }: CenteredModalProps) {
   const [mounted, setMounted] = useState(false);
@@ -96,7 +99,7 @@ export function CenteredModal({
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
       <Animated.View
-        style={[StyleSheet.absoluteFill, styles.backdrop, { opacity }]}
+        style={[StyleSheet.absoluteFill, styles.backdrop, backdropColor ? { backgroundColor: backdropColor } : null, { opacity }]}
         pointerEvents="auto"
       >
         <Pressable style={StyleSheet.absoluteFill} onPress={() => animateClose(onClose)} />

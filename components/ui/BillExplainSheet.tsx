@@ -165,7 +165,7 @@ function Section({ title, children, first }: { title: string; children: React.Re
   );
 }
 
-export function BillExplainContent({ bill, pinned = false, inset = true, onGiveDiscount }: {
+export function BillExplainContent({ bill, pinned = false, inset = true, onGiveDiscount, onAdjust }: {
   bill: ExplainedBill;
   /**
    * The tablet rail shows the bill permanently in a fixed-height pane: the
@@ -177,6 +177,8 @@ export function BillExplainContent({ bill, pinned = false, inset = true, onGiveD
   inset?: boolean;
   /** Puts the give/edit discount icon beside the total (tablet rail only). */
   onGiveDiscount?: () => void;
+  /** Puts an "Adjust bill" button beside the total (tablet rail only). */
+  onAdjust?: () => void;
 }) {
   const itemCount = bill.items.length;
 
@@ -319,6 +321,18 @@ export function BillExplainContent({ bill, pinned = false, inset = true, onGiveD
             />
           </TouchableOpacity>
         )}
+        {onAdjust && (
+          <TouchableOpacity
+            onPress={onAdjust}
+            style={styles.adjustBtn}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Adjust bill"
+          >
+            <MaterialCommunityIcons name="tune-variant" size={16} color={QuinckleColors.textPrimary} />
+            <Text style={styles.adjustBtnText} numberOfLines={1}>Adjust bill</Text>
+          </TouchableOpacity>
+        )}
         <Text style={styles.totalValue}>{rupees(bill.total)}</Text>
       </View>
     </View>
@@ -381,7 +395,14 @@ const styles = StyleSheet.create({
     backgroundColor: QuinckleColors.surfaceElevated, borderRadius: Radius.md,
     paddingHorizontal: Spacing.md, paddingVertical: Spacing.md, marginTop: Spacing.md,
   },
-  totalRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  totalRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, flexShrink: 1 },
+  adjustBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1,
+    height: 32, paddingHorizontal: Spacing.md,
+    borderRadius: Radius.md, borderWidth: 1, borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surfaceMuted,
+  },
+  adjustBtnText: { fontSize: 12.5, fontWeight: '600', color: QuinckleColors.textSecondary, flexShrink: 1 },
   totalLabel: { color: QuinckleColors.textPrimary, fontSize: 14, fontWeight: '600' },
   totalValue: { color: QuinckleColors.textPrimary, fontSize: 24, fontWeight: '700', letterSpacing: -0.5, fontVariant: ['tabular-nums'] },
 });

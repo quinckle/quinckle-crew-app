@@ -163,6 +163,14 @@ export default function LoginScreen() {
     }
   };
 
+  // Enter on the keyboard does what the CTA does. Same guard as the button's
+  // `disabled`, so a held or repeated Enter can't fire a second request while
+  // one is in flight, or submit an incomplete number/code.
+  const handleSubmitEditing = () => {
+    if (ctaDisabled) return;
+    handleNext();
+  };
+
   const handleVerify = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setError('');
@@ -314,6 +322,9 @@ export default function LoginScreen() {
               style={styles.phoneInput}
               keyboardType="phone-pad"
               maxLength={10}
+              onSubmitEditing={handleSubmitEditing}
+              blurOnSubmit={false}
+              returnKeyType="go"
               onFocus={handleFocus}
               onBlur={handleBlur}
               autoFocus
@@ -339,6 +350,9 @@ export default function LoginScreen() {
               style={styles.hiddenInput}
               keyboardType="number-pad"
               maxLength={OTP_LENGTH}
+              onSubmitEditing={handleSubmitEditing}
+              blurOnSubmit={false}
+              returnKeyType="go"
               onFocus={handleFocus}
               onBlur={handleBlur}
               autoFocus

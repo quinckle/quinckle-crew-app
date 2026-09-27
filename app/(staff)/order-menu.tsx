@@ -17,7 +17,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Animated,
+  Easing,
   FlatList,
   KeyboardAvoidingView,
   LayoutAnimation,
@@ -40,16 +42,28 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useResponsive } from '../../hooks/useResponsive';
 import { useAuth } from '../../context/AuthContext';
+import { useTableSessionStart, waitForTableSession, retryTableSession, startTableSession } from '../../services/tableSessionStart';
+import { useTakeawaySessionStart, waitForTakeawaySession, retryTakeawaySession, startTakeawaySession } from '../../services/takeawaySessionStart';
+import { signalOrderPlaced } from '../../services/orderPlacedSignal';
 import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
 import { normalizeChannel, isOffPremise, channelLabel } from '../../constants/channel';
 import {
-  crewSessions, crewOrders, crewDiners, crewMemberships, restaurantApi, crewOffers,
+  crewSessions, crewOrders, crewDiners, crewMemberships, restaurantApi, crewOffers, crewPayments,
+  type CollectSplitMethod,
 } from '../../services/api';
 import type { MenuItem, ModifierGroup, CrewOffer, CrewOrderPreview } from '../../services/api';
 import { BottomSheet } from '../../components/ui/BottomSheet';
+import { AdjustBillForm } from './adjust-bill';
+import { CenteredModal } from '../../components/ui/CenteredModal';
 import { CartReviewSheet, type CartLine } from '../../components/ui/CartReviewSheet';
+import { GuestSheet } from '../../components/ui/GuestSheet';
+import { SplitPaymentSheet } from '../../components/ui/SplitPaymentSheet';
+import { DuePaymentSheet, type DuePaymentDetails } from '../../components/ui/DuePaymentSheet';
+import { UpiPaymentSheet } from '../../components/ui/UpiPaymentSheet';
+import { OrderSummaryIcon, CustomerIcon } from '../../components/ui/OrderBarIcons';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { readCache, writeCache, cacheKeys } from '../../services/dataCache';
+import { isDesktop } from '../../services/platform';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -122,6 +136,24 @@ const MenuItemCard = React.memo(function MenuItemCard({
     onAdd(item);
   };
 
+  // Tap feedback runs on transform and opacity ONLY. Nothing here may change the
+  // card's box: the tile is a flex:1 item in a wrapping grid, and the old
+  // selected state (borderWidth 1 → 2) made it ~2px bigger and reflowed every
+  // card around it. Selection is now a colour change plus an overlay ring.
+  const flash = useRef(new Animated.Value(0)).current;
+  const pop = useRef(new Animated.Value(1)).current;
+  const prevQty = useRef(qty);
+  useEffect(() => {
+    if (qty > prevQty.current) {
+      const native = Platform.OS !== 'web';
+      flash.setValue(1);
+      Animated.timing(flash, { toValue: 0, duration: 340, easing: Easing.out(Easing.quad), useNativeDriver: native }).start();
+      pop.setValue(1.45);
+      Animated.spring(pop, { toValue: 1, friction: 4, tension: 220, useNativeDriver: native }).start();
+    }
+    prevQty.current = qty;
+  }, [qty, flash, pop]);
+
   return (
     <Pressable
       onPress={add}
@@ -153,6 +185,11 @@ const MenuItemCard = React.memo(function MenuItemCard({
         </View>
       )}
 
+      {/* Selected ring, drawn over the tile so it takes no space. */}
+      {qty > 0 && <View style={cardStyles.ring} pointerEvents="none" />}
+      {/* One warm pulse each time an item is added. */}
+      <Animated.View style={[cardStyles.flash, { opacity: flash }]} pointerEvents="none" />
+
       {discountPct > 0 && (
         <View style={cardStyles.discountBadge}>
           <Text style={cardStyles.discountText}>{discountPct}% OFF</Text>
@@ -160,9 +197,9 @@ const MenuItemCard = React.memo(function MenuItemCard({
       )}
       {/* How many are in the order, readable from across the grid. */}
       {qty > 0 && (
-        <View style={cardStyles.qtyBadge}>
+        <Animated.View style={[cardStyles.qtyBadge, { transform: [{ scale: pop }] }]}>
           <Text style={cardStyles.qtyBadgeText}>{qty}</Text>
-        </View>
+        </Animated.View>
       )}
 
       <View style={cardStyles.info}>
@@ -198,7 +235,7 @@ const MenuItemCard = React.memo(function MenuItemCard({
               hitSlop={4}
               accessibilityLabel={note ? `Edit note for ${item.name}` : `Add note for ${item.name}`}
             >
-              <Ionicons name="create-outline" size={15} color={note ? QuinckleColors.primary : QuinckleColors.textSecondary} />
+              <Ionicons name="create-outline" size={15} color={note ? '#fff' : QuinckleColors.textSecondary} />
             </TouchableOpacity>
           </View>
         )}
@@ -224,16 +261,38 @@ const cardStyles = StyleSheet.create({
     aspectRatio: 0.82,
     backgroundColor: QuinckleColors.surfaceElevated,
     borderRadius: Radius.lg,
+    // Same width in every state (see MenuItemCard). flex:1 splits the row using
+    // each item's border, so a card whose border differs ends up a different size.
     borderWidth: 1,
     borderColor: QuinckleColors.border,
+    minWidth: 0,
     overflow: 'hidden',
     justifyContent: 'flex-end',
+    ...(Platform.OS === 'web'
+      ? ({ transitionProperty: 'transform, border-color', transitionDuration: '120ms', transitionTimingFunction: 'ease-out' } as any)
+      : null),
   },
-  cardActive: { borderColor: QuinckleColors.primary, borderWidth: 2 },
-  cardPressed: { opacity: 0.85 },
+  // Colour only — never a width.
+  cardActive: { borderColor: QuinckleColors.primary },
+  // Press-down: a transform, so it moves nothing else. Springs back on release.
+  cardPressed: { transform: [{ scale: 0.965 }] },
+  // Inside the 1px border, so together they read as a 2px edge without growing it.
+  ring: {
+    ...StyleSheet.absoluteFillObject,
+    borderWidth: 1,
+    borderColor: QuinckleColors.primary,
+    borderRadius: Radius.lg - 1,
+    backgroundColor: 'rgba(243,93,59,0.07)',
+  },
+  flash: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(243,93,59,0.30)' },
   img: { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%' },
   scrim: { position: 'absolute', left: 0, right: 0, bottom: 0, height: '62%' },
-  watermark: { position: 'absolute', left: 0, right: 0, top: 0, height: '58%', alignItems: 'center', justifyContent: 'center' },
+  // Centred in the whole tile (not just the top, image-scrim region) — a no-
+  // photo item has no bottom scrim to anchor against, so the top-58% box the
+  // photo case uses left the glyph stranded near the top with a dead gap
+  // above the name/price. The name/price block is short enough that it never
+  // reaches the middle of the tile, so a full-tile centre never collides.
+  watermark: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
   discountBadge: {
     position: 'absolute', top: 7, left: 7,
     backgroundColor: QuinckleColors.success, borderRadius: Radius.pill,
@@ -265,7 +324,141 @@ const cardStyles = StyleSheet.create({
     width: 32, height: 32, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, borderColor: QuinckleColors.borderStrong, backgroundColor: 'rgba(10,10,11,0.72)',
   },
-  noteBtnOn: { borderColor: QuinckleColors.primarySoftBorder },
+  // A note is already on this item: solid orange, so it reads from across the grid.
+  noteBtnOn: { backgroundColor: QuinckleColors.primary, borderColor: QuinckleColors.primary },
+});
+
+// ── Item note modal ───────────────────────────────────────────────────────────
+// A centred card: the dish (photo + name) top-left, close top-right, the note
+// below, and a Save button. The text is a DRAFT — only Save writes it to the
+// cart, so the cross, the backdrop and Escape all discard an edit. (The old
+// bottom sheet wrote every keystroke straight into the cart.)
+
+const NOTE_MAX = 200;
+const NOTE_MARK_SIZE = 14;   // VegIcon's box
+const NOTE_MARK_GAP = 6;
+const NOTE_NAME_LINE = 20;
+
+function NoteModal({ wide, visible, item, initial, onSave, onClose }: {
+  /** Wide layouts (desktop, tablet landscape) get a centred modal; phones keep a bottom sheet. */
+  wide: boolean;
+  visible: boolean;
+  item: MenuItem | null;
+  initial: string;
+  onSave: (text: string) => void;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState(initial);
+  const [imgFailed, setImgFailed] = useState(false);
+
+  // Start from the saved note each time the modal opens.
+  useEffect(() => { if (visible) setDraft(initial); }, [visible, initial]);
+  useEffect(() => { setImgFailed(false); }, [item?.id]);
+
+  if (!item) return null;
+  const price = parseFloat(item.price);
+  const save = () => onSave(draft.trim());
+
+  const content = (
+      <View style={noteStyles.body}>
+        <View style={noteStyles.header}>
+          <View style={noteStyles.thumb}>
+            {item.imageUrl ? (
+              <Image
+                source={{ uri: imgFailed ? item.imageUrl : menuThumbUrl(item.imageUrl) }}
+                style={StyleSheet.absoluteFillObject}
+                contentFit="cover"
+                cachePolicy="disk"
+                transition={0}
+                onError={() => setImgFailed(true)}
+              />
+            ) : (
+              <Ionicons name="fast-food-outline" size={22} color={QuinckleColors.textMuted} />
+            )}
+          </View>
+          <View style={noteStyles.headText}>
+            <View style={noteStyles.nameRow}>
+              <View style={noteStyles.vegMark}><VegIcon isVeg={item.isVeg} /></View>
+              <Text style={noteStyles.name} numberOfLines={2}>{item.name}</Text>
+            </View>
+            <Text style={noteStyles.price}>₹{price.toFixed(0)}</Text>
+          </View>
+          <Pressable onPress={onClose} style={noteStyles.close} hitSlop={8} accessibilityRole="button" accessibilityLabel="Close note">
+            <Ionicons name="close" size={18} color={QuinckleColors.textSecondary} />
+          </Pressable>
+        </View>
+
+        <View style={noteStyles.labelRow}>
+          <Text style={noteStyles.label}>NOTE FOR THE KITCHEN</Text>
+          <Text style={noteStyles.count}>{draft.length}/{NOTE_MAX}</Text>
+        </View>
+        <TextInput
+          style={noteStyles.input}
+          placeholder="e.g. no onions, extra spicy…"
+          placeholderTextColor={QuinckleColors.textMuted}
+          value={draft}
+          onChangeText={setDraft}
+          multiline
+          maxLength={NOTE_MAX}
+          autoFocus
+          // Enter saves (Shift+Enter is a new line) — a note is a line or two,
+          // and on a till the keyboard is the fast path.
+          onKeyPress={(e: any) => {
+            if (Platform.OS === 'web' && e.nativeEvent?.key === 'Enter' && !e.nativeEvent?.shiftKey) {
+              e.preventDefault?.();
+              save();
+            }
+          }}
+        />
+
+        <TouchableOpacity style={noteStyles.save} onPress={save} activeOpacity={0.85} accessibilityRole="button">
+          <Text style={noteStyles.saveText}>Save note</Text>
+        </TouchableOpacity>
+      </View>
+  );
+
+  return wide ? (
+    <CenteredModal visible={visible} onClose={onClose} maxWidth={460} backdropColor="rgba(0,0,0,0.84)">{content}</CenteredModal>
+  ) : (
+    <BottomSheet visible={visible} onClose={onClose}>{content}</BottomSheet>
+  );
+}
+
+const noteStyles = StyleSheet.create({
+  body: { paddingHorizontal: Spacing.xl, paddingBottom: Spacing.lg },
+  header: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, marginBottom: Spacing.lg },
+  thumb: {
+    width: 52, height: 52, borderRadius: 26, overflow: 'hidden',
+    backgroundColor: QuinckleColors.surfaceElevated, borderWidth: 1, borderColor: QuinckleColors.border,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  headText: { flex: 1, minWidth: 0, gap: 3 },
+  nameRow: { flexDirection: 'row', alignItems: 'flex-start', gap: NOTE_MARK_GAP },
+  // The 14px marker centred on the name's first line (20px line height).
+  vegMark: { width: NOTE_MARK_SIZE, height: NOTE_NAME_LINE, alignItems: 'center', justifyContent: 'center' },
+  name: { flex: 1, color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '600', lineHeight: NOTE_NAME_LINE },
+  // Flush left, under the veg marker.
+  price: { color: QuinckleColors.textTertiary, fontSize: 13, fontWeight: '600' },
+  close: {
+    width: 30, height: 30, borderRadius: 15, alignSelf: 'flex-start',
+    alignItems: 'center', justifyContent: 'center', backgroundColor: QuinckleColors.surfaceMuted,
+  },
+  labelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: Spacing.sm },
+  label: { ...Typography.label, color: QuinckleColors.textTertiary },
+  input: {
+    minHeight: 96, maxHeight: 180, textAlignVertical: 'top',
+    backgroundColor: QuinckleColors.surfaceElevated, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: QuinckleColors.border,
+    paddingHorizontal: Spacing.md, paddingVertical: 12,
+    color: QuinckleColors.textPrimary, fontSize: 15, lineHeight: 21,
+    marginBottom: Spacing.lg,
+  },
+  count: { color: QuinckleColors.textMuted, fontSize: 11, fontVariant: ['tabular-nums'] },
+  save: {
+    height: 48, borderRadius: Radius.lg, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: QuinckleColors.primary,
+  },
+  saveText: { color: '#fff', fontSize: 15, fontWeight: '700' },
 });
 
 // ── Modifier bottom sheet ─────────────────────────────────────────────────────
@@ -327,11 +520,24 @@ function ModifierSheet({
 // Left category rail width in the tablet-landscape two-pane layout.
 const RAIL_WIDTH = 208;
 
+// Same icons as payment-collect.tsx's "How are they paying?" row — a preset
+// picked here is a shortcut into that same choice, not a second vocabulary.
+// One accent (primary orange) for all of them, on/off, the same soft-pill
+// language footerIconBtn already uses two rows down — so the whole capsule
+// reads as one design, not five methods each arguing for their own color.
+const PAYMENT_METHODS: { key: 'PENDING' | 'CASH' | 'UPI' | 'SPLIT' | 'DUE'; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { key: 'PENDING', label: 'Pending', icon: 'ellipsis-horizontal-circle-outline' },
+  { key: 'CASH', label: 'Cash', icon: 'cash-outline' },
+  { key: 'UPI', label: 'UPI', icon: 'qr-code-outline' },
+  { key: 'SPLIT', label: 'Split', icon: 'git-compare-outline' },
+  { key: 'DUE', label: 'Due', icon: 'time-outline' },
+];
+
 export default function OrderMenuScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { staffInfo } = useAuth();
-  const { isWide, width, height, contentMaxWidth } = useResponsive();
+  const { isWide, width, height } = useResponsive();
 
   // Grid columns for the wide POS layout — target ~200dp per card in the space
   // left of the category rail, clamped so cards never get comically wide/thin.
@@ -347,7 +553,8 @@ export default function OrderMenuScreen() {
     tableId,
     tableNum: paramTableNum,
     tableDbId,
-    sessionId,
+    sessionId: paramSessionId,
+    pendingStart,
     customerPhone: paramPhone,
     customerName: paramName,
     channel: paramChannel,
@@ -358,6 +565,8 @@ export default function OrderMenuScreen() {
     tableNum: string;
     tableDbId: string;
     sessionId: string;
+    /** '1' when opened straight from the table grid, before the session exists. */
+    pendingStart?: string;
     customerPhone: string;
     customerName: string;
     channel: string;
@@ -368,11 +577,43 @@ export default function OrderMenuScreen() {
   // Off-premise covers TAKEAWAY *and* DELIVERY — both are tableless and both
   // take the packed-food price. `channel` is kept exact where it matters (the
   // menu fetch below), because a delivery order must load the DELIVERY menu.
+  // Computed before the background-start hooks below, which need to know
+  // which kind of pending start `pendingStart === '1'` refers to.
   const channel = normalizeChannel(paramChannel);
   const isTakeaway = isOffPremise(channel);
   const orderLabel = channelLabel(channel);
-  const pickupToken = paramPickupToken || null;
   const tableNum = paramTableNum ?? String(tableId ?? '').padStart(2, '0');
+
+  // A table opened straight from the grid arrives with no session yet: it is
+  // being created in the background (services/tableSessionStart.ts). Browsing
+  // the menu and building a cart never needed it — only the bill preview and
+  // placing the order do — so the screen opens at once and picks the id up here.
+  const bgStart = useTableSessionStart(pendingStart === '1' && !isTakeaway ? tableDbId : undefined);
+  // A takeaway order opened from the '+' button arrives the same way — see
+  // services/takeawaySessionStart.ts and index.tsx's startTakeawayOrder.
+  const bgTakeawayStart = useTakeawaySessionStart(pendingStart === '1' && isTakeaway);
+  const sessionId = paramSessionId
+    || (bgStart?.phase === 'ready' ? bgStart.sessionId : '')
+    || (bgTakeawayStart?.phase === 'ready' ? bgTakeawayStart.sessionId : '');
+
+  // The route survives a reload but the in-memory record of the start does not.
+  // If we were opened pending and nothing is being tracked, begin (or adopt, for
+  // a table) the session now, so the screen recovers instead of stranding the cart.
+  useEffect(() => {
+    if (pendingStart !== '1' || paramSessionId) return;
+    if (isTakeaway) {
+      if (!bgTakeawayStart) void startTakeawaySession().catch(() => {});
+    } else if (tableDbId && !bgStart) {
+      void startTableSession(tableDbId).catch(() => {});
+    }
+  }, [pendingStart, isTakeaway, tableDbId, paramSessionId, bgStart, bgTakeawayStart]);
+
+  // Starts from the route (DELIVERY always arrives already tokened) or from a
+  // page reload after placing. A fresh takeaway session has none yet — the
+  // backend mints one the moment its first order actually lands (see
+  // takeaway.routes.ts / crew/orders.service.ts) — confirmAndPlace below reads
+  // that fresh token off placeOrder's response and stores it here.
+  const [pickupToken, setPickupToken] = useState(paramPickupToken || null);
 
   // ── Menu data ──────────────────────────────────────────────────────────────
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
@@ -400,8 +641,8 @@ export default function OrderMenuScreen() {
   const footerAnim = useRef(new Animated.Value(0)).current;
   const [footerMounted, setFooterMounted] = useState(false);
 
-  // ── Checkout / Identity ────────────────────────────────────────────────────
-  const [checkoutOpen, setCheckoutOpen] = useState(false);
+  // ── Customer (name + phone, edited in the GuestSheet) / placing ────────────
+  const [contactOpen, setContactOpen] = useState(false);
   const [coPhone, setCoPhone] = useState('');
   const [coName, setCoName] = useState('');
   const [coLooking, setCoLooking] = useState(false);
@@ -409,27 +650,25 @@ export default function OrderMenuScreen() {
   const [coLookupFailed, setCoLookupFailed] = useState(false);
   const [coVisits, setCoVisits] = useState<number | null>(null);
   const [coMember, setCoMember] = useState<boolean | null>(null);
-  // Brief "order placed" confirmation shown before opening payment collection.
-  const [placed, setPlaced] = useState<{ amount: number } | null>(null);
-  const navTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (navTimerRef.current) clearTimeout(navTimerRef.current); }, []);
-  // Card scale/fade-in, then the checkmark pops in a beat later — makes the
-  // wait before payment-collect feel shorter than a static "Order placed" card.
-  const placedCardAnim = useRef(new Animated.Value(0)).current;
-  const placedTickAnim = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    if (!placed) return;
-    placedCardAnim.setValue(0);
-    placedTickAnim.setValue(0);
-    Animated.spring(placedCardAnim, {
-      toValue: 1, damping: 16, stiffness: 220, mass: 0.7, useNativeDriver: true,
-    }).start();
-    Animated.spring(placedTickAnim, {
-      toValue: 1, damping: 9, stiffness: 200, mass: 0.6, delay: 100, useNativeDriver: true,
-    }).start();
-  }, [placed, placedCardAnim, placedTickAnim]);
   const [coSubmitting, setCoSubmitting] = useState(false);
   const [coError, setCoError] = useState<string | null>(null);
+
+  // Takeaway is often paid right at the counter when the order is placed —
+  // unlike dine-in, which always collects after. 'PENDING' is today's
+  // behaviour: land on payment-collect and choose there — the only one of the
+  // five that still opens that screen. Cash/UPI/Split/Due are all resolved
+  // right here instead: Cash needs nothing more (the chip alone is the
+  // choice), UPI opens a sheet for the QR, Split/Due open a sheet for the
+  // numbers a real order doesn't exist to hang them on yet — and whichever
+  // was chosen, confirmAndPlace calls crewPayments.collectPayment directly
+  // the moment the order exists (the same call payment-collect.tsx's own
+  // modes make), never that screen.
+  const [paymentMethod, setPaymentMethod] = useState<'PENDING' | 'CASH' | 'UPI' | 'SPLIT' | 'DUE'>('PENDING');
+  const [upiSheetOpen, setUpiSheetOpen] = useState(false);
+  const [splitSheetOpen, setSplitSheetOpen] = useState(false);
+  const [splitDetails, setSplitDetails] = useState<{ cash: number; upi: number } | null>(null);
+  const [dueSheetOpen, setDueSheetOpen] = useState(false);
+  const [dueDetails, setDueDetails] = useState<DuePaymentDetails | null>(null);
 
   // Keep session customer for pre-fill
   const [sessionCustomerPhone, setSessionCustomerPhone] = useState(paramPhone || null);
@@ -476,6 +715,19 @@ export default function OrderMenuScreen() {
       })
       .catch(() => { if (!cancelled) setIsMenuLoading(false); });
 
+    return () => { cancelled = true; };
+  }, [staffInfo?.restaurantId, isTakeaway, channel]);
+
+  // ── Offers — its own effect, on purpose ────────────────────────────────────
+  // This used to share the effect above. The session id can now arrive AFTER
+  // mount (table opened from the grid), and re-running the shared effect would
+  // refetch the menu and flash its skeleton. Offers may safely re-run: with the
+  // id they also return the session's prior subtotal for the progress nudge.
+  useEffect(() => {
+    const rid = staffInfo?.restaurantId;
+    if (!rid) return;
+    let cancelled = false;
+
     // Offers list is cacheable per restaurant; sessionSubtotalBeforeCart is
     // session-specific so it only ever comes from the fresh response.
     readCache<CrewOffer[]>(cacheKeys.crewOffers(rid)).then(cached => {
@@ -492,7 +744,7 @@ export default function OrderMenuScreen() {
       .catch(() => {});
 
     return () => { cancelled = true; };
-  }, [staffInfo?.restaurantId, sessionId, isTakeaway, channel]);
+  }, [staffInfo?.restaurantId, sessionId]);
 
   // ── Cart helpers — identity-stable so MenuItemCard's React.memo holds ──────
   const addToCart = useCallback((itemId: string, mods?: { groupId: string; optionId: string }[]) => {
@@ -673,22 +925,6 @@ export default function OrderMenuScreen() {
     return matchSearch && matchCat;
   }), [menuItems, search, activeCategory]);
 
-  // ── Checkout (identity) ────────────────────────────────────────────────────
-  const openCheckout = () => {
-    setCoError(null);
-    setCoVisits(null); setCoMember(null);
-    if (sessionCustomerPhone) {
-      const digits = sessionCustomerPhone.replace(/\D/g, '').slice(-10);
-      setCoPhone(digits.length === 10 ? digits : '');
-      setCoName(sessionCustomerName ?? '');
-      setCoFound(digits.length === 10 ? true : null);
-      if (digits.length === 10) void lookupGuest(digits, { keepName: true });
-    } else {
-      setCoPhone(''); setCoName(''); setCoFound(null);
-    }
-    setCheckoutOpen(true);
-  };
-
   // Looks up diner history (visit count) and membership status in parallel.
   // `keepName` is used when re-opening for an already-known session customer,
   // so a slower membership lookup can't blank out the name field meanwhile.
@@ -731,6 +967,19 @@ export default function OrderMenuScreen() {
     if (digits.length === 10) void lookupGuest(digits);
   };
 
+  // The table's saved customer (from the params) pre-fills the sheet once, so
+  // opening it shows who the bill is already attached to.
+  useEffect(() => {
+    if (!sessionCustomerPhone) return;
+    const digits = sessionCustomerPhone.replace(/\D/g, '').slice(-10);
+    if (digits.length !== 10) return;
+    setCoPhone(digits);
+    setCoName(sessionCustomerName ?? '');
+    setCoFound(true);
+    void lookupGuest(digits, { keepName: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // The exact payload placeOrder sends — the bill preview posts the same one,
   // so the projection is priced from what will actually be ordered.
   const buildOrderItems = useCallback(() => Object.entries(cart).map(([item_id, qty]) => {
@@ -749,14 +998,18 @@ export default function OrderMenuScreen() {
     };
   }), [cart, cartModifiers, cartNotes, menuItems]);
 
-  // Projected bill for the order summary (dine-in): this order plus what the
-  // table already owes, CGST/SGST split, priced by the server with the same
-  // code that places the order. Nothing is computed here. Debounced, and a
-  // late answer for an older cart never overwrites a newer one.
+  // Projected bill for the order summary: this order plus what the session
+  // already owes (dine-in: the table's running bill; takeaway: any charges an
+  // Adjust Bill trip has added), CGST/SGST split, priced by the server with
+  // the same code that places the order. Nothing is computed here. Debounced,
+  // and a late answer for an older cart never overwrites a newer one.
   const [billPreview, setBillPreview] = useState<CrewOrderPreview | null>(null);
   const [billPreviewState, setBillPreviewState] = useState<'idle' | 'loading' | 'error'>('idle');
   const previewSeq = useRef(0);
-  const showBillPreview = !isTakeaway && !!sessionId;
+  const showBillPreview = !!sessionId;
+  // Adjust Bill (container charges, tip) is a session-level change the preview
+  // can't see until it re-runs — bumped from its onSaved below.
+  const [previewRefreshKey, setPreviewRefreshKey] = useState(0);
   useEffect(() => {
     if (!reviewOpen || !showBillPreview) return;
     const items = buildOrderItems();
@@ -773,33 +1026,43 @@ export default function OrderMenuScreen() {
         .catch(() => { if (seq === previewSeq.current) setBillPreviewState('error'); });
     }, 300);
     return () => clearTimeout(t);
-  }, [reviewOpen, showBillPreview, sessionId, buildOrderItems]);
+  }, [reviewOpen, showBillPreview, sessionId, buildOrderItems, previewRefreshKey]);
 
   const confirmAndPlace = async () => {
     const phone = coPhone.replace(/\D/g, '');
     if (phone.length > 0 && phone.length !== 10) {
       setCoError('Enter a valid 10-digit number, or leave blank for a walk-in guest.');
+      setContactOpen(true);
       return;
     }
     const items = buildOrderItems();
     if (items.length === 0) { setCoError('Cart is empty.'); return; }
-    if (!sessionId) { setCoError('No active session. Go back and try again.'); return; }
+    const waitingOnStart = !sessionId && pendingStart === '1' && (isTakeaway || !!tableDbId);
+    if (!sessionId && !waitingOnStart) { setCoError('No active session. Go back and try again.'); return; }
 
     const snapshotTotal = cartTotal;
+    const snapshotCount = cartCount;
     const guestPhone = phone.length === 10 ? phone : '';
     const guestName = coName.trim() || null;
 
     setCoSubmitting(true);
     setCoError(null);
     try {
+      // Normally ready long before Place is pressed. If not, wait for it here —
+      // the button is already showing its spinner — rather than failing.
+      const sid = sessionId || (isTakeaway ? (await waitForTakeawaySession()).sessionId : await waitForTableSession(tableDbId!));
       if (guestPhone) {
-        crewSessions.saveCustomer(sessionId, guestPhone, guestName).catch(() => {});
+        crewSessions.saveCustomer(sid, guestPhone, guestName).catch(() => {});
         setSessionCustomerPhone(guestPhone);
         if (guestName) setSessionCustomerName(guestName);
       }
 
-      const orderRes = await crewOrders.placeOrder(sessionId, items);
+      const orderRes = await crewOrders.placeOrder(sid, items);
       const orderId = orderRes?.order_id ?? '';
+      // The one moment a fresh takeaway session learns its token — see
+      // takeaway.routes.ts / crew/orders.service.ts's placeOrder.
+      const freshPickupToken = orderRes?.pickup_token ?? null;
+      if (freshPickupToken) setPickupToken(freshPickupToken);
 
       setCart({});
       setCartNotes({});
@@ -816,50 +1079,173 @@ export default function OrderMenuScreen() {
         return;
       }
 
-      // Show a short-lived "Order placed" confirmation, then leave order-menu.
-      // Dine-in returns to [tableId] with the bill breakdown forced open — so
-      // the crew reviews exactly what was ordered before doing anything else —
-      // instead of jumping straight to payment collection. Takeaway has no
-      // table screen to return to, so it still goes to payment-collect directly.
-      //
-      // dismissTo (not replace) pops back to the [tableId] instance already in
-      // the stack — the one we were pushed from — updating its params. Using
-      // replace here mounted a *second* [tableId] on top of the original, which
-      // is why the crew had to hit Back twice to reach the table floor.
-      setPlaced({ amount: orderTotal });
-      navTimerRef.current = setTimeout(() => {
-        if (isTakeaway) {
-          router.replace({
-            pathname: '/(staff)/payment-collect',
-            params: {
-              orderId,
-              tableNumber: String(tableId ?? 0),
-              channel,
-              pickupToken: pickupToken ?? '',
-              amount: String(orderTotal),
-              customerName: guestName ?? '',
-              customerPhone: guestPhone,
-            },
-          });
-        } else {
-          router.dismissTo({
-            pathname: '/(staff)/[tableId]',
-            params: {
-              tableId: String(tableId ?? 0),
-              sessionId: sessionId ?? '',
-              tableDbId: tableDbId ?? '',
-              zoneName: paramZoneName ?? '',
-              openBill: '1',
-            },
-          });
+      // Leave order-menu immediately — the confirmation is a toast that drops
+      // in on the destination screen (see SuccessToast), not a card this
+      // screen holds up first. Takeaway has no table screen to return to, so
+      // it always goes to payment-collect directly.
+      const placedAmount = String(orderTotal);
+      const placedCount = String(snapshotCount);
+
+      // Cash/UPI/Split/Due were all resolved on the pill BEFORE placing (see
+      // PAYMENT_METHODS and the three sheets above) — collect right here with
+      // the same call payment-collect.tsx's own modes make, and NEVER open
+      // that screen for any of them: not on success, not on a failed collect
+      // either — the order is already placed either way, so there is nothing
+      // left for that screen to do except ask the question again. A failed
+      // collect stays visible instead as an alert plus a toast staff can act
+      // on (Dues / cash-collection), not a silent retry. Only 'PENDING' — no
+      // method chosen — still lands there, same as always.
+      if (isTakeaway && paymentMethod !== 'PENDING') {
+        const splits: { method: CollectSplitMethod; amount: number }[] = [];
+        let dueOptions: { customerPhone: string; customerName?: string | null } | null = null;
+        if (paymentMethod === 'CASH') {
+          splits.push({ method: 'CASH', amount: orderTotal });
+        } else if (paymentMethod === 'UPI') {
+          splits.push({ method: 'UPI_DIRECT', amount: orderTotal });
+        } else if (paymentMethod === 'SPLIT' && splitDetails) {
+          splits.push({ method: 'CASH', amount: splitDetails.cash });
+          splits.push({ method: 'UPI_DIRECT', amount: splitDetails.upi });
+        } else if (paymentMethod === 'DUE' && dueDetails) {
+          if (dueDetails.paidNow > 0) splits.push({ method: dueDetails.paidMethod, amount: dueDetails.paidNow });
+          splits.push({ method: 'DUE', amount: Math.max(0, orderTotal - dueDetails.paidNow) });
+          dueOptions = { customerPhone: dueDetails.phone, customerName: dueDetails.name || null };
         }
-      }, 500);
+
+        const successLabel = paymentMethod === 'DUE' ? 'Recorded on khata'
+          : paymentMethod === 'SPLIT' ? 'Split payment collected'
+          : paymentMethod === 'UPI' ? 'UPI collected'
+          : 'Cash collected';
+        let collectedLabel = successLabel;
+        if (splits.length > 0 && orderId && staffInfo?.id) {
+          try {
+            const sig = splits.map((s) => `${s.method}:${s.amount.toFixed(2)}`).join('|');
+            await crewPayments.collectPayment(orderId, staffInfo.id, splits, `crew-collect:${orderId}:${sig}`, null, dueOptions);
+          } catch (e: any) {
+            collectedLabel = 'Payment not recorded — collect manually';
+            Alert.alert(
+              'Order placed, payment not recorded',
+              `${e?.message ?? 'Could not record the payment automatically.'} Find the order in Takeaway and collect it from there.`,
+            );
+          }
+        } else {
+          collectedLabel = 'Payment not recorded — collect manually';
+        }
+
+        router.replace({
+          pathname: '/(staff)',
+          // `replace` to a route that's already lower in the stack mounts a
+          // FRESH instance rather than popping back to the existing one (see
+          // the [tableId] dismissTo comment below for the same quirk) — so
+          // the dashboard's activeTab resets to its 'tables' default. Tell it
+          // to land on Takeaway instead of leaving the crew looking at the
+          // table floor for the order they just placed.
+          params: { placedAmount, placedCount, collectedLabel, tab: 'takeaway', selectOrderId: orderId },
+        });
+        return;
+      }
+
+      if (isTakeaway) {
+        // Only reached with 'PENDING' now — every other method returned
+        // above — so this is "pay later". On the Electron desktop shell the
+        // takeaway board's own panel now has a proper Collect Payment sheet
+        // (see index.tsx's takeawayCollectTarget), so land there instead of
+        // forcing the phone's full-screen payment-collect immediately after
+        // every single order — the crew can collect from the panel whenever
+        // the order's actually ready.
+        if (isDesktop()) {
+          router.replace({
+            pathname: '/(staff)',
+            params: { placedAmount, placedCount, tab: 'takeaway', selectOrderId: orderId },
+          });
+          return;
+        }
+        router.replace({
+          pathname: '/(staff)/payment-collect',
+          params: {
+            orderId,
+            tableNumber: String(tableId ?? 0),
+            channel,
+            pickupToken: freshPickupToken ?? pickupToken ?? '',
+            amount: String(orderTotal),
+            customerName: guestName ?? '',
+            customerPhone: guestPhone,
+            placedAmount,
+            placedCount,
+          },
+        });
+      } else if (isWide) {
+        // Desktop: order-menu is always pushed straight from the table grid
+        // now (an available table's CTA, or "Add items" on the grid's own
+        // side panel) — there is no [tableId] route screen underneath it to
+        // dismiss to. The grid is, so a plain pop reveals it with the panel
+        // already pointed at this table; it picks up the fresh session/order
+        // on its own next refresh (loadTables already runs once the
+        // background session-start settles).
+        //
+        // pendingStart === '1' only on the "was free, first order" path —
+        // mark it so the panel plays the order-placed curtain instead of
+        // just swapping the placeholder for the bill. "Add items" on a table
+        // already showing its bill has nothing to reveal, so it's skipped.
+        if (pendingStart === '1' && tableDbId) signalOrderPlaced(tableDbId);
+        router.back();
+      } else {
+        // Dine-in returns to [tableId] with the bill breakdown forced open —
+        // so the crew reviews exactly what was ordered — instead of jumping
+        // straight to payment collection.
+        //
+        // dismissTo (not replace) pops back to the [tableId] instance already
+        // in the stack — the one we were pushed from — updating its params.
+        // Using replace here mounted a *second* [tableId] on top of the
+        // original, which is why the crew had to hit Back twice to reach the
+        // table floor.
+        router.dismissTo({
+          pathname: '/(staff)/[tableId]',
+          params: {
+            tableId: String(tableId ?? 0),
+            sessionId: sid,
+            tableDbId: tableDbId ?? '',
+            zoneName: paramZoneName ?? '',
+            openBill: '1',
+            placedAmount,
+            placedCount,
+          },
+        });
+      }
     } catch (e: any) {
       setCoError(e?.message ?? 'Failed to place order. Try again.');
     } finally {
       setCoSubmitting(false);
     }
   };
+
+  // Container charges, tip, party size — the same form the takeaway board
+  // opens full-screen on an already-placed order (index.tsx's openAdjustBill),
+  // but here it opens AS ITS OWN BOTTOM SHEET, stacked on top of the still-open
+  // order summary sheet (both are plain absolutely-positioned overlays, not
+  // native Modals, so mounting one after the other in the tree is enough for
+  // it to paint on top) — not a screen that replaces it. Charges live on the
+  // SESSION, not the order, so setting one now is exactly what makes the
+  // projected bill underneath right the moment this order does land.
+  // `dismissible={false}` for the same reason [tableId].tsx's desktop command
+  // rail sets it on this same embedded form: a part-typed bill has no business
+  // being thrown away by a stray swipe.
+  const [adjustBillBusy, setAdjustBillBusy] = useState(false);
+  const [adjustSheetOpen, setAdjustSheetOpen] = useState(false);
+  const [adjustSessionId, setAdjustSessionId] = useState('');
+  const openAdjustBillFromMenu = async () => {
+    if (adjustBillBusy) return;
+    setAdjustBillBusy(true);
+    try {
+      const sid = sessionId || (isTakeaway ? (await waitForTakeawaySession()).sessionId : await waitForTableSession(tableDbId!));
+      setAdjustSessionId(sid);
+      setAdjustSheetOpen(true);
+    } catch (e: any) {
+      setCoError(e?.message ?? 'Could not open Adjust Bill. Try again.');
+    } finally {
+      setAdjustBillBusy(false);
+    }
+  };
+  const closeAdjustBillFromMenu = () => setAdjustSheetOpen(false);
 
   // Pad the last grid row with invisible fillers so an incomplete final row
   // doesn't let its flex:1 cards stretch to fill the width (FlatList would
@@ -889,195 +1275,20 @@ export default function OrderMenuScreen() {
   }, [cart, cartNotes, handleAddPress, removeFromCart, handleEditNote]);
 
   const noteItem = noteItemId ? menuItems.find(m => m.id === noteItemId) ?? null : null;
+  // Keep the last item around so the modal can play its close animation after
+  // noteItemId has already been cleared.
+  const lastNoteItem = useRef<MenuItem | null>(null);
+  if (noteItem) lastNoteItem.current = noteItem;
   const noteSheetJsx = (
-    <BottomSheet visible={!!noteItem} onClose={() => setNoteItemId(null)} title={noteItem ? `Note · ${noteItem.name}` : 'Note'}>
-      <View style={{ paddingHorizontal: Spacing.xl, paddingBottom: Spacing.lg, gap: Spacing.md }}>
-        <TextInput
-          style={styles.noteSheetInput}
-          placeholder="e.g. no onions, extra spicy…"
-          placeholderTextColor={QuinckleColors.textMuted}
-          value={noteItemId ? cartNotes[noteItemId] ?? '' : ''}
-          onChangeText={text => noteItemId && handleChangeNote(noteItemId, text)}
-          returnKeyType="done"
-          onSubmitEditing={() => setNoteItemId(null)}
-          autoFocus
-          maxLength={200}
-        />
-        <TouchableOpacity style={styles.coConfirm} onPress={() => setNoteItemId(null)} activeOpacity={0.8}>
-          <Text style={styles.coConfirmText}>Done</Text>
-        </TouchableOpacity>
-      </View>
-    </BottomSheet>
+    <NoteModal
+      wide={isWide}
+      visible={!!noteItem}
+      item={noteItem ?? lastNoteItem.current}
+      initial={noteItemId ? cartNotes[noteItemId] ?? '' : ''}
+      onSave={(text) => { if (noteItemId) handleChangeNote(noteItemId, text); setNoteItemId(null); }}
+      onClose={() => setNoteItemId(null)}
+    />
   );
-
-  // ── Guest details — its own screen (not a modal), pushed in place of the ──
-  // menu when "Place Order" is tapped. Same fields/CRM lookup as before.
-  if (checkoutOpen) {
-    // Once the order is placed, this same screen morphs into the success tick
-    // (card + checkmark spring in) instead of bouncing back to the menu to
-    // show a separate confirmation — one continuous transition, not a jump.
-    if (placed) {
-      return (
-        <View style={[styles.screen, { paddingTop: insets.top }]}>
-          <View style={styles.placedScreenWrap}>
-            <Animated.View
-              style={[
-                styles.placedCard,
-                {
-                  opacity: placedCardAnim,
-                  transform: [{
-                    scale: placedCardAnim.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1] }),
-                  }],
-                },
-              ]}
-            >
-              <Animated.View
-                style={[
-                  styles.placedIcon,
-                  {
-                    transform: [{
-                      scale: placedTickAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] }),
-                    }],
-                  },
-                ]}
-              >
-                <Ionicons name="checkmark" size={34} color="#fff" />
-              </Animated.View>
-              <Text style={styles.placedTitle}>Order placed</Text>
-              <Text style={styles.placedSub}>
-                {isTakeaway ? (pickupToken ?? orderLabel) : `Table T${tableNum}`} · ₹{placed.amount.toFixed(0)}
-              </Text>
-              <Text style={styles.placedHint}>Opening payment collection…</Text>
-            </Animated.View>
-          </View>
-        </View>
-      );
-    }
-
-    return (
-      <View style={[styles.screen, { paddingTop: insets.top }]}>
-        <View style={styles.header}>
-          <TouchableOpacity
-            onPress={() => !coSubmitting && setCheckoutOpen(false)}
-            style={styles.backBtn}
-            activeOpacity={0.7}
-            disabled={coSubmitting}
-          >
-            <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
-          </TouchableOpacity>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.headerTitle}>Guest details</Text>
-            <Text style={styles.headerSub}>Optional — skip to place a walk-in order</Text>
-          </View>
-        </View>
-
-        <KeyboardAvoidingView
-          style={{ flex: 1 }}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        >
-          <ScrollView
-            contentContainerStyle={[
-              styles.coScreenBody,
-              contentMaxWidth != null && { maxWidth: contentMaxWidth, width: '100%', alignSelf: 'center' },
-            ]}
-            keyboardShouldPersistTaps="handled"
-          >
-            {/* Phone */}
-            <View style={styles.coInputWrap}>
-              <View style={styles.coCode}><Text style={styles.coCodeText}>+91</Text></View>
-              <View style={styles.coDivider} />
-              <TextInput
-                style={styles.coInput}
-                value={coPhone}
-                onChangeText={onCoPhoneChange}
-                placeholder="10-digit mobile"
-                placeholderTextColor={QuinckleColors.textMuted}
-                keyboardType="phone-pad"
-                maxLength={10}
-                autoFocus
-              />
-              {coLooking && <ActivityIndicator size="small" color={QuinckleColors.primary} style={{ marginRight: 12 }} />}
-            </View>
-
-            {coFound === false && !coLookupFailed && coPhone.length === 10 && (
-              <Text style={styles.notFoundText}>New guest — enter name below</Text>
-            )}
-            {coLookupFailed && coPhone.length === 10 && (
-              <Text style={styles.notFoundText}>Couldn’t check — enter the name to continue</Text>
-            )}
-            {coError ? <Text style={styles.coErrorText}>{coError}</Text> : null}
-
-            {/* Name */}
-            <View style={[styles.coInputWrap, { marginTop: 10 }]}>
-              <TextInput
-                style={[styles.coInput, { flex: 1, paddingHorizontal: 14 }]}
-                value={coName}
-                onChangeText={setCoName}
-                placeholder="Guest name (optional)"
-                placeholderTextColor={QuinckleColors.textMuted}
-                returnKeyType="done"
-                onSubmitEditing={confirmAndPlace}
-              />
-              {coFound === true && (
-                <Ionicons name="checkmark-circle" size={18} color={QuinckleColors.success} style={{ marginRight: 12 }} />
-              )}
-            </View>
-
-            {/* CRM — visit history + membership status */}
-            {coPhone.length === 10 && !coLooking && (coFound !== null || coMember !== null) && (
-              <View style={styles.crmCard}>
-                <View style={styles.crmRow}>
-                  <View style={styles.crmCol}>
-                    <Text style={styles.crmLabel}>VISITS HERE</Text>
-                    <View style={styles.crmValueRow}>
-                      <Text style={styles.crmValueNum}>{coVisits ?? 0}</Text>
-                      <Text style={styles.crmValueUnit}>{coVisits === 1 ? 'time' : 'times'}</Text>
-                    </View>
-                  </View>
-                  <View style={styles.crmDivider} />
-                  <View style={styles.crmCol}>
-                    <Text style={styles.crmLabel}>MEMBERSHIP</Text>
-                    {coMember ? (
-                      <View style={styles.crmMemberRow}>
-                        <Ionicons name="ribbon" size={14} color={QuinckleColors.warning} />
-                        <Text style={styles.crmMemberText}>Member</Text>
-                      </View>
-                    ) : (
-                      <Text style={styles.crmNotMemberText}>Not a member</Text>
-                    )}
-                  </View>
-                </View>
-                {coMember && (
-                  <View style={styles.crmDiscountStrip}>
-                    <Ionicons name="pricetag" size={13} color={QuinckleColors.warning} />
-                    <Text style={styles.crmDiscountText}>Membership discount applied at billing</Text>
-                  </View>
-                )}
-              </View>
-            )}
-
-            {/* Sits right below the name section normally; when the CRM card
-                above appears/disappears, LayoutAnimation glides it down/up
-                instead of it snapping to its new spot. */}
-            {/* The CRM lookup is informational only — never gate placing the
-                order on it, or a slow lookup adds a full RTT to every order. */}
-            <TouchableOpacity
-              style={[styles.coConfirm,
-                { marginTop: Spacing.lg },
-                (coSubmitting || (coPhone.length > 0 && coPhone.length < 10)) && { opacity: 0.4 }]}
-              onPress={confirmAndPlace}
-              disabled={coSubmitting || (coPhone.length > 0 && coPhone.length < 10)}
-              activeOpacity={0.8}
-            >
-              {coSubmitting
-                ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={styles.coConfirmText}>Place Order</Text>}
-            </TouchableOpacity>
-          </ScrollView>
-        </KeyboardAvoidingView>
-      </View>
-    );
-  }
 
   // ── UI ─────────────────────────────────────────────────────────────────────
 
@@ -1148,33 +1359,141 @@ export default function OrderMenuScreen() {
     </View>
   );
 
+  // A floating pill, not a docked bar: it hovers over the bottom of the menu and
+  // the grid scrolls underneath it. The wrapper spans the width but ignores
+  // touches (box-none), so only the pill itself takes them.
   const footerJsx = footerMounted && (
-    <Animated.View style={[
-      styles.footer,
-      { paddingBottom: insets.bottom + Spacing.sm },
-      {
-        opacity: footerAnim,
-        transform: [{ translateY: footerAnim.interpolate({ inputRange: [0, 1], outputRange: [56, 0] }) }],
-      },
-    ]}>
-      <TouchableOpacity
-        style={styles.footerLeft}
-        onPress={() => setReviewOpen(true)}
-        activeOpacity={0.7}
-        accessibilityLabel="Review order summary"
-      >
-        <View style={styles.footerChevron}>
-          <Ionicons name="chevron-up" size={16} color={QuinckleColors.primary} />
+    <Animated.View
+      pointerEvents="box-none"
+      style={[
+        styles.footer,
+        { bottom: insets.bottom + Spacing.lg },
+        {
+          opacity: footerAnim,
+          transform: [{ translateY: footerAnim.interpolate({ inputRange: [0, 1], outputRange: [56, 0] }) }],
+        },
+      ]}
+    >
+      {/* A failed placement surfaces here — the guest sheet shows its own
+          copy of the error, so this only appears while that sheet is closed. */}
+      {coError && !contactOpen ? (
+        <TouchableOpacity style={styles.footerError} onPress={() => setCoError(null)} activeOpacity={0.85}>
+          <Ionicons name="alert-circle" size={14} color={QuinckleColors.danger} />
+          <Text style={styles.footerErrorText} numberOfLines={2}>{coError}</Text>
+        </TouchableOpacity>
+      ) : null}
+      <View style={styles.footerPill}>
+        {isTakeaway && (
+          <>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.paymentChipRow}
+          >
+            {PAYMENT_METHODS.map((m) => {
+              const on = paymentMethod === m.key;
+              // Split/Due need real numbers before they mean anything — the
+              // chip opens the sheet that captures them (re-opens it, already
+              // filled in, to edit) rather than selecting blind.
+              const label =
+                m.key === 'SPLIT' && splitDetails ? `Split · ₹${splitDetails.cash}+₹${splitDetails.upi}`
+                : m.key === 'DUE' && dueDetails ? `Due · ₹${Math.max(0, cartTotal - dueDetails.paidNow)}`
+                : m.label;
+              return (
+                <TouchableOpacity
+                  key={m.key}
+                  style={[styles.paymentChip, on && styles.paymentChipOn]}
+                  onPress={() => {
+                    if (m.key === 'UPI') setUpiSheetOpen(true);
+                    else if (m.key === 'SPLIT') setSplitSheetOpen(true);
+                    else if (m.key === 'DUE') setDueSheetOpen(true);
+                    else setPaymentMethod(m.key);
+                  }}
+                  activeOpacity={0.75}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: on }}
+                >
+                  <Ionicons name={m.icon} size={13} color={on ? '#fff' : QuinckleColors.primary} />
+                  <Text style={[styles.paymentChipText, on && styles.paymentChipTextOn]}>{label}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+          <View style={styles.paymentChipDivider} />
+          </>
+        )}
+        <View style={styles.footerMainRow}>
+        <View style={styles.footerLeft}>
+          {/* The two icon buttons sit side by side as a pair, then the running
+              total — rather than the total splitting them. */}
+          <View style={styles.footerIconPair}>
+            <TouchableOpacity
+              style={styles.footerIconBtn}
+              onPress={() => setReviewOpen(true)}
+              activeOpacity={0.7}
+              accessibilityLabel="Review order summary"
+            >
+              <OrderSummaryIcon size={18} color={QuinckleColors.primary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.footerIconBtn}
+              onPress={() => setContactOpen(true)}
+              activeOpacity={0.7}
+              accessibilityLabel="Customer name and phone"
+            >
+              <CustomerIcon size={22} color={QuinckleColors.primary} />
+              {(coPhone || coName.trim()) ? <View style={styles.footerIconDot} /> : null}
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity
+            onPress={() => setReviewOpen(true)}
+            activeOpacity={0.7}
+            accessibilityLabel="Review order summary"
+          >
+            <Text style={styles.footerCount}>{cartCount} item{cartCount !== 1 ? 's' : ''}</Text>
+            <Text style={styles.footerTotal}>₹{cartTotal.toFixed(0)}</Text>
+          </TouchableOpacity>
         </View>
-        <View>
-          <Text style={styles.footerCount}>{cartCount} item{cartCount !== 1 ? 's' : ''}</Text>
-          <Text style={styles.footerTotal}>₹{cartTotal.toFixed(0)}</Text>
+        <TouchableOpacity
+          style={[styles.placeBtn, coSubmitting && { opacity: 0.7 }]}
+          onPress={confirmAndPlace}
+          disabled={coSubmitting}
+          activeOpacity={0.85}
+        >
+          {coSubmitting
+            ? <ActivityIndicator size="small" color="#fff" />
+            : <Text style={styles.placeBtnText}>Place Order</Text>}
+        </TouchableOpacity>
         </View>
-      </TouchableOpacity>
-      <TouchableOpacity style={styles.placeBtn} onPress={openCheckout} activeOpacity={0.85}>
-        <Text style={styles.placeBtnText}>Place Order</Text>
-      </TouchableOpacity>
+      </View>
     </Animated.View>
+  );
+
+  // Built here, rendered INSIDE CartReviewSheet's own drawer/sheet container
+  // (via adjustBillContent below) so it's confined to that panel's width on
+  // tablet-landscape instead of a screen-wide overlay spilling out past it.
+  const adjustBillSheetJsx = (
+    <BottomSheet
+      visible={adjustSheetOpen}
+      onClose={closeAdjustBillFromMenu}
+      dismissible={false}
+      disableInternalScroll
+      maxHeightRatio={0.88}
+    >
+      <AdjustBillForm
+        embedded
+        // pendingStart === '1' is already this screen's own signal for "this
+        // session was just created, before its first order" (both the table
+        // and takeaway background-starts use it) — exactly when Discount and
+        // Tip can't be saved yet (see AdjustBillForm's own doc comment).
+        preOrder={pendingStart === '1'}
+        sessionId={adjustSessionId}
+        subtitle={isTakeaway ? `New ${orderLabel} order` : `Table T${tableNum}`}
+        billTotal={billPreview?.projected.total ?? cartTotal}
+        onClose={closeAdjustBillFromMenu}
+        onSaved={() => setPreviewRefreshKey((k) => k + 1)}
+      />
+    </BottomSheet>
   );
 
   const cartReviewJsx = (
@@ -1186,12 +1505,68 @@ export default function OrderMenuScreen() {
       total={cartTotal}
       onInc={addToCart}
       onDec={removeFromCart}
-      onCheckout={() => { setReviewOpen(false); openCheckout(); }}
+      onCheckout={() => { setReviewOpen(false); void confirmAndPlace(); }}
+      onAdjust={() => { void openAdjustBillFromMenu(); }}
       bill={showBillPreview ? { data: billPreview, state: billPreviewState } : undefined}
+      adjustBillContent={adjustBillSheetJsx}
+    />
+  );
+
+  const guestSheetJsx = (
+    <GuestSheet
+      visible={contactOpen}
+      onClose={() => setContactOpen(false)}
+      isWide={isWide}
+      phone={coPhone}
+      name={coName}
+      onPhoneChange={(v) => { setCoError(null); void onCoPhoneChange(v); }}
+      onNameChange={setCoName}
+      looking={coLooking}
+      found={coFound}
+      lookupFailed={coLookupFailed}
+      visits={coVisits}
+      member={coMember}
+      error={coError}
+    />
+  );
+
+  const upiPaymentSheetJsx = (
+    <UpiPaymentSheet
+      visible={upiSheetOpen}
+      onClose={() => setUpiSheetOpen(false)}
+      isWide={isWide}
+      total={cartTotal}
+      restaurantId={staffInfo?.restaurantId}
+      onConfirm={() => setPaymentMethod('UPI')}
+    />
+  );
+
+  const splitPaymentSheetJsx = (
+    <SplitPaymentSheet
+      visible={splitSheetOpen}
+      onClose={() => setSplitSheetOpen(false)}
+      isWide={isWide}
+      total={cartTotal}
+      initialCash={splitDetails?.cash ?? null}
+      onConfirm={(cash, upi) => { setSplitDetails({ cash, upi }); setPaymentMethod('SPLIT'); }}
+    />
+  );
+
+  const duePaymentSheetJsx = (
+    <DuePaymentSheet
+      visible={dueSheetOpen}
+      onClose={() => setDueSheetOpen(false)}
+      isWide={isWide}
+      total={cartTotal}
+      initial={dueDetails}
+      fallbackPhone={coPhone}
+      fallbackName={coName}
+      onConfirm={(details) => { setDueDetails(details); setPaymentMethod('DUE'); }}
     />
   );
 
   const headerJsx = (
+    <>
     <View style={styles.header}>
       <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} activeOpacity={0.7}>
         <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
@@ -1199,7 +1574,11 @@ export default function OrderMenuScreen() {
       <View style={{ flex: 1 }}>
         <Text style={styles.headerTitle}>{isTakeaway ? `New ${orderLabel} Order` : 'Add Items'}</Text>
         <Text style={[styles.headerSub, isTakeaway && { color: QuinckleColors.primary, fontWeight: '700' }]}>
-          {isTakeaway ? `${orderLabel.toUpperCase()}${pickupToken ? ` · ${pickupToken}` : ''}` : `Table T${tableNum}`}
+          {isTakeaway
+            // No token yet reads as just "TAKEAWAY" — pickupToken stays null
+            // until the first order actually places (see confirmAndPlace).
+            ? `${orderLabel.toUpperCase()}${pickupToken ? ` · ${pickupToken}` : ''}`
+            : `Table T${tableNum}${bgStart?.phase === 'starting' ? ' · Opening…' : ''}`}
         </Text>
       </View>
       {cartCount > 0 && (
@@ -1208,6 +1587,37 @@ export default function OrderMenuScreen() {
         </View>
       )}
     </View>
+    {bgStart?.phase === 'failed' && (
+      <View style={styles.startFailBanner}>
+        <Ionicons name="alert-circle" size={16} color={QuinckleColors.danger} />
+        <Text style={styles.startFailText} numberOfLines={2}>
+          Could not open Table T{tableNum}. {bgStart.message}
+        </Text>
+        <TouchableOpacity
+          onPress={() => { void retryTableSession(tableDbId!).catch(() => {}); }}
+          style={styles.startFailRetry}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.startFailRetryText}>Retry</Text>
+        </TouchableOpacity>
+      </View>
+    )}
+    {bgTakeawayStart?.phase === 'failed' && (
+      <View style={styles.startFailBanner}>
+        <Ionicons name="alert-circle" size={16} color={QuinckleColors.danger} />
+        <Text style={styles.startFailText} numberOfLines={2}>
+          Could not start the order. {bgTakeawayStart.message}
+        </Text>
+        <TouchableOpacity
+          onPress={() => { void retryTakeawaySession().catch(() => {}); }}
+          style={styles.startFailRetry}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.startFailRetryText}>Retry</Text>
+        </TouchableOpacity>
+      </View>
+    )}
+    </>
   );
 
   const emptyJsx = (
@@ -1298,8 +1708,13 @@ export default function OrderMenuScreen() {
           onCancel={() => setModifierItem(null)}
         />
 
-        {/* ── Cart review (right-side drawer on tablet-landscape) ── */}
+        {/* ── Cart review (right-side drawer on tablet-landscape) — carries
+            the Adjust Bill sheet inside its own drawer, see adjustBillContent ── */}
         {cartReviewJsx}
+        {guestSheetJsx}
+        {upiPaymentSheetJsx}
+        {splitPaymentSheetJsx}
+        {duePaymentSheetJsx}
         {noteSheetJsx}
       </View>
     );
@@ -1428,8 +1843,13 @@ export default function OrderMenuScreen() {
         onCancel={() => setModifierItem(null)}
       />
 
-      {/* ── Cart review (bottom sheet on phone) ── */}
+      {/* ── Cart review (bottom sheet on phone) — carries the Adjust Bill
+          sheet inside its own body, see adjustBillContent ── */}
       {cartReviewJsx}
+        {guestSheetJsx}
+        {upiPaymentSheetJsx}
+        {splitPaymentSheetJsx}
+        {duePaymentSheetJsx}
       {noteSheetJsx}
 
     </View>
@@ -1439,6 +1859,22 @@ export default function OrderMenuScreen() {
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
+  // The table's session failed to start in the background. Sits under the header
+  // so the cart stays usable while the crew retries.
+  startFailBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    marginHorizontal: Spacing.lg, marginBottom: Spacing.sm,
+    paddingVertical: Spacing.sm, paddingHorizontal: Spacing.md,
+    borderRadius: Radius.md, borderWidth: 1, borderColor: 'rgba(239,68,68,0.3)',
+    backgroundColor: 'rgba(239,68,68,0.08)',
+  },
+  startFailText: { flex: 1, color: QuinckleColors.textPrimary, fontSize: 13 },
+  startFailRetry: {
+    paddingVertical: 6, paddingHorizontal: 12, borderRadius: Radius.sm,
+    backgroundColor: QuinckleColors.primary,
+  },
+  startFailRetryText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+
   screen: { flex: 1, backgroundColor: QuinckleColors.background },
 
   // Header
@@ -1531,7 +1967,6 @@ const styles = StyleSheet.create({
   // Note toggle + input
   noteToggle: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
   noteToggleText: { fontSize: 11, color: QuinckleColors.textMuted, fontWeight: '500' },
-  noteSheetInput: { backgroundColor: QuinckleColors.surfaceElevated, borderRadius: Radius.md, borderWidth: 1, borderColor: QuinckleColors.border, paddingHorizontal: Spacing.md, paddingVertical: 12, color: QuinckleColors.textPrimary, fontSize: 15 },
   gridSkeleton: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: Spacing.sm + 2, paddingHorizontal: Spacing.lg, paddingTop: Spacing.sm },
   noteInput: { marginTop: 6, backgroundColor: QuinckleColors.surfaceElevated, borderRadius: Radius.sm, borderWidth: 1, borderColor: QuinckleColors.border, paddingHorizontal: Spacing.sm, paddingVertical: 6, color: QuinckleColors.textPrimary, fontSize: 12 },
 
@@ -1548,42 +1983,72 @@ const styles = StyleSheet.create({
   emptyText: { ...Typography.caption, color: QuinckleColors.textMuted },
 
   // Footer
-  footer: { backgroundColor: QuinckleColors.surface, borderTopWidth: 1, borderTopColor: QuinckleColors.border, paddingHorizontal: Spacing.xl, paddingTop: Spacing.md, flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
-  footerLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
-  footerChevron: {
-    width: 32, height: 32, borderRadius: Radius.md,
+  // Floating pill. `footer` is the full-width, touch-through wrapper that
+  // positions it; `footerPill` is the visible capsule, centred and capped in width.
+  footer: { position: 'absolute', left: 0, right: 0, alignItems: 'center', paddingHorizontal: Spacing.lg },
+  footerPill: {
+    // Wider than the row alone needs — the payment-method chips (takeaway
+    // only) push this from a single-line pill to a two-row capsule, so it
+    // gets the extra width to keep the chips from wrapping on anything but
+    // the narrowest phones.
+    width: '100%', maxWidth: 640,
+    flexDirection: 'column',
+    paddingVertical: 8, paddingLeft: 10, paddingRight: 8,
+    borderRadius: Radius.xl,
+    backgroundColor: QuinckleColors.surfaceElevated,
+    borderWidth: 1, borderColor: QuinckleColors.borderStrong,
+    ...(Platform.OS === 'web'
+      ? ({ boxShadow: '0 12px 32px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.4)' } as any)
+      : { shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.5, shadowRadius: 20, elevation: 14 }),
+  },
+  footerMainRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingTop: 6 },
+  // One soft-orange language for the whole capsule: at rest a chip reads
+  // exactly like footerIconBtn two rows down (primarySoft fill, primary
+  // icon/text); selected just deepens to solid primary. No per-method colour
+  // — five different accents on one small pill was the "not looking good".
+  paymentChipRow: { flexDirection: 'row', gap: 6, paddingHorizontal: 2 },
+  paymentChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: 11, paddingVertical: 7,
+    borderRadius: Radius.pill,
+    borderWidth: 1, borderColor: QuinckleColors.primarySoftBorder,
+    backgroundColor: QuinckleColors.primarySoft,
+  },
+  paymentChipOn: {
+    backgroundColor: QuinckleColors.primary,
+    borderColor: QuinckleColors.primary,
+  },
+  paymentChipText: { fontSize: 11, fontWeight: '700', color: QuinckleColors.primary },
+  paymentChipTextOn: { color: '#fff' },
+  paymentChipDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: QuinckleColors.border,
+    marginTop: 8, marginHorizontal: 2,
+  },
+  footerLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  footerIconPair: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  footerIconBtn: {
+    width: 36, height: 36, borderRadius: 18,
     backgroundColor: QuinckleColors.primarySoft, borderWidth: 1, borderColor: QuinckleColors.primarySoftBorder,
     alignItems: 'center', justifyContent: 'center',
   },
+  // Says "a customer is attached" without opening the sheet.
+  footerIconDot: {
+    position: 'absolute', top: -1, right: -1, width: 9, height: 9, borderRadius: 5,
+    backgroundColor: QuinckleColors.success, borderWidth: 1.5, borderColor: QuinckleColors.surfaceElevated,
+  },
+  footerError: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, maxWidth: 520,
+    marginBottom: Spacing.sm, paddingVertical: 8, paddingHorizontal: 12, borderRadius: Radius.pill,
+    backgroundColor: QuinckleColors.surfaceElevated, borderWidth: 1, borderColor: QuinckleColors.danger,
+  },
+  footerErrorText: { ...Typography.caption, color: QuinckleColors.danger, flexShrink: 1 },
   footerCount: { ...Typography.micro, color: QuinckleColors.textSecondary },
   footerTotal: { ...Typography.subtitle, color: QuinckleColors.textPrimary, marginTop: 1 },
-  placeBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: QuinckleColors.primary, paddingHorizontal: Spacing.xl, paddingVertical: 13, borderRadius: Radius.md },
+  placeBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, backgroundColor: QuinckleColors.primary, paddingHorizontal: Spacing.xl, height: 46, borderRadius: Radius.pill },
   placeBtnText: { ...Typography.bodyStrong, color: '#fff' },
 
   // Guest details screen
-  coScreenBody: { padding: Spacing.lg, paddingBottom: Spacing.xxl },
-  coInputWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: QuinckleColors.surfaceElevated, borderRadius: Radius.md, borderWidth: 1, borderColor: QuinckleColors.border, height: 48, overflow: 'hidden' },
-  coCode: { paddingHorizontal: 12, height: '100%', justifyContent: 'center' },
-  coCodeText: { ...Typography.body, color: QuinckleColors.textSecondary, fontWeight: '600' },
-  coDivider: { width: 1, height: '60%', backgroundColor: QuinckleColors.border },
-  coInput: { flex: 1, color: QuinckleColors.textPrimary, fontSize: 15, paddingHorizontal: 12, height: '100%' },
-  notFoundText: { fontSize: 12, color: QuinckleColors.textMuted, marginTop: 6, fontStyle: 'italic' },
-  coErrorText: { fontSize: 12, color: QuinckleColors.danger, marginTop: 6 },
-  crmCard: { marginTop: 14, backgroundColor: QuinckleColors.surface, borderRadius: Radius.lg, borderWidth: 1, borderColor: QuinckleColors.border, overflow: 'hidden' },
-  crmRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 16 },
-  crmCol: { flex: 1 },
-  crmDivider: { width: 1, height: 34, backgroundColor: QuinckleColors.border, marginHorizontal: 14 },
-  crmLabel: { fontSize: 11, color: QuinckleColors.textSecondary, marginBottom: 3 },
-  crmValueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 5 },
-  crmValueNum: { fontSize: 20, fontWeight: '700', color: QuinckleColors.textPrimary },
-  crmValueUnit: { fontSize: 12, color: QuinckleColors.textSecondary },
-  crmMemberRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  crmMemberText: { fontSize: 14, fontWeight: '700', color: QuinckleColors.warning },
-  crmNotMemberText: { fontSize: 13, color: QuinckleColors.textSecondary },
-  crmDiscountStrip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: QuinckleColors.warningSoft, borderTopWidth: 1, borderTopColor: QuinckleColors.warningBorder, paddingVertical: 8, paddingHorizontal: 16 },
-  crmDiscountText: { fontSize: 12, fontWeight: '600', color: QuinckleColors.warning },
-  coConfirm: { backgroundColor: QuinckleColors.success, borderRadius: Radius.md, paddingVertical: 14, alignItems: 'center' },
-  coConfirmText: { ...Typography.bodyStrong, color: '#fff' },
 
   // Modifier sheet
   modGroup: { paddingHorizontal: Spacing.xl, marginBottom: Spacing.lg },
@@ -1598,12 +2063,4 @@ const styles = StyleSheet.create({
   modAdj: { ...Typography.caption, color: QuinckleColors.textSecondary },
   modConfirmBtn: { marginHorizontal: Spacing.xl, marginTop: Spacing.sm, marginBottom: Spacing.md, backgroundColor: QuinckleColors.primary, borderRadius: Radius.lg, paddingVertical: Spacing.lg, alignItems: 'center' },
   modConfirmText: { ...Typography.bodyStrong, color: '#fff' },
-
-  // Order-placed confirmation — takes over the guest-details screen in place
-  placedScreenWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  placedCard: { alignItems: 'center', gap: 8, paddingHorizontal: Spacing.xl },
-  placedIcon: { width: 72, height: 72, borderRadius: 36, backgroundColor: QuinckleColors.success, alignItems: 'center', justifyContent: 'center', marginBottom: 6 },
-  placedTitle: { ...Typography.title, color: QuinckleColors.textPrimary, fontWeight: '800' },
-  placedSub: { ...Typography.body, color: QuinckleColors.textSecondary },
-  placedHint: { ...Typography.caption, color: QuinckleColors.textTertiary, marginTop: 6 },
 });

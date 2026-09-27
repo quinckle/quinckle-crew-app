@@ -1,12 +1,15 @@
 import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   AppState,
+  Easing,
   FlatList,
   RefreshControl,
   Image,
   LayoutAnimation,
   Linking,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -21,10 +24,11 @@ import QRCode from 'react-native-qrcode-svg';
 
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
-import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewTakeaway, crewDelivery, restaurantApi, printerApi, loyaltyApi, type ClosedSessionInfo } from '../../services/api';
+import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewDelivery, restaurantApi, printerApi, loyaltyApi, type ClosedSessionInfo } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { invalidateCache, writeCache, cacheKeys } from '../../services/dataCache';
 import { startTableSession, isTableSessionStarting } from '../../services/tableSessionStart';
+import { startTakeawaySession } from '../../services/takeawaySessionStart';
 import {
   printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode,
   getPrinters,
@@ -34,7 +38,7 @@ import type { InvoiceBill } from '../../services/invoiceTemplate';
 import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded, watchPrintDispatch } from '../../services/printSink';
 import { getPrintDeviceId } from '../../services/printDevice';
 import type { TakeawayOrder } from '../../services/api';
-import { router, useFocusEffect } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
@@ -45,19 +49,25 @@ import { BottomSheet } from '../../components/ui/BottomSheet';
 import { CenteredModal } from '../../components/ui/CenteredModal';
 import { SlideDrawer } from '../../components/ui/SlideDrawer';
 import { MenuPanel } from '../../components/menu/MenuPanel';
+import { TableAvailableIcon, NoTableSelectedIcon } from '../../components/ui/TableIcons';
+import { OrderPlacedCurtain } from '../../components/ui/OrderPlacedCurtain';
+import { takeOrderPlacedSignal } from '../../services/orderPlacedSignal';
 import { isDesktop } from '../../services/platform';
 import { StartSessionOverlay, type StartSessionJob } from '../../components/ui/StartSessionOverlay';
 import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { MergeTableSheet } from '../../components/ui/MergeTableSheet';
 import { GroupPickerSheet } from '../../components/ui/GroupPickerSheet';
 import { UndoSnackbar } from '../../components/ui/UndoSnackbar';
+import { CollectPaymentPanel } from '../../components/ui/CollectPaymentPanel';
 // FreeTableOverlay (center "table cleared" modal) removed — every free now uses
 // the bottom UndoSnackbar so it never blocks the floor during a rush.
 import { addReady, pruneToActive, type ReadyNav } from '../../stores/itemReadyToast';
 import { ClearFlash } from '../../components/ui/ClearFlash';
 import { BottomNavbar } from '../../components/ui/BottomNavbar';
 import { PICKUP_LAYOUT_PRESET, PickupCard, PickupSegmented } from '../../components/ui/pickup';
-import { PrintOptionsSheet, type InvoiceBuyer } from '../../components/ui/PrintOptionsSheet';
+import { PrintOptionsSheet, PrintCard, type InvoiceBuyer } from '../../components/ui/PrintOptionsSheet';
+import { AdjustBillForm } from './adjust-bill';
+import { BillExplainSheet, type ExplainedBill } from '../../components/ui/BillExplainSheet';
 import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintProgressOverlay';
 import { TakeawayManageSheet } from '../../components/ui/TakeawayManageSheet';
 import { ReasonSheet } from '../../components/ui/ReasonSheet';
@@ -66,11 +76,13 @@ import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
 import { TableSkeleton } from '../../components/ui/TableSkeleton';
 import { MenuSkeleton } from '../../components/ui/MenuSkeleton';
 import { TakeawaySkeleton } from '../../components/ui/TakeawaySkeleton';
+import { SuccessToast } from '../../components/ui/SuccessToast';
 import { GiveDiscountModal } from '../../components/ui/GiveDiscountModal';
 import { DeliveryBoard } from '../../components/delivery/DeliveryBoard';
 import { RiderRuns } from '../../components/delivery/RiderRuns';
 import { CAP, deliveryViewFor, hasCapability, type Capability } from '../../constants/capabilities';
 import { useResponsive } from '../../hooks/useResponsive';
+import { TableDetailScreen } from './[tableId]';
 import { expiryLevel, expiryColor, expiryChipStyle, type ExpiryLevel } from '../../constants/sessionExpiry';
 import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
 
@@ -203,6 +215,13 @@ type MenuRow = {
  */
 const IST_OFFSET_MIN = 330;
 
+// Orders (serve queue) grid, desktop only — fixed tiles, always 3 across, no
+// responsive column count and nothing stretches to fill leftover space. A
+// KOT with more items than fits scrolls internally (see PickupCard's
+// fixedWidth/fixedHeight props) instead of growing the tile.
+const KOT_CARD_WIDTH = 420;
+const KOT_CARD_HEIGHT = 300;
+
 /** The UTC instant of `hour`:00 IST, `dayOffset` days from now. */
 function istInstantFromNow(dayOffset: number, hour: number): string {
   const shifted = new Date(Date.now() + IST_OFFSET_MIN * 60_000);
@@ -262,11 +281,52 @@ export default function StaffDashboard() {
   const insets = useSafeAreaInsets();
   const { staffInfo, capabilities } = useAuth();
   const { width: winWidth, isTablet, isWide } = useResponsive();
+
+  // A takeaway order placed with Split or Due pre-chosen on order-menu's
+  // payment pill collects right there and lands back here — payment-collect
+  // is never opened for those two (see order-menu.tsx's confirmAndPlace) — so
+  // this is the only screen left to show the "placed" confirmation.
+  const placedParams = useLocalSearchParams<{ placedAmount?: string; placedCount?: string; collectedLabel?: string; tab?: string; selectOrderId?: string }>();
+  const [placedMessage, setPlacedMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (!placedParams.placedAmount) return;
+    const n = Number(placedParams.placedCount) || 0;
+    const label = placedParams.collectedLabel ? ` · ${placedParams.collectedLabel}` : '';
+    setPlacedMessage(`${n} item${n !== 1 ? 's' : ''} placed · ₹${placedParams.placedAmount}${label}`);
+    // order-menu's `replace` back to this route mounts a fresh instance
+    // (see its own comment), so activeTab has already reset to 'tables' by
+    // the time this runs — land on the tab the order actually belongs to,
+    // with its panel already open on the order just placed (selection is
+    // safe to set before the list has loaded — the panel just resolves it
+    // once loadTakeawayOrders' fetch lands).
+    if (placedParams.tab === 'takeaway') {
+      setActiveTab('takeaway');
+      if (placedParams.selectOrderId) setSelectedTakeawayId(placedParams.selectOrderId);
+    }
+    router.setParams({ placedAmount: undefined, placedCount: undefined, collectedLabel: undefined, tab: undefined, selectOrderId: undefined });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [placedParams.placedAmount]);
   // Table grid columns: phones stay 2-up; tablets scale with width (target
   // ~240dp per card) so landscape fills the screen instead of leaving 2 wide
-  // columns. space-between + a ~2% gutter keeps the existing look.
-  const tableColumns = isTablet ? Math.max(3, Math.floor(winWidth / 240)) : 2;
+  // columns. space-between + a ~2% gutter keeps the existing look. Wide
+  // layouts permanently give 40% of the width to the table side panel (see
+  // tablePanel below) — the column count is worked out against the 60% the
+  // grid actually gets, not the full window, or cards would be sized for
+  // space the panel is sitting on.
+  const tableGridWidth = isWide ? winWidth * 0.6 : winWidth;
+  // Same target width and column clamp as the takeaway grid's
+  // takeawayGridColumns, so the two grids' cards read as the same size.
+  const tableColumns = isTablet ? Math.max(3, Math.min(5, Math.floor(tableGridWidth / 230))) : 2;
   const tableCellWidth = `${(100 - 2 * (tableColumns - 1)) / tableColumns}%` as `${number}%`;
+  // Takeaway grid: same 60%-of-window basis as the table grid (see `split`
+  // below). ~230dp per card — a token, a status word and a total fit that
+  // comfortably, so more (narrower) columns read better than a few wide ones.
+  const takeawayGridColumns = isWide ? Math.max(3, Math.min(5, Math.floor((winWidth * 0.6) / 230))) : 1;
+  // Orders (serve queue): always exactly 3 fixed-size tiles across on
+  // desktop — no responsive 1/2/3 column count based on window width, the
+  // tiles just sit at their fixed size (see KOT_CARD_WIDTH/HEIGHT). Phone
+  // keeps its natural single, full-width, height-to-content card.
+  const ordersGridColumns = isWide ? 3 : 1;
   const [activeTab, setActiveTab] = useState<NavItem>('tables');
   // Desktop opens the menu as a left-hand drawer over this screen; phones and
   // tablets keep pushing the full-screen /more sheet.
@@ -353,10 +413,6 @@ export default function StaffDashboard() {
   const [groupPicker, setGroupPicker] = useState<{ table: Table; groups: TableGroup[]; canAddParty: boolean } | null>(null);
   const [seatingParty, setSeatingParty] = useState(false);
 
-  // ── Manual takeaway entry (counter / phone orders) ─────────────────────────
-  // Guest name/phone are collected later on order-menu's guest CRM row (before
-  // placing), not here — asking twice was redundant.
-  const [startingTakeaway, setStartingTakeaway] = useState(false);
   // Manage-table action sheet (occupied long-press) + reused swap sheet.
   const [manageTable, setManageTable] = useState<Table | null>(null);
   const [swapTable, setSwapTable] = useState<{ id: string; number: number } | null>(null);
@@ -367,7 +423,75 @@ export default function StaffDashboard() {
   // Mirror of `tables` for use inside stable callbacks (loadPickupOrders) that
   // must resolve a table's DB id without re-subscribing to every table change.
   const tablesRef = useRef<Table[]>([]);
+
+  // Wide layout: the table a crew member has selected shows in a fixed side
+  // panel instead of pushing a separate table-details screen (see
+  // TableDetailScreen's panelMode). A snapshot at selection time, same shape
+  // as the params [tableId] used to be pushed with — the panel fetches its
+  // own live bill/order data off `sessionId` from there, same as that route
+  // always did, so this never needs to be kept in sync with `tables` itself.
+  const [tablePanel, setTablePanel] = useState<
+    | null
+    | { status: 'available'; table: Table }
+    | {
+        status: 'occupied'; tableId: string; sessionId: string; tableDbId: string;
+        occupiedSince: string; expiresAt: string; customerName: string; customerPhone: string;
+        groupLabel: string; zoneName: string;
+        /** Grid card's quick-print icon selected this table — see [tableId].tsx's autoOpenPrint prop. */
+        autoOpenPrint?: boolean;
+      }
+  >(null);
+  // Quick-print (the grid card's own print icon) shouldn't leave the panel
+  // pointed at a different table than whatever the crew actually had open —
+  // it's a "print this and get back to what I was doing" action, not a
+  // selection. Snapshot whatever was selected right before switching, and
+  // TableDetailScreen's onQuickPrintFinished restores it once the flow ends.
+  const quickPrintPrevPanelRef = useRef<typeof tablePanel>(null);
+  // If the selected table gets freed by someone else while its panel is open,
+  // fall back to the available placeholder instead of showing a stale bill;
+  // if the table itself vanishes (re-seated floor plan), just close it.
+  // Also the other direction: order-menu's isWide path pops straight back to
+  // this screen after placing a fresh table's first order, leaving the panel
+  // still pointed at the stale "available" placeholder until `tables`
+  // refetches — this is where it picks up the now-occupied table and swaps
+  // the panel over (single-party only; a table that came back with more than
+  // one live party needs the group picker, which this isn't).
+  useEffect(() => {
+    if (!tablePanel) return;
+    const dbId = tablePanel.status === 'available' ? tablePanel.table.id : tablePanel.tableDbId;
+    const live = tables.find(t => t.id === dbId);
+    if (!live) { setTablePanel(null); return; }
+    if (tablePanel.status === 'occupied' && live.status !== 'occupied') {
+      setTablePanel({ status: 'available', table: live });
+      return;
+    }
+    if (tablePanel.status === 'available' && live.status === 'occupied' && (live.groups?.length ?? 0) <= 1) {
+      setTablePanel({
+        status: 'occupied',
+        tableId: String(live.number),
+        sessionId: live.sessionId ?? '',
+        tableDbId: live.id,
+        occupiedSince: live.occupiedSince ?? '',
+        expiresAt: live.expiresAt ?? '',
+        customerName: live.customerName ?? '',
+        customerPhone: live.customerPhone ?? '',
+        groupLabel: '',
+        zoneName: live.zoneName ?? '',
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tables]);
   tablesRef.current = tables;
+  // The order-placed curtain plays over the panel above exactly once — keyed
+  // on the session so a later re-select of the same table (or a second party
+  // landing on it) can't replay it. takeOrderPlacedSignal self-clears, so this
+  // only ever fires for the table order-menu actually just marked.
+  const [curtainSessionId, setCurtainSessionId] = useState<string | null>(null);
+  useEffect(() => {
+    if (tablePanel?.status === 'occupied' && takeOrderPlacedSignal(tablePanel.tableDbId)) {
+      setCurtainSessionId(tablePanel.sessionId);
+    }
+  }, [tablePanel]);
   const [isLoadingTables, setIsLoadingTables] = useState(true);
   // Freeing UX: every free path (single, group, batch) raises the same bottom
   // Undo snackbar, which holds the closed sessions to reopen and a busy flag
@@ -428,7 +552,30 @@ export default function StaffDashboard() {
   // ── Takeaway state ──
   const [takeawayOrders, setTakeawayOrders] = useState<TakeawayOrder[]>([]);
   const [takeawaySubTab, setTakeawaySubTab] = useState<'preparing' | 'handed'>('preparing');
+  // Wide toolbar's Preparing/Handed switcher — a dropdown instead of two
+  // tabs. Position is measured off the trigger button (measureInWindow) and
+  // the menu itself renders in a transparent Modal so it floats above
+  // everything regardless of where this sits in the tree, with a full-screen
+  // backdrop Pressable behind it for click-outside-to-close.
+  const takeawayTabBtnRef = useRef<View>(null);
+  const [takeawayTabMenuOpen, setTakeawayTabMenuOpen] = useState(false);
+  const [takeawayTabMenuPos, setTakeawayTabMenuPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const openTakeawayTabMenu = () => {
+    takeawayTabBtnRef.current?.measureInWindow((x, y, width, height) => {
+      setTakeawayTabMenuPos({ top: y + height + 4, left: x, width });
+      setTakeawayTabMenuOpen(true);
+    });
+  };
   const [handingOverIds, setHandingOverIds] = useState<string[]>([]);
+  // Set to the order's id right after ITS OWN panel hands it over, so the
+  // panel plays a brief "handed over" curtain (same component the table
+  // panel uses for "order placed") before falling back to the idle
+  // placeholder — instead of just sitting on a settled order forever.
+  const [handoverCurtainId, setHandoverCurtainId] = useState<string | null>(null);
+  // Set by the collect sheet's own "Hand over" toggle (see
+  // takeawayCollectTarget below) so onCollected knows whether its handover
+  // actually ran, without CollectPaymentPanel needing to report it back.
+  const handedOverViaCollectRef = useRef(false);
   // Order whose long-press "manage" sheet (item / whole-order delete) is open.
   const [manageOrder, setManageOrder] = useState<TakeawayOrder | null>(null);
   const [refreshingTakeaway, setRefreshingTakeaway] = useState(false);
@@ -436,6 +583,11 @@ export default function StaffDashboard() {
   const [isLoadingTakeaway, setIsLoadingTakeaway] = useState(true);
   const [takeawaySearchText, setTakeawaySearchText] = useState('');
   const [takeawayQrOpen, setTakeawayQrOpen] = useState(false);
+  // Wide layout: which order sits in the fixed 40% side panel — same idea as
+  // `tablePanel` for the table grid, but simpler, since a takeaway order needs
+  // no snapshot: it's just an id, resolved against the live `takeawayOrders`
+  // array on every render, so the panel updates itself as that list refreshes.
+  const [selectedTakeawayId, setSelectedTakeawayId] = useState<string | null>(null);
   const takeawayOrderUrl = staffInfo?.restaurantId
     ? `https://quinckle.com/takeaway/${staffInfo.restaurantId}`
     : '';
@@ -510,6 +662,10 @@ export default function StaffDashboard() {
   const [upiId, setUpiId] = useState<string | null>(null);
   const [upiName, setUpiName] = useState('');
   const [printTakeawayOrder, setPrintTakeawayOrder] = useState<TakeawayOrder | null>(null);
+  // The grid card's own quick-print icon — a bare KOT/Invoice choice in a
+  // CenteredModal, no GSTIN capture, so it stays a one-tap action from the
+  // tile instead of pulling up the panel's full print sheet.
+  const [quickPrintOrder, setQuickPrintOrder] = useState<TakeawayOrder | null>(null);
   // Tap-to-paper progress overlay for the manual takeaway prints; null = hidden.
   const [printJob, setPrintJob] = useState<PrintJob | null>(null);
   const [qrSheet, setQrSheet] = useState<{ grandTotal: number } | null>(null);
@@ -712,7 +868,16 @@ export default function StaffDashboard() {
     setQrSheet({ grandTotal: order.total });
   };
 
+  // On the Electron desktop shell this order already has its own right-hand
+  // panel (like the table's), so collecting opens the same kind of embedded
+  // sheet the table panel uses — see takeawayCollectTarget below — instead of
+  // pushing the phone's full-screen payment-collect.tsx.
+  const [takeawayCollectTarget, setTakeawayCollectTarget] = useState<TakeawayOrder | null>(null);
   const handleCollectTakeaway = (order: TakeawayOrder) => {
+    if (isDesktop()) {
+      setTakeawayCollectTarget(order);
+      return;
+    }
     router.push({
       pathname: '/(staff)/payment-collect',
       params: {
@@ -736,6 +901,7 @@ export default function StaffDashboard() {
       setTakeawayOrders((prev) =>
         prev.map((o) => (o.orderId === orderId ? { ...o, status: 'SERVED' } : o)),
       );
+      if (selectedTakeawayId === orderId) setHandoverCurtainId(orderId);
     } catch (err: any) {
       const code = String(err?.code ?? err?.message ?? '');
       showDialog(
@@ -1351,10 +1517,19 @@ export default function StaffDashboard() {
     }, [activeTab, loadTakeawayOrders]),
   );
 
-  // Adjust bill is a screen: a form of number fields with the keyboard up, and
-  // it pops back into the focus refetch above.
+  // On phone, Adjust bill is a pushed screen: a form of number fields with
+  // the keyboard up, popping back into the focus refetch above. On the
+  // Electron desktop shell it opens embedded in this order's own panel
+  // instead — the same move [tableId].tsx's "Bill" rail button makes with
+  // AdjustBillForm (see its doc comment: "the desktop table panel puts it in
+  // a BottomSheet beside the ticket").
+  const [takeawayAdjustTarget, setTakeawayAdjustTarget] = useState<TakeawayOrder | null>(null);
   const openAdjustBill = (order: TakeawayOrder) => {
     if (!order.sessionId) return;
+    if (isDesktop()) {
+      setTakeawayAdjustTarget(order);
+      return;
+    }
     router.push({
       pathname: '/(staff)/adjust-bill',
       params: {
@@ -1868,6 +2043,14 @@ export default function StaffDashboard() {
     if (!isTableSessionStarting(table.id)) {
       void startTableSession(table.id, { onSettled: () => { void loadTables(); } }).catch(() => {});
     }
+    // Select this table into the panel before leaving — order-menu's own
+    // `isWide` path just pops back (router.back()) rather than replacing,
+    // trusting the panel to already be pointed here. That's only true when
+    // this was reached via the panel's own "Take order" CTA on an already-
+    // selected table; the grid card's quick '+' action calls this directly
+    // without selecting first, which used to pop back to whatever (or
+    // nothing) was previously shown instead of this table.
+    if (isWide) setTablePanel({ status: 'available', table });
     router.push({
       pathname: '/(staff)/order-menu',
       params: {
@@ -1886,32 +2069,30 @@ export default function StaffDashboard() {
     if (nav) router.push(nav);
   };
 
-  // Create a crew takeaway session (tableless) straight from the '+' button —
-  // no name/phone prompt here; the order-menu guest CRM row collects that
-  // right before placing, so asking twice was redundant.
-  const startTakeawayOrder = async () => {
-    if (startingTakeaway) return;
-    setStartingTakeaway(true);
-    try {
-      const res = await crewTakeaway.createSession();
-      const d = res.data;
-      router.push({
-        pathname: '/(staff)/order-menu',
-        params: {
-          sessionId: d.session_id,
-          channel: 'TAKEAWAY',
-          pickupToken: d.pickup_token ?? '',
-        },
-      });
-    } catch (e: any) {
-      showDialog(
-        'Could Not Start Order',
-        e?.message ?? 'Could not start a new takeaway order. Please try again.',
-        [{ label: 'OK', onPress: () => {} }],
-      );
-    } finally {
-      setStartingTakeaway(false);
-    }
+  // '+' opens the order menu at once, the same instant-nav the table grid
+  // uses (openTableToOrder): the create-session POST runs in the background
+  // (services/takeawaySessionStart.ts) and the menu picks its id up when it
+  // lands — no spinner, no waiting on the POST. No name/phone prompt here
+  // either — the order-menu guest CRM row collects that right before placing.
+  //
+  // The session this starts carries no pickup token yet — see
+  // takeaway.routes.ts — so a tap that opens the menu and never places
+  // anything never shows up as a skipped TK number. The token is minted the
+  // moment an order actually lands (crew/orders.service.ts's placeOrder).
+  const lastTakeawayOpenAt = useRef(0);
+  const startTakeawayOrder = () => {
+    const now = Date.now();
+    if (now - lastTakeawayOpenAt.current < 800) return;
+    lastTakeawayOpenAt.current = now;
+
+    startTakeawaySession().catch(() => {});
+    router.push({
+      pathname: '/(staff)/order-menu',
+      params: {
+        channel: 'TAKEAWAY',
+        pendingStart: '1',
+      },
+    });
   };
 
   // Manage-sheet → Swap: close the action sheet, then open the shared swap sheet.
@@ -2016,9 +2197,11 @@ export default function StaffDashboard() {
     if (currentStatus === 'available') {
       const table = tables.find(t => t.number === tableNum);
       if (!table) return;
-      // Desktop is a till: opening a free table means taking its order, so go
-      // straight to the menu and let the session start behind it. Phones keep
-      // the overlay flow for now.
+      // Wide layout: a free table selects into the side panel, which shows a
+      // placeholder with its own "take order" CTA (openTableToOrder) — no
+      // navigation on the tap itself. Desktop-but-narrow and phone keep going
+      // straight to the menu / the start-session overlay respectively.
+      if (isWide) { setTablePanel({ status: 'available', table }); return; }
       if (isDesktop()) openTableToOrder(table);
       else void startSessionForTable(table);
     } else {
@@ -2059,9 +2242,10 @@ export default function StaffDashboard() {
     }
   };
 
-  // Shared seating: open one party's bill on the table-detail screen.
-  const openGroupForTable = (table: Table, g?: TableGroup, opts?: { forceLabel?: boolean }) => {
-    router.push({ pathname: '/(staff)/[tableId]', params: {
+  // Shared seating: open one party's bill — the side panel on wide layouts,
+  // the table-detail screen everywhere else.
+  const openGroupForTable = (table: Table, g?: TableGroup, opts?: { forceLabel?: boolean; autoOpenPrint?: boolean }) => {
+    const fields = {
       tableId: String(table.number),
       sessionId: g?.session_id ?? table.sessionId ?? '',
       tableDbId: table.id ?? '',
@@ -2074,7 +2258,21 @@ export default function StaffDashboard() {
       // a bill, not a table. Carried so the adjust-bill header can say which
       // part of the floor this is.
       zoneName: table.zoneName ?? '',
-    } });
+    };
+    // autoOpenPrint is a panel-only convenience (the grid card's quick-print
+    // icon) — the phone route has no matching param, so it's left out of the
+    // router.push below rather than sending a route param [tableId].tsx
+    // doesn't read.
+    if (isWide) { setTablePanel({ status: 'occupied', ...fields, autoOpenPrint: opts?.autoOpenPrint }); return; }
+    router.push({ pathname: '/(staff)/[tableId]', params: fields });
+  };
+
+  // The grid card's quick-print icon: snapshot the panel's current selection
+  // first, so onQuickPrintFinished (passed to TableDetailScreen below) has
+  // something to put back once the print flow is done.
+  const openTableQuickPrint = (table: Table, g?: TableGroup) => {
+    quickPrintPrevPanelRef.current = tablePanel;
+    openGroupForTable(table, g, { autoOpenPrint: true });
   };
 
   // Shared seating: crew seats a SEPARATE walk-in party (didn't scan the QR)
@@ -2086,7 +2284,7 @@ export default function StaffDashboard() {
       const res = await crewSessions.start(table.id, true) as any;
       void loadTables();
       setGroupPicker(null);
-      router.push({ pathname: '/(staff)/[tableId]', params: {
+      const fields = {
         tableId: String(table.number),
         sessionId: res.session_id,
         tableDbId: table.id ?? '',
@@ -2096,7 +2294,9 @@ export default function StaffDashboard() {
         customerPhone: '',
         groupLabel: res.party_slot ? `G${res.party_slot}` : '',
         zoneName: table.zoneName ?? '',
-      } });
+      };
+      if (isWide) setTablePanel({ status: 'occupied', ...fields });
+      else router.push({ pathname: '/(staff)/[tableId]', params: fields });
     } catch (e: any) {
       setGroupPicker(null);
       const msg = typeof e?.message === 'string' && e.message.includes('TABLE_PARTIES_FULL')
@@ -2188,7 +2388,7 @@ export default function StaffDashboard() {
   // its own row below (not enough width to fit alongside the burger + avatar).
   const tableControls = (
     <>
-      <View style={[styles.searchBox, isTablet && styles.searchBoxCompact]}>
+      <View style={[styles.searchBox, { flex: 1 }]}>
         <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
         <TextInput
           value={searchText}
@@ -2242,8 +2442,434 @@ export default function StaffDashboard() {
     </>
   );
 
+  // The fixed 40%-width panel — always present on wide layouts (not just
+  // while something's selected), so the grid never reflows width as staff
+  // tap around the floor. Its content is the only thing that changes.
+  const tablePanelJsx = !isWide ? null : (
+    <View style={[styles.tablePanelPane, { marginTop: insets.top + Spacing.md }]}>
+      {!tablePanel ? (
+        <View style={styles.tablePanelIdle}>
+          <NoTableSelectedIcon size={72} color={QuinckleColors.textTertiary} />
+          <Text style={styles.tablePanelIdleText}>Select a table to see its details</Text>
+        </View>
+      ) : tablePanel.status === 'available' ? (
+        <View style={styles.tablePanelIdle}>
+          <TableAvailableIcon size={72} color={QuinckleColors.textTertiary} />
+          <Text style={styles.tablePanelAvailableTitle}>
+            Table T{String(tablePanel.table.number).padStart(2, '0')}
+          </Text>
+          <Text style={styles.tablePanelIdleText}>This table is free.</Text>
+          <TouchableOpacity
+            style={styles.tablePanelCta}
+            onPress={() => openTableToOrder(tablePanel.table)}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel={`Take order for table T${String(tablePanel.table.number).padStart(2, '0')}`}
+          >
+            <Ionicons name="add" size={16} color="#fff" />
+            <Text style={styles.tablePanelCtaText}>Take order</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        // Keyed on the session — switching tables/groups should remount with
+        // fresh state rather than an existing instance quietly seeing new
+        // props (its identity fields are read once via useState, same as
+        // when this was route params). Mounted immediately — even under the
+        // curtain — so its own data fetch runs the whole time the curtain
+        // plays instead of starting only once the curtain clears; by the
+        // time it lifts, the bill underneath is already there.
+        <View style={{ flex: 1 }}>
+          <TableDetailScreen
+            key={tablePanel.sessionId}
+            panelMode
+            onDeselect={() => setTablePanel(null)}
+            tableId={tablePanel.tableId}
+            sessionId={tablePanel.sessionId}
+            tableDbId={tablePanel.tableDbId}
+            occupiedSince={tablePanel.occupiedSince}
+            expiresAt={tablePanel.expiresAt}
+            customerName={tablePanel.customerName}
+            customerPhone={tablePanel.customerPhone}
+            groupLabel={tablePanel.groupLabel}
+            zoneName={tablePanel.zoneName}
+            autoOpenPrint={tablePanel.autoOpenPrint}
+            onAutoPrintHandled={() => setTablePanel((p) => (p && p.status === 'occupied' ? { ...p, autoOpenPrint: false } : p))}
+            onQuickPrintFinished={() => { setTablePanel(quickPrintPrevPanelRef.current); quickPrintPrevPanelRef.current = null; }}
+          />
+          {curtainSessionId === tablePanel.sessionId && (
+            <OrderPlacedCurtain onDone={() => setCurtainSessionId(null)} />
+          )}
+        </View>
+      )}
+    </View>
+  );
+
+  // Wide Tables/Takeaway tabs: the window splits in two full-height columns.
+  // The left 60% carries the top bar, grid and bottom navbar; the detail panel
+  // takes the right 40% edge to edge (top to bottom), so it is not boxed in by
+  // the bar. Same split, same panel width, on both tabs — one desktop layout
+  // language for "a grid of things, and the selected one's detail beside it."
+  const split = isWide && (activeTab === 'tables' || activeTab === 'takeaway');
+
+  // The bottom navbar used to live inside `container`, so its width just
+  // snapped with that box's instant flexBasis flip (60% split / 100% full)
+  // every time `split` toggled — jarring on a wide window, where 40% of the
+  // screen appears or vanishes from under the bar in a single frame. It's
+  // rendered as its own sibling now (see the JSX below) with its left/width
+  // driven by these two Animated.Values instead, tweened in real pixels so
+  // the resize reads as one continuous glide. (Plain numbers pre-`isWide` —
+  // the split state never changes on a phone, so nothing here ever animates
+  // there; it's a no-op, not a workaround.)
+  const navFloatT = useRef(new Animated.Value(split ? 1 : 0)).current;
+  useEffect(() => {
+    Animated.timing(navFloatT, {
+      toValue: split ? 1 : 0,
+      duration: 340,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false, // animating left/width — no native-driver support
+    }).start();
+  }, [split, navFloatT]);
+  const navLeftAnim = navFloatT.interpolate({ inputRange: [0, 1], outputRange: [0, Spacing.lg] });
+  const navWidthAnim = navFloatT.interpolate({
+    inputRange: [0, 1],
+    outputRange: [winWidth, Math.max(0, winWidth * 0.6 - Spacing.lg * 2)],
+  });
+
+  const selectedTakeawayOrder = selectedTakeawayId
+    ? takeawayOrders.find((o) => o.orderId === selectedTakeawayId) ?? null
+    : null;
+
+  // Same shape [tableId].tsx builds for its own chevron-up breakdown
+  // (explainedBill) — nothing here computes money, every figure comes
+  // straight off the order the server already priced.
+  const [takeawayBillExpanded, setTakeawayBillExpanded] = useState(false);
+  const explainedTakeawayBill = useMemo<ExplainedBill | null>(() => {
+    if (!selectedTakeawayOrder) return null;
+    const o = selectedTakeawayOrder;
+    return {
+      items: o.items.map((it, idx) => ({
+        key: `${o.orderId}:${it.itemId}:${idx}`,
+        name: `${it.qty}× ${it.name}`,
+        modifiersSummary: it.modifiers,
+        price: it.qty * it.unitPrice,
+      })),
+      subtotal: o.subtotal,
+      discountTotal: o.discount,
+      // Takeaway orders don't itemise WHICH discount a rupee came from
+      // (offer vs. staff-given) the way a session's discount_lines do — one
+      // untagged "Discount" row (BillExplainContent's own fallback) beats a
+      // guessed attribution.
+      discountLines: [],
+      chargesTotal: o.serviceCharge,
+      chargeLines: o.chargeLines ?? [],
+      taxTotal: o.tax,
+      taxRate: o.subtotal > 0 ? (o.tax / o.subtotal) * 100 : 0,
+      taxLines: o.taxLines ?? [],
+      tip: 0,
+      roundOff: o.roundOff ?? 0,
+      total: o.total,
+    };
+  }, [selectedTakeawayOrder]);
+
+  const takeawayListData = (
+    takeawaySubTab === 'preparing'
+      ? takeawayOrders.filter((o) => o.status !== 'SERVED')
+      : takeawayOrders.filter((o) => o.status === 'SERVED')
+  ).filter(matchesTakeawaySearch);
+
+  // The desktop grid's cards are `flex: 1` so every column shares the row
+  // evenly — great for full rows, but a trailing row with fewer items than
+  // `takeawayGridColumns` stretches to fill the leftover width instead of
+  // matching the cards above it. Pad it out with invisible fillers that
+  // still claim a flex:1 slot, so the last row sizes exactly like the rest
+  // and the remainder is genuinely empty space, not a stretched card.
+  const takeawayGridData = useMemo<(TakeawayOrder | { __filler: true; orderId: string })[]>(() => {
+    if (!split || takeawayGridColumns <= 1) return takeawayListData;
+    const remainder = takeawayListData.length % takeawayGridColumns;
+    if (remainder === 0) return takeawayListData;
+    const fillers = Array.from({ length: takeawayGridColumns - remainder }, (_, i) => ({
+      __filler: true as const,
+      orderId: `__takeaway-grid-filler-${i}`,
+    }));
+    return [...takeawayListData, ...fillers];
+  }, [takeawayListData, takeawayGridColumns, split]);
+
+  // Same visual language as the table panel's desktop command rail
+  // ([tableId].tsx: cmdHeader / cmdRow / cmdBill / cmdRail) — a compact
+  // single-line header, numbered-style tabular rows, a Payable footer with
+  // one primary CTA, and a narrow icon rail for the secondary actions —
+  // instead of the old standalone layout (giant coloured token, a loose
+  // action row of mixed icon/text buttons) that looked like a different app
+  // next to the table panel.
+  const takeawayPanelJsx = !isWide ? null : (
+    <View style={[styles.tablePanelPane, { marginTop: insets.top + Spacing.md }]}>
+      {!selectedTakeawayOrder ? (
+        <View style={styles.tablePanelIdle}>
+          <Ionicons name="bag-handle-outline" size={72} color={QuinckleColors.textTertiary} />
+          <Text style={styles.tablePanelIdleText}>Select an order to see its details, or take a new one</Text>
+          <TouchableOpacity
+            style={styles.tablePanelCta}
+            onPress={startTakeawayOrder}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Take new takeaway order"
+          >
+            <Ionicons name="add" size={16} color="#fff" />
+            <Text style={styles.tablePanelCtaText}>Take new order</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <View style={styles.twpSplit}>
+          <View style={styles.twpMain}>
+            <View style={styles.twpHeader}>
+              <Text style={styles.twpTitle} numberOfLines={1}>{selectedTakeawayOrder.pickupToken ?? '—'}</Text>
+              {selectedTakeawayOrder.customerName ? (
+                <Text style={styles.takeawayCustomer} numberOfLines={1}>{selectedTakeawayOrder.customerName}</Text>
+              ) : null}
+              {selectedTakeawayOrder.customerPhone ? (
+                <TouchableOpacity
+                  onPress={() => { void Linking.openURL(`tel:${(selectedTakeawayOrder.customerPhone ?? '').replace(/[^0-9+]/g, '')}`); }}
+                  activeOpacity={0.7}
+                  style={styles.takeawayPhoneBtn}
+                >
+                  <Ionicons name="call-outline" size={12} color={QuinckleColors.primary} />
+                  <Text style={styles.takeawayPhoneLink}>{selectedTakeawayOrder.customerPhone}</Text>
+                </TouchableOpacity>
+              ) : null}
+              <View style={{ flex: 1, minWidth: Spacing.sm }} />
+              <Text style={styles.twpTime} numberOfLines={1}>
+                {new Date(selectedTakeawayOrder.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+              </Text>
+              <TouchableOpacity
+                onPress={() => { setSelectedTakeawayId(null); setTakeawayBillExpanded(false); }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={styles.twpCloseBtn}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close" size={18} color={QuinckleColors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.twpTicketHeader}>
+              <Text style={styles.twpSectionLabel}>
+                {selectedTakeawayOrder.items.length} {selectedTakeawayOrder.items.length === 1 ? 'item' : 'items'}
+                {selectedTakeawayOrder.sessionRef ? `  ·  ${selectedTakeawayOrder.sessionRef}` : ''}
+              </Text>
+              <Text style={[
+                styles.twpSectionLabel,
+                { color: isTakeawayPaid(selectedTakeawayOrder) ? QuinckleColors.success : QuinckleColors.warning },
+              ]}>
+                {isTakeawayPaid(selectedTakeawayOrder) ? 'Paid' : 'Pending'}
+              </Text>
+            </View>
+
+            <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.twpListContent}>
+              {selectedTakeawayOrder.items.map((it, j) => (
+                <View key={j} style={styles.twpRow}>
+                  <Text style={styles.twpRowQty}>{it.qty}×</Text>
+                  <View style={styles.twpRowBody}>
+                    <Text style={styles.twpRowName} numberOfLines={1}>{it.name}</Text>
+                    {it.modifiers ? <Text style={styles.twpRowSub} numberOfLines={1}>{it.modifiers}</Text> : null}
+                  </View>
+                  <Text style={styles.twpRowPrice}>{(it.qty * it.unitPrice).toFixed(0)}</Text>
+                </View>
+              ))}
+            </ScrollView>
+
+            <View style={styles.twpBill}>
+              <TouchableOpacity
+                style={styles.twpPayRow}
+                activeOpacity={selectedTakeawayOrder.items.length > 0 ? 0.7 : 1}
+                disabled={selectedTakeawayOrder.items.length === 0}
+                onPress={() => setTakeawayBillExpanded(true)}
+                accessibilityRole="button"
+                accessibilityLabel="Full bill breakdown"
+              >
+                <Text style={styles.twpPayLabel}>Payable</Text>
+                <View style={styles.twpPayRight}>
+                  <Text style={styles.twpPayValue}>₹{selectedTakeawayOrder.total}</Text>
+                  {selectedTakeawayOrder.items.length > 0 && (
+                    <Ionicons name="chevron-up" size={16} color={QuinckleColors.textTertiary} />
+                  )}
+                </View>
+              </TouchableOpacity>
+
+              {selectedTakeawayOrder.status === 'SERVED' ? (
+                <View style={[styles.twpPaidBadge, styles.twpPaidBadgeSuccess]}>
+                  <Ionicons name="checkmark-circle" size={15} color={QuinckleColors.success} />
+                  <Text style={[styles.twpPaidText, { color: QuinckleColors.success }]}>Handed over</Text>
+                </View>
+              ) : isTakeawayPendingCollection(selectedTakeawayOrder) ? (
+                <TouchableOpacity
+                  style={styles.twpCollectBtn}
+                  onPress={() => handleCollectTakeaway(selectedTakeawayOrder)}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="Send to payment collection"
+                >
+                  <Ionicons name="cash-outline" size={15} color="#fff" />
+                  <Text style={styles.twpCollectText}>Collect Payment</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  style={[
+                    styles.twpCollectBtn,
+                    (!isTakeawayPaid(selectedTakeawayOrder) || handingOverIds.includes(selectedTakeawayOrder.orderId)) && styles.twpCollectBtnDisabled,
+                  ]}
+                  onPress={() => handleHandover(selectedTakeawayOrder.orderId)}
+                  disabled={!isTakeawayPaid(selectedTakeawayOrder) || handingOverIds.includes(selectedTakeawayOrder.orderId)}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="Hand over order"
+                >
+                  {handingOverIds.includes(selectedTakeawayOrder.orderId) && (
+                    <ActivityIndicator size="small" color="#fff" />
+                  )}
+                  <Text style={styles.twpCollectText}>
+                    {handingOverIds.includes(selectedTakeawayOrder.orderId) ? 'Handing Over…' : 'Hand Over'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+
+          {selectedTakeawayOrder.status !== 'SERVED' && (
+            <View style={styles.twpRail}>
+              <TouchableOpacity
+                style={styles.twpRailBtn}
+                onPress={() => setPrintTakeawayOrder(selectedTakeawayOrder)}
+                activeOpacity={0.6}
+                accessibilityRole="button"
+                accessibilityLabel="Print"
+              >
+                <Ionicons name="print-outline" size={20} color={QuinckleColors.textSecondary} />
+                <Text style={styles.twpRailLabel}>Print</Text>
+              </TouchableOpacity>
+              {/* Discount lives inside Adjust bill's own form (see
+                  AdjustBillForm's discount section) — no separate rail
+                  button needed for it here. */}
+              {canDiscountTakeaway(selectedTakeawayOrder) && selectedTakeawayOrder.sessionId && (
+                <TouchableOpacity
+                  style={styles.twpRailBtn}
+                  onPress={() => openAdjustBill(selectedTakeawayOrder)}
+                  activeOpacity={0.6}
+                  accessibilityRole="button"
+                  accessibilityLabel="Adjust bill"
+                >
+                  <Ionicons name="options-outline" size={20} color={QuinckleColors.textSecondary} />
+                  <Text style={styles.twpRailLabel}>Bill</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* Bill breakdown — the same chevron-up-beside-Payable move as the
+          table panel's command rail (cmdPayRow → BillExplainSheet), nested
+          here so it opens inside this panel instead of the old full-screen
+          sheet's usual home. */}
+      <BillExplainSheet
+        visible={takeawayBillExpanded}
+        onClose={() => setTakeawayBillExpanded(false)}
+        bill={explainedTakeawayBill}
+      />
+
+      {/* Handed over — a brief celebration, same component the table panel
+          uses for "order placed", then fall back to the idle placeholder
+          instead of leaving a settled order sitting in the panel. */}
+      {handoverCurtainId && (
+        <OrderPlacedCurtain
+          label="Order handed over"
+          skipLoading
+          onDone={() => {
+            setHandoverCurtainId(null);
+            setSelectedTakeawayId(null);
+            setTakeawayBillExpanded(false);
+          }}
+        />
+      )}
+
+      {/* Send to Payment Collection — same move as the table panel's
+          CollectPaymentPanel sheet (see [tableId].tsx): a method picker + one
+          CTA embedded HERE, inside this panel's own box, instead of pushing
+          the phone's payment-collect.tsx screen. Nested inside
+          tablePanelPane (not at the top level) so its absoluteFill backdrop
+          is clipped to this panel's rounded card, same as the table one. */}
+      {takeawayCollectTarget && (
+        <BottomSheet
+          visible={!!takeawayCollectTarget}
+          onClose={() => setTakeawayCollectTarget(null)}
+          title="Send to payment collection"
+          dismissible={false}
+        >
+          <CollectPaymentPanel
+            orderId={takeawayCollectTarget.orderId}
+            amount={takeawayCollectTarget.total}
+            tableLabel={takeawayCollectTarget.pickupToken ?? 'Takeaway'}
+            staffId={staffInfo?.id ?? ''}
+            customerName={takeawayCollectTarget.customerName}
+            customerPhone={takeawayCollectTarget.customerPhone}
+            onClose={() => setTakeawayCollectTarget(null)}
+            secondaryAction={{
+              label: 'Hand over',
+              run: async () => {
+                await crewOrders.handoverTakeaway(takeawayCollectTarget.orderId);
+                handedOverViaCollectRef.current = true;
+              },
+            }}
+            onCollected={() => {
+              const orderId = takeawayCollectTarget.orderId;
+              setTakeawayCollectTarget(null);
+              void loadTakeawayOrders();
+              if (handedOverViaCollectRef.current) {
+                handedOverViaCollectRef.current = false;
+                if (selectedTakeawayId === orderId) setHandoverCurtainId(orderId);
+              }
+            }}
+          />
+        </BottomSheet>
+      )}
+
+      {/* Print — same PrintOptionsSheet the table panel uses, nested here for
+          the same reason as the collect sheet above (was rendered at the top
+          level, so its backdrop covered the left grid instead of this panel). */}
+      <PrintOptionsSheet
+        visible={!!printTakeawayOrder}
+        onPrintKot={() => { if (printTakeawayOrder) void handlePrintTakeawayKot(printTakeawayOrder); }}
+        onPrintInvoice={(buyer) => { if (printTakeawayOrder) void handlePrintTakeawayInvoice(printTakeawayOrder, buyer); }}
+        onClose={() => setPrintTakeawayOrder(null)}
+      />
+
+      {/* Adjust bill — embedded on desktop, same move as [tableId].tsx's
+          "Bill" rail button (AdjustBillForm's own doc comment: "the desktop
+          table panel puts it in a BottomSheet beside the ticket"). */}
+      {takeawayAdjustTarget && (
+        <BottomSheet
+          visible={!!takeawayAdjustTarget}
+          onClose={() => setTakeawayAdjustTarget(null)}
+          title="Adjust bill"
+          disableInternalScroll
+          maxHeightRatio={0.88}
+        >
+          <AdjustBillForm
+            embedded
+            sessionId={takeawayAdjustTarget.sessionId!}
+            subtitle={takeawayAdjustTarget.pickupToken ? `Order ${takeawayAdjustTarget.pickupToken}` : 'This order'}
+            billTotal={takeawayAdjustTarget.total}
+            onClose={() => setTakeawayAdjustTarget(null)}
+            onSaved={() => { void loadTakeawayOrders(); }}
+          />
+        </BottomSheet>
+      )}
+    </View>
+  );
+
   return (
-    <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
+    <View style={styles.root}>
+    <View style={[styles.container, split && styles.containerSplit, { paddingTop: insets.top + Spacing.sm }]}>
       <View style={styles.topBar}>
         <View style={styles.topBarLeft}>
           <TouchableOpacity
@@ -2254,18 +2880,11 @@ export default function StaffDashboard() {
           >
             <Ionicons name="menu" size={26} color={QuinckleColors.textPrimary} />
           </TouchableOpacity>
-
-          {/* Tablet: search/refresh/filter live inline beside the burger icon
-              instead of their own row below — more width to spare here. */}
-          {activeTab === 'tables' && isTablet && (
-            <View style={styles.topBarControls}>{tableControls}</View>
-          )}
         </View>
 
         {/* The splash wordmark, centred between the burger and the cash icon.
-            A flex slot rather than absolute centring: on tablet the table
-            controls sit beside the burger, so the logo takes the gap left
-            over and shrinks instead of overlapping them. */}
+            A flex slot rather than absolute centring, so it shrinks instead
+            of overlapping either side on a narrow window. */}
         <View style={styles.headerLogoSlot} pointerEvents="none">
           <Image
             source={require('../../assets/images/logo/quinckle crew logo header.webp')}
@@ -2299,12 +2918,11 @@ export default function StaffDashboard() {
       </View>
 
       {activeTab === 'tables' ? (
-        <>
-          {/* Phone: no room beside the burger icon, so search/refresh/filter
-              keep their own row. Tablet renders this cluster inline above. */}
-          {!isTablet && (
-            <View style={styles.controlsRow}>{tableControls}</View>
-          )}
+        <View style={isWide ? styles.tablesRow : styles.tablesFill}>
+        <View style={isWide ? styles.tablesGridPane : styles.tablesFill}>
+          {/* Own row below the header, same as the takeaway tab's toolbar —
+              not squeezed inline beside the burger icon any more. */}
+          <View style={styles.controlsRow}>{tableControls}</View>
 
           {isLoadingTables && tables.length === 0 ? (
             <TableSkeleton />
@@ -2459,9 +3077,60 @@ export default function StaffDashboard() {
                     // occupied tables outright — an Undo snackbar the crew
                     // never saw mid-rush is not a safety net. Free now lives
                     // behind long-press → Manage → Free table.
+                    // One quick action per card, same notch + FAB affordance,
+                    // the icon/handler set by status:
+                    //  - occupied, single party → print (multi-party is
+                    //    ambiguous about whose bill, so it's left to the
+                    //    card's own tap, which opens the group picker)
+                    //  - available → '+' straight into order-menu, skipping
+                    //    the panel-select step (same instant-nav openTableToOrder
+                    //    already gives the panel's own "Take order" CTA)
+                    //  - offline → play, straight back to available, no
+                    //    confirm dialog (the card's own tap still asks)
+                    // tableCardOuter clips overflow for its gradient border,
+                    // so the notch + FAB render out here as gridCell's own
+                    // children instead of inside that clipped box.
+                    // Glass fill stays neutral (same as takeaway's FAB) —
+                    // only the icon tints to the card's own status color
+                    // (meta.color, the same value driving the gradient
+                    // border), so the button reads as "this card's action"
+                    // without turning the tile into another colored blob.
+                    const quickAction = !isWide ? null
+                      : item.status === 'occupied' && (item.groups?.length ?? 0) <= 1
+                        ? {
+                            icon: 'print-outline' as const,
+                            label: 'Print',
+                            color: meta.color,
+                            onPress: () => openTableQuickPrint(item, item.groups?.[0]),
+                          }
+                        : item.status === 'available'
+                        ? { icon: 'add' as const, label: 'Take order', color: meta.color, onPress: () => openTableToOrder(item) }
+                        : item.status === 'offline'
+                        ? {
+                            icon: 'play' as const,
+                            label: 'Make available',
+                            color: meta.color,
+                            onPress: () => { void updateTableStatus(item.number, 'available'); },
+                          }
+                        : null;
                     return (
                       <View key={item.id} style={[styles.gridCell, { width: tableCellWidth }]}>
                         {cardInner}
+                        {quickAction && (
+                          <>
+                            <View style={styles.tableCardActionNotch} pointerEvents="none" />
+                            <TouchableOpacity
+                              style={styles.tableCardActionFab}
+                              onPress={quickAction.onPress}
+                              activeOpacity={0.8}
+                              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                              accessibilityRole="button"
+                              accessibilityLabel={quickAction.label}
+                            >
+                              <Ionicons name={quickAction.icon} size={18} color={quickAction.color} />
+                            </TouchableOpacity>
+                          </>
+                        )}
                       </View>
                     );
                   })}
@@ -2482,15 +3151,15 @@ export default function StaffDashboard() {
               )}
             </ScrollView>
           )}
-        </>
+        </View>
+        </View>
       ) : activeTab === 'menu' ? (
         <>
           {/* Main menu view */}
           {isLoadingMenu ? (
             <MenuSkeleton />
-          ) : (
-            <ScrollView style={styles.tabContent} showsVerticalScrollIndicator={false}>
-              {/* Two shortcut tiles */}
+          ) : (() => {
+            const tilesJsx = (
               <View style={styles.menuTileRow}>
                 <TouchableOpacity
                   style={[styles.menuTile, { opacity: combos.length === 0 ? 0.45 : 1 }]}
@@ -2536,8 +3205,9 @@ export default function StaffDashboard() {
                   </View>
                 </TouchableOpacity>
               </View>
+            );
 
-              {/* Search + Refresh + Category chips */}
+            const searchJsx = (
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                 <View style={[styles.searchBoxFull, { flex: 1, marginBottom: 0 }]}>
                   <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
@@ -2560,99 +3230,151 @@ export default function StaffDashboard() {
                     : <Ionicons name="refresh" size={18} color={QuinckleColors.primary} />}
                 </TouchableOpacity>
               </View>
+            );
 
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipScroll} style={styles.chipRow}>
-                {menuCategories.map(cat => (
-                  <TouchableOpacity key={cat} style={[styles.chip, menuFilter === cat && styles.chipActive]} onPress={() => setMenuFilter(cat)}>
-                    <Text style={[styles.chipText, menuFilter === cat && styles.chipTextActive]}>{cat}</Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-
-              {/* Menu Items */}
-              {menuData
-                .filter(item => {
-                  const q = searchText.trim().toLowerCase();
-                  // A search spans the WHOLE menu. Now that the tab opens on one
-                  // category instead of "All", scoping search to that category
-                  // would quietly hide matches sitting in the others.
-                  if (q) return item.name.toLowerCase().includes(q);
-                  return menuFilter === 'All' || item.category === menuFilter;
-                })
-                .map(item => {
-                  const hasMods = !!item.modifierGroups?.length;
-                  const expanded = expandedMenuItem === item.id;
-                  const offCount = item.modifierGroups?.reduce(
-                    (n, g) => n + g.options.filter(o => !o.available).length, 0) ?? 0;
-                  return (
-                  <View key={item.id} style={styles.menuItemCard}>
-                    <View style={styles.menuItemRow}>
-                      <TouchableOpacity
-                        style={styles.menuItemLeft}
-                        activeOpacity={hasMods ? 0.6 : 1}
-                        onPress={() => { if (hasMods) setExpandedMenuItem(expanded ? null : item.id); }}
-                      >
-                        {item.image
-                          ? <Image source={{ uri: item.image }} style={[styles.menuItemImage, !item.available && styles.dimmed]} />
-                          : <View style={[styles.menuItemImagePlaceholder, !item.available && styles.dimmed]}><Ionicons name="fast-food-outline" size={20} color={QuinckleColors.textTertiary} /></View>}
-                        <View style={styles.menuItemInfo}>
-                          <Text style={[styles.menuItemName, !item.available && styles.dimmedText]}>{item.name}</Text>
-                          <Text style={styles.menuItemPrice}>₹{item.price}</Text>
-                        </View>
-                        {hasMods && (
-                          <View style={styles.modCaret}>
-                            {offCount > 0 && !expanded && (
-                              <View style={styles.modOffBadge}><Text style={styles.modOffBadgeText}>{offCount} off</Text></View>
-                            )}
-                            <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={16} color={QuinckleColors.textTertiary} />
+            const itemListJsx = (
+              <>
+                {menuData
+                  .filter(item => {
+                    const q = searchText.trim().toLowerCase();
+                    // A search spans the WHOLE menu. Now that the tab opens on one
+                    // category instead of "All", scoping search to that category
+                    // would quietly hide matches sitting in the others.
+                    if (q) return item.name.toLowerCase().includes(q);
+                    return menuFilter === 'All' || item.category === menuFilter;
+                  })
+                  .map(item => {
+                    const hasMods = !!item.modifierGroups?.length;
+                    const expanded = expandedMenuItem === item.id;
+                    const offCount = item.modifierGroups?.reduce(
+                      (n, g) => n + g.options.filter(o => !o.available).length, 0) ?? 0;
+                    return (
+                    <View key={item.id} style={styles.menuItemCard}>
+                      <View style={styles.menuItemRow}>
+                        <TouchableOpacity
+                          style={styles.menuItemLeft}
+                          activeOpacity={hasMods ? 0.6 : 1}
+                          onPress={() => { if (hasMods) setExpandedMenuItem(expanded ? null : item.id); }}
+                        >
+                          {item.image
+                            ? <Image source={{ uri: item.image }} style={[styles.menuItemImage, !item.available && styles.dimmed]} />
+                            : <View style={[styles.menuItemImagePlaceholder, !item.available && styles.dimmed]}><Ionicons name="fast-food-outline" size={20} color={QuinckleColors.textTertiary} /></View>}
+                          <View style={styles.menuItemInfo}>
+                            <Text style={[styles.menuItemName, !item.available && styles.dimmedText]}>{item.name}</Text>
+                            <Text style={styles.menuItemPrice}>₹{item.price}</Text>
+                          </View>
+                          {hasMods && (
+                            <View style={styles.modCaret}>
+                              {offCount > 0 && !expanded && (
+                                <View style={styles.modOffBadge}><Text style={styles.modOffBadgeText}>{offCount} off</Text></View>
+                              )}
+                              <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={16} color={QuinckleColors.textTertiary} />
+                            </View>
+                          )}
+                        </TouchableOpacity>
+                        {!item.available && item.unavailableUntil && (
+                          <View style={styles.backAtBadge}>
+                            <Ionicons name="time-outline" size={11} color={QuinckleColors.textSecondary} />
+                            <Text style={styles.backAtBadgeText}>{formatBackAt(item.unavailableUntil)}</Text>
                           </View>
                         )}
-                      </TouchableOpacity>
-                      {!item.available && item.unavailableUntil && (
-                        <View style={styles.backAtBadge}>
-                          <Ionicons name="time-outline" size={11} color={QuinckleColors.textSecondary} />
-                          <Text style={styles.backAtBadgeText}>{formatBackAt(item.unavailableUntil)}</Text>
+                        <TouchableOpacity
+                          onPress={() => onToggleMenuItemPress(item)}
+                          style={[styles.toggleBase, item.available ? styles.toggleOn : styles.toggleOff]}
+                        >
+                          <View style={[styles.toggleCircle, item.available ? styles.toggleCircleOn : styles.toggleCircleOff]} />
+                        </TouchableOpacity>
+                      </View>
+
+                      {expanded && hasMods && (
+                        <View style={styles.modOptionsWrap}>
+                          {item.modifierGroups!.map((group, gi) => (
+                            <View key={group.id}>
+                              {gi > 0 && <View style={styles.modGroupDivider} />}
+                              <View style={styles.modGroup}>
+                                <Text style={styles.modGroupName}>{group.name}</Text>
+                                {group.options.map(opt => (
+                                  <View key={opt.id} style={styles.modOptionRow}>
+                                    <Text style={[styles.modOptionName, !opt.available && styles.dimmedText]} numberOfLines={1}>
+                                      {opt.name}{opt.priceAdjustment ? `  +₹${opt.priceAdjustment.toFixed(0)}` : ''}
+                                    </Text>
+                                    <TouchableOpacity
+                                      onPress={() => void toggleOptionAvailability(item.id, opt.id, !opt.available)}
+                                      style={[styles.toggleBaseSm, opt.available ? styles.toggleOn : styles.toggleOff]}
+                                    >
+                                      <View style={[styles.toggleCircleSm, opt.available ? styles.toggleCircleOn : styles.toggleCircleOff]} />
+                                    </TouchableOpacity>
+                                  </View>
+                                ))}
+                              </View>
+                            </View>
+                          ))}
                         </View>
                       )}
-                      <TouchableOpacity
-                        onPress={() => onToggleMenuItemPress(item)}
-                        style={[styles.toggleBase, item.available ? styles.toggleOn : styles.toggleOff]}
-                      >
-                        <View style={[styles.toggleCircle, item.available ? styles.toggleCircleOn : styles.toggleCircleOff]} />
-                      </TouchableOpacity>
                     </View>
+                    );
+                  })}
+                <View style={{ height: 120 }} />
+              </>
+            );
 
-                    {expanded && hasMods && (
-                      <View style={styles.modOptionsWrap}>
-                        {item.modifierGroups!.map((group, gi) => (
-                          <View key={group.id}>
-                            {gi > 0 && <View style={styles.modGroupDivider} />}
-                            <View style={styles.modGroup}>
-                              <Text style={styles.modGroupName}>{group.name}</Text>
-                              {group.options.map(opt => (
-                                <View key={opt.id} style={styles.modOptionRow}>
-                                  <Text style={[styles.modOptionName, !opt.available && styles.dimmedText]} numberOfLines={1}>
-                                    {opt.name}{opt.priceAdjustment ? `  +₹${opt.priceAdjustment.toFixed(0)}` : ''}
-                                  </Text>
-                                  <TouchableOpacity
-                                    onPress={() => void toggleOptionAvailability(item.id, opt.id, !opt.available)}
-                                    style={[styles.toggleBaseSm, opt.available ? styles.toggleOn : styles.toggleOff]}
-                                  >
-                                    <View style={[styles.toggleCircleSm, opt.available ? styles.toggleCircleOn : styles.toggleCircleOff]} />
-                                  </TouchableOpacity>
-                                </View>
-                              ))}
-                            </View>
-                          </View>
-                        ))}
-                      </View>
-                    )}
-                  </View>
-                  );
-                })}
-              <View style={{ height: 120 }} />
-            </ScrollView>
-          )}
+            // Desktop/tablet-landscape: categories move into a left rail (20% of
+            // the window) instead of the horizontal chip row, so a long category
+            // list doesn't need to scroll sideways on a screen with room to spare.
+            if (isWide) {
+              return (
+                <View style={styles.menuRow}>
+                  <ScrollView
+                    style={styles.menuCategoryRail}
+                    showsVerticalScrollIndicator={false}
+                    contentContainerStyle={styles.menuCategoryRailContent}
+                  >
+                    {menuCategories.map(cat => {
+                      const active = menuFilter === cat;
+                      return (
+                        <TouchableOpacity
+                          key={cat}
+                          style={[styles.menuRailItem, active && styles.menuRailItemActive]}
+                          onPress={() => setMenuFilter(cat)}
+                          activeOpacity={0.75}
+                        >
+                          <View style={[styles.menuRailAccent, active && styles.menuRailAccentActive]} />
+                          <Text style={[styles.menuRailText, active && styles.menuRailTextActive]} numberOfLines={2}>
+                            {cat}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+
+                  <View style={styles.menuRowDivider} />
+
+                  <ScrollView style={styles.menuRightPane} showsVerticalScrollIndicator={false}>
+                    {tilesJsx}
+                    {searchJsx}
+                    {itemListJsx}
+                  </ScrollView>
+                </View>
+              );
+            }
+
+            return (
+              <ScrollView style={styles.tabContent} showsVerticalScrollIndicator={false}>
+                {tilesJsx}
+                {searchJsx}
+
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipScroll} style={styles.chipRow}>
+                  {menuCategories.map(cat => (
+                    <TouchableOpacity key={cat} style={[styles.chip, menuFilter === cat && styles.chipActive]} onPress={() => setMenuFilter(cat)}>
+                      <Text style={[styles.chipText, menuFilter === cat && styles.chipTextActive]}>{cat}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+
+                {itemListJsx}
+              </ScrollView>
+            );
+          })()}
         </>
 
       ) : activeTab === 'orders' ? (
@@ -2670,8 +3392,13 @@ export default function StaffDashboard() {
           </View>
 
           <FlatList
+            // numColumns can't change on a live FlatList without a remount —
+            // same trick the takeaway grid uses.
+            key={`orders-grid-${ordersGridColumns}`}
             data={ordersSubTab === 'active' ? activePickupOrders : completedPickupOrders}
             keyExtractor={(item) => item.id}
+            numColumns={ordersGridColumns}
+            columnWrapperStyle={ordersGridColumns > 1 ? styles.ordersGridRow : undefined}
             contentContainerStyle={styles.orderListContent}
             renderItem={({ item }) => (
               <PickupCard
@@ -2680,6 +3407,8 @@ export default function StaffDashboard() {
                 onToggleItem={(itemId, nextQty) => togglePickupItem(item.id, itemId, nextQty)}
                 onCompletionFinished={() => handleCompletionFinished(item.id)}
                 onReopen={undefined}
+                fixedWidth={ordersGridColumns > 1 ? KOT_CARD_WIDTH : undefined}
+                fixedHeight={ordersGridColumns > 1 ? KOT_CARD_HEIGHT : undefined}
               />
             )}
             ListEmptyComponent={
@@ -2723,67 +3452,229 @@ export default function StaffDashboard() {
         </View>
       ) : activeTab === 'takeaway' ? (
         <View style={styles.tabContent}>
-          <View style={styles.segmentWrap}>
-            <PickupSegmented
-              items={[
-                { key: 'preparing', label: 'Preparing', count: takeawayOrders.filter((o) => o.status !== 'SERVED').length },
-                { key: 'handed', label: 'Handed', count: takeawayOrders.filter((o) => o.status === 'SERVED').length },
-              ]}
-              active={takeawaySubTab}
-              onChange={(key) => setTakeawaySubTab(key as 'preparing' | 'handed')}
-            />
-          </View>
-
-          <View style={styles.controlsRow}>
-            <View style={styles.searchBox}>
-              <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
-              <TextInput
-                value={takeawaySearchText}
-                onChangeText={setTakeawaySearchText}
-                placeholder="Token, session ref, or phone…"
-                placeholderTextColor={QuinckleColors.textTertiary}
-                style={styles.searchInput}
-              />
+          {isWide ? (
+            // Wide layout: tabs, search, refresh and add in one compact bar
+            // instead of two stacked rows — and no QR icon here. That code
+            // opens a self-order QR for a customer to scan; it stays on the
+            // phone's stacked layout below, where the crew actually hands
+            // the device across the counter.
+            <View style={styles.takeawayToolbarRow}>
+              <TouchableOpacity
+                ref={takeawayTabBtnRef}
+                style={styles.takeawayToolbarSeg}
+                onPress={openTakeawayTabMenu}
+                activeOpacity={0.8}
+                accessibilityRole="button"
+                accessibilityLabel={`${takeawaySubTab === 'preparing' ? 'Preparing' : 'Handed'}, change list`}
+              >
+                <Text style={styles.twDropdownText}>
+                  {takeawaySubTab === 'preparing' ? 'Preparing' : 'Handed'}
+                </Text>
+                <View style={{ flex: 1 }} />
+                <View style={styles.twDropdownCount}>
+                  <Text style={styles.twDropdownCountText}>
+                    {takeawaySubTab === 'preparing'
+                      ? takeawayOrders.filter((o) => o.status !== 'SERVED').length
+                      : takeawayOrders.filter((o) => o.status === 'SERVED').length}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-down" size={16} color={QuinckleColors.textSecondary} />
+              </TouchableOpacity>
+              <View style={[styles.searchBox, { flex: 1 }]}>
+                <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
+                <TextInput
+                  value={takeawaySearchText}
+                  onChangeText={setTakeawaySearchText}
+                  placeholder="Token, session ref, or phone…"
+                  placeholderTextColor={QuinckleColors.textTertiary}
+                  style={styles.searchInput}
+                />
+              </View>
+              <TouchableOpacity
+                style={styles.takeawayRefreshBtn}
+                onPress={handleRefreshTakeaway}
+                disabled={refreshingTakeaway}
+                activeOpacity={0.75}
+              >
+                {refreshingTakeaway
+                  ? <ActivityIndicator size="small" color={QuinckleColors.primary} />
+                  : <Ionicons name="refresh" size={18} color={QuinckleColors.primary} />}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.takeawayNewIconBtn}
+                onPress={startTakeawayOrder}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="add" size={22} color="#fff" />
+              </TouchableOpacity>
             </View>
-            <TouchableOpacity
-              style={styles.takeawayRefreshBtn}
-              onPress={handleRefreshTakeaway}
-              disabled={refreshingTakeaway}
-              activeOpacity={0.75}
-            >
-              {refreshingTakeaway
-                ? <ActivityIndicator size="small" color={QuinckleColors.primary} />
-                : <Ionicons name="refresh" size={18} color={QuinckleColors.primary} />}
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.takeawayRefreshBtn}
-              onPress={() => setTakeawayQrOpen(true)}
-              activeOpacity={0.75}
-            >
-              <Ionicons name="qr-code-outline" size={18} color={QuinckleColors.primary} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.takeawayNewIconBtn}
-              onPress={() => { void startTakeawayOrder(); }}
-              disabled={startingTakeaway}
-              activeOpacity={0.85}
-            >
-              {startingTakeaway
-                ? <ActivityIndicator size="small" color="#fff" />
-                : <Ionicons name="add" size={22} color="#fff" />}
-            </TouchableOpacity>
-          </View>
+          ) : (
+            <>
+              <View style={styles.segmentWrap}>
+                <PickupSegmented
+                  items={[
+                    { key: 'preparing', label: 'Preparing', count: takeawayOrders.filter((o) => o.status !== 'SERVED').length },
+                    { key: 'handed', label: 'Handed', count: takeawayOrders.filter((o) => o.status === 'SERVED').length },
+                  ]}
+                  active={takeawaySubTab}
+                  onChange={(key) => setTakeawaySubTab(key as 'preparing' | 'handed')}
+                />
+              </View>
+
+              <View style={styles.controlsRow}>
+                <View style={styles.searchBox}>
+                  <Ionicons name="search" size={15} color={QuinckleColors.textTertiary} />
+                  <TextInput
+                    value={takeawaySearchText}
+                    onChangeText={setTakeawaySearchText}
+                    placeholder="Token, session ref, or phone…"
+                    placeholderTextColor={QuinckleColors.textTertiary}
+                    style={styles.searchInput}
+                  />
+                </View>
+                <TouchableOpacity
+                  style={styles.takeawayRefreshBtn}
+                  onPress={handleRefreshTakeaway}
+                  disabled={refreshingTakeaway}
+                  activeOpacity={0.75}
+                >
+                  {refreshingTakeaway
+                    ? <ActivityIndicator size="small" color={QuinckleColors.primary} />
+                    : <Ionicons name="refresh" size={18} color={QuinckleColors.primary} />}
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.takeawayRefreshBtn}
+                  onPress={() => setTakeawayQrOpen(true)}
+                  activeOpacity={0.75}
+                >
+                  <Ionicons name="qr-code-outline" size={18} color={QuinckleColors.primary} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.takeawayNewIconBtn}
+                  onPress={startTakeawayOrder}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="add" size={22} color="#fff" />
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
+
+          {/* Preparing/Handed dropdown menu — a transparent Modal so it
+              floats above the grid regardless of where this sits in the
+              tree, positioned off the trigger button's measured coordinates.
+              The backdrop Pressable behind it closes on any outside tap. */}
+          <Modal visible={takeawayTabMenuOpen} transparent animationType="fade" onRequestClose={() => setTakeawayTabMenuOpen(false)}>
+            <Pressable style={styles.twDropdownBackdrop} onPress={() => setTakeawayTabMenuOpen(false)} />
+            {takeawayTabMenuPos && (
+              <View style={[styles.twDropdownMenu, { top: takeawayTabMenuPos.top, left: takeawayTabMenuPos.left, width: takeawayTabMenuPos.width }]}>
+                <TouchableOpacity
+                  style={[styles.twDropdownRow, takeawaySubTab === 'preparing' && styles.twDropdownRowActive]}
+                  onPress={() => { setTakeawaySubTab('preparing'); setTakeawayTabMenuOpen(false); }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[styles.twDropdownRowText, takeawaySubTab === 'preparing' && styles.twDropdownRowTextActive]}>Preparing</Text>
+                  <Text style={[styles.twDropdownRowText, takeawaySubTab === 'preparing' && styles.twDropdownRowTextActive]}>
+                    {takeawayOrders.filter((o) => o.status !== 'SERVED').length}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.twDropdownRow, takeawaySubTab === 'handed' && styles.twDropdownRowActive]}
+                  onPress={() => { setTakeawaySubTab('handed'); setTakeawayTabMenuOpen(false); }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[styles.twDropdownRowText, takeawaySubTab === 'handed' && styles.twDropdownRowTextActive]}>Handed</Text>
+                  <Text style={[styles.twDropdownRowText, takeawaySubTab === 'handed' && styles.twDropdownRowTextActive]}>
+                    {takeawayOrders.filter((o) => o.status === 'SERVED').length}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </Modal>
 
           {isLoadingTakeaway && takeawayOrders.length === 0 ? (
             <TakeawaySkeleton />
+          ) : split ? (
+          // ── Desktop: a grid of compact cards, full detail lives in the
+          //     fixed 40% panel beside it (takeawayPanelJsx) — same division
+          //     of labour as the table grid's tiles vs. its side panel. ──
+          <FlatList
+            key={`grid-${takeawayGridColumns}`}
+            data={takeawayGridData}
+            numColumns={takeawayGridColumns}
+            columnWrapperStyle={styles.takeawayGridRow}
+            keyExtractor={(item) => item.orderId}
+            contentContainerStyle={styles.orderListContent}
+            refreshControl={
+              <RefreshControl refreshing={refreshingTakeaway} onRefresh={handleRefreshTakeaway} tintColor={QuinckleColors.primary} />
+            }
+            renderItem={({ item }) => {
+              // A blank slot claiming its flex:1 share of the row, so the
+              // real cards beside it stay the same size the fully-populated
+              // rows above use, instead of stretching to fill the gap.
+              if ('__filler' in item) return <View style={{ flex: 1 }} />;
+              return (
+              <Pressable
+                style={({ pressed }) => [
+                  styles.takeawayGridCard,
+                  item.orderId === selectedTakeawayId && styles.takeawayGridCardActive,
+                  pressed && styles.takeawayCardPressed,
+                ]}
+                onPress={() => setSelectedTakeawayId(item.orderId)}
+              >
+                <View style={styles.takeawayCardTop}>
+                  <View style={styles.takeawayCardLeft}>
+                    <Text style={styles.takeawayToken}>{item.pickupToken ?? '—'}</Text>
+                    <Text style={styles.takeawayCustomer} numberOfLines={1}>
+                      {item.customerName ?? 'N/A'} · {item.customerPhone ?? 'N/A'}
+                    </Text>
+                  </View>
+                  <Text style={[
+                    styles.takeawayStatusText,
+                    { color: isTakeawayPaid(item) ? QuinckleColors.success : QuinckleColors.warning },
+                  ]}>
+                    {isTakeawayPaid(item) ? 'Paid' : 'Pending'}
+                  </Text>
+                </View>
+                <View style={styles.takeawayGridFooterRow}>
+                  <Text style={styles.takeawayGridItemCount}>
+                    {item.items.length} item{item.items.length === 1 ? '' : 's'}
+                  </Text>
+                  <Text style={styles.takeawayTotal}>₹{item.total}</Text>
+                </View>
+                <View style={styles.takeawayGridPrintNotch} pointerEvents="none" />
+                <TouchableOpacity
+                  style={styles.takeawayGridPrintFab}
+                  onPress={() => setQuickPrintOrder(item)}
+                  activeOpacity={0.8}
+                  hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Print"
+                >
+                  <Ionicons name="print-outline" size={18} color={QuinckleColors.primary} />
+                </TouchableOpacity>
+              </Pressable>
+              );
+            }}
+            ListEmptyComponent={
+              <View style={styles.emptyOrders}>
+                <View style={styles.emptyMedallion}>
+                  <Ionicons name="bag-handle-outline" size={28} color={QuinckleColors.textTertiary} />
+                </View>
+                <Text style={styles.emptyTitle}>
+                  {takeawaySubTab === 'preparing' ? 'No active takeaway orders' : 'No handed orders yet'}
+                </Text>
+                <Text style={styles.emptySubtitle}>
+                  {takeawaySubTab === 'preparing'
+                    ? 'Takeaway orders will appear here when customers order.'
+                    : 'Orders you hand over move here.'}
+                </Text>
+              </View>
+            }
+          />
           ) : (
           <FlatList
-            data={
-              (takeawaySubTab === 'preparing'
-                ? takeawayOrders.filter((o) => o.status !== 'SERVED')
-                : takeawayOrders.filter((o) => o.status === 'SERVED')
-              ).filter(matchesTakeawaySearch)
-            }
+            data={takeawayListData}
             keyExtractor={(item) => item.orderId}
             contentContainerStyle={styles.orderListContent}
             refreshControl={
@@ -2976,10 +3867,21 @@ export default function StaffDashboard() {
         onDismiss={() => setUndo(null)}
       />
 
+      <SuccessToast message={placedMessage} onDismiss={() => setPlacedMessage(null)} />
+
+      {/* left/width are driven by navFloatT (above) in real pixels instead of
+          tracking `container`'s own instant flexBasis flip (60% split / 100%
+          full) — that flip used to make the bar's width snap in one frame
+          every time the tab changed; this makes it glide. Stays declared
+          here (not hoisted out to a `container` sibling) so it keeps its
+          original stacking position under every sheet/modal below that
+          expects to cover it. */}
       <BottomNavbar
         activeTab={activeTab}
         onTabChange={setActiveTab}
         tabs={navTabs}
+        floating={split}
+        animatedBox={{ left: navLeftAnim, width: navWidthAnim }}
       />
 
       {/* Filter tables — centered modal on tablet-landscape, bottom sheet elsewhere */}
@@ -3118,16 +4020,27 @@ export default function StaffDashboard() {
         onClose={closeDialog}
       />
 
-      {/* Takeaway manual print — same sheet/flow as the table-detail screen */}
-      <PrintOptionsSheet
-        visible={!!printTakeawayOrder}
-        onPrintKot={() => { if (printTakeawayOrder) void handlePrintTakeawayKot(printTakeawayOrder); }}
-        onPrintInvoice={(buyer) => { if (printTakeawayOrder) void handlePrintTakeawayInvoice(printTakeawayOrder, buyer); }}
-        onClose={() => setPrintTakeawayOrder(null)}
-      />
 
       {/* Tap-to-paper print progress */}
       <PrintProgressOverlay job={printJob} onDismiss={() => setPrintJob(null)} />
+
+      {/* Grid card's own quick-print icon — a bare KOT/Invoice choice in a
+          centered modal (not the panel's full bottom sheet with GSTIN
+          capture), reusing the same PrintCard the panel's print sheet uses. */}
+      <CenteredModal visible={!!quickPrintOrder} onClose={() => setQuickPrintOrder(null)} title="Print">
+        <View style={styles.quickPrintGrid}>
+          <PrintCard
+            icon="restaurant-outline"
+            label="Print KOT"
+            onPress={() => { const o = quickPrintOrder; setQuickPrintOrder(null); if (o) void handlePrintTakeawayKot(o); }}
+          />
+          <PrintCard
+            icon="receipt-outline"
+            label="Print invoice"
+            onPress={() => { const o = quickPrintOrder; setQuickPrintOrder(null); if (o) void handlePrintTakeawayInvoice(o); }}
+          />
+        </View>
+      </CenteredModal>
 
       {discountOrder?.sessionId && (
         <GiveDiscountModal
@@ -3194,6 +4107,9 @@ export default function StaffDashboard() {
       {/* Desktop menu drawer. Last child, so it stacks above everything else on
           this screen. Navigating from it starts the push and the slide-out
           together — the incoming screen covers the panel as it leaves. */}
+    </View>
+      {split && (activeTab === 'tables' ? tablePanelJsx : takeawayPanelJsx)}
+
       {menuOpen && (
         <SlideDrawer width={460} onClosed={() => setMenuOpen(false)}>
           {(close) => (
@@ -3210,11 +4126,45 @@ export default function StaffDashboard() {
 }
 
 const styles = StyleSheet.create({
+  root: { flex: 1, flexDirection: 'row', backgroundColor: QuinckleColors.background },
   container: {
     flex: 1,
     paddingHorizontal: Spacing.lg,
     backgroundColor: QuinckleColors.background,
   },
+  // flexBasis, not width: the base style's `flex: 1` sets a 0 basis on web,
+  // which beats `width` and collapsed this column to its content.
+  containerSplit: { flexGrow: 0, flexShrink: 0, flexBasis: '60%' },
+
+  // ── Wide layout: table grid + the fixed 40% side panel ──
+  tablesRow: { flex: 1, flexDirection: 'row', gap: Spacing.lg },
+  tablesFill: { flex: 1 },
+  tablesGridPane: { flex: 1, minWidth: 0 },
+  // A big rounded card inset from the window edge. The gap on its left comes
+  // from the grid column's own right padding; the bottom margin matches the
+  // floating navbar's so the two sit on the same baseline.
+  tablePanelPane: {
+    flex: 1,
+    marginRight: Spacing.lg,
+    marginBottom: Spacing.md,
+    backgroundColor: QuinckleColors.surface,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    overflow: 'hidden',
+  },
+  tablePanelIdle: {
+    flex: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,
+    paddingHorizontal: Spacing.xl,
+  },
+  tablePanelIdleText: { ...Typography.caption, color: QuinckleColors.textTertiary, textAlign: 'center' },
+  tablePanelAvailableTitle: { ...Typography.subtitle, color: QuinckleColors.textPrimary },
+  tablePanelCta: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginTop: Spacing.md,
+    backgroundColor: QuinckleColors.primary, paddingHorizontal: Spacing.xl, paddingVertical: 12,
+    borderRadius: Radius.pill,
+  },
+  tablePanelCtaText: { ...Typography.bodyStrong, color: '#fff' },
 
   // ── Bottom-sheet content (filter / start session / manage) ──
   sheetBody: { paddingHorizontal: Spacing.xl, paddingBottom: Spacing.md, gap: 2 },
@@ -3275,11 +4225,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.md,
     flexShrink: 1,
-  },
-  topBarControls: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
   },
   headerLogoSlot: {
     flex: 1,
@@ -3421,17 +4366,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     height: 40,
     gap: Spacing.sm,
-  },
-  // Inline in the tablet top bar, next to the burger icon — kept narrow so
-  // it doesn't crowd out the avatar/cash icons on the right.
-  // NOT `flex: 0`: react-native-web emits CSS `flex: 0` (= 0 1 0%), whose zero
-  // flex-basis beats `width` and collapses the box to icon size on desktop.
-  // The longhands mean "fixed 220" on every platform.
-  searchBoxCompact: {
-    flexGrow: 0,
-    flexShrink: 0,
-    flexBasis: 'auto',
-    width: 220,
   },
   searchBoxFull: {
     flexDirection: 'row',
@@ -3576,14 +4510,49 @@ const styles = StyleSheet.create({
   // The grid cell owns the 2-column width; the card fills it.
   gridCell: {
     width: '48.5%',
-    marginBottom: Spacing.md,
+    // Padded out (beyond a plain gap) so an occupied card's print notch —
+    // which overhangs the card below tableCardOuter's own clipped box — has
+    // room before the next row, same margin every cell gets for a
+    // consistent row rhythm regardless of which ones show the button.
+    marginBottom: Spacing.xxxl,
   },
   tableCardOuter: {
     width: '100%',
-    minHeight: 130,
+    // Matches the takeaway grid card's own minHeight (takeawayGridCard).
+    minHeight: 156,
     borderRadius: Radius.lg + 1.5,
     padding: 1.5,
     overflow: 'hidden',
+  },
+  // Same notch + glass FAB as the takeaway grid card (index.tsx's
+  // takeawayGridPrintNotch/Fab) — kept as its own copy since gridCell's
+  // structure differs (tableCardOuter clips overflow for its gradient
+  // border, so these sit outside it as gridCell's own children). One shared
+  // shape for whichever quickAction a card gets — print, take-order '+', or
+  // reactivate-play — only the icon and handler change.
+  tableCardActionNotch: {
+    position: 'absolute',
+    left: '50%',
+    bottom: -23,
+    marginLeft: -23,
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: QuinckleColors.background,
+  },
+  tableCardActionFab: {
+    position: 'absolute',
+    left: '50%',
+    bottom: -18,
+    marginLeft: -18,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: QuinckleColors.surfaceMutedHover,
+    borderWidth: 1.5,
+    borderColor: QuinckleColors.borderStrong,
   },
   // Multi-select overlays.
   selectDim: { opacity: 0.35 },
@@ -3647,7 +4616,7 @@ const styles = StyleSheet.create({
     backgroundColor: QuinckleColors.background,
     borderRadius: Radius.lg,
     padding: Spacing.lg,
-    minHeight: 130 - 3,
+    minHeight: 156 - 3,
     justifyContent: 'space-between',
   },
   offlineCard: {
@@ -3811,6 +4780,23 @@ const styles = StyleSheet.create({
     color: QuinckleColors.primary,
     fontWeight: '600',
   },
+
+  // Desktop/tablet-landscape Menu tab: category rail (20% width) + content pane,
+  // same two-pane shape order-menu.tsx uses for its own category rail.
+  menuRow: { flex: 1, flexDirection: 'row' },
+  menuCategoryRail: { width: '20%', paddingRight: Spacing.md },
+  menuCategoryRailContent: { paddingVertical: Spacing.sm },
+  menuRowDivider: { width: 1, backgroundColor: QuinckleColors.border, marginHorizontal: Spacing.sm },
+  menuRightPane: { flex: 1 },
+  menuRailItem: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingVertical: 12, paddingHorizontal: Spacing.md, borderRadius: Radius.md, marginBottom: 2,
+  },
+  menuRailItemActive: { backgroundColor: QuinckleColors.primarySoft },
+  menuRailAccent: { width: 3, height: 20, borderRadius: 2, backgroundColor: 'transparent' },
+  menuRailAccentActive: { backgroundColor: QuinckleColors.primary },
+  menuRailText: { ...Typography.body, color: QuinckleColors.textSecondary, fontWeight: '500', flex: 1 },
+  menuRailTextActive: { color: QuinckleColors.primary, fontWeight: '700' },
 
   menuListContent: {
     paddingBottom: 100,
@@ -4162,9 +5148,60 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     paddingBottom: 100,
   },
+  // ── Desktop orders (serve queue): fixed 3-across tile grid, nothing
+  //     stretches — see KOT_CARD_WIDTH/HEIGHT and PickupCard's fixed*
+  //     props. Left-aligned with gaps; leftover row space stays empty. ──
+  ordersGridRow: { gap: Spacing.md },
   segmentWrap: {
     marginBottom: Spacing.md,
   },
+  // Wide takeaway toolbar: tabs + search + refresh + add, one row.
+  takeawayToolbarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  // Fixed width so PickupSegmented's own flex:1 buttons resolve against a
+  // known size instead of stretching to fill the row — the search box next
+  // to it takes whatever's left.
+  // The active tab's fill runs the container's full height edge to edge
+  // (no inner padding), clipped to the container's own rounded corners via
+  // overflow:hidden — not a pill floating inside a track.
+  takeawayToolbarSeg: {
+    width: 210,
+    height: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surfaceMuted,
+  },
+  twDropdownText: { fontSize: 13, fontWeight: '600', color: QuinckleColors.textPrimary },
+  twDropdownCount: {
+    minWidth: 20, paddingHorizontal: 5, height: 18, borderRadius: Radius.pill,
+    backgroundColor: QuinckleColors.primarySoft, alignItems: 'center', justifyContent: 'center',
+  },
+  twDropdownCountText: { fontSize: 11, fontWeight: '700', color: QuinckleColors.primary },
+  twDropdownBackdrop: { ...StyleSheet.absoluteFillObject },
+  twDropdownMenu: {
+    position: 'absolute',
+    backgroundColor: QuinckleColors.surfaceElevated,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.borderStrong,
+    overflow: 'hidden',
+  },
+  twDropdownRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm + 2,
+  },
+  twDropdownRowActive: { backgroundColor: QuinckleColors.primarySoft },
+  twDropdownRowText: { fontSize: 13, fontWeight: '600', color: QuinckleColors.textSecondary },
+  twDropdownRowTextActive: { color: QuinckleColors.primary },
   emptyOrders: {
     flex: 1,
     paddingVertical: Spacing.huge,
@@ -4506,4 +5543,167 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
+
+  // ── Desktop takeaway: grid cards (left 60%) ──────────────────────────────
+  takeawayGridRow: { gap: Spacing.sm },
+  takeawayGridCard: {
+    flex: 1,
+    minHeight: 156,
+    justifyContent: 'space-between',
+    backgroundColor: QuinckleColors.surface,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+    padding: Spacing.lg,
+    // Extra clearance under the card (beyond the row's own gap) so the print
+    // FAB, which overlaps the bottom edge, has room to sit in the space
+    // between rows instead of overlapping the next row's cards.
+    marginBottom: Spacing.xxxl,
+  },
+  takeawayGridCardActive: {
+    borderColor: QuinckleColors.primary,
+    backgroundColor: QuinckleColors.surfaceElevated,
+  },
+  takeawayGridFooterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: Spacing.sm,
+    paddingTop: Spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: QuinckleColors.borderSubtle,
+  },
+  takeawayGridItemCount: {
+    fontSize: 12,
+    color: QuinckleColors.textTertiary,
+  },
+  // Orange FAB peeking off the card's bottom edge, centered — the card has
+  // no overflow:hidden, so it paints outside the card's own box; the card's
+  // marginBottom above is padded out to give it room before the next row.
+  // A same-center circle in the page's own background color, painted after
+  // the card, "erases" a semicircular bite out of the card's bottom border —
+  // the FAB then sits inside that bite instead of just overlapping the edge.
+  takeawayGridPrintNotch: {
+    position: 'absolute',
+    left: '50%',
+    bottom: -23,
+    marginLeft: -23,
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: QuinckleColors.background,
+  },
+  takeawayGridPrintFab: {
+    position: 'absolute',
+    left: '50%',
+    bottom: -18,
+    marginLeft: -18,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: QuinckleColors.surfaceMutedHover,
+    borderWidth: 1.5,
+    borderColor: QuinckleColors.borderStrong,
+  },
+  quickPrintGrid: {
+    flexDirection: 'row',
+    paddingHorizontal: Spacing.xl,
+    paddingBottom: Spacing.xl,
+    gap: Spacing.md,
+  },
+
+  // ── Desktop takeaway: detail panel (fixed 40%) ───────────────────────────
+  // Mirrors the table panel's command rail in [tableId].tsx (cmdHeader /
+  // cmdRow / cmdBill / cmdRail) so the two right-hand panels read as one
+  // design language instead of two different apps stitched together.
+  twpSplit: { flex: 1, flexDirection: 'row' },
+  twpMain: { flex: 1, minWidth: 0 },
+  twpHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingLeft: Spacing.lg, paddingRight: Spacing.sm, paddingVertical: Spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: QuinckleColors.border,
+  },
+  twpTitle: { fontSize: 16, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.3, flexShrink: 0 },
+  twpTime: {
+    fontSize: 12, fontWeight: '600', color: QuinckleColors.textSecondary,
+    fontVariant: ['tabular-nums'] as any,
+  },
+  twpCloseBtn: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center' },
+
+  twpTicketHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: Spacing.lg, paddingTop: Spacing.md, paddingBottom: Spacing.sm,
+  },
+  twpSectionLabel: {
+    fontSize: 11, fontWeight: '700', color: QuinckleColors.textTertiary,
+    textTransform: 'uppercase', letterSpacing: 1,
+  },
+
+  twpListContent: { paddingHorizontal: Spacing.lg, paddingBottom: Spacing.sm },
+  twpRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingVertical: 7,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: QuinckleColors.borderSubtle,
+  },
+  twpRowQty: {
+    width: 26, textAlign: 'right',
+    fontSize: 12, fontWeight: '600', color: QuinckleColors.textMuted,
+    fontVariant: ['tabular-nums'] as any,
+  },
+  twpRowBody: { flex: 1, minWidth: 0 },
+  twpRowName: { fontSize: 13.5, fontWeight: '600', color: QuinckleColors.textPrimary },
+  twpRowSub: { fontSize: 11, fontWeight: '500', color: QuinckleColors.textTertiary, marginTop: 1 },
+  twpRowPrice: {
+    fontSize: 12.5, fontWeight: '600', color: QuinckleColors.textSecondary,
+    minWidth: 46, textAlign: 'right',
+    fontVariant: ['tabular-nums'] as any,
+  },
+
+  twpBill: {
+    paddingHorizontal: Spacing.lg, paddingTop: Spacing.md, paddingBottom: Spacing.lg,
+    borderTopWidth: 1, borderTopColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surface,
+  },
+  twpPayRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  twpPayLabel: { fontSize: 11, fontWeight: '700', color: QuinckleColors.textTertiary, textTransform: 'uppercase', letterSpacing: 1 },
+  twpPayRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
+  twpPayValue: {
+    fontSize: 22, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.5,
+    fontVariant: ['tabular-nums'] as any,
+  },
+  twpPaidBadge: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    marginTop: Spacing.md, paddingVertical: 12, borderRadius: Radius.md, borderWidth: 1,
+  },
+  twpPaidBadgeSuccess: { backgroundColor: QuinckleColors.successSoft, borderColor: QuinckleColors.successBorder },
+  twpPaidText: { fontSize: 14, fontWeight: '700' },
+  twpCollectBtn: {
+    backgroundColor: QuinckleColors.primary,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
+    paddingVertical: 11, borderRadius: Radius.md, marginTop: Spacing.md,
+  },
+  twpCollectBtnDisabled: { opacity: 0.5 },
+  twpCollectText: { color: '#fff', fontSize: 13.5, fontWeight: '700' },
+
+  twpRail: {
+    width: 60,
+    alignItems: 'center',
+    paddingTop: Spacing.sm,
+    paddingBottom: Spacing.lg,
+    gap: 4,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderLeftColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surface,
+  },
+  twpRailBtn: {
+    width: 54,
+    paddingVertical: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    borderRadius: Radius.sm,
+  },
+  twpRailLabel: { fontSize: 9, fontWeight: '600', color: QuinckleColors.textTertiary, letterSpacing: 0.1 },
 });

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
 
 type ThemedDialogAction = {
@@ -63,14 +63,25 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.65)',
     justifyContent: 'center',
+    // Missing on a phone-width screen this never mattered — nothing to
+    // center against. On a wide desktop window, `card` (no width of its
+    // own) took the cross-axis default of 'stretch' and filled almost the
+    // whole screen: a giant bar with a couple of lines of text lost in it,
+    // instead of a modest floating card. Same fix CenteredModal already uses.
+    alignItems: 'center',
     padding: Spacing.xl,
   },
   card: {
+    width: '100%',
+    maxWidth: 420,
     backgroundColor: QuinckleColors.surface,
     borderWidth: 1,
     borderColor: QuinckleColors.border,
     borderRadius: Radius.xl,
     padding: Spacing.xxl,
+    ...(Platform.OS === 'web'
+      ? ({ boxShadow: '0 12px 30px rgba(0,0,0,0.35)' } as any)
+      : { shadowColor: '#000', shadowOffset: { width: 0, height: 12 }, shadowOpacity: 0.35, shadowRadius: 30, elevation: 24 }),
   },
   title: {
     ...Typography.subtitle,

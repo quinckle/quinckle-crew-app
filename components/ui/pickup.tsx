@@ -5,6 +5,7 @@ import {
   LayoutAnimation,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   UIManager,
@@ -348,6 +349,16 @@ type CardProps = {
   onToggleItem: (itemId: string, nextQty: number) => void;
   onCompletionFinished: () => void;
   onReopen?: () => void;
+  /**
+   * Desktop grid (index.tsx's Orders tab): a fixed tile size instead of the
+   * phone's natural full-width, height-to-content card — every ticket the
+   * same size, none stretched to fill its row/column. The item list becomes
+   * internally scrollable to fit whatever's left under the header, rather
+   * than the card growing past its fixed height for a long ticket. Omit both
+   * for the original behaviour.
+   */
+  fixedWidth?: number;
+  fixedHeight?: number;
 };
 
 const SWEEP_DURATION_MS = 480;     // green wipe left → right
@@ -362,7 +373,10 @@ export function PickupCard({
   onToggleItem,
   onCompletionFinished,
   onReopen,
+  fixedWidth,
+  fixedHeight,
 }: CardProps) {
+  const isFixedSize = fixedWidth != null && fixedHeight != null;
   const isCompleted = !!order.completedAt;
   const items = order.items;
 
@@ -525,8 +539,18 @@ export function PickupCard({
     'transparent',
   ];
 
+  const itemRows = items.map((it) => (
+    <PickupItemRow
+      key={it.id}
+      item={it}
+      onToggle={(nextQty) => onToggleItem(it.id, nextQty)}
+      disabled={isCompleting}
+      isCompleted={isCompleted}
+    />
+  ));
+
   return (
-    <View style={cardStyles.cardOuter}>
+    <View style={[cardStyles.cardOuter, isFixedSize && { width: fixedWidth }]}>
       <LinearGradient
         colors={gradColors}
         start={{ x: 0, y: 0 }}
@@ -537,6 +561,7 @@ export function PickupCard({
       onLayout={(e) => setCardWidth(e.nativeEvent.layout.width)}
       style={[
         cardStyles.card,
+        isFixedSize && { height: fixedHeight },
         {
           backgroundColor: cardBackground,
           opacity: entryOpacity,
@@ -577,17 +602,16 @@ export function PickupCard({
           )}
         </View>
 
-        <View style={cardStyles.itemList}>
-          {items.map((it) => (
-            <PickupItemRow
-              key={it.id}
-              item={it}
-              onToggle={(nextQty) => onToggleItem(it.id, nextQty)}
-              disabled={isCompleting}
-              isCompleted={isCompleted}
-            />
-          ))}
-        </View>
+        {/* Fixed tile: the list gets whatever's left under the header and
+            scrolls internally, so a long ticket never grows the tile past
+            its fixed height — every card in the grid stays the same size. */}
+        {isFixedSize ? (
+          <ScrollView style={cardStyles.itemListScroll} showsVerticalScrollIndicator={false}>
+            <View style={cardStyles.itemList}>{itemRows}</View>
+          </ScrollView>
+        ) : (
+          <View style={cardStyles.itemList}>{itemRows}</View>
+        )}
       </View>
 
       {/* Green sweep overlay — fills left → right when the order completes,
@@ -697,6 +721,12 @@ const cardStyles = StyleSheet.create({
   },
   itemList: {
     gap: 2,
+  },
+  // Fixed-tile grid only — `body` is already bounded (card has a fixed
+  // height, and stretches to it via the row's default alignItems), so
+  // flex:1 here just claims whatever's left under the header.
+  itemListScroll: {
+    flex: 1,
   },
   sweepOverlay: {
     position: 'absolute',

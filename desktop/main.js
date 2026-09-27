@@ -10,16 +10,44 @@
  * registered standard scheme gives the page a stable, real origin.
  */
 
-const { app, BrowserWindow, protocol, ipcMain, powerSaveBlocker, shell } = require('electron');
+const { app, BrowserWindow, protocol, ipcMain, powerSaveBlocker, shell, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs/promises');
 const fsSync = require('fs');
 const printService = require('./print/service');
 const httpService = require('./http');
+const secureStore = require('./secureStore');
 
 const SCHEME = 'app';
 const WEB_DIST = process.env.QUINCKLE_WEB_DIST || path.join(__dirname, 'web-build');
 const IS_DEV = !app.isPackaged;
+
+/**
+ * Live mode (`npm run live`): load the Metro dev server instead of the static
+ * export, so saving a file updates the window without an export + reload.
+ *
+ * Unpackaged builds only, and localhost only — an env var must never be able to
+ * point a shipped till at some other site.
+ */
+function resolveDevUrl(raw) {
+  if (!raw || app.isPackaged) return null;
+  try {
+    const url = new URL(raw);
+    const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+    return url.protocol === 'http:' && local ? url.origin + '/' : null;
+  } catch {
+    return null;
+  }
+}
+const DEV_URL = resolveDevUrl(process.env.QUINCKLE_DEV_URL);
+
+/**
+ * Hidden mode, for automated checks (QUINCKLE_HIDDEN=1): no window, no DevTools,
+ * no dock icon, so a test run does not flash windows over whatever you are
+ * doing. The page still renders and answers the debugger; throttling is off so
+ * timers and animation frames keep running. Unpackaged builds only.
+ */
+const HIDDEN = process.env.QUINCKLE_HIDDEN === '1' && !app.isPackaged;
 
 const MIME = {
   '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript',
@@ -92,11 +120,13 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: !HIDDEN,
       sandbox: false, // the preload needs require(); the renderer stays sandboxed by contextIsolation
     },
   });
 
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.once('ready-to-show', () => { if (!HIDDEN) mainWindow.show(); });
+  if (HIDDEN) app.dock?.hide();
 
   // A till should not sleep mid-service, and the KOT sink must keep its socket.
   // This replaces expo-keep-awake, which is a no-op off native.
@@ -105,7 +135,8 @@ function createWindow() {
   // Anything that is not the app itself opens in the real browser, not in a
   // chrome-less Electron window the staff cannot navigate out of.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (!url.startsWith(`${SCHEME}://`)) { shell.openExternal(url); return { action: 'deny' }; }
+    const isApp = url.startsWith(`${SCHEME}://`) || (DEV_URL && url.startsWith(DEV_URL));
+    if (!isApp) { shell.openExternal(url); return { action: 'deny' }; }
     return { action: 'allow' };
   });
 
@@ -117,20 +148,24 @@ function createWindow() {
     });
   }
 
-  mainWindow.loadURL(`${SCHEME}://local/`);
-  if (IS_DEV) mainWindow.webContents.openDevTools({ mode: 'detach' });
+  mainWindow.loadURL(DEV_URL || `${SCHEME}://local/`);
+  if (IS_DEV && !HIDDEN) mainWindow.webContents.openDevTools({ mode: 'detach' });
 
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
 app.whenReady().then(() => {
-  if (!fsSync.existsSync(WEB_DIST)) {
+  if (!DEV_URL && !fsSync.existsSync(WEB_DIST)) {
     // A clear message beats a blank window when the export step was skipped.
     console.error(`\n  No web build at ${WEB_DIST}\n  Run: npm run desktop:export\n`);
   }
 
   protocol.handle(SCHEME, serve);
   httpService.register(ipcMain);
+  secureStore.register(ipcMain, {
+    safeStorage,
+    filePath: path.join(app.getPath('userData'), 'secure-store.json'),
+  });
   printService.register(ipcMain);
   createWindow();
 

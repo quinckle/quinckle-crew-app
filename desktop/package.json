@@ -8,7 +8,8 @@
     "export": "node export.js",
     "start": "electron .",
     "dev": "npm run export && npm start",
-    "test": "node --test print/"
+    "live": "node live.js",
+    "test": "node --test print/ secureStore.test.js"
   },
   "devDependencies": {
     "electron": "^44.0.0"

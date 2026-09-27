@@ -17,17 +17,23 @@ import { useCountdown } from '../../hooks/useCountdown';
 import { expiryLevel, expiryColor, expiryChipStyle } from '../../constants/sessionExpiry';
 import { subscribeChannel } from '../../services/realtime';
 import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
+import { CollectPaymentPanel } from '../../components/ui/CollectPaymentPanel';
 import { QrChoiceSheet } from '../../components/ui/QrChoiceSheet';
-import { PrintOptionsSheet, type InvoiceBuyer } from '../../components/ui/PrintOptionsSheet';
+import { PrintOptionsSheet, PrintCard, type InvoiceBuyer } from '../../components/ui/PrintOptionsSheet';
 import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintProgressOverlay';
 import { BillExplainContent, BillExplainSheet, type ExplainedBill } from '../../components/ui/BillExplainSheet';
+import { CenteredModal } from '../../components/ui/CenteredModal';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { HintToast } from '../../components/ui/HintToast';
+import { SuccessToast } from '../../components/ui/SuccessToast';
 import { ReasonSheet, ReasonChips } from '../../components/ui/ReasonSheet';
 import { useManagerApproval } from '../../components/ui/ManagerPinSheet';
 import { WAIVE_REASONS, isReasonComplete, toReasonPayload, type CancelReason } from '../../constants/adjustmentReasons';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { useResponsive } from '../../hooks/useResponsive';
+import { isDesktop } from '../../services/platform';
+import { KeyLabels } from '../../constants/keyLabels';
+import { AdjustBillForm } from './adjust-bill';
 
 type ItemStatus = 'prep' | 'ready' | 'served';
 
@@ -69,7 +75,48 @@ function toSessionRef(sessionId: string | null | undefined): string {
   return `S-${tail || 'UNKNOWN'}`;
 }
 
-export default function TableDetail() {
+export interface TableDetailScreenProps {
+  tableId?: string; sessionId?: string; tableDbId?: string; occupiedSince?: string;
+  expiresAt?: string; customerName?: string; customerPhone?: string;
+  groupLabel?: string; zoneName?: string; openBill?: string;
+  placedAmount?: string; placedCount?: string;
+  /**
+   * Embedded in the table grid's side panel (see app/(staff)/index.tsx)
+   * instead of routed to full-screen. Swaps the back chevron for a close
+   * action (`onDeselect`) and drops the wideRow/empty-main-pane wrapper the
+   * standalone route still uses — the panel supplies its own box, this just
+   * fills it.
+   */
+  panelMode?: boolean;
+  /** panelMode only — closes/deselects this table in the host panel. */
+  onDeselect?: () => void;
+  /**
+   * panelMode only — the grid card's own quick-print icon selected this
+   * table specifically to print, so open the print sheet as soon as this
+   * mounts. The host (index.tsx) owns the flag on `tablePanel` and resets it
+   * via `onAutoPrintHandled` once consumed, the same one-shot shape
+   * `openBill` uses for the route case below.
+   */
+  autoOpenPrint?: boolean;
+  onAutoPrintHandled?: () => void;
+  /**
+   * panelMode only — fires once the quick-print flow this table was selected
+   * for is done (the choice modal closed, or the resulting print job's
+   * progress overlay was dismissed) so the host can restore whichever table
+   * (or nothing) was selected before, instead of leaving this one open.
+   */
+  onQuickPrintFinished?: () => void;
+}
+
+/**
+ * The screen's actual content — reads identity/session fields from props so
+ * it can render both as this file's own route (phone, deep links, and the
+ * wide layout when reached directly) AND embedded as the grid's side panel
+ * (`panelMode`, see TableDetailScreenProps). All the data-fetching, realtime
+ * subscriptions and action handlers below are identical in both cases; only
+ * the final JSX branches on `isWide`/`panelMode`.
+ */
+export function TableDetailScreen(props: TableDetailScreenProps) {
   const insets = useSafeAreaInsets();
   /**
    * Bottom padding for the docked total/collect bar.
@@ -94,14 +141,49 @@ export default function TableDetail() {
   // Tablet-landscape: session details + a permanently-visible bill breakdown
   // sit in a left pane, ordered items alone fill the right pane. Phone and
   // tablet-portrait keep the original single-column stack.
-  const { isWide, width: winWidth } = useResponsive();
+  const { isWide, width: winWidth, height: winHeight } = useResponsive();
   // The receipt rail grows with the window rather than staying a fixed 340: a
   // third of the width, kept between 400 and 520 so it is roomy on a big screen
   // and still leaves the order ticket enough room on the smallest one.
   const railWidth = Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, Math.round(winWidth * RAIL_WIDTH_RATIO)));
-  const { tableId, sessionId: paramSessionId, tableDbId, occupiedSince, expiresAt: paramExpiresAt, customerName: paramCustomerName, customerPhone: paramCustomerPhone, groupLabel: paramGroupLabel, zoneName: paramZoneName, openBill } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string; occupiedSince: string; expiresAt: string; customerName: string; customerPhone: string; groupLabel?: string; zoneName?: string; openBill?: string }>();
+  const {
+    tableId, sessionId: paramSessionId, tableDbId, occupiedSince, expiresAt: paramExpiresAt,
+    customerName: paramCustomerName, customerPhone: paramCustomerPhone, groupLabel: paramGroupLabel,
+    zoneName: paramZoneName, openBill, placedAmount, placedCount, panelMode = false, onDeselect,
+    autoOpenPrint, onAutoPrintHandled, onQuickPrintFinished,
+  } = props;
   const router = useRouter();
   const { staffInfo } = useAuth();
+
+  /**
+   * How much room this component was actually GIVEN.
+   *
+   * `isWide` comes from useResponsive, which measures the WINDOW — fine when
+   * this screen is the whole screen, wrong when it is the grid's side panel,
+   * which is a ~40% column inside that wide window. The command rail below
+   * needs its own width, not the window's, so it measures the box.
+   *
+   * 0 means "not laid out yet"; the first frame falls back to `isWide`.
+   */
+  const [panelW, setPanelW] = useState(0);
+  const onPanelLayout = useCallback(
+    (e: { nativeEvent: { layout: { width: number } } }) => {
+      const w = Math.round(e.nativeEvent.layout.width);
+      setPanelW(prev => (Math.abs(prev - w) > 1 ? w : prev));
+    },
+    [],
+  );
+  /**
+   * Style C — the desktop command rail. Electron only: the phone and the
+   * tablet keep the layouts they already have, which are tuned for a thumb.
+   * This one assumes a mouse and a keyboard and trades target size for
+   * density and an always-open bill.
+   */
+  const commandRail = isDesktop() && isWide && (panelW === 0 || panelW >= COMMAND_RAIL_MIN);
+  /** Keyboard selection in the ticket — the row ↵ serves. */
+  const [selIdx, setSelIdx] = useState(0);
+  /** Desktop only: Adjust bill as a sheet over the panel, not a pushed route. */
+  const [adjustSheetOpen, setAdjustSheetOpen] = useState(false);
 
   const tableNum = String(tableId ?? '').padStart(2, '0');
   // Shared seating: "G2" when this table hosts >1 party. Rides on the header
@@ -173,6 +255,26 @@ export default function TableDetail() {
   } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [orders, setOrders] = useState<BillOrder[]>([]);
+  // Most recent order round on this session — the rail's "Last order" line.
+  // Minute-grain and its own 30s tick: staff don't need second-level
+  // precision on how long ago something was ordered, unlike the expiry
+  // countdown above.
+  const lastOrderAt = useMemo(() => orders.reduce<string | null>((max, o) => {
+    if (!o.placed_at) return max;
+    return !max || new Date(o.placed_at) > new Date(max) ? o.placed_at : max;
+  }, null), [orders]);
+  const [orderAgo, setOrderAgo] = useState('');
+  useEffect(() => {
+    if (!lastOrderAt) { setOrderAgo(''); return; }
+    const ms = new Date(lastOrderAt).getTime();
+    const tick = () => {
+      const mins = Math.max(0, Math.floor((Date.now() - ms) / 60000));
+      setOrderAgo(mins < 1 ? 'Just now' : mins < 60 ? `${mins}m ago` : `${Math.floor(mins / 60)}h ${mins % 60}m ago`);
+    };
+    tick();
+    const id = setInterval(tick, 30000);
+    return () => clearInterval(id);
+  }, [lastOrderAt]);
   const [sessionTotal, setSessionTotal] = useState(0);
   const [taxTotal, setTaxTotal] = useState(0);
   const [serviceChargeTotal, setServiceChargeTotal] = useState(0);
@@ -215,7 +317,53 @@ export default function TableDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openBill]);
 
+  // The grid card's own quick-print icon — same one-shot shape as openBill
+  // above, but prop-driven instead of a route param, since panelMode has no
+  // params to reset via router.setParams. The host flips autoOpenPrint back
+  // to false once notified, so reselecting the same table later doesn't
+  // silently reopen print on its own. Must sit above `if (isLoading) return`
+  // like every other hook in this component — see the note further down.
+  useEffect(() => {
+    if (autoOpenPrint) {
+      setActionMenuOpen(false);
+      setQuickPrintOpen(true);
+      setQuickPrintActive(true);
+      onAutoPrintHandled?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenPrint]);
+
+  // The quick-print flow ends either by backing out of the choice modal
+  // without picking anything, or by the resulting print job's progress
+  // overlay being dismissed — either way, hand the panel back.
+  const finishQuickPrintIfActive = () => {
+    if (!quickPrintActive) return;
+    setQuickPrintActive(false);
+    onQuickPrintFinished?.();
+  };
+
+  // Same landing, plus a toast — order-menu navigates back here the instant
+  // the order is placed (see its confirmAndPlace), rather than holding on a
+  // confirmation screen first, so this is where that confirmation actually
+  // shows up.
+  const [placedMessage, setPlacedMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (placedAmount) {
+      const n = Number(placedCount) || 0;
+      setPlacedMessage(`${n} item${n !== 1 ? 's' : ''} placed · ₹${placedAmount}`);
+      router.setParams({ placedAmount: undefined, placedCount: undefined });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [placedAmount]);
+
   const [isRequestingCollection, setIsRequestingCollection] = useState(false);
+  // Command rail: "Send to collection" opens an embedded sheet (CollectPaymentPanel)
+  // instead of pushing payment-collect.tsx — same move as Swap/Extend/Adjust.
+  // Holds the canonical orderIds/amount requestCollection() fetched, so the
+  // sheet collects against exactly what the server just flagged, not a
+  // locally-computed guess.
+  const [collectSheetOpen, setCollectSheetOpen] = useState(false);
+  const [collectSheetData, setCollectSheetData] = useState<{ orderIds: string[]; amount: number } | null>(null);
 
   // UPI QR generator
   const [upiId, setUpiId]           = useState<string | null>(null);
@@ -234,6 +382,16 @@ export default function TableDetail() {
   // Action menu + swap-table state for the 3-dot header
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [printMenuOpen, setPrintMenuOpen] = useState(false);
+  // The grid card's quick-print icon gets a bare KOT/Invoice choice in a
+  // centered modal — no GSTIN capture, no keyboard rail — instead of the
+  // rail's own full PrintOptionsSheet bottom sheet. Same split takeaway's
+  // grid card already makes between its quick print and the panel's own.
+  const [quickPrintOpen, setQuickPrintOpen] = useState(false);
+  // True for the whole lifetime of a quick-print flow (from autoOpenPrint
+  // firing through the choice modal AND the resulting print job), so
+  // onQuickPrintFinished only fires for a job this table was selected FOR —
+  // not one the crew starts normally while genuinely working this table.
+  const [quickPrintActive, setQuickPrintActive] = useState(false);
   // Session reference data (ref, guest, phone, opened) lives behind a tap — it's
   // consulted once a service, not continuously, so it doesn't earn a permanent
   // block above the order list.
@@ -261,6 +419,10 @@ export default function TableDetail() {
   // the keyboard up, and the bill re-reads on focus when it pops back.
   const openAdjustBill = () => {
     if (!sessionId) return;
+    // Desktop: the panel keeps its context. Adjust bill opens over the ticket
+    // as a sheet, the same as Swap table and Extend time, instead of replacing
+    // the whole window with a pushed screen.
+    if (commandRail) { setAdjustSheetOpen(true); return; }
     router.push({
       pathname: '/(staff)/adjust-bill',
       params: {
@@ -284,7 +446,7 @@ export default function TableDetail() {
     try {
       const res = await crewTables.transferSession(tableDbId, targetId);
       setSwapOpen(false);
-      router.replace('/(staff)');
+      if (panelMode) onDeselect?.(); else router.replace('/(staff)');
       showDialog(
         'Moved',
         `Guest moved to T${String(res.data.toTableNumber).padStart(2, '0')} — ${res.data.ordersMoved} order${res.data.ordersMoved === 1 ? '' : 's'} relocated.`,
@@ -411,11 +573,14 @@ export default function TableDetail() {
     useCallback(() => {
       if (endedWhileCoveredRef.current) {
         endedWhileCoveredRef.current = false;
-        router.back();
+        // panelMode has no "screen" to pop — router.back() would take out the
+        // grid underneath it instead. Deselecting is the panel's equivalent.
+        if (panelMode) onDeselect?.();
+        else router.back();
         return;
       }
       void loadBill();
-    }, [loadBill, router]),
+    }, [loadBill, router, panelMode, onDeselect]),
   );
 
 
@@ -479,8 +644,9 @@ export default function TableDetail() {
       subscribeChannel(`waiter:${restaurantId}`, 'session_ended', (data: any) => {
         const endedId = data?.sessionId as string | undefined;
         if (endedId && endedId === sessionId) {
-          if (navigation.isFocused()) router.back();
-          else endedWhileCoveredRef.current = true;
+          if (!navigation.isFocused()) endedWhileCoveredRef.current = true;
+          else if (panelMode) onDeselect?.();
+          else router.back();
         }
       }),
     ];
@@ -488,7 +654,7 @@ export default function TableDetail() {
       if (refetchTimer) clearTimeout(refetchTimer);
       unsubs.forEach(u => u());
     };
-  }, [staffInfo?.restaurantId, sessionId, router, navigation, loadBill]);
+  }, [staffInfo?.restaurantId, sessionId, router, navigation, loadBill, panelMode, onDeselect]);
 
 
   // Flat list of all items across all orders
@@ -611,6 +777,26 @@ export default function TableDetail() {
 
   const requestCollection = async () => {
     if (isPaid || !sessionId || isRequestingCollection || grandTotal <= 0 || orders.length === 0) return;
+
+    if (commandRail) {
+      // Open the sheet off what's already on screen — no reason to make the
+      // crew wait on a network round trip just to see a method picker they
+      // haven't even started filling in. The PENDING_STAFF_COLLECTION flag
+      // (so other devices / the dashboard see this table as being collected)
+      // still fires below, just in the background: it's a visibility nicety,
+      // not a precondition — collectSessionPayment re-validates the real
+      // orders/total at Confirm time regardless (CollectPaymentPanel already
+      // handles a STALE_ORDERS/ALREADY_COLLECTED response from THAT call), so
+      // there's no correctness gap here, only a UI one, and this removes it.
+      if (collectSheetOpen) return;
+      setCollectSheetData({ orderIds: orders.map(o => o.order_id), amount: grandTotal });
+      setCollectSheetOpen(true);
+      crewSessions.requestCollection(sessionId, sessionCustomerPhone ?? '', sessionCustomerName ?? null)
+        .then(() => void loadBill())
+        .catch(() => {}); // best-effort — see above
+      return;
+    }
+
     setIsRequestingCollection(true);
     try {
       // Flag the session's orders PENDING_STAFF_COLLECTION server-side (so
@@ -885,11 +1071,11 @@ export default function TableDetail() {
   const doEndSession = async () => {
     try {
       if (sessionId) await crewSessions.end(sessionId);
-      router.replace('/(staff)');
+      if (panelMode) onDeselect?.(); else router.replace('/(staff)');
     } catch (err: any) {
       const code = err?.error || err?.message || '';
       if (code === 'SESSION_ALREADY_CLOSED') {
-        router.replace('/(staff)');
+        if (panelMode) onDeselect?.(); else router.replace('/(staff)');
       } else {
         showDialog('Could Not Free Table', 'Something went wrong while ending the session. Please try again.', [{ label: 'OK', onPress: () => {} }]);
       }
@@ -998,9 +1184,63 @@ export default function TableDetail() {
     return () => { cancelled = true; };
   }, [sessionId, orders.length]);
 
+  // ══ Keyboard shortcuts (desktop only) ═══════════════════════════════════
+  // The rail's actions are also keys, because a till is worked with one hand
+  // on the keyboard. This is NOT tab-navigation — the app still has no focus
+  // ring (see services/webFocusRing.web.ts) — it is a flat set of hotkeys on
+  // the window while a table panel is open.
+  //
+  // The handlers it fires are built far below, after `if (isLoading) return`,
+  // so they arrive through a ref that render keeps current. That is the
+  // "latest callback" pattern, used here for a hard reason: a hook declared
+  // below that early return would make the loading render and the loaded
+  // render disagree on hook count, which is exactly the crash that took every
+  // table screen down once already.
+  const keysRef = useRef<{ enabled: boolean; run: (action: string) => void }>({
+    enabled: false,
+    run: () => {},
+  });
+  /** So ↑/↓ can keep the selected row on screen. */
+  const listRef = useRef<FlatList<FlatItem>>(null);
+  useEffect(() => {
+    if (!isDesktop() || typeof document === 'undefined') return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!keysRef.current.enabled) return;
+      // Never steal a keystroke from something being typed into.
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || t?.isContentEditable) return;
+
+      const accel = e.metaKey || e.ctrlKey;
+      let action: string | null = null;
+      if (e.key === 'Enter') action = accel ? 'collect' : 'serve';
+      else if (accel || e.altKey) action = null;
+      else if (e.key === 'ArrowDown') action = 'down';
+      else if (e.key === 'ArrowUp') action = 'up';
+      else switch (e.key.toLowerCase()) {
+        case 'a': action = 'add'; break;
+        case 'u': action = 'qr'; break;
+        case 'p': action = 'print'; break;
+        case 'b': action = 'adjust'; break;
+        default: action = null;
+      }
+      if (!action) return;
+      e.preventDefault();
+      keysRef.current.run(action);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
+
+  // Items leave the ticket (cancelled, or a whole order voided); the selection
+  // must not point past the end of the list when they do.
+  useEffect(() => {
+    setSelIdx(i => (flatItems.length === 0 ? 0 : Math.min(i, flatItems.length - 1)));
+  }, [flatItems.length]);
+
   if (isLoading) {
     return (
-      <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
+      <View style={[styles.container, { paddingTop: panelMode ? 0 : insets.top + Spacing.sm }]}>
         {!isWide ? (
           <>
             {/* ── Nav bar skeleton (phone) — same box as the real bar, so nothing shifts ── */}
@@ -1406,52 +1646,71 @@ export default function TableDetail() {
     </BottomSheet>
   );
 
+  // The three everyday actions, as plain functions — the action cards, the
+  // command rail and the keyboard shortcuts all fire the same ones.
+  const goAddItems = () => router.push({
+    pathname: '/(staff)/order-menu',
+    params: {
+      tableId: String(tableId),
+      tableNum,
+      tableDbId: tableDbId ?? '',
+      sessionId,
+      customerPhone: sessionCustomerPhone ?? '',
+      customerName: sessionCustomerName ?? '',
+      zoneName: (paramZoneName ?? '').trim(),
+    },
+  });
+  const openUpiQr = () => { setUpiAmount(''); setUpiUri(null); setShowUpiModal(true); };
+  const openPrintMenu = () => { setActionMenuOpen(false); setPrintMenuOpen(true); };
+
   const actionRowJsx = (
     <View style={styles.actionRow}>
-      {actionCard('add', 'add-circle-outline', 'Add items', () => router.push({
-        pathname: '/(staff)/order-menu',
-        params: {
-          tableId: String(tableId),
-          tableNum,
-          tableDbId: tableDbId ?? '',
-          sessionId,
-          customerPhone: sessionCustomerPhone ?? '',
-          customerName: sessionCustomerName ?? '',
-          zoneName: (paramZoneName ?? '').trim(),
-        },
-      }), addItemsReason)}
-      {actionCard('qr', 'qr-code-outline', 'UPI QR', () => {
-        setUpiAmount(''); setUpiUri(null); setShowUpiModal(true);
-      }, upiQrReason)}
-      {actionCard('print', 'print-outline', 'Print', () => {
-        setActionMenuOpen(false); setPrintMenuOpen(true);
-      }, null)}
+      {actionCard('add', 'add-circle-outline', 'Add items', goAddItems, addItemsReason)}
+      {actionCard('qr', 'qr-code-outline', 'UPI QR', openUpiQr, upiQrReason)}
+      {actionCard('print', 'print-outline', 'Print', openPrintMenu, null)}
+    </View>
+  );
+
+  // Wide layout shows this in the rail (below the action cards) instead of
+  // above the ticket — the ticket itself is the ordered items, this is a
+  // status summary of them, which reads more naturally as session info.
+  // Phone/portrait keeps it where it's always been, right above the list.
+  const activeOrdersHeaderJsx = (
+    <View style={styles.sectionHeader}>
+      <View style={styles.sectionTitleRow}>
+        <Text style={styles.sectionTitle}>Active Orders</Text>
+        <Text style={styles.progressText}>{servedCount}/{totalCount} served</Text>
+      </View>
+      <View style={styles.serviceProgressTrack}>
+        <Animated.View
+          style={[styles.serviceProgressFill, {
+            width: progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }),
+          }]}
+        />
+      </View>
     </View>
   );
 
   const orderListJsx = (
     <>
-      <View style={styles.sectionHeader}>
-        <View style={styles.sectionTitleRow}>
-          <Text style={styles.sectionTitle}>Active Orders</Text>
-          <Text style={styles.progressText}>{servedCount}/{totalCount} served</Text>
-        </View>
-        <View style={styles.serviceProgressTrack}>
-          <Animated.View
-            style={[styles.serviceProgressFill, {
-              width: progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }),
-            }]}
-          />
-        </View>
-      </View>
+      {!isWide && activeOrdersHeaderJsx}
 
       <FlatList
+        ref={listRef}
         style={isWide ? styles.wideFlatList : undefined}
         data={flatItems}
         keyExtractor={item => item.key}
+        // The selected row is drawn by renderItem, so the list has to be told
+        // that moving the selection is a reason to repaint.
+        extraData={commandRail ? selIdx : undefined}
         // Tablet's list is not overlaid by the docked bar — it lives in its own
         // pane — so it keeps the base clearance.
-        contentContainerStyle={isWide ? styles.listContent : { paddingBottom: listBottomPad }}
+        contentContainerStyle={
+          commandRail ? styles.cmdListContent : isWide ? styles.listContent : { paddingBottom: listBottomPad }
+        }
+        // scrollToIndex on a row that has not been measured yet throws;
+        // there is nothing to recover, so swallow it and leave the list put.
+        onScrollToIndexFailed={() => {}}
         onRefresh={handleRefresh}
         refreshing={refreshing}
         ListEmptyComponent={
@@ -1460,7 +1719,7 @@ export default function TableDetail() {
             <Text style={styles.emptyText}>No items ordered yet.</Text>
           </View>
         }
-        renderItem={({ item }) => {
+        renderItem={({ item, index }) => {
           const isServed = item.status === 'served';
           const servedQty = Math.max(0, Math.min(item.qty, item.servedQty));
           const isPartial = !isServed && servedQty > 0;
@@ -1468,13 +1727,16 @@ export default function TableDetail() {
           const holdable = !isServed && item.qty - servedQty > 1;
           if (item.cancelled) {
             return (
-              <View style={[styles.orderItemRow, { opacity: 0.5 }]}>
+              <View style={[commandRail ? styles.cmdRow : styles.orderItemRow, { opacity: 0.5 }]}>
+                {commandRail && <Text style={styles.cmdRowNum}>{index + 1}</Text>}
                 <View style={styles.orderItemLeft}>
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.itemName, styles.itemNameCancelled]}>{item.name}</Text>
-                    <View style={styles.itemMetaRow}>
-                      <Text style={[styles.itemPrice, styles.itemNameCancelled]}>₹{item.price.toFixed(0)}</Text>
-                    </View>
+                    {!commandRail && (
+                      <View style={styles.itemMetaRow}>
+                        <Text style={[styles.itemPrice, styles.itemNameCancelled]}>₹{item.price.toFixed(0)}</Text>
+                      </View>
+                    )}
                   </View>
                 </View>
                 <View style={styles.cancelledBadge}>
@@ -1484,6 +1746,66 @@ export default function TableDetail() {
               </View>
             );
           }
+
+          // ── Command rail: one line per item. Number, name, price in a
+          //    right-aligned tabular column, then the serve control. The
+          //    price moved out from under the name because a mouse reads a
+          //    column faster than it reads a meta line, and because ↵ needs
+          //    a row it can highlight without the row being three deep.
+          if (commandRail) {
+            const selected = index === selIdx;
+            return (
+              <TouchableOpacity
+                activeOpacity={0.9}
+                onPress={() => setSelIdx(index)}
+                onLongPress={() => setCancelTarget(item)}
+                delayLongPress={350}
+                style={[styles.cmdRow, selected && styles.cmdRowSelected, isServed && { opacity: 0.5 }]}
+                accessibilityRole="button"
+                accessibilityLabel={`${item.name}, ₹${item.price.toFixed(0)}${isServed ? ', served' : ''}`}
+              >
+                <Text style={[styles.cmdRowNum, selected && styles.cmdRowNumSelected]}>{index + 1}</Text>
+                <View style={styles.cmdRowBody}>
+                  <Text style={[styles.cmdRowName, isServed && styles.itemNameServed]} numberOfLines={1}>
+                    {item.name}
+                  </Text>
+                  <Text style={styles.cmdRowSub} numberOfLines={1}>
+                    {item.orderedAt}
+                    {item.modifiersSummary ? ` · ${item.modifiersSummary}`
+                      : isPartial ? ` · ${servedQty} of ${item.qty} served` : ''}
+                  </Text>
+                </View>
+                <Text style={[styles.cmdRowPrice, isServed && styles.itemNameServed]}>
+                  {item.price.toFixed(0)}
+                </Text>
+                {isServed ? (
+                  <View style={styles.cmdServed}>
+                    <Ionicons name="checkmark" size={13} color={QuinckleColors.success} />
+                  </View>
+                ) : (
+                  <View style={styles.cmdServeWrap}>
+                    {dinerStatusMode === 'DUAL_CHANNEL' && item.status === 'ready' ? (
+                      <View style={styles.cmdReadyDot} />
+                    ) : null}
+                    <TouchableOpacity
+                      style={styles.cmdServeBtn}
+                      onPress={() => void handleServe(item, servedQty + 1)}
+                      onLongPress={holdable ? () => void handleServe(item, item.qty) : undefined}
+                      delayLongPress={350}
+                      activeOpacity={0.75}
+                      accessibilityRole="button"
+                      accessibilityLabel={holdable ? `Serve one of ${item.qty - servedQty}` : 'Mark served'}
+                    >
+                      <Text style={styles.cmdServeText}>
+                        {holdable ? `Serve 1/${item.qty - servedQty}` : 'Serve'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </TouchableOpacity>
+            );
+          }
+
           return (
             <TouchableOpacity
               activeOpacity={0.9}
@@ -1663,14 +1985,380 @@ export default function TableDetail() {
     </View>
   );
 
+  // Docked total + CTA / status — the total sits directly above the button it
+  // feeds, instead of floating higher up the rail. The itemised breakdown and
+  // GST split live behind the same chevron-up sheet the phone layout uses.
+  // Shared between the standalone-route wide layout and the panel — the rail
+  // ends the same way in both.
+  const railFooterJsx = (
+    <View style={[styles.railFooter, panelMode && styles.railFooterBleed]}>
+      <TouchableOpacity style={styles.railTotalRow} activeOpacity={0.85} onPress={() => setIsExpanded(true)}>
+        <Text style={styles.railTotalLabel}>Total payable</Text>
+        <View style={styles.railTotalRight}>
+          {!isPaid && orders.length > 0 && (
+            <TouchableOpacity
+              onPress={() => openAdjustBill()}
+              style={styles.railAdjustPill}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel="Adjust bill"
+            >
+              <MaterialCommunityIcons name="tune-variant" size={13} color={QuinckleColors.textSecondary} />
+              <Text style={styles.railAdjustPillText}>Adjust bill</Text>
+            </TouchableOpacity>
+          )}
+          <Text style={styles.railTotalValue}>₹{grandTotal.toFixed(0)}</Text>
+          {orders.length > 0 && (
+            <Ionicons name="chevron-up" size={16} color={QuinckleColors.textTertiary} />
+          )}
+        </View>
+      </TouchableOpacity>
+
+      {!isPaid && grandTotal > 0 && orders.length > 0 ? (
+        <TouchableOpacity
+          style={[styles.collectBtn, isRequestingCollection && { opacity: 0.65 }]}
+          onPress={() => { setIsExpanded(false); void requestCollection(); }}
+          disabled={isRequestingCollection}
+          activeOpacity={0.85}
+        >
+          {isRequestingCollection
+            ? <ActivityIndicator size="small" color="#fff" />
+            : <Ionicons name="cash-outline" size={16} color="#fff" />}
+          <Text style={styles.collectBtnText}>
+            {isRequestingCollection ? 'Creating request...' : 'Send to Payment Collection'}
+          </Text>
+        </TouchableOpacity>
+      ) : isPaid ? (
+        <View style={[
+          styles.railPaidBadge,
+          (billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? styles.paidBadgeKhata : styles.paidBadgeActive,
+        ]}>
+          <Ionicons
+            name={(billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? 'book-outline' : 'checkmark-circle'}
+            size={15}
+            color={(billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? QuinckleColors.warning : QuinckleColors.success}
+          />
+          <Text style={[
+            styles.railPaidText,
+            { color: (billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? QuinckleColors.warning : QuinckleColors.success },
+          ]}>
+            {billPaymentMethod === 'due' ? 'On khata'
+              : (billDueAmount ?? 0) > 0 ? `Split · ₹${Math.round(billDueAmount ?? 0)} on khata`
+              : billPaymentMethod === 'waived' ? 'Waived'
+              : billPaymentMethod === 'cash' ? 'Settled · Cash'
+              : billPaymentMethod === 'upi_direct' ? 'Settled · UPI'
+              : billPaymentMethod === 'mixed' ? 'Settled · Split'
+              : 'Settled'}
+          </Text>
+        </View>
+      ) : (
+        <Text style={styles.railEmptyHint}>No items to bill yet</Text>
+      )}
+    </View>
+  );
+
+  // The rail's own content — actions, the progress header, the scrollable
+  // ticket, then the footer. Identical whether it's inside the standalone
+  // route's bordered railPane or filling the grid panel edge-to-edge.
+  const railContentJsx = (
+    <>
+      {ladderStripJsx}
+      <View style={styles.railActions}>{actionRowJsx}</View>
+      <View style={styles.railSection}>{activeOrdersHeaderJsx}</View>
+      <View style={{ flex: 1 }}>
+        {orderListJsx}
+      </View>
+      {railFooterJsx}
+    </>
+  );
+
+  // ══ Style C — the desktop command rail ══════════════════════════════════
+  // The side panel is a narrow column in a wide window, worked with a mouse.
+  // The phone layout spent its top 130pt on three fat action cards and hid
+  // the bill behind a chevron, which left the middle of the panel empty and
+  // the one number staff ask about out of sight. Here the actions become a
+  // 44pt icon rail on the outer edge, the ticket takes the full width, and
+  // the bill sits open on the floor above the CTA.
+
+  const railBtn = (o: {
+    key: string;
+    icon: React.ComponentProps<typeof Ionicons>['name'];
+    label: string;
+    color?: string;
+    onPress: () => void;
+    disabledReason?: string | null;
+  }) => {
+    const enabled = !o.disabledReason;
+    return (
+      <TouchableOpacity
+        key={o.key}
+        onPress={enabled ? o.onPress : () => setHint(o.disabledReason!)}
+        style={styles.cmdRailBtn}
+        activeOpacity={0.6}
+        accessibilityRole="button"
+        accessibilityLabel={o.label}
+        accessibilityHint={o.disabledReason ?? undefined}
+        accessibilityState={{ disabled: !enabled }}
+      >
+        <Ionicons
+          name={o.icon}
+          size={22}
+          color={enabled ? (o.color ?? QuinckleColors.textSecondary) : QuinckleColors.textMuted}
+        />
+        {/* The label rides under the icon rather than in a hover tooltip: at
+            44pt it still fits, and a till that a new hire picks up mid-shift
+            should not require discovering what a glyph means. */}
+        <Text
+          style={[
+            styles.cmdRailLabel,
+            o.color ? { color: o.color } : null,
+            !enabled && { color: QuinckleColors.textMuted },
+          ]}
+          numberOfLines={1}
+        >
+          {o.label}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const commandRailJsx = (
+    <View style={styles.cmdRail}>
+      {railBtn({ key: 'add', icon: 'add-circle-outline', label: 'Add', onPress: goAddItems, disabledReason: addItemsReason })}
+      {railBtn({ key: 'qr', icon: 'qr-code-outline', label: 'UPI', onPress: openUpiQr, disabledReason: upiQrReason })}
+      {railBtn({ key: 'print', icon: 'print-outline', label: 'Print', onPress: openPrintMenu })}
+      {!isPaid && orders.length > 0
+        ? railBtn({ key: 'adjust', icon: 'options-outline', label: 'Bill', onPress: () => openAdjustBill() })
+        : null}
+      {railBtn({ key: 'swap', icon: 'swap-horizontal', label: 'Swap', onPress: () => { void openSwapModal(); } })}
+      {railBtn({ key: 'extend', icon: 'time-outline', label: 'Time', onPress: openExtendMenu })}
+      {/* Destructive, so it sits alone at the far end of the rail. */}
+      <View style={{ flex: 1 }} />
+      {railBtn({
+        key: 'end', icon: 'log-out-outline', label: 'End',
+        color: QuinckleColors.danger, onPress: handleEndSession,
+      })}
+    </View>
+  );
+
+  const cmdHeaderJsx = (
+    <View style={styles.cmdHeader}>
+      {/* The side panel has no back: picking another table swaps it. The
+          standalone route still needs one. */}
+      {!panelMode && (
+        <TouchableOpacity
+          onPress={() => router.back()}
+          style={styles.cmdInfoBtn}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+        >
+          <Ionicons name="chevron-back" size={18} color={QuinckleColors.textPrimary} />
+        </TouchableOpacity>
+      )}
+      <Text style={styles.cmdTable} numberOfLines={1}>
+        T{tableNum}{groupLabel ? ` · ${groupLabel}` : ''}
+      </Text>
+      <Text style={styles.cmdZone} numberOfLines={1}>{zoneLabel}</Text>
+      {mergedFrom.length > 0 ? (
+        <Text style={styles.cmdMerged} numberOfLines={1}>· Merged</Text>
+      ) : null}
+      <View style={{ flex: 1, minWidth: Spacing.sm }} />
+      {(countdownStr || elapsed) ? (
+        <Text style={[styles.cmdTimer, countdownStr ? { color: expiryFg } : null]} numberOfLines={1}>
+          {countdownStr ?? elapsed}
+        </Text>
+      ) : null}
+      <TouchableOpacity
+        onPress={() => setSessionInfoOpen(true)}
+        style={styles.cmdInfoBtn}
+        activeOpacity={0.7}
+        accessibilityRole="button"
+        accessibilityLabel="Session details"
+      >
+        <Ionicons name="information-circle-outline" size={17} color={QuinckleColors.textSecondary} />
+      </TouchableOpacity>
+    </View>
+  );
+
+  const cmdTicketHeaderJsx = (
+    <View style={styles.cmdTicketHeader}>
+      <View style={styles.sectionTitleRow}>
+        <Text style={styles.sectionTitle}>
+          {totalCount} {totalCount === 1 ? 'item' : 'items'}
+        </Text>
+        <Text style={styles.progressText}>{servedCount} served</Text>
+      </View>
+      <View style={styles.serviceProgressTrack}>
+        <Animated.View
+          style={[styles.serviceProgressFill, {
+            width: progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }),
+          }]}
+        />
+      </View>
+    </View>
+  );
+
+  const cmdKeysJsx = (
+    <View style={styles.cmdKeys}>
+      <Text style={styles.cmdKeysText} numberOfLines={1}>
+        {KeyLabels.enter} serve   ↑↓ pick   A add   P print   B bill   {KeyLabels.accel}{KeyLabels.enter} collect
+      </Text>
+    </View>
+  );
+
+  // The bill, open. GST already inside the prices is stated under the total
+  // instead of as a line item, because a crew printout once read embedded
+  // GST as a discount. The itemised breakdown (items, discounts, charges,
+  // GST, round-off, tip) no longer sits inline here — it lives one tap away,
+  // behind the chevron-up beside Payable, same as the session-info and print
+  // sheets elsewhere on this rail.
+  const pricesIncludeTax = !!restaurantInvoiceMeta?.pricesIncludeTax;
+
+  const cmdBillJsx = (
+    <View style={styles.cmdBill}>
+      <TouchableOpacity
+        style={styles.cmdPayRow}
+        activeOpacity={orders.length > 0 ? 0.7 : 1}
+        disabled={orders.length === 0}
+        onPress={() => setIsExpanded(true)}
+        accessibilityRole="button"
+        accessibilityLabel="Full bill breakdown"
+      >
+        <Text style={styles.cmdPayLabel}>Payable</Text>
+        <View style={styles.cmdPayRight}>
+          <Text style={styles.cmdPayValue}>₹{grandTotal.toFixed(0)}</Text>
+          {orders.length > 0 && (
+            <Ionicons name="chevron-up" size={16} color={QuinckleColors.textTertiary} />
+          )}
+        </View>
+      </TouchableOpacity>
+      {pricesIncludeTax && taxTotal > 0 ? (
+        <Text style={styles.cmdPayNote}>includes ₹{taxTotal.toFixed(2)} GST</Text>
+      ) : null}
+
+      {!isPaid && grandTotal > 0 && orders.length > 0 ? (
+        <TouchableOpacity
+          style={[styles.cmdCollectBtn, isRequestingCollection && { opacity: 0.65 }]}
+          onPress={() => { setIsExpanded(false); void requestCollection(); }}
+          disabled={isRequestingCollection}
+          activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel="Send to payment collection"
+        >
+          {isRequestingCollection
+            ? <ActivityIndicator size="small" color="#fff" />
+            : <Ionicons name="cash-outline" size={15} color="#fff" />}
+          <Text style={styles.cmdCollectText}>
+            {isRequestingCollection ? 'Creating request…' : 'Send to collection'}
+          </Text>
+          {!isRequestingCollection && (
+            <Text style={styles.cmdCollectKey}>{KeyLabels.accel}{KeyLabels.enter}</Text>
+          )}
+        </TouchableOpacity>
+      ) : isPaid ? (
+        <View style={[
+          styles.railPaidBadge,
+          { marginTop: Spacing.md },
+          (billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? styles.paidBadgeKhata : styles.paidBadgeActive,
+        ]}>
+          <Ionicons
+            name={(billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? 'book-outline' : 'checkmark-circle'}
+            size={15}
+            color={(billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? QuinckleColors.warning : QuinckleColors.success}
+          />
+          <Text style={[
+            styles.railPaidText,
+            { color: (billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? QuinckleColors.warning : QuinckleColors.success },
+          ]}>
+            {billPaymentMethod === 'due' ? 'On khata'
+              : (billDueAmount ?? 0) > 0 ? `Split · ₹${Math.round(billDueAmount ?? 0)} on khata`
+              : billPaymentMethod === 'waived' ? 'Waived'
+              : billPaymentMethod === 'cash' ? 'Settled · Cash'
+              : billPaymentMethod === 'upi_direct' ? 'Settled · UPI'
+              : billPaymentMethod === 'mixed' ? 'Settled · Split'
+              : 'Settled'}
+          </Text>
+        </View>
+      ) : (
+        <Text style={styles.railEmptyHint}>No items to bill yet</Text>
+      )}
+    </View>
+  );
+
+  const commandRailLayoutJsx = (
+    <View style={styles.cmdRow2}>
+      <View style={styles.cmdMain}>
+        {cmdHeaderJsx}
+        {ladderStripJsx}
+        {cmdTicketHeaderJsx}
+        <View style={{ flex: 1 }}>{orderListJsx}</View>
+        {cmdKeysJsx}
+        {cmdBillJsx}
+      </View>
+      {commandRailJsx}
+    </View>
+  );
+
+  // ── What the hotkeys actually do ──
+  // Assigned during render (see keysRef, above the isLoading return): these
+  // handlers only exist down here, and a hook below that return would change
+  // the hook count between the loading and loaded renders.
+  const anySheetOpen = actionMenuOpen || printMenuOpen || quickPrintOpen || isExpanded || showUpiModal
+    || sessionInfoOpen || ladderOpen || swapOpen || extendSheetOpen || freeModalOpen
+    || adjustSheetOpen || collectSheetOpen || !!cancelTarget || !!qrSheet || dialog.visible;
+  const moveSel = (delta: number) => {
+    if (flatItems.length === 0) return;
+    const next = Math.min(flatItems.length - 1, Math.max(0, selIdx + delta));
+    setSelIdx(next);
+    listRef.current?.scrollToIndex({ index: next, viewPosition: 0.5, animated: true });
+  };
+  keysRef.current = {
+    enabled: commandRail && !anySheetOpen,
+    run: (action) => {
+      switch (action) {
+        case 'down': moveSel(1); break;
+        case 'up': moveSel(-1); break;
+        case 'serve': {
+          const item = flatItems[selIdx];
+          if (!item || item.cancelled || item.status === 'served') return;
+          void handleServe(item, Math.max(0, Math.min(item.qty, item.servedQty)) + 1);
+          break;
+        }
+        case 'add': if (!addItemsReason) goAddItems(); else setHint(addItemsReason); break;
+        case 'qr': if (!upiQrReason) openUpiQr(); else setHint(upiQrReason); break;
+        case 'print': openPrintMenu(); break;
+        case 'adjust': if (!isPaid && orders.length > 0) openAdjustBill(); break;
+        case 'collect':
+          if (!isPaid && grandTotal > 0 && orders.length > 0 && !isRequestingCollection) {
+            void requestCollection();
+          }
+          break;
+      }
+    },
+  };
+
   return (
-    <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
-      {!isWide ? phoneHeaderJsx : (
+    <View
+      style={[styles.container, { paddingTop: panelMode ? 0 : insets.top + Spacing.sm }]}
+      onLayout={onPanelLayout}
+    >
+      {/* The command rail draws its own one-line header inside the layout. */}
+      {!isWide ? phoneHeaderJsx : commandRail ? null : (
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} activeOpacity={0.7}>
-            <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
-          </TouchableOpacity>
+          {/* The side panel has no back/close: picking another table swaps it. */}
+          {!panelMode && (
+            <TouchableOpacity
+              onPress={() => router.back()}
+              style={styles.iconBtn}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel="Back"
+            >
+              <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
+            </TouchableOpacity>
+          )}
           {/* Table number with its seating zone beside it, read as one label.
               Tables without a zone show the number alone. */}
           <View style={styles.titleGroup}>
@@ -1691,8 +2379,7 @@ export default function TableDetail() {
             accessibilityRole="button"
             accessibilityLabel="Session details"
           >
-            <Ionicons name="information-circle-outline" size={16} color={QuinckleColors.textSecondary} />
-            <Text style={styles.sessionBtnText}>Session details</Text>
+            <Ionicons name="information-circle-outline" size={18} color={QuinckleColors.textSecondary} />
           </TouchableOpacity>
 
           {/* Merged tables stay visible. Which sessions this table absorbed
@@ -1729,91 +2416,37 @@ export default function TableDetail() {
       )}{/* end header */}
 
       {isWide ? (
-        // ── POS layout: order ticket fills the main pane, a fixed receipt rail
-        //    on the right carries the session summary, itemized bill, and the
-        //    docked pay CTA. ──
-        <View style={[styles.wideRow, { paddingBottom: insets.bottom + Spacing.md }]}>
-          <View style={styles.wideMainPane}>
-            {orderListJsx}
+        commandRail ? (
+          // ── Desktop: command rail. Full-bleed in the panel (the container's
+          //    own side padding would otherwise inset the icon rail off the
+          //    window edge); boxed in the receipt card on the standalone
+          //    route, where it is a floating pane rather than a column. ──
+          panelMode ? (
+            <View style={[styles.cmdBleed, { flex: 1 }]}>{commandRailLayoutJsx}</View>
+          ) : (
+            <View style={[styles.wideRow, { paddingBottom: insets.bottom + Spacing.md }]}>
+              <View style={styles.wideMainPane} />
+              <View style={[styles.railPane, { width: railWidth }]}>{commandRailLayoutJsx}</View>
+            </View>
+          )
+        ) : panelMode ? (
+          // ── Embedded in the grid's side panel: the rail's content fills
+          //    whatever box the panel already drew — no wideRow, no empty
+          //    main pane, no fixed railWidth (those only make sense when this
+          //    is the whole screen). ──
+          <View style={{ flex: 1 }}>{railContentJsx}</View>
+        ) : (
+          // ── Standalone route on a wide window (direct link, not the grid's
+          //    panel): order ticket fills the main pane, a fixed receipt rail
+          //    on the right carries the session summary, itemized bill, and
+          //    the docked pay CTA. ──
+          <View style={[styles.wideRow, { paddingBottom: insets.bottom + Spacing.md }]}>
+            {/* Empty for now — the ticket that used to fill this pane moved
+                into the rail, under the progress bar. */}
+            <View style={styles.wideMainPane} />
+            <View style={[styles.railPane, { width: railWidth }]}>{railContentJsx}</View>
           </View>
-
-          <View style={[styles.railPane, { width: railWidth }]}>
-            {/* Compact session header. T{num}, the ref and the timer all live in
-                the screen header now, so the rail carries only the guest
-                identity the bill is handed to. */}
-            <View style={styles.railHeader}>
-              <View style={styles.railHeaderTop}>
-                <Text style={styles.railGuest} numberOfLines={1}>
-                  {sessionCustomerName?.trim() || 'Walk-in guest'}
-                </Text>
-              </View>
-              {sessionCustomerPhone?.trim() ? (
-                <Text style={styles.railPhone}>{sessionCustomerPhone.trim()}</Text>
-              ) : null}
-            </View>
-
-            {/* Same three actions as the phone layout, so behaviour doesn't
-                diverge by form factor. */}
-            {ladderStripJsx}
-            {/* The row has no side padding of its own — on a phone the screen
-                supplies it — so inside the rail it takes the rail's inset. */}
-            <View style={styles.railActions}>{actionRowJsx}</View>
-
-            <View style={styles.railBillWrap}>
-              <BillExplainContent
-                bill={explainedBill}
-                pinned
-                inset={false}
-                // Same rule as the phone layout's tune icon: any unpaid bill with items.
-                onAdjust={!isPaid && orders.length > 0 ? () => openAdjustBill() : undefined}
-              />
-            </View>
-
-            {/* Docked CTA / status */}
-            <View style={styles.railFooter}>
-              {!isPaid && grandTotal > 0 && orders.length > 0 ? (
-                <TouchableOpacity
-                  style={[styles.collectBtn, isRequestingCollection && { opacity: 0.65 }]}
-                  onPress={() => { setIsExpanded(false); void requestCollection(); }}
-                  disabled={isRequestingCollection}
-                  activeOpacity={0.85}
-                >
-                  {isRequestingCollection
-                    ? <ActivityIndicator size="small" color="#fff" />
-                    : <Ionicons name="cash-outline" size={16} color="#fff" />}
-                  <Text style={styles.collectBtnText}>
-                    {isRequestingCollection ? 'Creating request...' : 'Send to Payment Collection'}
-                  </Text>
-                </TouchableOpacity>
-              ) : isPaid ? (
-                <View style={[
-                  styles.railPaidBadge,
-                  (billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? styles.paidBadgeKhata : styles.paidBadgeActive,
-                ]}>
-                  <Ionicons
-                    name={(billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? 'book-outline' : 'checkmark-circle'}
-                    size={15}
-                    color={(billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? QuinckleColors.warning : QuinckleColors.success}
-                  />
-                  <Text style={[
-                    styles.railPaidText,
-                    { color: (billPaymentMethod === 'due' || (billDueAmount ?? 0) > 0) ? QuinckleColors.warning : QuinckleColors.success },
-                  ]}>
-                    {billPaymentMethod === 'due' ? 'On khata'
-                      : (billDueAmount ?? 0) > 0 ? `Split · ₹${Math.round(billDueAmount ?? 0)} on khata`
-                      : billPaymentMethod === 'waived' ? 'Waived'
-                      : billPaymentMethod === 'cash' ? 'Settled · Cash'
-                      : billPaymentMethod === 'upi_direct' ? 'Settled · UPI'
-                      : billPaymentMethod === 'mixed' ? 'Settled · Split'
-                      : 'Settled'}
-                  </Text>
-                </View>
-              ) : (
-                <Text style={styles.railEmptyHint}>No items to bill yet</Text>
-              )}
-            </View>
-          </View>
-        </View>
+        )
       ) : (
         <>
           {ladderStripJsx}
@@ -1926,16 +2559,38 @@ export default function TableDetail() {
       {actionSheetJsx}
 
       <HintToast message={hint} onDismiss={() => setHint(null)} bottomOffset={isWide ? 24 : 96} />
+      <SuccessToast message={placedMessage} onDismiss={() => setPlacedMessage(null)} />
 
-      {/* The full bill, explained — the same sheet Collect Payment opens. */}
-      <BillExplainSheet
-        visible={isExpanded}
-        onClose={() => setIsExpanded(false)}
-        bill={explainedBill}
-      />
+      {/* The full bill, explained. Desktop/tablet-landscape (not the command
+          rail) gets a centered, content-sized card (it's a reference popup
+          beside a rail that already shows the total, not a full flow) — a
+          bottom sheet reads as a phone pattern stranded on a big screen.
+          The command rail is a mouse-and-keyboard surface that already opens
+          session info and print this way, so the bill breakdown's
+          chevron-up matches them instead — same sheet Collect Payment opens
+          on phone. */}
+      {isWide && !commandRail ? (
+        <CenteredModal visible={isExpanded} onClose={() => setIsExpanded(false)} title="Bill breakdown" maxWidth={440}>
+          {/* A fixed box, not one that grows or shrinks with the item count —
+              CenteredModal's own ScrollView just measures this one child, so
+              giving it a set height keeps the card's size constant while
+              `pinned` scrolls the items INSIDE it and holds the total still
+              at the bottom, the same split the rail used to show inline. */}
+          <View style={{ height: Math.min(420, Math.round(winHeight * 0.5)) }}>
+            {explainedBill ? <BillExplainContent bill={explainedBill} pinned /> : null}
+          </View>
+        </CenteredModal>
+      ) : (
+        <BillExplainSheet
+          visible={isExpanded}
+          onClose={() => setIsExpanded(false)}
+          bill={explainedBill}
+        />
+      )}
 
       <QrChoiceSheet
         visible={!!qrSheet}
+        keyboard={commandRail}
         amount={qrSheet?.grandTotal ?? 0}
         onPick={(mode) => {
           void setUpiQrMode(mode);        // remember as the default next time
@@ -2044,6 +2699,7 @@ export default function TableDetail() {
       {/* Print options bottom sheet */}
       <PrintOptionsSheet
         visible={printMenuOpen}
+        keyboard={commandRail}
         onPrintKot={handlePrintKot}
         onPrintInvoice={(buyer) => { void handlePrintInvoice(buyer); }}
         onClose={() => setPrintMenuOpen(false)}
@@ -2051,8 +2707,80 @@ export default function TableDetail() {
         initialBuyerName={sessionBuyerName}
       />
 
+      {/* Grid card's quick-print — bare KOT/Invoice choice, centered. */}
+      <CenteredModal
+        visible={quickPrintOpen}
+        onClose={() => { setQuickPrintOpen(false); finishQuickPrintIfActive(); }}
+        title="Print"
+      >
+        <View style={styles.quickPrintGrid}>
+          <PrintCard
+            icon="restaurant-outline"
+            label="Print KOT"
+            onPress={() => { setQuickPrintOpen(false); void handlePrintKot(); }}
+          />
+          <PrintCard
+            icon="receipt-outline"
+            label="Print invoice"
+            onPress={() => { setQuickPrintOpen(false); void handlePrintInvoice(); }}
+          />
+        </View>
+      </CenteredModal>
+
       {/* Tap-to-paper print progress */}
-      <PrintProgressOverlay job={printJob} onDismiss={() => setPrintJob(null)} />
+      <PrintProgressOverlay job={printJob} onDismiss={() => { setPrintJob(null); finishQuickPrintIfActive(); }} />
+
+      {/* ── Adjust bill, in the panel (desktop) ──
+          Not dismissible by backdrop or swipe: it holds a part-typed bill, and
+          the sheet cannot ask "discard?" after a gesture has already thrown it
+          away. Its own chevron routes through the form's discard guard. */}
+      {commandRail && (
+        <BottomSheet
+          visible={adjustSheetOpen}
+          onClose={() => setAdjustSheetOpen(false)}
+          dismissible={false}
+          disableInternalScroll
+          maxHeightRatio={0.88}
+        >
+          <AdjustBillForm
+            embedded
+            sessionId={sessionId}
+            subtitle={`Table T${tableNum} · ${zoneLabel}`}
+            billTotal={grandTotal}
+            onClose={() => setAdjustSheetOpen(false)}
+            onSaved={() => { void loadBill(); }}
+          />
+        </BottomSheet>
+      )}
+
+      {/* ── Send to Payment Collection, in the panel (desktop) ──
+          See CollectPaymentPanel — a method picker + one CTA, not the phone's
+          staged confirm flow or a UPI QR. Not dismissible by backdrop: closing
+          mid-submit would leave the crew unsure whether the payment landed. */}
+      {commandRail && sessionId && (
+        <BottomSheet
+          visible={collectSheetOpen}
+          onClose={() => setCollectSheetOpen(false)}
+          title="Send to payment collection"
+          dismissible={false}
+        >
+          <CollectPaymentPanel
+            sessionId={sessionId}
+            orderIds={collectSheetData?.orderIds ?? orders.map(o => o.order_id)}
+            amount={collectSheetData?.amount ?? grandTotal}
+            tableLabel={`T${tableNum}`}
+            staffId={staffInfo?.id ?? ''}
+            customerName={sessionCustomerName}
+            customerPhone={sessionCustomerPhone}
+            onClose={() => setCollectSheetOpen(false)}
+            onCollected={() => {
+              setCollectSheetOpen(false);
+              void loadBill();
+              setPlacedMessage('Payment collected');
+            }}
+          />
+        </BottomSheet>
+      )}
 
       {/* Swap-table bottom sheet */}
       <SwapTableSheet
@@ -2184,11 +2912,35 @@ export default function TableDetail() {
   );
 }
 
+/**
+ * The route itself — phone always lands here (router.push), and so does
+ * desktop for a direct/deep link. The table grid's side panel renders
+ * `TableDetailScreen` directly instead, with `panelMode` + live props (see
+ * app/(staff)/index.tsx) rather than pushing this route at all.
+ */
+export default function TableDetailRoute() {
+  const params = useLocalSearchParams<{
+    tableId: string; sessionId: string; tableDbId: string; occupiedSince: string;
+    expiresAt: string; customerName: string; customerPhone: string;
+    groupLabel?: string; zoneName?: string; openBill?: string;
+    placedAmount?: string; placedCount?: string;
+  }>();
+  return <TableDetailScreen {...params} />;
+}
+
 const RAIL_MIN_WIDTH = 400;
 const RAIL_MAX_WIDTH = 520;
 const RAIL_WIDTH_RATIO = 0.34;
+/**
+ * Below this the icon rail would eat too much of the ticket, so the panel
+ * falls back to the stacked rail layout. 380 = 336 of content beside a 44pt
+ * rail, which still fits "1× Crispy Corn & Cheese  299  Serve" on one line.
+ */
+const COMMAND_RAIL_MIN = 380;
+const COMMAND_RAIL_W = 60;
 
 const styles = StyleSheet.create({
+  quickPrintGrid: { flexDirection: 'row', paddingHorizontal: Spacing.xl, paddingBottom: Spacing.xl, gap: Spacing.md },
   toast: { position: 'absolute', alignSelf: 'center', backgroundColor: QuinckleColors.surfaceElevated, borderWidth: 1, borderColor: QuinckleColors.borderStrong, borderRadius: 12, paddingHorizontal: 18, paddingVertical: 12 },
   toastText: { color: QuinckleColors.textPrimary, fontSize: 13.5, fontWeight: '700' },
   segToggle: {
@@ -2429,29 +3181,155 @@ const styles = StyleSheet.create({
     borderColor: QuinckleColors.border,
     overflow: 'hidden',
   },
-  railHeader: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.lg, paddingBottom: Spacing.md },
-  railHeaderTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.sm },
-  railGuest: { ...Typography.subtitle, color: QuinckleColors.textPrimary, flex: 1 },
-  railPhone: { ...Typography.caption, color: QuinckleColors.textSecondary, marginTop: 2 },
-  railActions: { paddingHorizontal: Spacing.lg },
-  railBillWrap: {
-    flex: 1,
-    paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.sm,
-    paddingBottom: Spacing.md,
+  // A block below the action cards — a top border (echoing the divider
+  // railFooter draws above the total) reads as "a new section", where a
+  // bottom border here would have looked like it was closing one.
+  railSection: {
+    paddingHorizontal: Spacing.lg, paddingTop: Spacing.lg, paddingBottom: Spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: QuinckleColors.borderSubtle,
   },
+  railActions: { paddingHorizontal: Spacing.lg },
+  // Lives inside railFooter, directly above the CTA it feeds — the footer
+  // already supplies the top border/padding that used to sit on this row.
+  railTotalRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.md,
+    marginBottom: Spacing.md,
+  },
+  railTotalLabel: { color: QuinckleColors.textTertiary, fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 },
+  railTotalRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  railTotalValue: { color: QuinckleColors.textPrimary, fontSize: 20, fontWeight: '700', letterSpacing: -0.4 },
+  railAdjustPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: Radius.pill,
+    backgroundColor: QuinckleColors.surfaceMuted, borderWidth: 1, borderColor: QuinckleColors.border,
+  },
+  railAdjustPillText: { fontSize: 12, fontWeight: '600', color: QuinckleColors.textSecondary },
   railFooter: {
     paddingHorizontal: Spacing.lg, paddingTop: Spacing.lg, paddingBottom: Spacing.lg,
     borderTopWidth: 1, borderTopColor: QuinckleColors.border,
     backgroundColor: QuinckleColors.surface,
   },
+  // In the grid's side panel the screen container still carries its own side
+  // padding, which would inset this band from the card's edges. Cancel it so
+  // the total + CTA section runs the full width (its own padding keeps the
+  // content where it was).
+  railFooterBleed: { marginHorizontal: -Spacing.lg },
   railPaidBadge: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     paddingVertical: 12, borderRadius: Radius.md, borderWidth: 1,
   },
   railPaidText: { fontSize: 14, fontWeight: '700' },
   railEmptyHint: { ...Typography.caption, color: QuinckleColors.textMuted, textAlign: 'center', paddingVertical: 12 },
+
+  // ── Style C: the desktop command rail ──────────────────────────────────
+  // Sized for a mouse and a 27" screen, not a thumb: rows are 34pt rather
+  // than 56, numbers are tabular so the price column reads as a column, and
+  // nothing that matters is more than one glance from the top-left.
+  cmdBleed: { marginHorizontal: -Spacing.lg },
+  cmdRow2: { flex: 1, flexDirection: 'row' },
+  cmdMain: { flex: 1, minWidth: 0 },
+  cmdRail: {
+    width: COMMAND_RAIL_W,
+    alignItems: 'center',
+    paddingTop: Spacing.sm,
+    // Matches cmdBill's own paddingBottom (Spacing.lg) — so "End" settles
+    // with the same bottom margin the main column gives Payable, instead of
+    // being shoved flush against the panel's rounded bottom corner.
+    paddingBottom: Spacing.lg,
+    gap: 4,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderLeftColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surface,
+  },
+  cmdRailBtn: {
+    width: COMMAND_RAIL_W - 6,
+    paddingVertical: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    borderRadius: Radius.sm,
+  },
+  cmdRailLabel: { fontSize: 9, fontWeight: '600', color: QuinckleColors.textTertiary, letterSpacing: 0.1 },
+
+  cmdHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingLeft: Spacing.lg, paddingRight: Spacing.sm, paddingVertical: Spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: QuinckleColors.border,
+  },
+  cmdTable: { fontSize: 16, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.3, flexShrink: 0 },
+  cmdZone: { fontSize: 12, fontWeight: '500', color: QuinckleColors.textSecondary, flexShrink: 1 },
+  cmdMerged: { fontSize: 12, fontWeight: '600', color: QuinckleColors.warning, flexShrink: 0 },
+  cmdTimer: {
+    fontSize: 12, fontWeight: '600', color: QuinckleColors.textSecondary,
+    fontVariant: ['tabular-nums'] as any,
+  },
+  cmdInfoBtn: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center' },
+
+  cmdTicketHeader: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.md, paddingBottom: Spacing.sm },
+  cmdListContent: { paddingHorizontal: Spacing.lg, paddingBottom: Spacing.sm },
+
+  cmdRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingVertical: 7, paddingHorizontal: 6, marginHorizontal: -6,
+    borderRadius: Radius.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: QuinckleColors.borderSubtle,
+  },
+  cmdRowSelected: { backgroundColor: QuinckleColors.surfaceMuted, borderBottomColor: 'transparent' },
+  cmdRowNum: {
+    width: 16, textAlign: 'right',
+    fontSize: 11, fontWeight: '600', color: QuinckleColors.textMuted,
+    fontVariant: ['tabular-nums'] as any,
+  },
+  cmdRowNumSelected: { color: QuinckleColors.primary },
+  cmdRowBody: { flex: 1, minWidth: 0 },
+  cmdRowName: { fontSize: 13.5, fontWeight: '600', color: QuinckleColors.textPrimary },
+  cmdRowSub: { fontSize: 11, fontWeight: '500', color: QuinckleColors.textTertiary, marginTop: 1 },
+  cmdRowPrice: {
+    fontSize: 12.5, fontWeight: '600', color: QuinckleColors.textSecondary,
+    minWidth: 46, textAlign: 'right',
+    fontVariant: ['tabular-nums'] as any,
+  },
+  cmdServed: { width: 62, alignItems: 'center' },
+  cmdServeWrap: { width: 62, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 4 },
+  cmdReadyDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: QuinckleColors.success },
+  cmdServeBtn: {
+    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6,
+    borderWidth: 1, borderColor: QuinckleColors.primarySoftBorder,
+    backgroundColor: QuinckleColors.primarySoft,
+  },
+  cmdServeText: { color: QuinckleColors.primary, fontSize: 10.5, fontWeight: '700' },
+
+  cmdKeys: {
+    paddingHorizontal: Spacing.lg, paddingVertical: 6,
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: QuinckleColors.borderSubtle,
+  },
+  cmdKeysText: { fontSize: 10.5, fontWeight: '500', color: QuinckleColors.textMuted },
+
+  cmdBill: {
+    paddingHorizontal: Spacing.lg, paddingTop: Spacing.md, paddingBottom: Spacing.lg,
+    borderTopWidth: 1, borderTopColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surface,
+  },
+  cmdPayRow: {
+    // cmdBill already borders its own top edge — Payable is the only thing
+    // left inside it now that the itemised rows moved behind the chevron, so
+    // a second border here just doubled up as a near-touching twin line.
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+  },
+  cmdPayLabel: { fontSize: 11, fontWeight: '700', color: QuinckleColors.textTertiary, textTransform: 'uppercase', letterSpacing: 1 },
+  cmdPayRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
+  cmdPayValue: {
+    fontSize: 22, fontWeight: '700', color: QuinckleColors.textPrimary, letterSpacing: -0.5,
+    fontVariant: ['tabular-nums'] as any,
+  },
+  cmdPayNote: { fontSize: 11, fontWeight: '500', color: QuinckleColors.textMuted, textAlign: 'right', marginTop: 2 },
+  cmdCollectBtn: {
+    backgroundColor: QuinckleColors.primary,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
+    paddingVertical: 11, borderRadius: Radius.md, marginTop: Spacing.md,
+  },
+  cmdCollectText: { color: '#fff', fontSize: 13.5, fontWeight: '700' },
+  cmdCollectKey: { color: 'rgba(255,255,255,0.7)', fontSize: 11, fontWeight: '600' },
   actionSheetGroup: {
     marginHorizontal: Spacing.xl,
     backgroundColor: QuinckleColors.surfaceMuted,
@@ -2485,13 +3363,13 @@ const styles = StyleSheet.create({
   // Wide header: "T01  Rooftop" as one baseline-aligned label, then a labelled button.
   titleGroup: { flexDirection: 'row', alignItems: 'baseline', gap: Spacing.sm, flexShrink: 1, minWidth: 0 },
   zoneLabel: { fontSize: 15, fontWeight: '600', color: QuinckleColors.textTertiary, flexShrink: 1 },
+  // Icon only — the label is on the button's accessibilityLabel.
   sessionBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0,
-    height: 34, paddingHorizontal: Spacing.md,
+    alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+    width: 34, height: 34,
     borderRadius: Radius.md, borderWidth: 1, borderColor: QuinckleColors.border,
     backgroundColor: QuinckleColors.surfaceMuted,
   },
-  sessionBtnText: { fontSize: 13, fontWeight: '600', color: QuinckleColors.textSecondary },
   mergedBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 3,
     backgroundColor: QuinckleColors.surfaceMuted, borderRadius: Radius.pill,
@@ -2618,7 +3496,11 @@ const styles = StyleSheet.create({
   progressText: { color: QuinckleColors.textTertiary, fontSize: 11, fontWeight: '600' },
   serviceProgressTrack: { height: 3, backgroundColor: QuinckleColors.surfaceMutedHover, borderRadius: 2, overflow: 'hidden' },
   serviceProgressFill: { height: '100%', backgroundColor: QuinckleColors.success },
-  listContent: { paddingBottom: 290 },
+  // Now the rail's own list content (see railSection/orderListJsx) — the
+  // rail supplies no horizontal padding of its own to its children, so this
+  // does, matching railActions/railSection. The footer sits right after this
+  // in flow rather than floating over it, so no large clearance padding.
+  listContent: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.sm, paddingBottom: Spacing.lg },
   orderItemRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: Spacing.md, borderBottomWidth: 1, borderBottomColor: QuinckleColors.borderSubtle },
   orderItemLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, flex: 1 },
   checkCircle: { width: 22, height: 22, borderRadius: 11, borderWidth: 1.5, borderColor: QuinckleColors.borderStrong, alignItems: 'center', justifyContent: 'center' },

@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { AppState } from 'react-native';
-import * as SecureStore from 'expo-secure-store';
+import * as SecureStore from '@/services/secureStorage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import { setCrewToken, setOn401Callback, crewAuth } from '../services/api';

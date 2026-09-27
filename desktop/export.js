@@ -29,34 +29,18 @@
  * react-native-web and needs SPA-fallback routing in the shell anyway.)
  */
 
-const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { applySingleOutput } = require('./singleOutput');
 
 const APP_ROOT = path.join(__dirname, '..');
-const APP_JSON = path.join(APP_ROOT, 'app.json');
 const OUT_DIR = path.join('desktop', 'web-build');
 
-const original = fs.readFileSync(APP_JSON); // Buffer — byte-exact restore
-let restored = false;
-
-function restore() {
-  if (restored) return;
-  restored = true;
-  fs.writeFileSync(APP_JSON, original);
-}
-
-// Restore whatever happens — a crash, a failed export, or Ctrl-C.
-process.on('exit', restore);
-for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-  process.on(sig, () => { restore(); process.exit(1); });
-}
+// The override, and the guarantee that app.json is restored whatever happens,
+// live in singleOutput.js — `npm run live` needs the identical treatment.
+const restore = applySingleOutput();
 
 try {
-  const config = JSON.parse(original.toString('utf8'));
-  config.expo.web = { ...(config.expo.web || {}), output: 'single' };
-  fs.writeFileSync(APP_JSON, JSON.stringify(config, null, 2));
-
   const result = spawnSync(
     'npx',
     ['expo', 'export', '--platform', 'web', '--output-dir', OUT_DIR],

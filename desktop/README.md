@@ -30,6 +30,38 @@ npm run desktop:start    # launch only
 npm run desktop:test     # renderer unit tests
 ```
 
+### Live mode — edit and see it, no export
+
+```bash
+cd desktop && npm run live
+```
+
+Starts Metro's dev server and opens the shell on it, so a saved source file
+updates the window in about a second. Quit any running Quinckle Crew first — the
+shell allows one instance per machine, so a second launch just focuses the first.
+
+- Extra arguments go to Electron: `npm run live -- --user-data-dir=/tmp/p` runs
+  a second profile beside a running instance.
+- Port 8099 by default; `QUINCKLE_LIVE_PORT` changes it.
+- It sets `web.output: "single"` in `app.json` for the session and puts it back
+  on exit (`singleOutput.js`, shared with the export). If the process is
+  SIGKILLed, `git checkout app.json` clears the leftover.
+- Live mode runs on its own origin (`http://localhost`), so the per-origin staff
+  profile is separate from the exported build's. Sign in once in each.
+- The shell only honours `QUINCKLE_DEV_URL` when unpackaged, and only for
+  localhost.
+
+## Login persistence
+
+`expo-secure-store` has no web build, so on desktop the token used to live in
+memory only and every reload signed you out. `services/secureStorage.web.ts`
+now goes through the preload bridge (`window.quinckle.secureStore`) to
+`secureStore.js`, which encrypts with Electron's `safeStorage` (the macOS
+Keychain, Windows DPAPI) and writes `secure-store.json` in `userData`. There is
+no plaintext fallback: if encryption is unavailable a write fails and the user
+signs in again next launch. A plain browser tab has no bridge and persists
+nothing.
+
 ## Why the templates are untouched
 
 `kotTemplate.ts`, `invoiceTemplate.ts` and `zReportTemplate.ts` emit DantSu
@@ -56,6 +88,5 @@ logo is already Android-only).
 
 ## Not done yet
 
-Phases 2–5 of the plan: capability gating for the camera/face screens, secure
-token storage (`safeStorage` rather than `localStorage`), `electron-updater`,
-Windows code signing, auto-launch, and the desktop keyboard/mouse layer.
+Phases 2–5 of the plan: capability gating for the camera/face screens,
+`electron-updater`, Windows code signing, auto-launch, and the desktop keyboard/mouse layer.

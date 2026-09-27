@@ -31,6 +31,16 @@ contextBridge.exposeInMainWorld('quinckle', {
     request: (req) => call('http:request', req),
   },
 
+  /**
+   * OS-encrypted key/value storage (see desktop/secureStore.js). Backs the
+   * crew login token, in place of expo-secure-store, which has no web build.
+   */
+  secureStore: {
+    get: (key) => call('secure:get', { key }),
+    set: (key, value) => call('secure:set', { key, value }),
+    delete: (key) => call('secure:delete', { key }),
+  },
+
   printer: {
     print: (job) => call('printer:print', job),
     listUsb: () => call('printer:listUsb'),

@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Image, StyleSheet, Text, View } from 'react-native';
-import Svg, { Defs, RadialGradient as SvgRadialGradient, Rect, Stop } from 'react-native-svg';
 import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
+import { isDesktop } from '../../services/platform';
+import { HeroBackground } from './HeroBackground';
 
 type Slide = {
   title: string;
@@ -23,40 +24,25 @@ const SLIDES: Slide[] = [
   },
 ];
 
+// Desktop shows one fixed message instead of the rotating slides.
+const DESKTOP_CAPTION = {
+  headline: ['The crew is the heart of every venue.', 'You turn a meal into a memory, one table at a time.'],
+  tagline: 'Quinckle Crew. Built for the people who make service happen.',
+};
+
 const AUTO_ADVANCE_MS = 4200;
 const FADE_MS = 420;
 
-/**
- * Background: two soft radial-gradient blobs (react-native-svg) drifting
- * behind the content. Cheap, GPU-friendly, and avoids stretching any bitmap
- * asset across arbitrary tablet aspect ratios.
- */
-function GradientMesh() {
-  return (
-    <Svg width="100%" height="100%" style={StyleSheet.absoluteFill} pointerEvents="none">
-      <Defs>
-        <SvgRadialGradient id="blobTop" cx="80%" cy="8%" r="65%">
-          <Stop offset="0%" stopColor={QuinckleColors.primary} stopOpacity={0.32} />
-          <Stop offset="100%" stopColor={QuinckleColors.primary} stopOpacity={0} />
-        </SvgRadialGradient>
-        <SvgRadialGradient id="blobBottom" cx="10%" cy="95%" r="55%">
-          <Stop offset="0%" stopColor={QuinckleColors.primaryDark} stopOpacity={0.28} />
-          <Stop offset="100%" stopColor={QuinckleColors.primaryDark} stopOpacity={0} />
-        </SvgRadialGradient>
-      </Defs>
-      <Rect x="0" y="0" width="100%" height="100%" fill={QuinckleColors.background} />
-      <Rect x="0" y="0" width="100%" height="100%" fill="url(#blobTop)" />
-      <Rect x="0" y="0" width="100%" height="100%" fill="url(#blobBottom)" />
-    </Svg>
-  );
-}
-
 export function FeatureCarousel() {
+  // Desktop shows the hero as an inset rounded card with one static caption —
+  // no logo, no rotating copy, no dots. Phone and tablet keep the carousel.
+  const showSlides = !isDesktop();
   const [index, setIndex] = useState(0);
   const fade = useRef(new Animated.Value(1)).current;
   const rise = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
+    if (!showSlides) return;
     const timer = setInterval(() => {
       Animated.timing(fade, {
         toValue: 0,
@@ -78,35 +64,53 @@ export function FeatureCarousel() {
   const slide = SLIDES[index];
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, !showSlides && styles.containerDesktopCard]}>
       {/* Background fills the full pane, edge to edge — not inset by the
-          foreground's padding. */}
-      <GradientMesh />
+          foreground's padding. Gradient blobs on phone, a photographic hero
+          with a scrim on desktop — see HeroBackground.web.tsx. */}
+      <HeroBackground />
 
       <View style={styles.content}>
-        <Image
-          source={require('../../assets/images/logo/quinckle crew logo dark.webp')}
-          style={styles.logo}
-          resizeMode="contain"
-        />
+        {showSlides && (
+          <Image
+            source={require('../../assets/images/logo/quinckle crew logo dark.webp')}
+            style={styles.logo}
+            resizeMode="contain"
+          />
+        )}
 
-        <View style={styles.centerArea}>
-          <Animated.View
-            style={[
-              styles.slideContent,
-              { opacity: fade, transform: [{ translateY: rise }] },
-            ]}
-          >
-            <Text style={styles.title}>{slide.title}</Text>
-            <Text style={styles.subtitle}>{slide.subtitle}</Text>
-          </Animated.View>
-        </View>
+        {!showSlides && (
+          <View style={styles.caption}>
+            {DESKTOP_CAPTION.headline.map((line) => (
+              <Text key={line} style={styles.captionHeadline}>
+                {line}
+              </Text>
+            ))}
+            <Text style={styles.captionTagline}>{DESKTOP_CAPTION.tagline}</Text>
+          </View>
+        )}
 
-        <View style={styles.dots}>
-          {SLIDES.map((_, i) => (
-            <View key={i} style={[styles.dot, i === index && styles.dotActive]} />
-          ))}
-        </View>
+        {showSlides && (
+          <>
+            <View style={styles.centerArea}>
+              <Animated.View
+                style={[
+                  styles.slideContent,
+                  { opacity: fade, transform: [{ translateY: rise }] },
+                ]}
+              >
+                <Text style={styles.title}>{slide.title}</Text>
+                <Text style={styles.subtitle}>{slide.subtitle}</Text>
+              </Animated.View>
+            </View>
+
+            <View style={styles.dots}>
+              {SLIDES.map((_, i) => (
+                <View key={i} style={[styles.dot, i === index && styles.dotActive]} />
+              ))}
+            </View>
+          </>
+        )}
       </View>
     </View>
   );
@@ -117,6 +121,12 @@ const styles = StyleSheet.create({
     flex: 1,
     overflow: 'hidden',
     backgroundColor: QuinckleColors.background,
+  },
+  // Desktop: the photo is a rounded card floating in the dark window, not a
+  // full-bleed pane. overflow:'hidden' on container clips the image to it.
+  containerDesktopCard: {
+    margin: Spacing.md,
+    borderRadius: Radius.xxl,
   },
   content: {
     flex: 1,
@@ -131,6 +141,27 @@ const styles = StyleSheet.create({
     left: Spacing.huge,
     width: 121,
     height: 68,
+  },
+  caption: {
+    position: 'absolute',
+    left: Spacing.huge,
+    right: Spacing.huge,
+    bottom: Spacing.huge,
+    alignItems: 'center',
+  },
+  captionHeadline: {
+    fontSize: 24,
+    lineHeight: 32,
+    fontWeight: '400',
+    letterSpacing: -0.4,
+    textAlign: 'center',
+    color: QuinckleColors.textPrimary,
+  },
+  captionTagline: {
+    ...Typography.caption,
+    marginTop: Spacing.lg,
+    textAlign: 'center',
+    color: QuinckleColors.textSecondary,
   },
   centerArea: {
     flex: 1,

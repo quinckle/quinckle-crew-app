@@ -282,21 +282,47 @@ function ProjectedBill({
   );
 }
 
-export default function AdjustBillScreen() {
-  const router = useRouter();
+/**
+ * The form itself, with no opinion about what is holding it.
+ *
+ * The route below wraps it in a pushed screen; the desktop table panel puts it
+ * in a BottomSheet beside the ticket, the same way Swap table and Extend time
+ * open there. Both get identical fields, validation and save order — the only
+ * difference is what `onClose` means and whether there is a status bar to
+ * clear.
+ */
+export function AdjustBillForm({
+  sessionId,
+  subtitle = '',
+  billTotal = null,
+  embedded = false,
+  preOrder = false,
+  onClose,
+  onSaved,
+}: {
+  sessionId: string;
+  /** "Table T02 · Rooftop", already joined by the caller. */
+  subtitle?: string;
+  /** The bill as it stands, for the header. */
+  billTotal?: number | null;
+  /** In a sheet: no status-bar inset, no route chrome, no slide to wait out. */
+  embedded?: boolean;
+  /**
+   * Opened before this session has ever had an order (quinckle-crew-app's
+   * order-menu.tsx, while still building a takeaway cart). Discount and tip
+   * both land on an EXISTING order's row — there isn't one yet — so both
+   * sections hide rather than let staff type into a field Save can never
+   * write. Charges and party size are genuinely session-level (checkout-
+   * pricing.service.ts reads them independent of any order), so those still
+   * work and are what this mode is for.
+   */
+  preOrder?: boolean;
+  /** Leave without saving — pop the route, or close the sheet. */
+  onClose: () => void;
+  /** Something was written, so the host should re-read the bill. */
+  onSaved?: () => void;
+}) {
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{
-    sessionId: string; subtitle?: string; total?: string; zone?: string;
-  }>();
-  const sessionId = String(params.sessionId ?? '');
-  const zone = (params.zone ?? '').trim();
-  // Callers pass the zone, or "Dine-in" for a table in a venue without zones
-  // (matching the table screen's header). Takeaway passes nothing — its order
-  // label already says what it is.
-  const subtitle = [params.subtitle ? String(params.subtitle) : '', zone]
-    .filter(Boolean)
-    .join(' · ');
-  const billTotal = params.total != null ? Number(params.total) : null;
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -334,15 +360,18 @@ export default function AdjustBillScreen() {
   // while the screen is still moving. So the skeleton holds until the slide has
   // settled, even if the data came back first. The timer is a floor in case
   // transitionEnd never arrives (it is not guaranteed on every platform).
+  // In a sheet there is no route transition to wait out — the sheet's own
+  // spring is already running and the form is what it is lifting.
   const navigation = useNavigation();
-  const [settled, setSettled] = useState(false);
+  const [settled, setSettled] = useState(embedded);
   useEffect(() => {
+    if (embedded) return;
     const fallback = setTimeout(() => setSettled(true), 450);
     const unsub = navigation.addListener('transitionEnd' as any, (e: any) => {
       if (!e?.data?.closing) setSettled(true);
     });
     return () => { clearTimeout(fallback); unsub(); };
-  }, [navigation]);
+  }, [navigation, embedded]);
 
   const [dialog, setDialog] = useState<{ title: string; message: string } | null>(null);
   const [confirmLeave, setConfirmLeave] = useState(false);
@@ -452,7 +481,8 @@ export default function AdjustBillScreen() {
   // Debounced because this is a write transaction server-side (rolled back, but
   // still a transaction) — not something to fire on every keystroke.
   useEffect(() => {
-    if (loading || !sessionId) return;
+    // No order to diff a projection against yet — see `preOrder` above.
+    if (loading || !sessionId || preOrder) return;
     let cancelled = false;
     const timer = setTimeout(() => {
       setPreviewing(true);
@@ -476,9 +506,9 @@ export default function AdjustBillScreen() {
     }, 400);
     return () => { cancelled = true; clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, sessionId, covers, amounts, tip, discountType, discountValue, charges]);
+  }, [loading, sessionId, preOrder, covers, amounts, tip, discountType, discountValue, charges]);
 
-  const leave = () => router.back();
+  const leave = onClose;
   const onBack = () => { if (dirty && !saving) setConfirmLeave(true); else leave(); };
 
   const handleSave = async () => {
@@ -568,7 +598,10 @@ export default function AdjustBillScreen() {
       if (tipNum > 0 && (allocChanged || tipChanged)) {
         await crewSessions.allocateTip(sessionId, allocations.filter((a) => a.amount > 0));
       }
-      // Every caller re-reads the bill on focus, so going back IS the refresh.
+      // The route's callers re-read the bill on focus, so going back IS the
+      // refresh there. A sheet never blurs the screen underneath it, so it
+      // has to say so.
+      onSaved?.();
       leave();
     } catch (e: any) {
       const code = e?.code as string | undefined;
@@ -652,9 +685,9 @@ export default function AdjustBillScreen() {
 
   return (
     <View style={s.fill}>
-      <Stack.Screen options={{ headerShown: false }} />
+      {!embedded && <Stack.Screen options={{ headerShown: false }} />}
 
-      <View style={[s.root, { paddingTop: insets.top }]}>
+      <View style={[s.root, embedded && s.rootEmbedded, { paddingTop: embedded ? 0 : insets.top }]}>
 
       <View style={s.header}>
         <TouchableOpacity
@@ -714,6 +747,8 @@ export default function AdjustBillScreen() {
               </Text>
             )}
 
+            {!preOrder && (
+            <>
             <Text style={s.section}>Discount</Text>
 
             {/* Underline tabs rather than a filled segment: the discount is the
@@ -798,7 +833,11 @@ export default function AdjustBillScreen() {
                 />
               </View>
             )}
+            </>
+            )}
 
+            {!preOrder && (
+            <>
             <Text style={s.section}>Tip</Text>
 
             {field(
@@ -853,11 +892,21 @@ export default function AdjustBillScreen() {
                 </Text>
               </>
             )}
+            </>
+            )}
 
-            {preview && <ProjectedBill preview={preview} stale={previewing} changed={changedLines} />}
+            {preOrder ? (
+              <Text style={s.hint}>
+                Discount and tip become available once the first item is ordered.
+              </Text>
+            ) : (
+              preview && <ProjectedBill preview={preview} stale={previewing} changed={changedLines} />
+            )}
           </ScrollView>
 
-          <View style={[s.footer, { paddingBottom: insets.bottom + Spacing.lg }]}>
+          {/* The sheet already floats clear of the home indicator and pads its
+              own floor, so the inset would be counted twice inside one. */}
+          <View style={[s.footer, { paddingBottom: embedded ? Spacing.lg : insets.bottom + Spacing.lg }]}>
             <TouchableOpacity
               style={[s.save, (saving || !dirty || tipRemainder < 0) && s.saveOff]}
               onPress={() => void handleSave()}
@@ -915,9 +964,39 @@ export default function AdjustBillScreen() {
   );
 }
 
+/**
+ * The pushed screen — phone, tablet, and any desktop entry point that is not
+ * the table panel (the takeaway ledger still links here).
+ */
+export default function AdjustBillScreen() {
+  const router = useRouter();
+  const params = useLocalSearchParams<{
+    sessionId: string; subtitle?: string; total?: string; zone?: string;
+  }>();
+  const zone = (params.zone ?? '').trim();
+  // Callers pass the zone, or "Dine-in" for a table in a venue without zones
+  // (matching the table screen's header). Takeaway passes nothing — its order
+  // label already says what it is.
+  const subtitle = [params.subtitle ? String(params.subtitle) : '', zone]
+    .filter(Boolean)
+    .join(' · ');
+
+  return (
+    <AdjustBillForm
+      sessionId={String(params.sessionId ?? '')}
+      subtitle={subtitle}
+      billTotal={params.total != null ? Number(params.total) : null}
+      onClose={() => router.back()}
+    />
+  );
+}
+
 const s = StyleSheet.create({
   fill: { flex: 1 },
   root: { flex: 1, backgroundColor: QuinckleColors.background },
+  // Inside a sheet the card behind it already paints the surface; a second
+  // opaque background here would square off its rounded top corners.
+  rootEmbedded: { backgroundColor: 'transparent' },
 
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',

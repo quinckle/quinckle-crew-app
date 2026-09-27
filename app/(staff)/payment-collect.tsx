@@ -27,6 +27,7 @@ import { useAuth } from '../../context/AuthContext';
 import { crewOrders, crewPayments, crewSessions, restaurantApi, type BillBreakdown, type CollectDueOptions, type CollectSplitMethod, type CrewOrderPaymentContext, type SessionCollectible } from '../../services/api';
 import { BillExplainSheet, explainBreakdown, explainSessionBill, type ExplainedBill } from '../../components/ui/BillExplainSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
+import { SuccessToast } from '../../components/ui/SuccessToast';
 import { playPaymentSuccess } from '../../services/sound';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
@@ -74,6 +75,10 @@ type SuccessInfo = {
   freed?: boolean;
   /** Auto-free was on but did not happen — say so, don't leave staff guessing. */
   freeFailed?: boolean;
+  /** A takeaway order was auto-handed-over after this collection. */
+  handedOver?: boolean;
+  /** Auto-handover was on but did not happen — say so, don't leave staff guessing. */
+  handoverFailed?: boolean;
 };
 
 // ── Shimmer (matches TableSkeleton) ─────────────────────────────────────────
@@ -203,6 +208,15 @@ function SuccessScreen({ info, onDone }: { info: SuccessInfo; onDone: () => void
         {info.freeFailed && (
           <Text style={sc.freeFailed}>Couldn&apos;t free the table — free it from the floor.</Text>
         )}
+        {info.handedOver && (
+          <View style={sc.freedPill}>
+            <Ionicons name="checkmark-circle" size={16} color="#fff" />
+            <Text style={sc.freedText}>Order handed over</Text>
+          </View>
+        )}
+        {info.handoverFailed && (
+          <Text style={sc.freeFailed}>Couldn&apos;t hand over the order — hand it over from the board.</Text>
+        )}
       </Animated.View>
     </Animated.View>
   );
@@ -295,6 +309,12 @@ export default function PaymentCollectScreen() {
     closed?: string;
     channel?: string;
     pickupToken?: string;
+    placedAmount?: string;
+    placedCount?: string;
+    /** Picked on order-menu's payment-method pill before placing — opens
+     *  straight into that option instead of asking again. Absent (or
+     *  'PENDING', never actually sent) means land on the picker as always. */
+    presetMethod?: 'CASH' | 'UPI' | 'SPLIT' | 'DUE';
   }>();
 
   const orderId       = params.orderId ?? '';
@@ -313,6 +333,19 @@ export default function PaymentCollectScreen() {
    * re-reads the table's net from the server on open and on every focus, and
    * everything below runs off THAT, with the params only as a first paint.
    */
+  // order-menu navigates straight here the instant a takeaway order is
+  // placed — see its confirmAndPlace — rather than holding on a confirmation
+  // screen first, so the toast that used to live there shows up here instead.
+  const [placedMessage, setPlacedMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (params.placedAmount) {
+      const n = Number(params.placedCount) || 0;
+      setPlacedMessage(`${n} item${n !== 1 ? 's' : ''} placed · ₹${params.placedAmount}`);
+      router.setParams({ placedAmount: undefined, placedCount: undefined });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.placedAmount]);
+
   const [liveDue, setLiveDue] = useState<SessionCollectible | null>(null);
   const [isSyncingDue, setIsSyncingDue] = useState(false);
   const [dueSyncError, setDueSyncError] = useState<string | null>(null);
@@ -369,6 +402,10 @@ export default function PaymentCollectScreen() {
   // sessions that are already closed (the caller says so), and takeaway has
   // no table to free.
   const canAutoFree = !isOffPremise(channel) && !!sessionId && tableNumber > 0 && params.closed !== '1';
+  // Mirrors canAutoFree for the other side of the counter: a takeaway order
+  // collected here is (almost always) also being handed to the guest right
+  // now, so offer to skip the separate "Hand Over" tap back on the board.
+  const canAutoHandover = channel === 'TAKEAWAY' && !!orderId && !isSessionCollect;
   const snapshotTotal = Number(params.amount ?? 0);
   const customerName  = params.customerName && params.customerName.length > 0 ? params.customerName : null;
   const customerPhone = params.customerPhone ?? '';
@@ -406,6 +443,7 @@ export default function PaymentCollectScreen() {
   // visit. Not remembered per device: a switch that silently stays off after
   // one odd table is how "why didn't it free?" happens.
   const [autoFree, setAutoFree]         = useState(true);
+  const [autoHandover, setAutoHandover] = useState(true);
   const [sessionBill, setSessionBill]   = useState<ExplainedBill | null>(null);
 
   // ── Khata (due) mode state ────────────────────────────────────────────────
@@ -559,8 +597,18 @@ export default function PaymentCollectScreen() {
           freeFailed = true;
         }
       }
+      let handedOver = false;
+      let handoverFailed = false;
+      if (autoHandover && canAutoHandover) {
+        try {
+          await crewOrders.handoverTakeaway(orderId);
+          handedOver = true;
+        } catch {
+          handoverFailed = true;
+        }
+      }
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setSuccessInfo({ tableNumber, locationLabel, total: resolvedTotal, splits, freed, freeFailed });
+      setSuccessInfo({ tableNumber, locationLabel, total: resolvedTotal, splits, freed, freeFailed, handedOver, handoverFailed });
     } catch (err: any) {
       const code = String(err?.code ?? err?.message ?? '');
       if (code.includes('ALREADY_COLLECTED')) {
@@ -693,6 +741,25 @@ export default function PaymentCollectScreen() {
   const isVerifyingDue = isSyncingDue && !liveDue && isSessionCollect;
   const paymentReady = resolvedTotal > 0 && !isLoadingPaymentContext && !isVerifyingDue;
 
+  // A method chosen on order-menu's pill before placing — same as tapping the
+  // matching row below, just automatic, so it waits on exactly what that row's
+  // own `disabled` waits on. Still just OPENS that option; Cash/Split/Due all
+  // stage a confirmation a staffer has to tap through, same as a manual pick —
+  // nothing here moves money on its own. Fires once: a re-render (or a second
+  // pass through `stage`) must never reopen a mode the staffer already left.
+  const presetMethod = params.presetMethod;
+  const presetConsumed = useRef(false);
+  useEffect(() => {
+    if (!presetMethod || presetConsumed.current) return;
+    if (mode !== 'normal' || step !== 'choose' || loading || !paymentReady) return;
+    if (presetMethod === 'UPI' && (isLoadingUpi || !partnerUpi.vpa)) return;
+    presetConsumed.current = true;
+    if (presetMethod === 'CASH') handleCashTap();
+    else if (presetMethod === 'UPI') openUpiSheet();
+    else if (presetMethod === 'SPLIT') enterSplitMode();
+    else if (presetMethod === 'DUE') enterKhataMode();
+  }, [presetMethod, mode, step, loading, paymentReady, isLoadingUpi, partnerUpi.vpa]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // The itemised bill (items, tagged discounts, CGST/SGST, round off) comes
   // from the session bill. It is only shown when it adds up to what is being
   // collected — a session can also hold orders this screen isn't settling,
@@ -768,6 +835,8 @@ export default function PaymentCollectScreen() {
   return (
     <KeyboardAvoidingView style={s.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <Stack.Screen options={{ headerShown: false }} />
+
+      <SuccessToast message={placedMessage} onDismiss={() => setPlacedMessage(null)} />
 
       {/* Header */}
       <View style={[s.header, { paddingTop: insets.top + 8 }]}>
@@ -855,6 +924,31 @@ export default function PaymentCollectScreen() {
               thumbColor="#fff"
               ios_backgroundColor={QuinckleColors.border}
               accessibilityLabel="Free table after payment"
+            />
+          </View>
+        )}
+
+        {/* Takeaway's equivalent of the free-table toggle above: collecting
+            at the counter almost always means the bag is going out with it,
+            so skip the separate Hand Over tap back on the board unless the
+            crew turns this off. */}
+        {canAutoHandover && (
+          <View style={[s.freeRow, !(mode === 'normal' && step === 'choose' && isSessionCollect && !intentId) && { marginTop: Spacing.xl }]}>
+            <Ionicons name="bag-check-outline" size={17} color={QuinckleColors.textSecondary} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.tipRowText}>Hand over after payment</Text>
+              <Text style={s.freeRowSub}>
+                {autoHandover ? 'Order is handed over once it’s collected' : 'Hand over separately from the board'}
+              </Text>
+            </View>
+            <Switch
+              value={autoHandover}
+              onValueChange={setAutoHandover}
+              disabled={loading}
+              trackColor={{ false: QuinckleColors.border, true: QuinckleColors.success }}
+              thumbColor="#fff"
+              ios_backgroundColor={QuinckleColors.border}
+              accessibilityLabel="Hand over after payment"
             />
           </View>
         )}

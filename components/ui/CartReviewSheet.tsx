@@ -183,12 +183,25 @@ export interface CartReviewSheetProps {
   onDec: (id: string) => void;
   onCheckout: () => void;
   ctaLabel?: string;
-  /** Dine-in only: the server-priced bill once this order lands. */
+  /** The server-priced bill once this order lands. */
   bill?: { data: CrewOrderPreview | null; state: 'idle' | 'loading' | 'error' };
+  /** Container charges, tip, party size — opens Adjust Bill when given. Its
+   *  changes land on the session, which is why the projected bill above
+   *  re-prices to include them the next time this sheet opens. */
+  onAdjust?: () => void;
+  /**
+   * The Adjust Bill sheet itself (a BottomSheet wrapping AdjustBillForm),
+   * built by the caller so this component doesn't need to know its props —
+   * rendered INSIDE this sheet's own container (the drawer on tablet-landscape,
+   * this sheet's body on phone) so it stays within its bounds instead of a
+   * screen-wide overlay that spills out past a narrower drawer. Its own
+   * `visible` controls whether it actually shows.
+   */
+  adjustBillContent?: React.ReactNode;
 }
 
 export function CartReviewSheet({
-  visible, onClose, isWide, lines, total, onInc, onDec, onCheckout, ctaLabel = 'Place Order', bill,
+  visible, onClose, isWide, lines, total, onInc, onDec, onCheckout, ctaLabel = 'Place Order', bill, onAdjust, adjustBillContent,
 }: CartReviewSheetProps) {
   const insets = useSafeAreaInsets();
   const count = useMemo(() => lines.reduce((a, l) => a + l.qty, 0), [lines]);
@@ -227,6 +240,16 @@ export function CartReviewSheet({
           {bill?.data ? money(bill.data.projected.total) : `₹${total.toFixed(0)}`}
         </Text>
       </View>
+      {onAdjust && (
+        <TouchableOpacity
+          style={styles.adjustBtn}
+          onPress={onAdjust}
+          activeOpacity={0.8}
+          accessibilityLabel="Adjust bill"
+        >
+          <Ionicons name="options-outline" size={18} color={QuinckleColors.textSecondary} />
+        </TouchableOpacity>
+      )}
       <TouchableOpacity
         style={[styles.cta, lines.length === 0 && { opacity: 0.4 }]}
         onPress={onCheckout}
@@ -245,6 +268,7 @@ export function CartReviewSheet({
         <View style={{ flex: 1 }}>
           {listBody}
           {footer}
+          {adjustBillContent}
         </View>
       </BottomSheet>
     );
@@ -261,12 +285,16 @@ export function CartReviewSheet({
     <View style={styles.drawerDivider} />
     {listBody}
     {footer}
+    {/* Rendered inside the drawer, not order-menu's screen-wide tree, so it's
+        confined to the drawer's own width instead of spilling across the
+        whole window behind it. */}
+    {adjustBillContent}
   </RightDrawer>;
 }
 
 // ── Right-side drawer shell (translateX slide, mirrors SideDrawer) ───────────
 
-function RightDrawer({
+export function RightDrawer({
   visible, onClose, insetsTop, insetsBottom, children,
 }: {
   visible: boolean;
@@ -375,6 +403,11 @@ const styles = StyleSheet.create({
   footerTotals: { flex: 1 },
   footerCount: { ...Typography.micro, color: QuinckleColors.textSecondary },
   footerTotal: { ...Typography.subtitle, color: QuinckleColors.textPrimary, marginTop: 1 },
+  adjustBtn: {
+    width: 44, height: 44, alignItems: 'center', justifyContent: 'center',
+    borderRadius: Radius.md, borderWidth: 1, borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surfaceMuted,
+  },
   cta: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     backgroundColor: QuinckleColors.primary, paddingHorizontal: Spacing.xl, paddingVertical: 13, borderRadius: Radius.md,

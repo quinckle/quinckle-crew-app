@@ -1002,7 +1002,9 @@ export const crewOrders = {
     ),
 
   placeOrder: (sessionId: string, items: { item_id: string; qty: number; note?: string; selectedModifiers?: { groupId: string; optionId: string }[]; modifiers_summary?: string }[]) =>
-    request<{ success: boolean; order_id: string; status: string; total: number }>(
+    // pickup_token is non-null only when this order just minted a fresh
+    // TAKEAWAY session's token (see crew/orders.service.ts's placeOrder).
+    request<{ success: boolean; order_id: string; status: string; total: number; pickup_token: string | null }>(
       'POST',
       '/api/crew/orders',
       { session_id: sessionId, items },
