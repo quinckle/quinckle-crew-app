@@ -10,6 +10,7 @@ import { crewSessions, crewTables, crewOrders, restaurantApi, printerApi } from 
 import type { SessionBill, BillOrderItem, BillOrder } from '../../services/api';
 import { printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
 import { printBillFromHere, type InvoicePrinterChoice } from '../../services/billPrint';
+import { mergeBillLines } from '../../services/mergeBillLines';
 import { useInvoicePrinterPicker } from '../../hooks/useInvoicePrinterPicker';
 import { loyaltyApi, type CrewLadder } from '../../services/api';
 import type { InvoiceBill, LoyaltyNudge } from '../../services/invoiceTemplate';
@@ -53,6 +54,52 @@ type FlatItem = {
   menuItemId?: string;
   selectedModifiers?: { groupId: string; optionId: string }[];
 };
+
+/**
+ * One row on screen. Every round of ordering is its own Order (its own KOT), so
+ * a dish ordered at 06:11 and again at 06:34 arrives as two lines; the crew
+ * sees it as one row — "4× Garlic Bread · 1 at 06:11 · 3 at 06:34". `lines`
+ * are the real order lines behind it, oldest round first; every action on a
+ * row is spread across them (serve oldest first, remove newest first).
+ */
+type ItemRow = FlatItem & { lines: FlatItem[] };
+
+/** Same dish, same options, same unit price — the rule the printed bill uses too (services/mergeBillLines.ts). */
+const rowKeyOf = (i: FlatItem) => [i.menuItemId || i.label, i.unitPrice.toFixed(2), i.modifiersSummary ?? ''].join('\u0000');
+
+function groupRows(items: FlatItem[]): ItemRow[] {
+  const rows: ItemRow[] = [];
+  const open = new Map<string, ItemRow>();
+  for (const it of items) {
+    // A cancelled line stays its own struck-through row: it is the visible
+    // trace that something came off the bill.
+    if (it.cancelled) { rows.push({ ...it, lines: [it] }); continue; }
+    const k = rowKeyOf(it);
+    const row = open.get(k);
+    if (row) { row.lines.push(it); continue; }
+    // Keyed by the dish, not the line, so the row keeps its identity (and any
+    // edit draft on it) when another round of the same dish lands.
+    const fresh: ItemRow = { ...it, key: `row:${k}`, lines: [it] };
+    open.set(k, fresh);
+    rows.push(fresh);
+  }
+  return rows.map((r) => {
+    if (r.lines.length === 1) return r;
+    const qty = r.lines.reduce((n, l) => n + l.qty, 0);
+    const servedQty = r.lines.reduce((n, l) => n + Math.min(l.qty, l.servedQty), 0);
+    const status: ItemStatus = r.lines.every((l) => l.status === 'served') ? 'served'
+      : r.lines.some((l) => l.status === 'ready') ? 'ready' : 'prep';
+    return {
+      ...r,
+      qty,
+      servedQty,
+      status,
+      name: `${qty}× ${r.label}`,
+      price: r.lines.reduce((n, l) => n + l.price, 0),
+      orderedAt: r.lines.map((l) => `${l.qty} at ${l.orderedAt}`).join(' · '),
+    };
+  });
+}
 
 // In DUAL_CHANNEL mode the kitchen's per-item "done" marking surfaces to the
 // steward as a distinct "ready to serve" state, so they can see which plates
@@ -531,7 +578,8 @@ export default function TableDetail() {
   const totalCount = flatItems.reduce((n, i) => n + (i.cancelled ? 0 : i.qty), 0);
   const serviceProgress = totalCount > 0 ? servedCount / totalCount : 0;
   const progressAnim = React.useRef(new Animated.Value(serviceProgress)).current;
-  const billableFlatItems = useMemo(() => flatItems.filter(item => !item.cancelled), [flatItems]);
+  const rows = useMemo(() => groupRows(flatItems), [flatItems]);
+  const billableRows = useMemo(() => rows.filter(row => !row.cancelled), [rows]);
 
   useEffect(() => {
     Animated.spring(progressAnim, { toValue: serviceProgress, useNativeDriver: false, bounciness: 4, speed: 12 }).start();
@@ -541,7 +589,7 @@ export default function TableDetail() {
   const grandTotal = payableTotal;
 
   const explainedBill = useMemo<ExplainedBill>(() => ({
-    items: billableFlatItems.map((i) => ({ key: `${i.order_id}:${i.key}`, name: i.name, modifiersSummary: i.modifiersSummary, price: i.price })),
+    items: billableRows.map((i) => ({ key: i.key, name: i.name, modifiersSummary: i.modifiersSummary, price: i.price })),
     subtotal: sessionTotal,
     discountTotal,
     discountLines,
@@ -554,7 +602,7 @@ export default function TableDetail() {
     roundOff: roundOffTotal,
     total: grandTotal,
     pricesIncludeTax: restaurantInvoiceMeta?.pricesIncludeTax,
-  }), [billableFlatItems, sessionTotal, discountTotal, discountLines, serviceChargeTotal, chargeLines, tax, billTaxRate, sessionTaxLines, tipTotal, roundOffTotal, grandTotal, restaurantInvoiceMeta?.pricesIncludeTax]);
+  }), [billableRows, sessionTotal, discountTotal, discountLines, serviceChargeTotal, chargeLines, tax, billTaxRate, sessionTaxLines, tipTotal, roundOffTotal, grandTotal, restaurantInvoiceMeta?.pricesIncludeTax]);
 
 
   // `nextQty` is the ABSOLUTE served count the line should stand at. A tap
@@ -584,8 +632,21 @@ export default function TableDetail() {
     }
   };
 
-  // ── Item cancel (whole line, before payment is settled) ───────────────────
-  const [cancelTarget, setCancelTarget] = useState<FlatItem | null>(null);
+  // A row's served count is spread over its rounds, oldest first — the plate
+  // that has waited longest goes out first. `nextQty` is the row's absolute
+  // served count, like handleServe's.
+  const serveRow = async (row: ItemRow, nextQty: number) => {
+    if (row.lines.length === 1) return handleServe(row.lines[0]!, nextQty);
+    let left = Math.max(0, Math.min(row.qty, nextQty));
+    for (const line of row.lines) {
+      const target = Math.min(line.qty, left);
+      left -= target;
+      if (target > line.servedQty) await handleServe(line, target);
+    }
+  };
+
+  // ── Item cancel (a whole row: every round of that dish) ───────────────────
+  const [cancelTarget, setCancelTarget] = useState<ItemRow | null>(null);
   const [cancelling, setCancelling] = useState(false);
 
   // The backend returns a 409 with a specific code/message for states where a
@@ -609,13 +670,21 @@ export default function TableDetail() {
     if (!cancelTarget || cancelling) return;
     const target = cancelTarget;
     setCancelling(true);
+    // Survives the PIN retry: the approval hook re-runs the attempt from the
+    // top, and a line that already went must not be cancelled twice.
+    const done = new Set<string>();
     try {
       await runWithApproval({ action: 'VOID_AFTER_BILL', amount: target.price }, async (mint) => {
-        const grantId = mint ? await mint(target.order_id, target.unitPrice * target.qty) : undefined;
-        await crewOrders.cancelItem(target.order_id, target.item_id, reason, { grantId });
+        for (const line of target.lines) {
+          if (done.has(line.key)) continue;
+          const grantId = mint ? await mint(line.order_id, line.unitPrice * line.qty) : undefined;
+          await crewOrders.cancelItem(line.order_id, line.item_id, reason, { grantId });
+          done.add(line.key);
+        }
         await loadBill(); // refresh totals + the new collection amount
       });
     } catch (e: any) {
+      if (done.size > 0) void loadBill();
       showDialog('Could not cancel', cancelErrorMessage(e), [{ label: 'OK', onPress: () => {} }]);
     } finally {
       setCancelTarget(null);
@@ -634,8 +703,11 @@ export default function TableDetail() {
   const [editReasonOpen, setEditReasonOpen] = useState(false);
   const [savingEdits, setSavingEdits] = useState(false);
 
-  const draftQty = (item: FlatItem) => draft[item.key] ?? item.qty;
-  const setDraftQty = (item: FlatItem, qty: number) => {
+  // Keyed by ROW and holding the row's target quantity — absolute, not a
+  // delta — so a Save that half-failed is corrected by the reload: the plan
+  // is recomputed against whatever actually went through.
+  const draftQty = (item: ItemRow) => draft[item.key] ?? item.qty;
+  const setDraftQty = (item: ItemRow, qty: number) => {
     setDraft((d) => {
       const next = { ...d };
       if (qty === item.qty) delete next[item.key];
@@ -645,18 +717,31 @@ export default function TableDetail() {
   };
 
   const editPlan = useMemo(() => {
-    const removals: { item: FlatItem; units: number }[] = [];
-    const additions: { item: FlatItem; units: number }[] = [];
-    for (const item of flatItems) {
-      if (item.cancelled || draft[item.key] == null) continue;
-      const target = draft[item.key]!;
-      if (target < item.qty) removals.push({ item, units: item.qty - target });
-      else if (target > item.qty && item.menuItemId) additions.push({ item, units: target - item.qty });
+    const removals: { item: FlatItem; units: number; row: ItemRow }[] = [];
+    const additions: { item: ItemRow; units: number }[] = [];
+    let changedRows = 0;
+    for (const row of rows) {
+      if (row.cancelled || draft[row.key] == null) continue;
+      const target = draft[row.key]!;
+      if (target < row.qty) {
+        changedRows += 1;
+        // Newest round first: it is the one least likely to be cooked yet.
+        let left = row.qty - target;
+        for (const line of [...row.lines].reverse()) {
+          if (left <= 0) break;
+          const units = Math.min(line.qty, left);
+          removals.push({ item: line, units, row });
+          left -= units;
+        }
+      } else if (target > row.qty && row.menuItemId) {
+        changedRows += 1;
+        additions.push({ item: row, units: target - row.qty });
+      }
     }
     const removedValue = removals.reduce((s, r) => s + r.item.unitPrice * r.units, 0);
-    return { removals, additions, removedValue };
-  }, [flatItems, draft]);
-  const editCount = editPlan.removals.length + editPlan.additions.length;
+    return { removals, additions, removedValue, changedRows };
+  }, [rows, draft]);
+  const editCount = editPlan.changedRows;
   // `menu_item_id` ships in the same backend release that understands `qty`.
   // An older backend ignores `qty` and would cancel the WHOLE line on one "−",
   // so without that marker the stepper is not offered at all.
@@ -678,11 +763,6 @@ export default function TableDetail() {
     // so anything that already went through must not go again.
     const done = new Set<string>();
     let added = additions.length === 0;
-    const dropDone = () => setDraft((d) => {
-      const next = { ...d };
-      for (const key of done) delete next[key];
-      return next;
-    });
 
     const attempt = async (mint?: MintGrant) => {
       try {
@@ -700,12 +780,11 @@ export default function TableDetail() {
             ...(a.item.modifiersSummary ? { modifiers_summary: a.item.modifiersSummary } : {}),
           })));
           added = true;
-          for (const a of additions) done.add(a.item.key);
         }
       } catch (e) {
-        // Some lines may have gone through before this one failed — take them
-        // out of the draft so a second Save does not repeat them.
-        dropDone();
+        // Some lines may have gone through before this one failed. The draft
+        // holds target quantities, so reloading is enough: a second Save plans
+        // only what is still missing.
         void loadBill();
         throw e;
       }
@@ -728,8 +807,10 @@ export default function TableDetail() {
     if (editing && !canEdit) exitEditing();
   }, [editing, canEdit]);
 
-  const editSummary = editPlan.removals
-    .map((r) => `${r.units}× ${r.item.label}`)
+  // One entry per row, however many rounds the units come out of.
+  const editSummary = rows
+    .filter((row) => editPlan.removals.some((r) => r.row.key === row.key))
+    .map((row) => `${row.qty - draftQty(row)}× ${row.label}`)
     .join(', ');
 
   // Cash collection lives in app/(staff)/cash-collection.tsx now — accessible
@@ -839,14 +920,17 @@ export default function TableDetail() {
     // path below reports the real reason (no bill printer configured, host
     // offline) instead of this device guessing from its own pairing.
 
-    const invoiceItems: InvoiceBill['items'] = orders.flatMap(order =>
+    // One line per dish for the guest, across ordering rounds (the KOTs stay
+    // one per round — they never come through here).
+    const invoiceItems: InvoiceBill['items'] = mergeBillLines(orders.flatMap(order =>
       order.items.filter(item => item.item_status !== 'cancelled').map(item => ({
         name: item.name,
         qty: item.qty,
         unitPrice: item.price,
         modifiersSummary: item.modifiers_summary,
+        menuItemId: item.menu_item_id ?? null,
       })),
-    );
+    ));
 
     // Three independent server calls gate the print; run them CONCURRENTLY so
     // the tap-to-paper delay is one round trip, not three stacked ones. The
@@ -1634,7 +1718,7 @@ export default function TableDetail() {
 
       <FlatList
         style={isWide ? styles.wideFlatList : undefined}
-        data={flatItems}
+        data={rows}
         // Edit mode and its draft change what a row draws without changing
         // `data` — without this the list keeps showing the old rows.
         extraData={`${editing}|${savingEdits}|${JSON.stringify(draft)}`}
@@ -1775,8 +1859,8 @@ export default function TableDetail() {
                       hold = hand over the rest. */}
                   <TouchableOpacity
                     style={styles.markServedBtn}
-                    onPress={() => void handleServe(item, servedQty + 1)}
-                    onLongPress={holdable ? () => void handleServe(item, item.qty) : undefined}
+                    onPress={() => void serveRow(item, servedQty + 1)}
+                    onLongPress={holdable ? () => void serveRow(item, item.qty) : undefined}
                     delayLongPress={350}
                     activeOpacity={0.75}
                   >
