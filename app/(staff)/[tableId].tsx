@@ -1337,14 +1337,20 @@ export function TableDetailScreen(props: TableDetailScreenProps) {
       const accel = e.metaKey || e.ctrlKey;
       let action: string | null = null;
       if (e.key === 'Enter') action = accel ? 'collect' : 'serve';
+      else if (e.key === 'Escape') action = 'escape';
       else if (accel || e.altKey) action = null;
       else if (e.key === 'ArrowDown') action = 'down';
       else if (e.key === 'ArrowUp') action = 'up';
+      else if (e.key === 'Delete' || e.key === 'Backspace') action = 'remove';
       else switch (e.key.toLowerCase()) {
         case 'a': action = 'add'; break;
         case 'u': action = 'qr'; break;
         case 'p': action = 'print'; break;
         case 'b': action = 'adjust'; break;
+        case 'e': action = 'edit'; break;
+        // "=" is "+" without Shift, so either works on a US layout.
+        case '-': case '_': action = 'minus'; break;
+        case '+': case '=': action = 'plus'; break;
         default: action = null;
       }
       if (!action) return;
@@ -2434,7 +2440,9 @@ export function TableDetailScreen(props: TableDetailScreenProps) {
   const cmdKeysJsx = (
     <View style={styles.cmdKeys}>
       <Text style={styles.cmdKeysText} numberOfLines={1}>
-        {KeyLabels.enter} serve   ↑↓ pick   A add   P print   B bill   {KeyLabels.accel}{KeyLabels.enter} collect
+        {editing
+          ? `↑↓ pick   − less   + more   ⌫ remove   ${KeyLabels.enter} save   esc cancel`
+          : `${KeyLabels.enter} serve   ↑↓ pick   A add   P print   B bill   E edit   ${KeyLabels.accel}${KeyLabels.enter} collect`}
       </Text>
     </View>
   );
@@ -2538,7 +2546,8 @@ export function TableDetailScreen(props: TableDetailScreenProps) {
   // the hook count between the loading and loaded renders.
   const anySheetOpen = actionMenuOpen || printMenuOpen || quickPrintOpen || isExpanded || showUpiModal
     || sessionInfoOpen || ladderOpen || swapOpen || extendSheetOpen || freeModalOpen
-    || adjustSheetOpen || collectSheetOpen || !!cancelTarget || !!qrSheet || dialog.visible;
+    || adjustSheetOpen || collectSheetOpen || !!cancelTarget || !!qrSheet || dialog.visible
+    || editReasonOpen;
   const moveSel = (delta: number) => {
     if (flatItems.length === 0) return;
     const next = Math.min(flatItems.length - 1, Math.max(0, selIdx + delta));
@@ -2548,9 +2557,27 @@ export function TableDetailScreen(props: TableDetailScreenProps) {
   keysRef.current = {
     enabled: commandRail && !anySheetOpen,
     run: (action) => {
+      // Edit mode owns the keyboard: ↵ saves, Esc cancels, −/+/⌫ change the
+      // picked row, and the rail's other actions stand down so a stray P or
+      // ⌘↵ cannot print or collect a bill that is half-edited.
+      if (editing) {
+        const item = flatItems[selIdx];
+        const editable = !!item && !item.cancelled && !savingEdits;
+        switch (action) {
+          case 'down': moveSel(1); break;
+          case 'up': moveSel(-1); break;
+          case 'serve': saveEdits(); break;
+          case 'escape': if (!savingEdits) exitEditing(); break;
+          case 'minus': if (editable && draftQty(item) > 0) setDraftQty(item, draftQty(item) - 1); break;
+          case 'plus': if (editable && item.menuItemId) setDraftQty(item, draftQty(item) + 1); break;
+          case 'remove': if (editable) setDraftQty(item, draftQty(item) === 0 ? item.qty : 0); break;
+        }
+        return;
+      }
       switch (action) {
         case 'down': moveSel(1); break;
         case 'up': moveSel(-1); break;
+        case 'edit': if (canEdit) setEditing(true); break;
         case 'serve': {
           const item = flatItems[selIdx];
           if (!item || item.cancelled || item.status === 'served') return;
