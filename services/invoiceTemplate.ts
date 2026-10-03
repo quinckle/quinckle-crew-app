@@ -168,6 +168,45 @@ function buildUpiPayString(opts: { pa: string; pn: string; am?: number | null })
   return `upi://pay?${parts.join('&')}`;
 }
 
+/** Data codewords per QR version at error-correction level L (ISO 18004 table 7). */
+const QR_L_DATA_CODEWORDS = [0, 19, 34, 55, 80, 108, 136, 156, 194, 232, 274];
+
+/**
+ * The QR symbol's side in modules, as DantSu (zxing Encoder, ECC L, UTF-8 hint)
+ * will build it: byte mode + a 12-bit ECI header + an 8/16-bit length.
+ * Returns null past version 10 — far beyond any UPI intent. `data` is a
+ * percent-encoded URI, so its length is its UTF-8 byte count.
+ */
+function qrModuleCount(data: string): number | null {
+  const bytes = data.length;
+  for (let v = 1; v < QR_L_DATA_CODEWORDS.length; v++) {
+    const bits = 12 + 4 + (v < 10 ? 8 : 16) + bytes * 8;
+    if (bits <= QR_L_DATA_CODEWORDS[v] * 8) return 17 + 4 * v;
+  }
+  return null;
+}
+
+/**
+ * The <qrcode size='…'> value (mm) for a payload.
+ *
+ * DantSu draws each QR module as round(sizePx / modules) printer dots, so a
+ * fixed size shrinks the modules whenever the payload tips into the next QR
+ * version. Baking `am=` into a UPI intent does exactly that: on 58mm paper a
+ * 20mm code dropped from 5 to 4 dots per module (0.5mm, ECC L, no quiet zone)
+ * and UPI apps stopped reading it, while the shorter static intent still
+ * printed at 5. Sizing from the module count pins every module at
+ * ~0.75mm (6 dots at 203dpi) and only shrinks it to stay within ~70% of the
+ * printable width.
+ */
+function qrSizeMm(data: string, profile: PaperProfile): number {
+  const modules = qrModuleCount(data);
+  if (!modules) return profile.qrSize;
+  const dotsPerMm = profile.dpi / 25.4;
+  const maxDots = Math.floor(profile.printableWidthMM * 0.7 * dotsPerMm);
+  const dotsPerModule = Math.max(1, Math.min(Math.round(0.75 * dotsPerMm), Math.floor(maxDots / modules)));
+  return Number(((modules * dotsPerModule) / dotsPerMm).toFixed(2));
+}
+
 // ── Layout helpers ─────────────────────────────────────────────────────────────
 
 function divider(width: number, char = '─'): string {
@@ -649,7 +688,8 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
       ? `[C]<b>Scan to pay</b>`
       : `[C]<b>Scan to pay ${fmt(bill.grandTotal)}</b>`);
     lines.push('[C] '); // breathing room between the heading and the QR
-    lines.push(`[C]<qrcode size='${profile.qrSize}'>${upiString}</qrcode>`);
+    lines.push(`[C]<qrcode size='${qrSizeMm(upiString, profile)}'>${upiString}</qrcode>`);
+    lines.push('[C] '); // quiet zone — DantSu prints the QR with no white border
   }
 
   // ── Loyalty nudge (§2.1) ──────────────────────────────────────────────────
