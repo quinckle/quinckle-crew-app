@@ -194,16 +194,17 @@ function qrModuleCount(data: string): number | null {
  * version. Baking `am=` into a UPI intent does exactly that: on 58mm paper a
  * 20mm code dropped from 5 to 4 dots per module (0.5mm, ECC L, no quiet zone)
  * and UPI apps stopped reading it, while the shorter static intent still
- * printed at 5. Sizing from the module count pins every module at
- * ~0.75mm (6 dots at 203dpi) and only shrinks it to stay within ~70% of the
- * printable width.
+ * printed at 5. Sizing from the module count pins every module at the
+ * static QR's proven ~0.63mm (5 dots at 203dpi) and only shrinks it to stay
+ * within ~70% of the printable width. Not bigger: 6 dots made a ~6KB raster
+ * the printer could not buffer, and the bill was cut off mid-QR.
  */
 function qrSizeMm(data: string, profile: PaperProfile): number {
   const modules = qrModuleCount(data);
   if (!modules) return profile.qrSize;
   const dotsPerMm = profile.dpi / 25.4;
   const maxDots = Math.floor(profile.printableWidthMM * 0.7 * dotsPerMm);
-  const dotsPerModule = Math.max(1, Math.min(Math.round(0.75 * dotsPerMm), Math.floor(maxDots / modules)));
+  const dotsPerModule = Math.max(1, Math.min(Math.round(0.625 * dotsPerMm), Math.floor(maxDots / modules)));
   return Number(((modules * dotsPerModule) / dotsPerMm).toFixed(2));
 }
 

@@ -48,6 +48,22 @@ const KEY_BILL_LOGO = 'printLogoOnBill';
 // real-hardware test confirms full tickets still print.
 const KOT_END_FEED_MM = 40;
 
+// Bills carry images (logo, scan-to-pay QR) that the printer cannot buffer
+// whole, so the socket must stay open until the QR and footer have printed —
+// 320ms (the KOT wait) cut a 58mm bill off mid-QR.
+const BILL_END_WAIT_MS = 2500;
+
+/**
+ * mmFeedPaper for a given pre-disconnect wait. DantSu sends the end feed as
+ * ESC J (byte)dots but sleeps `dots` ms, so any dots ≡ 64 (mod 256) feeds the
+ * same 64 dots (8mm at 203dpi) KOT_END_FEED_MM already does (320 dots) while
+ * the wait grows. A plain larger mm would wrap the feed byte instead.
+ */
+function endFeedMmForWait(waitMs: number, dpi: number): number {
+  const dots = 64 + 256 * Math.max(1, Math.ceil((waitMs - 64) / 256));
+  return Number(((dots * 25.4) / dpi).toFixed(3));
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface BluetoothDevice {
@@ -481,7 +497,11 @@ export function getConfig(): PrinterConfig | null {
 // react-native-thermal-printer connects, prints, then disconnects per call.
 // No persistent connection or reconnect step is needed or supported.
 
-async function printRaw(text: string, target?: LocalPrinter | null): Promise<void> {
+async function printRaw(
+  text: string,
+  target?: LocalPrinter | null,
+  opts: { endWaitMs?: number } = {},
+): Promise<void> {
   const printer = target ?? primaryPrinter();
   if (!printer) throw new Error('PRINTER_NOT_PAIRED');
   const profile = profileOf(printer);
@@ -503,7 +523,7 @@ async function printRaw(text: string, target?: LocalPrinter | null): Promise<voi
     // buffer, so the TAIL (last items + footer) never renders. This is why a big
     // (~6-item) KOT printed only its first few lines. A larger feed buys the
     // flush time so the whole ticket prints. Tune KOT_END_FEED_MM if needed.
-    mmFeedPaper: KOT_END_FEED_MM,
+    mmFeedPaper: opts.endWaitMs ? endFeedMmForWait(opts.endWaitMs, profile.dpi) : KOT_END_FEED_MM,
   };
   if (printer.transport === 'network') {
     if (!printer.ip) throw new Error('PRINTER_NO_IP');
@@ -634,7 +654,7 @@ export async function printBill(
   const profile = profileOf(printer);
   const logoDataUri = await billLogoFor(profile);
   try {
-    await printRaw(buildInvoiceText({ ...billToPrint, logoDataUri }, profile), printer);
+    await printRaw(buildInvoiceText({ ...billToPrint, logoDataUri }, profile), printer, { endWaitMs: BILL_END_WAIT_MS });
     return 'printed';
   } catch {
     if (!logoDataUri) return 'failed';
@@ -642,7 +662,7 @@ export async function printBill(
     // customer their bill. The image is converted before anything is sent, so
     // a logo failure has printed nothing yet.
     try {
-      await printRaw(buildInvoiceText({ ...billToPrint, logoDataUri: null }, profile), printer);
+      await printRaw(buildInvoiceText({ ...billToPrint, logoDataUri: null }, profile), printer, { endWaitMs: BILL_END_WAIT_MS });
       return 'printed';
     } catch {
       return 'failed';
