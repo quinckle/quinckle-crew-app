@@ -15,10 +15,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { PermissionsAndroid, Platform } from 'react-native';
 import ThermalPrinter from 'react-native-thermal-printer';
 import { buildKotText, type KotOrder } from './kotTemplate';
-import { buildInvoiceText, type InvoiceBill } from './invoiceTemplate';
+import { buildInvoiceText, billEndWaitMs, type InvoiceBill } from './invoiceTemplate';
 import { buildZReportText } from './zReportTemplate';
 import type { ZReport } from './api';
-import { profileFromWidth, DEFAULT_PAPER_WIDTH, type PaperProfile } from './paperProfile';
+import { profileFromWidth, endFeedMmForWait, DEFAULT_PAPER_WIDTH, type PaperProfile } from './paperProfile';
 import { printerApi } from './api';
 import { getPrintDeviceId } from './printDevice';
 import {
@@ -47,22 +47,6 @@ const KEY_BILL_LOGO = 'printLogoOnBill';
 // safe margin over the 20mm default; lower it if paper waste is a concern and a
 // real-hardware test confirms full tickets still print.
 const KOT_END_FEED_MM = 40;
-
-// Bills carry images (logo, scan-to-pay QR) that the printer cannot buffer
-// whole, so the socket must stay open until the QR and footer have printed —
-// 320ms (the KOT wait) cut a 58mm bill off mid-QR.
-const BILL_END_WAIT_MS = 2500;
-
-/**
- * mmFeedPaper for a given pre-disconnect wait. DantSu sends the end feed as
- * ESC J (byte)dots but sleeps `dots` ms, so any dots ≡ 64 (mod 256) feeds the
- * same 64 dots (8mm at 203dpi) KOT_END_FEED_MM already does (320 dots) while
- * the wait grows. A plain larger mm would wrap the feed byte instead.
- */
-function endFeedMmForWait(waitMs: number, dpi: number): number {
-  const dots = 64 + 256 * Math.max(1, Math.ceil((waitMs - 64) / 256));
-  return Number(((dots * 25.4) / dpi).toFixed(3));
-}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -654,7 +638,8 @@ export async function printBill(
   const profile = profileOf(printer);
   const logoDataUri = await billLogoFor(profile);
   try {
-    await printRaw(buildInvoiceText({ ...billToPrint, logoDataUri }, profile), printer, { endWaitMs: BILL_END_WAIT_MS });
+    const text = buildInvoiceText({ ...billToPrint, logoDataUri }, profile);
+    await printRaw(text, printer, { endWaitMs: billEndWaitMs(text, profile) });
     return 'printed';
   } catch {
     if (!logoDataUri) return 'failed';
@@ -662,7 +647,8 @@ export async function printBill(
     // customer their bill. The image is converted before anything is sent, so
     // a logo failure has printed nothing yet.
     try {
-      await printRaw(buildInvoiceText({ ...billToPrint, logoDataUri: null }, profile), printer, { endWaitMs: BILL_END_WAIT_MS });
+      const text = buildInvoiceText({ ...billToPrint, logoDataUri: null }, profile);
+      await printRaw(text, printer, { endWaitMs: billEndWaitMs(text, profile) });
       return 'printed';
     } catch {
       return 'failed';

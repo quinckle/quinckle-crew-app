@@ -177,7 +177,7 @@ const QR_L_DATA_CODEWORDS = [0, 19, 34, 55, 80, 108, 136, 156, 194, 232, 274];
  * Returns null past version 10 — far beyond any UPI intent. `data` is a
  * percent-encoded URI, so its length is its UTF-8 byte count.
  */
-function qrModuleCount(data: string): number | null {
+export function qrModuleCount(data: string): number | null {
   const bytes = data.length;
   for (let v = 1; v < QR_L_DATA_CODEWORDS.length; v++) {
     const bits = 12 + 4 + (v < 10 ? 8 : 16) + bytes * 8;
@@ -206,6 +206,26 @@ function qrSizeMm(data: string, profile: PaperProfile): number {
   const maxDots = Math.floor(profile.printableWidthMM * 0.7 * dotsPerMm);
   const dotsPerModule = Math.max(1, Math.min(Math.round(0.625 * dotsPerMm), Math.floor(maxDots / modules)));
   return Number(((modules * dotsPerModule) / dotsPerMm).toFixed(2));
+}
+
+/** Pre-disconnect wait that printed a 58mm bill in full on 2026-10-03, with a
+ *  QR raster of up to VERIFIED_QR_RASTER_BYTES. KOTs keep their own 320ms. */
+export const BILL_END_WAIT_MS = 2500;
+/** 185px × 24 bytes/row — the largest 5-dot raster of a v4/v5 code. */
+export const VERIFIED_QR_RASTER_BYTES = 4440;
+
+/**
+ * How long the socket must stay open after a bill is sent. DantSu closes it
+ * after the end-feed wait whether or not the printer has drained, and the QR
+ * raster is the one part the printer cannot buffer — a 320ms wait cut a bill
+ * off mid-QR. A larger QR (a long VPA/payee name) scales the proven wait.
+ */
+export function billEndWaitMs(text: string, profile: PaperProfile): number {
+  const size = text.match(/<qrcode size='([\d.]+)'>/)?.[1];
+  if (!size) return BILL_END_WAIT_MS;
+  const px = Math.round((parseFloat(size) * profile.dpi) / 25.4);
+  const rasterBytes = Math.ceil(px / 8) * px;
+  return Math.max(BILL_END_WAIT_MS, Math.ceil((BILL_END_WAIT_MS * rasterBytes) / VERIFIED_QR_RASTER_BYTES));
 }
 
 // ── Layout helpers ─────────────────────────────────────────────────────────────
