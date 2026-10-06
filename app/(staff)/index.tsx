@@ -590,6 +590,7 @@ export default function StaffDashboard() {
       items: order.items.map((item) => ({
         name: item.name,
         quantity: item.qty,
+        notes: item.notes ?? undefined,
         modifiersSummary: item.modifiers ?? undefined,
       })),
       isAddOn: false,
@@ -2896,7 +2897,7 @@ export default function StaffDashboard() {
                 <View style={styles.takeawayDivider} />
                 {item.items.map((it, j) => (
                   <Text key={j} style={styles.takeawayItemText}>
-                    {it.qty}× {it.name}{it.modifiers ? ` (${it.modifiers})` : ''}
+                    {it.qty}× {it.name}{it.modifiers ? ` (${it.modifiers})` : ''}{it.notes ? ` — “${it.notes}”` : ''}
                   </Text>
                 ))}
                 {item.status !== 'SERVED' && (

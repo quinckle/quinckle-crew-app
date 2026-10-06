@@ -40,6 +40,8 @@ type FlatItem = {
   order_id: string;
   name: string;
   modifiersSummary?: string | null;
+  /** The per-item note the diner (or crew) typed — "no onion". */
+  note?: string | null;
   status: ItemStatus;
   cancelled: boolean;
   price: number;
@@ -64,8 +66,12 @@ type FlatItem = {
  */
 type ItemRow = FlatItem & { lines: FlatItem[] };
 
-/** Same dish, same options, same unit price — the rule the printed bill uses too (services/mergeBillLines.ts). */
-const rowKeyOf = (i: FlatItem) => [i.menuItemId || i.label, i.unitPrice.toFixed(2), i.modifiersSummary ?? ''].join('\u0000');
+/**
+ * Same dish, same options, same unit price — the rule the printed bill uses too
+ * (services/mergeBillLines.ts) — and the same note: a "no onion" plate must not
+ * fold into a plain one, or the note vanishes from the row.
+ */
+const rowKeyOf = (i: FlatItem) => [i.menuItemId || i.label, i.unitPrice.toFixed(2), i.modifiersSummary ?? '', i.note ?? ''].join('\u0000');
 
 function groupRows(items: FlatItem[]): ItemRow[] {
   const rows: ItemRow[] = [];
@@ -602,6 +608,7 @@ export default function TableDetail() {
         order_id: order.order_id,
         name: `${item.qty}× ${item.name}`,
         modifiersSummary: item.modifiers_summary,
+        note: item.note ?? null,
         status: itemStatus(item, dinerStatusMode === 'DUAL_CHANNEL'),
         cancelled: item.item_status === 'cancelled',
         price: item.price * item.qty,
@@ -836,6 +843,9 @@ export default function TableDetail() {
             qty: a.units,
             ...(a.item.selectedModifiers?.length ? { selectedModifiers: a.item.selectedModifiers } : {}),
             ...(a.item.modifiersSummary ? { modifiers_summary: a.item.modifiersSummary } : {}),
+            // Same plate, same note — but not a combo's "Combo: …" tag, which
+            // is the server's, and a re-order is priced as the plain dish.
+            ...(a.item.note && !a.item.note.startsWith('Combo:') ? { note: a.item.note.slice(0, 200) } : {}),
           })));
           added = true;
         }
@@ -939,6 +949,7 @@ export default function TableDetail() {
         items: latestOrder.items.map((item) => ({
           name: item.name,
           quantity: item.qty,
+          notes: item.note ?? undefined,
           modifiersSummary: item.modifiers_summary ?? undefined,
         })),
         isAddOn: false,
@@ -1829,6 +1840,7 @@ export default function TableDetail() {
                     {item.modifiersSummary ? (
                       <Text style={styles.itemModifiers} numberOfLines={1}>{item.modifiersSummary}</Text>
                     ) : null}
+                    {item.note ? <Text style={styles.itemNote} numberOfLines={2}>“{item.note}”</Text> : null}
                     <View style={styles.itemMetaRow}>
                       <Text style={styles.itemPrice}>₹{(item.unitPrice * q).toFixed(0)}</Text>
                       {changed ? <Text style={styles.stepWas}>was {item.qty}</Text> : null}
@@ -1881,6 +1893,7 @@ export default function TableDetail() {
                   {item.modifiersSummary ? (
                     <Text style={styles.itemModifiers} numberOfLines={1}>{item.modifiersSummary}</Text>
                   ) : null}
+                  {item.note ? <Text style={styles.itemNote} numberOfLines={3}>“{item.note}”</Text> : null}
                   {isPartial ? (
                     <Text style={styles.itemPartialServed}>{servedQty} of {item.qty} served</Text>
                   ) : null}
@@ -3030,6 +3043,8 @@ const styles = StyleSheet.create({
   itemName: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '600' },
   itemNameServed: { textDecorationLine: 'line-through', color: QuinckleColors.textTertiary },
   itemModifiers: { color: QuinckleColors.textTertiary, fontSize: 12, marginTop: 1, fontStyle: 'italic' },
+  // Amber, not grey: a note is an instruction to act on, not a detail to skim.
+  itemNote: { color: QuinckleColors.warning, fontSize: 12, marginTop: 2, fontWeight: '500' },
   itemPartialServed: { color: QuinckleColors.success, fontSize: 12, fontWeight: '600', marginTop: 2 },
   itemMetaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 3, gap: 6 },
   itemPrice: { color: QuinckleColors.textTertiary, fontSize: 12, fontWeight: '500' },

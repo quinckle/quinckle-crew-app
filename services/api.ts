@@ -376,6 +376,8 @@ export const crewMenu = {
 
 export interface BillOrderItem {
   item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done' | 'cancelled'; served: boolean; served_qty?: number; modifiers_summary?: string | null;
+  /** The per-item note ("no onion"). Absent from backends before it was sent. */
+  note?: string | null;
   /** What the table screen's "+" re-orders. Absent from backends before the qty stepper. */
   menu_item_id?: string;
   selected_modifiers?: { groupId: string; optionId: string }[];
@@ -858,7 +860,7 @@ export interface TakeawayOrder {
   sessionRef: string | null;
   customerName: string | null;
   customerPhone: string | null;
-  items: { itemId: string; name: string; qty: number; unitPrice: number; modifiers: string | null; itemStatus: string }[];
+  items: { itemId: string; name: string; qty: number; unitPrice: number; modifiers: string | null; notes?: string | null; itemStatus: string }[];
   status: string;
   subtotal: number;
   discount: number;
