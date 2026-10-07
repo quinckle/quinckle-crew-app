@@ -512,7 +512,7 @@ export default function OrderMenuScreen() {
     });
   }, []);
 
-  const cartTotal = useMemo(() => Object.entries(cart).reduce((sum, [id, qty]) => {
+  const cartLineValue = useCallback((id: string, qty: number) => {
     const item = menuItems.find(m => m.id === id);
     let base = parseFloat(item?.price ?? '0') * qty;
     (cartModifiers[id] ?? []).forEach(({ groupId, optionId }) => {
@@ -520,8 +520,12 @@ export default function OrderMenuScreen() {
       const opt = g?.options.find(o => o.id === optionId);
       if (opt) base += parseFloat(opt.priceAdjustment ?? '0') * qty;
     });
-    return sum + base;
-  }, 0), [cart, menuItems, cartModifiers]);
+    return base;
+  }, [menuItems, cartModifiers]);
+
+  const cartTotal = useMemo(() => Object.entries(cart).reduce(
+    (sum, [id, qty]) => sum + cartLineValue(id, qty), 0,
+  ), [cart, cartLineValue]);
 
   // Flattened cart lines for the review sheet — one entry per cart key (an item
   // keeps a single line regardless of qty), with its modifier-adjusted unit
@@ -558,16 +562,31 @@ export default function OrderMenuScreen() {
     const spendOffers = offers.filter(o => o.minOrderValue != null && o.minOrderValue > 0);
     if (spendOffers.length === 0) return null;
 
-    // Same threshold base the discount engine uses: prior orders on the table
-    // + the current cart.
-    const base = priorSubtotal + cartTotal;
+    // Same threshold base the discount engine uses (resolve-discount.service):
+    // the table's earlier rounds that count toward THIS offer, plus the cart —
+    // minus the offer's excluded items/categories unless the partner chose
+    // "excluded items still count toward the minimum".
+    const baseFor = (o: CrewOffer) => {
+      const prior = o.priorTowardThreshold ?? priorSubtotal;
+      if (o.excludedCountToThreshold !== false) return prior + cartTotal;
+      const exIds = new Set(o.excludedItemIds ?? []);
+      const exCats = new Set(o.excludedCategories ?? []);
+      let counted = 0;
+      for (const [id, qty] of Object.entries(cart)) {
+        const cat = menuItems.find(m => m.id === id)?.category;
+        if (exIds.has(id) || (cat && exCats.has(cat))) continue;
+        counted += cartLineValue(id, qty);
+      }
+      return prior + counted;
+    };
 
     const locked = spendOffers
-      .filter(o => base < (o.minOrderValue as number))
+      .filter(o => baseFor(o) < (o.minOrderValue as number))
       .sort((a, b) => (a.minOrderValue as number) - (b.minOrderValue as number));
     if (locked.length > 0) {
       const o = locked[0];
       const min = o.minOrderValue as number;
+      const base = baseFor(o);
       return {
         unlocked: false,
         name: o.name,
@@ -579,7 +598,7 @@ export default function OrderMenuScreen() {
     // All spend offers met → celebrate the highest-threshold one.
     const best = spendOffers.sort((a, b) => (b.minOrderValue as number) - (a.minOrderValue as number))[0];
     return { unlocked: true, name: best.name, reward: reward(best), remaining: 0, progress: 1 };
-  }, [offers, cartTotal, priorSubtotal]);
+  }, [offers, cart, cartTotal, priorSubtotal, menuItems, cartLineValue]);
 
   // ── Offer nudge animations ──────────────────────────────────────────────────
   const offerProgressAnim = useRef(new Animated.Value(0)).current; // 0→1 bar fill
