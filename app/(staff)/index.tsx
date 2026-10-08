@@ -140,6 +140,8 @@ type Table = {
   paymentSettled?: boolean;
   /** Some party's bill is printed and not yet paid — cutting it needs a manager. */
   billPrintedUnpaid?: boolean;
+  /** Orders landed after the bill was printed — reprint before collecting. */
+  billOutOfDate?: boolean;
   // Shared seating: one entry per live party (slot order). >1 → the tap
   // opens a group picker and the card shows a groups badge + combined total.
   groups?: TableGroup[];
@@ -167,6 +169,7 @@ type TableGroup = {
   items_total?: number;
   payment_settled?: boolean;
   bill_printed?: boolean;
+  bill_out_of_date?: boolean;
   // Items the diner has put in their cart but not ordered yet.
   cart_item_count?: number;
 };
@@ -1074,6 +1077,8 @@ export default function StaffDashboard() {
           paymentSettled: t.payment_settled === true,
           billPrintedUnpaid: (groups ?? [{ bill_printed: t.bill_printed, payment_settled: t.payment_settled }])
             .some((g) => g.bill_printed === true && g.payment_settled !== true),
+          billOutOfDate: (groups ?? [{ bill_out_of_date: t.bill_out_of_date, payment_settled: t.payment_settled }])
+            .some((g) => g.bill_out_of_date === true && g.payment_settled !== true),
           billAmount,
         };
       });
@@ -1547,6 +1552,10 @@ export default function StaffDashboard() {
     const off6e = subscribeChannel(`waiter:${restaurantId}`, 'bill_printed', () => {
       refetchTables();
     });
+    // Someone ordered on a table whose bill is already printed — flag it red.
+    const off6f = subscribeChannel(`waiter:${restaurantId}`, 'bill_out_of_date', () => {
+      refetchTables();
+    });
 
     const off7 = subscribeChannel(`waiter:${restaurantId}`, 'item_bumped', () => {
       refetchPickup();
@@ -1662,7 +1671,7 @@ export default function StaffDashboard() {
 
     return () => {
       Object.values(timers).forEach(clearTimeout);
-      off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off6d(); off6e(); off7(); off7b(); off7c(); off8(); off9(); offReprint(); offAutoPrint(); offPrinterPaired(); offPrinterUnpaired();
+      off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off6d(); off6e(); off6f(); off7(); off7b(); off7c(); off8(); off9(); offReprint(); offAutoPrint(); offPrinterPaired(); offPrinterUnpaired();
       offDispatch();
     };
   }, [
@@ -2385,6 +2394,8 @@ export default function StaffDashboard() {
                     // Amber, not green: green means done. A printed, unpaid bill
                     // is the window where cutting it needs a manager.
                     const billPrinted = showStatusIcons && !paid && item.billPrintedUnpaid === true;
+                    // Red: the printed bill is short — it must be reprinted before collecting.
+                    const billStale = billPrinted && item.billOutOfDate === true;
                     const timeLeft = item.status === 'occupied' ? formatTimeLeft(item.expiresAt, now, item.occupiedSince) : null;
                     const isOccupied = item.status === 'occupied';
                     const selected = selectedIds.has(item.id);
@@ -2448,8 +2459,8 @@ export default function StaffDashboard() {
                                   <Ionicons
                                     name={billPrinted ? 'receipt' : 'receipt-outline'}
                                     size={14}
-                                    color={billPrinted ? QuinckleColors.warning : QuinckleColors.textTertiary}
-                                    accessibilityLabel={billPrinted ? 'Bill printed, not paid' : undefined}
+                                    color={billStale ? QuinckleColors.danger : billPrinted ? QuinckleColors.warning : QuinckleColors.textTertiary}
+                                    accessibilityLabel={billStale ? 'Bill out of date, reprint' : billPrinted ? 'Bill printed, not paid' : undefined}
                                   />
                                   <Ionicons
                                     name={paid ? 'card' : 'card-outline'}

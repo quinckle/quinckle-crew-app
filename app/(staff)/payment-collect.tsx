@@ -565,6 +565,15 @@ export default function PaymentCollectScreen() {
       const code = String(err?.code ?? err?.message ?? '');
       if (code.includes('ALREADY_COLLECTED')) {
         Alert.alert('Already collected', 'This table has already been settled.', [{ text: 'OK', onPress: () => router.back() }]);
+      } else if (code.includes('BILL_REPRINT_REQUIRED')) {
+        // The guest is holding a printed bill that no longer shows everything
+        // they ordered. Back to the table, where Print reprints it (same
+        // invoice number, new total) — then collect.
+        Alert.alert(
+          'Reprint the bill first',
+          'This table ordered after the bill was printed, so the guest\'s bill is short. Reprint it, then collect.',
+          [{ text: 'OK', onPress: () => router.back() }],
+        );
       } else if (code.includes('SESSION_HAS_UNCOLLECTED_ORDERS') || code.includes('STALE_ORDERS')) {
         // The backend refused to bank a PART of the bill. Pull the real net and
         // stay on the sheet with it loaded, so the fix is one tap, not a

@@ -231,10 +231,10 @@ export const crewAuthorization = {
 // ── Crew Tables (STEWARD/ADMIN) ───────────────────────────────────────────────
 
 /** `cart_item_count` = items on the diner's phone they have not ordered yet. */
-export interface CrewTableGroup { session_id: string; party_slot: number; label: string; occupied_since: string | null; expires_at?: string | null; customer_name?: string | null; customer_phone?: string | null; bill_subtotal?: number; bill_tax?: number; bill_total?: number; items_served?: number; items_total?: number; payment_settled?: boolean; bill_printed?: boolean; cart_item_count?: number; }
+export interface CrewTableGroup { session_id: string; party_slot: number; label: string; occupied_since: string | null; expires_at?: string | null; customer_name?: string | null; customer_phone?: string | null; bill_subtotal?: number; bill_tax?: number; bill_total?: number; items_served?: number; items_total?: number; payment_settled?: boolean; bill_printed?: boolean; bill_out_of_date?: boolean; cart_item_count?: number; }
 // `groups` (shared seating): one entry per live party on the table, slot order.
 // Single-party tables have one entry mirroring the legacy top-level fields.
-export interface CrewTable { table_id: string; table_number: number; capacity: number; status: 'available' | 'occupied' | 'reserved' | 'offline'; session_id: string | null; occupied_since: string | null; expires_at?: string | null; customer_name?: string | null; customer_phone?: string | null; bill_subtotal?: number; bill_tax?: number; bill_total?: number; items_served?: number; items_total?: number; payment_settled?: boolean; bill_printed?: boolean; groups?: CrewTableGroup[]; max_parties?: number; }
+export interface CrewTable { table_id: string; table_number: number; capacity: number; status: 'available' | 'occupied' | 'reserved' | 'offline'; session_id: string | null; occupied_since: string | null; expires_at?: string | null; customer_name?: string | null; customer_phone?: string | null; bill_subtotal?: number; bill_tax?: number; bill_total?: number; items_served?: number; items_total?: number; payment_settled?: boolean; bill_printed?: boolean; bill_out_of_date?: boolean; groups?: CrewTableGroup[]; max_parties?: number; }
 
 export const crewTables = {
   list: () => request<{ tables: CrewTable[] }>('GET', '/api/crew/tables', undefined, true),
@@ -895,6 +895,14 @@ export interface CrewOffer {
   maxDiscount: number | null;
   freeItemId: string | null;
   freeItemQty: number;
+  // Exclusions — absent from servers older than these fields.
+  excludeCombos?: boolean;
+  excludedItemIds?: string[];
+  excludedCategories?: string[];
+  /** false = excluded items do NOT count toward minOrderValue. */
+  excludedCountToThreshold?: boolean;
+  /** The table's earlier rounds that count toward THIS offer (its excluded lines dropped). */
+  priorTowardThreshold?: number;
 }
 
 export const crewOffers = {
