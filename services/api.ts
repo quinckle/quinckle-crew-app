@@ -1024,7 +1024,11 @@ export const crewOrders = {
     ),
 
   placeOrder: (sessionId: string, items: { item_id: string; qty: number; note?: string; selectedModifiers?: { groupId: string; optionId: string }[]; modifiers_summary?: string }[]) =>
-    request<{ success: boolean; order_id: string; status: string; total: number }>(
+    request<{
+      success: boolean; order_id: string; status: string; total: number;
+      /** Only when the venue auto-prints takeaway invoices (Printer screen). */
+      auto_invoice?: { status: 'sent'; printer_name: string } | { status: 'failed'; reason: string };
+    }>(
       'POST',
       '/api/crew/orders',
       { session_id: sessionId, items },
@@ -1831,6 +1835,9 @@ export interface PrintStatus {
   pairedByName: string | null;
   pairedById: string | null;
   kotAutoPrint: boolean;
+  /** Takeaway-only overrides. Absent from older backends — read as true / false. */
+  takeawayKotAutoPrint?: boolean;
+  takeawayInvoiceAutoPrint?: boolean;
 }
 
 // ── Printer API ───────────────────────────────────────────────────────────────
@@ -2059,6 +2066,15 @@ export const printerApi = {
       'PATCH',
       '/api/crew/print/autoprint',
       { enabled },
+      true,
+    ),
+
+  /** Takeaway-only toggles. Send either one alone; the other is kept. */
+  setTakeawayAutoPrint: (body: { kot?: boolean; invoice?: boolean }) =>
+    request<{ success: true; data: { takeawayKotAutoPrint: boolean; takeawayInvoiceAutoPrint: boolean } }>(
+      'PATCH',
+      '/api/crew/print/takeaway-autoprint',
+      body,
       true,
     ),
 };

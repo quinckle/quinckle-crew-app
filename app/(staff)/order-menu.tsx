@@ -327,6 +327,20 @@ function ModifierSheet({
 // Left category rail width in the tablet-landscape two-pane layout.
 const RAIL_WIDTH = 208;
 
+/** The success card's line for the takeaway bill the server auto-printed. */
+function autoInvoiceLine(
+  r: { status: 'sent'; printer_name: string } | { status: 'failed'; reason: string } | undefined,
+): { ok: boolean; text: string } | undefined {
+  if (!r) return undefined;
+  if (r.status === 'sent') return { ok: true, text: `Invoice printing at ${r.printer_name || 'the counter'}` };
+  const why = r.reason === 'NO_BILL_PRINTER'
+    ? 'no invoice printer is set up'
+    : r.reason === 'PRINTER_NO_HOST'
+      ? 'the invoice printer is not connected to any device'
+      : 'it could not be sent';
+  return { ok: false, text: `Invoice not printed — ${why}. Print it from the takeaway list.` };
+}
+
 export default function OrderMenuScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -410,7 +424,11 @@ export default function OrderMenuScreen() {
   const [coVisits, setCoVisits] = useState<number | null>(null);
   const [coMember, setCoMember] = useState<boolean | null>(null);
   // Brief "order placed" confirmation shown before opening payment collection.
-  const [placed, setPlaced] = useState<{ amount: number } | null>(null);
+  const [placed, setPlaced] = useState<{
+    amount: number;
+    /** Set when the venue auto-prints takeaway invoices (Printer screen). */
+    invoice?: { ok: boolean; text: string };
+  } | null>(null);
   const navTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (navTimerRef.current) clearTimeout(navTimerRef.current); }, []);
   // Card scale/fade-in, then the checkmark pops in a beat later — makes the
@@ -845,7 +863,9 @@ export default function OrderMenuScreen() {
       // the stack — the one we were pushed from — updating its params. Using
       // replace here mounted a *second* [tableId] on top of the original, which
       // is why the crew had to hit Back twice to reach the table floor.
-      setPlaced({ amount: orderTotal });
+      const invoice = autoInvoiceLine(orderRes?.auto_invoice);
+      setPlaced({ amount: orderTotal, invoice });
+      // A failed auto-invoice holds the card long enough to read why.
       navTimerRef.current = setTimeout(() => {
         if (isTakeaway) {
           router.replace({
@@ -872,7 +892,7 @@ export default function OrderMenuScreen() {
             },
           });
         }
-      }, 500);
+      }, invoice && !invoice.ok ? 2500 : 500);
     } catch (e: any) {
       setCoError(e?.message ?? 'Failed to place order. Try again.');
     } finally {
@@ -966,6 +986,11 @@ export default function OrderMenuScreen() {
               <Text style={styles.placedSub}>
                 {isTakeaway ? (pickupToken ?? orderLabel) : `Table T${tableNum}`} · ₹{placed.amount.toFixed(0)}
               </Text>
+              {placed.invoice && (
+                <Text style={[styles.placedInvoice, !placed.invoice.ok && styles.placedInvoiceFailed]}>
+                  {placed.invoice.text}
+                </Text>
+              )}
               <Text style={styles.placedHint}>Opening payment collection…</Text>
             </Animated.View>
           </View>
@@ -1625,4 +1650,6 @@ const styles = StyleSheet.create({
   placedTitle: { ...Typography.title, color: QuinckleColors.textPrimary, fontWeight: '800' },
   placedSub: { ...Typography.body, color: QuinckleColors.textSecondary },
   placedHint: { ...Typography.caption, color: QuinckleColors.textTertiary, marginTop: 6 },
+  placedInvoice: { ...Typography.caption, color: QuinckleColors.success, fontWeight: '600', marginTop: 8, textAlign: 'center' },
+  placedInvoiceFailed: { color: QuinckleColors.danger },
 });

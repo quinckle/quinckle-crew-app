@@ -45,7 +45,7 @@ import {
   printerApi, printersApi,
   type RegisteredPrinter, type PrinterRole, type PrinterInputBody,
 } from '../services/api';
-import { refreshLocalPrinters } from '../services/printSink';
+import { refreshLocalPrinters, applyAutoPrintSettings } from '../services/printSink';
 import { invalidateInvoicePrinters } from '../services/billPrint';
 import { getPrintDeviceId } from '../services/printDevice';
 import { useAuth } from '../context/AuthContext';
@@ -98,6 +98,11 @@ export default function PrinterScreen() {
   } | null>(null);
   const [kotAutoPrint, setKotAutoPrint] = useState(true);
   const [autoPrintSaving, setAutoPrintSaving] = useState(false);
+  // Takeaway-only: fast-billing counters print the bill the moment a takeaway
+  // is punched, and can keep or drop the KOT for those orders.
+  const [takeawayKot, setTakeawayKot] = useState(true);
+  const [takeawayInvoice, setTakeawayInvoice] = useState(false);
+  const [takeawaySaving, setTakeawaySaving] = useState(false);
 
   const [isScanning, setIsScanning] = useState(false);
   const [devices, setDevices] = useState<BluetoothDevice[]>([]);
@@ -149,8 +154,29 @@ export default function PrinterScreen() {
       if (typeof res.data?.kotAutoPrint === 'boolean') {
         setKotAutoPrint(res.data.kotAutoPrint);
       }
+      if (typeof res.data?.takeawayKotAutoPrint === 'boolean') setTakeawayKot(res.data.takeawayKotAutoPrint);
+      if (typeof res.data?.takeawayInvoiceAutoPrint === 'boolean') setTakeawayInvoice(res.data.takeawayInvoiceAutoPrint);
     } catch { /* non-fatal */ }
   }, []);
+
+  const handleTakeawayToggle = async (which: 'kot' | 'invoice') => {
+    if (takeawaySaving) return;
+    const set = which === 'kot' ? setTakeawayKot : setTakeawayInvoice;
+    const next = which === 'kot' ? !takeawayKot : !takeawayInvoice;
+    set(next);
+    setTakeawaySaving(true);
+    try {
+      const res = await printerApi.setTakeawayAutoPrint({ [which]: next });
+      // Don't wait for the push to reach this phone's own print gate.
+      applyAutoPrintSettings(res?.data);
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch {
+      set(!next); // revert on failure
+      showToast('Could not update auto-print setting', false);
+    } finally {
+      setTakeawaySaving(false);
+    }
+  };
 
   const handleAutoPrintToggle = async () => {
     if (autoPrintSaving) return;
@@ -807,7 +833,7 @@ export default function PrinterScreen() {
           <View style={styles.autoPrintRow}>
             <View style={{ flex: 1 }}>
               <Text style={styles.autoPrintLabel}>Auto-print KOT</Text>
-              <Text style={styles.autoPrintSub}>Print automatically on every new order</Text>
+              <Text style={styles.autoPrintSub}>Every new order — takeaway has its own switches below</Text>
             </View>
             <TouchableOpacity
               onPress={handleAutoPrintToggle}
@@ -816,6 +842,38 @@ export default function PrinterScreen() {
               style={[styles.toggleTrack, kotAutoPrint && styles.toggleTrackOn]}
             >
               <View style={[styles.toggleThumb, kotAutoPrint && styles.toggleThumbOn]} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Takeaway-only auto-print — venue-wide, like Auto-print KOT. The
+              invoice goes to the default bill printer, whichever device drives it. */}
+          <View style={styles.autoPrintRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.autoPrintLabel}>Takeaway · auto-print invoice</Text>
+              <Text style={styles.autoPrintSub}>Print the bill the moment a takeaway order is placed</Text>
+            </View>
+            <TouchableOpacity
+              onPress={() => { void handleTakeawayToggle('invoice'); }}
+              disabled={takeawaySaving}
+              activeOpacity={0.8}
+              style={[styles.toggleTrack, takeawayInvoice && styles.toggleTrackOn]}
+            >
+              <View style={[styles.toggleThumb, takeawayInvoice && styles.toggleThumbOn]} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.autoPrintRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.autoPrintLabel}>Takeaway · auto-print KOT</Text>
+              <Text style={styles.autoPrintSub}>Print the kitchen ticket for every new takeaway order</Text>
+            </View>
+            <TouchableOpacity
+              onPress={() => { void handleTakeawayToggle('kot'); }}
+              disabled={takeawaySaving}
+              activeOpacity={0.8}
+              style={[styles.toggleTrack, takeawayKot && styles.toggleTrackOn]}
+            >
+              <View style={[styles.toggleThumb, takeawayKot && styles.toggleThumbOn]} />
             </TouchableOpacity>
           </View>
 

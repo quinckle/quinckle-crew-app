@@ -30,7 +30,7 @@ import { kitchen, printerApi, restaurantApi } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { useResyncOnReturn } from '../../hooks/useResyncOnReturn';
 import { printKot, getStatus as getPrinterStatus, getPrinters } from '../../services/printer';
-import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded, watchPrintDispatch } from '../../services/printSink';
+import { applyAutoPrintSettings, kotAutoPrintFor, drainPendingPrintJobs, handleSinkSuperseded, watchPrintDispatch } from '../../services/printSink';
 import { getPrintDeviceId } from '../../services/printDevice';
 import { useAuth } from '../../context/AuthContext';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
@@ -86,8 +86,8 @@ export default function CookDashboard() {
   // connection (getPrinterStatus), never on staff identity — the BT pairing is
   // the real single-sink guarantee, so any crew member on the paired device
   // can drive printing. (The old pairedById === staffInfo.id check silently
-  // killed auto-print whenever a different cook logged in.)
-  const kotAutoPrintRef = useRef(true);
+  // killed auto-print whenever a different cook logged in.) The toggles
+  // themselves live in the print sink — see kotAutoPrintFor.
 
   const [orders,        setOrders]        = useState<KitchenTicket[]>([]);
   const [completedOrders, setCompletedOrders] = useState<KitchenTicket[]>([]);
@@ -105,7 +105,7 @@ export default function CookDashboard() {
   // KOT drain: the SHARED implementation in printSink.ts (also used by the
   // staff screen + FGS) — flushes the ack outbox, pulls the server queue with
   // this device's sink identity, prints first prints + durable reprints. The
-  // auto-print toggle reaches it via setSinkContext.
+  // auto-print toggles reach it via applyAutoPrintSettings.
 
   // ── Data mapping ─────────────────────────────────────────────────────────
   const mapTicket = (t: any, isCompleted = false): KitchenTicket => ({
@@ -231,10 +231,7 @@ export default function CookDashboard() {
     // transient status-fetch failure never silently disables printing.
     void printerApi.getStatus()
       .then((res) => {
-        if (typeof res?.data?.kotAutoPrint === 'boolean') {
-          kotAutoPrintRef.current = res.data.kotAutoPrint;
-          setSinkContext({ autoPrint: res.data.kotAutoPrint });
-        }
+        applyAutoPrintSettings(res?.data);
       })
       .catch(() => { /* keep last known toggle value */ });
 
@@ -309,7 +306,7 @@ export default function CookDashboard() {
       // by the auto-print toggle. The event-driven reconciliation drain (mount /
       // foreground / socket reconnect) is the backstop if this push is ever
       // missed; printKot de-dupes so the push and the drain can't double-print.
-      if (kotAutoPrintRef.current && getPrinterStatus() === 'connected') {
+      if (kotAutoPrintFor(data?.channel) && getPrinterStatus() === 'connected') {
         // items come directly from the NewOrderEvent shape
         const items = (data?.items ?? []).map((i: any) => ({
           name: i.menuItemName ?? i.name ?? '',
@@ -397,10 +394,10 @@ export default function CookDashboard() {
 
     // Keep the auto-print toggle in sync when changed from any device/dashboard.
     const unsubAutoPrint = subscribeChannel(`partner:${restaurantId}`, 'kot_autoprint_changed', (data: any) => {
-      if (typeof data?.enabled === 'boolean') {
-        kotAutoPrintRef.current = data.enabled;
-        setSinkContext({ autoPrint: data.enabled });
-      }
+      if (typeof data?.enabled === 'boolean') applyAutoPrintSettings({ kotAutoPrint: data.enabled });
+    });
+    const unsubTakeawayAutoPrint = subscribeChannel(`partner:${restaurantId}`, 'takeaway_autoprint_changed', (data: any) => {
+      applyAutoPrintSettings(data);
     });
 
     // Registry changes + bills dispatched to a printer this device drives —
@@ -414,6 +411,7 @@ export default function CookDashboard() {
       unsubServed();
       unsubReprint();
       unsubAutoPrint();
+      unsubTakeawayAutoPrint();
       unsubPrinterPaired();
       unsubPrinterUnpaired();
       unsubDispatch();
