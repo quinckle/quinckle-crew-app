@@ -1811,6 +1811,8 @@ export const restaurantApi = {
         // Owner's custom bill text — printed on the invoice footer.
         billThankYouMsg?: string | null;
         billFooterNote?: string | null;
+        // Owner's Google review link (partner profile) — the floor's review card.
+        googleReviewUrl?: string | null;
         taxConfig?: { gstRegistered: boolean; gstin: string | null; taxRate: number | null; displayMode: string; pricesIncludeTax?: boolean };
       };
     }>('GET', `/api/v1/dine/restaurant/${restaurantId}`),
