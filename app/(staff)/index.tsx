@@ -71,6 +71,7 @@ import { useResponsive } from '../../hooks/useResponsive';
 import { useResyncOnReturn } from '../../hooks/useResyncOnReturn';
 import { expiryLevel, expiryColor, expiryChipStyle, type ExpiryLevel } from '../../constants/sessionExpiry';
 import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
+import { announceNewOrders, isSpokenNewOrderNotification } from '../../services/voiceAlerts';
 
 async function playSound(file: any) {
   try {
@@ -110,10 +111,10 @@ function formatTimeLeft(
 }
 
 Notifications.setNotificationHandler({
-  handleNotification: async () => {
+  handleNotification: async (n) => {
     return {
       shouldShowAlert: true,
-      shouldPlaySound: true,
+      shouldPlaySound: !isSpokenNewOrderNotification(n.request.content),
       shouldSetBadge: false,
     } as any;
   },
@@ -448,6 +449,8 @@ export default function StaffDashboard() {
   const dualChannelRef = useRef(false);
   const prevItemStatusRef = useRef<Map<string, 'pending' | 'done'>>(new Map());
   const pickupSeededRef = useRef(false);
+  // First floor-list load done — orders found on app open aren't announced as new.
+  const pickupLoadedRef = useRef(false);
   const [completedPickupOrders, setCompletedPickupOrders] = useState<PickupOrder[]>([]);
   const [completedPage, setCompletedPage] = useState(1);
   const [completedHasMore, setCompletedHasMore] = useState(false);
@@ -1174,12 +1177,17 @@ export default function StaffDashboard() {
       const prevOrderIds = pickupOrderIdsRef.current;
       const newOrders = serveableOrders.filter(o => !prevOrderIds.has(o.order_id));
       if (newOrders.length > 0) {
-        void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
+        const spoken = announceNewOrders(
+          newOrders.map(o => ({ id: o.order_id, channel: o.channel })),
+          { quiet: !pickupLoadedRef.current },
+        );
+        if (!spoken) void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
         Notifications.scheduleNotificationAsync({
           content: {
             title: '🔔 New Order',
             body: newOrders.map(o => channelLocationLabel(o.channel, { token: o.pickup_token ?? 'TK', tableNumber: o.table_number })).join(', ') + ' — ready to serve',
             sound: true,
+            data: { type: 'new_order' },
           },
           trigger: null,
         }).catch(() => { });
@@ -1254,6 +1262,7 @@ export default function StaffDashboard() {
       }));
 
       pickupOrderIdsRef.current = new Set(refreshedActive.map(order => order.id));
+      pickupLoadedRef.current = true;
       setPickupOrders(refreshedActive);
     } catch (e) { console.error('[pickup] loadPickupOrders error:', e); }
   }, []);
@@ -1483,6 +1492,10 @@ export default function StaffDashboard() {
     });
 
     const off3 = subscribeChannel(`waiter:${restaurantId}`, 'new_order', (data: any) => {
+      // Dine-in is announced by loadPickupOrders' diff. Takeaway and delivery
+      // never reach that list, so voice phones hear about them here. No chime
+      // fallback: off-premise orders have never chimed on the floor.
+      if (isOffPremise(data?.channel)) announceNewOrders([{ id: data?.orderId, channel: data?.channel }]);
       refetchPickup();
       if (data?.channel === 'TAKEAWAY') refetchTakeaway();
       refetchTables();

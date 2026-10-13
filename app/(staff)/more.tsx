@@ -22,6 +22,7 @@ import { useAuth } from '../../context/AuthContext';
 import UpdateStatus from '../../components/ui/UpdateStatus';
 import { CAP, ROLE_COLOR_FALLBACK, type Capability } from '../../constants/capabilities';
 import { QuinckleColors, Spacing, Radius } from '../../constants/Colors';
+import { VoiceAlertsCard } from '../../components/ui/VoiceAlertsCard';
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -159,6 +160,11 @@ export default function MoreScreen() {
             </View>
           </View>
         ))}
+
+        <View style={styles.group}>
+          <Text style={styles.groupTitle}>NEW ORDER ALERTS</Text>
+          <VoiceAlertsCard />
+        </View>
 
         {/* Utilities — not modules, so never capability-gated. */}
         <View style={styles.group}>

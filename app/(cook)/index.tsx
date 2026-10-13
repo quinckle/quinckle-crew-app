@@ -32,6 +32,7 @@ import { useResyncOnReturn } from '../../hooks/useResyncOnReturn';
 import { printKot, getStatus as getPrinterStatus, getPrinters } from '../../services/printer';
 import { applyAutoPrintSettings, kotAutoPrintFor, drainPendingPrintJobs, handleSinkSuperseded, watchPrintDispatch } from '../../services/printSink';
 import { getPrintDeviceId } from '../../services/printDevice';
+import { announceNewOrders } from '../../services/voiceAlerts';
 import { useAuth } from '../../context/AuthContext';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { BottomNavbar, type BottomNavTab } from '../../components/ui/BottomNavbar';
@@ -138,9 +139,10 @@ export default function CookDashboard() {
       const tickets: any[] = activeRes?.tickets ?? [];
 
       const incomingIds = new Set(tickets.map((t: any) => t.order_id as string));
-      const hasNew = tickets.some((t: any) => !knownOrderIdsRef.current.has(t.order_id));
-      if (hasNew && knownOrderIdsRef.current.size > 0) {
-        void playSound(require('../../assets/audio/notifications/kitchen notification.wav'));
+      const newTickets = tickets.filter((t: any) => !knownOrderIdsRef.current.has(t.order_id));
+      if (newTickets.length > 0 && knownOrderIdsRef.current.size > 0) {
+        const spoken = announceNewOrders(newTickets.map((t: any) => ({ id: t.order_id, channel: t.channel })));
+        if (!spoken) void playSound(require('../../assets/audio/notifications/kitchen notification.wav'));
       }
       knownOrderIdsRef.current = incomingIds;
 
@@ -297,7 +299,8 @@ export default function CookDashboard() {
       const orderId = data?.orderId as string | undefined;
       if (orderId && !knownOrderIdsRef.current.has(orderId)) {
         knownOrderIdsRef.current.add(orderId);
-        void playSound(require('../../assets/audio/notifications/kitchen notification.wav'));
+        const spoken = announceNewOrders([{ id: orderId, channel: data?.channel }]);
+        if (!spoken) void playSound(require('../../assets/audio/notifications/kitchen notification.wav'));
       }
       void loadOrders();
 
