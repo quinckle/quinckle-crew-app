@@ -28,8 +28,9 @@ import { crewOrders, crewPayments, crewSessions, restaurantApi, type BillBreakdo
 import { BillExplainSheet, explainBreakdown, explainSessionBill, type ExplainedBill } from '../../components/ui/BillExplainSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { playPaymentSuccess } from '../../services/sound';
+import { getHandoverOnCollect, setHandoverOnCollect } from '../../services/takeawayHandover';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
-import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
+import { isOffPremise, channelLabel, normalizeChannel, locationLabel as channelLocationLabel } from '../../constants/channel';
 
 function buildUpiUri(vpa: string, merchantName: string, amount: number): string {
   const enc = (v: string | number) => encodeURIComponent(String(v));
@@ -74,6 +75,10 @@ type SuccessInfo = {
   freed?: boolean;
   /** Auto-free was on but did not happen — say so, don't leave staff guessing. */
   freeFailed?: boolean;
+  /** The takeaway was handed over with this collection. */
+  handedOver?: boolean;
+  /** Hand-over was on but did not happen. */
+  handoverFailed?: boolean;
 };
 
 // ── Shimmer (matches TableSkeleton) ─────────────────────────────────────────
@@ -202,6 +207,15 @@ function SuccessScreen({ info, onDone }: { info: SuccessInfo; onDone: () => void
         )}
         {info.freeFailed && (
           <Text style={sc.freeFailed}>Couldn&apos;t free the table — free it from the floor.</Text>
+        )}
+        {info.handedOver && (
+          <View style={sc.freedPill}>
+            <Ionicons name="checkmark-circle" size={16} color="#fff" />
+            <Text style={sc.freedText}>{info.locationLabel} handed over</Text>
+          </View>
+        )}
+        {info.handoverFailed && (
+          <Text style={sc.freeFailed}>Couldn&apos;t hand it over — use Hand Over on the Takeaway tab.</Text>
         )}
       </Animated.View>
     </Animated.View>
@@ -369,6 +383,9 @@ export default function PaymentCollectScreen() {
   // sessions that are already closed (the caller says so), and takeaway has
   // no table to free.
   const canAutoFree = !isOffPremise(channel) && !!sessionId && tableNumber > 0 && params.closed !== '1';
+  // Takeaway only — delivery has its own dispatch flow, and the backend's
+  // handover endpoint refuses anything else.
+  const canAutoHandover = normalizeChannel(channel) === 'TAKEAWAY' && !!orderId && params.closed !== '1';
   const snapshotTotal = Number(params.amount ?? 0);
   const customerName  = params.customerName && params.customerName.length > 0 ? params.customerName : null;
   const customerPhone = params.customerPhone ?? '';
@@ -406,6 +423,15 @@ export default function PaymentCollectScreen() {
   // visit. Not remembered per device: a switch that silently stays off after
   // one odd table is how "why didn't it free?" happens.
   const [autoFree, setAutoFree]         = useState(true);
+  // Unlike auto-free, remembered per phone and off by default: handing over
+  // drops the order off the kitchen screen, so only counters that serve
+  // ready food should have it on (see services/takeawayHandover).
+  const [autoHandover, setAutoHandover] = useState(false);
+  useEffect(() => { void getHandoverOnCollect().then(setAutoHandover); }, []);
+  const toggleAutoHandover = (value: boolean) => {
+    setAutoHandover(value);
+    void setHandoverOnCollect(value);
+  };
   const [sessionBill, setSessionBill]   = useState<ExplainedBill | null>(null);
 
   // ── Khata (due) mode state ────────────────────────────────────────────────
@@ -559,8 +585,20 @@ export default function PaymentCollectScreen() {
           freeFailed = true;
         }
       }
+      // Same contract for takeaway hand-over: the payment is already banked,
+      // so a failure only means staff hand it over from the Takeaway tab.
+      let handedOver = false;
+      let handoverFailed = false;
+      if (autoHandover && canAutoHandover) {
+        try {
+          await crewOrders.handoverTakeaway(orderId);
+          handedOver = true;
+        } catch {
+          handoverFailed = true;
+        }
+      }
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setSuccessInfo({ tableNumber, locationLabel, total: resolvedTotal, splits, freed, freeFailed });
+      setSuccessInfo({ tableNumber, locationLabel, total: resolvedTotal, splits, freed, freeFailed, handedOver, handoverFailed });
     } catch (err: any) {
       const code = String(err?.code ?? err?.message ?? '');
       if (code.includes('ALREADY_COLLECTED')) {
@@ -864,6 +902,27 @@ export default function PaymentCollectScreen() {
               thumbColor="#fff"
               ios_backgroundColor={QuinckleColors.border}
               accessibilityLabel="Free table after payment"
+            />
+          </View>
+        )}
+
+        {canAutoHandover && (
+          <View style={[s.freeRow, { marginTop: Spacing.xl }]}>
+            <Ionicons name="bag-check-outline" size={17} color={QuinckleColors.textSecondary} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.tipRowText}>Hand over after payment</Text>
+              <Text style={s.freeRowSub}>
+                {autoHandover ? 'Leaves the kitchen screen once collected' : 'Hand over later from the Takeaway tab'}
+              </Text>
+            </View>
+            <Switch
+              value={autoHandover}
+              onValueChange={toggleAutoHandover}
+              disabled={loading}
+              trackColor={{ false: QuinckleColors.border, true: QuinckleColors.success }}
+              thumbColor="#fff"
+              ios_backgroundColor={QuinckleColors.border}
+              accessibilityLabel="Hand over after payment"
             />
           </View>
         )}
