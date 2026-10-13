@@ -179,7 +179,7 @@ export default function TableDetail() {
   // sit in a left pane, ordered items alone fill the right pane. Phone and
   // tablet-portrait keep the original single-column stack.
   const { isWide } = useResponsive();
-  const { tableId, sessionId: paramSessionId, tableDbId, occupiedSince, expiresAt: paramExpiresAt, customerName: paramCustomerName, customerPhone: paramCustomerPhone, groupLabel: paramGroupLabel, zoneName: paramZoneName, openBill } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string; occupiedSince: string; expiresAt: string; customerName: string; customerPhone: string; groupLabel?: string; zoneName?: string; openBill?: string }>();
+  const { tableId, sessionId: paramSessionId, tableDbId, occupiedSince, expiresAt: paramExpiresAt, customerName: paramCustomerName, customerPhone: paramCustomerPhone, groupLabel: paramGroupLabel, zoneName: paramZoneName, openBill, startOrder } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string; occupiedSince: string; expiresAt: string; customerName: string; customerPhone: string; groupLabel?: string; zoneName?: string; openBill?: string; startOrder?: string }>();
   const router = useRouter();
   const { staffInfo } = useAuth();
 
@@ -294,6 +294,33 @@ export default function TableDetail() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openBill]);
+
+  const openOrderMenu = () => router.push({
+    pathname: '/(staff)/order-menu',
+    params: {
+      tableId: String(tableId),
+      tableNum,
+      tableDbId: tableDbId ?? '',
+      sessionId,
+      customerPhone: sessionCustomerPhone ?? '',
+      customerName: sessionCustomerName ?? '',
+      zoneName: (paramZoneName ?? '').trim(),
+    },
+  });
+
+  // A table the floor just opened (see index.tsx's startSessionForTable) goes
+  // straight on to the menu — taking the first order is the only thing to do
+  // on an empty table. This screen stays underneath, so Back from the menu and
+  // placing the order both land here as they would via "Add items". The ref
+  // guards a re-run if dismissTo hands the params back merged.
+  const startOrderHandled = useRef(false);
+  useEffect(() => {
+    if (startOrder !== '1' || startOrderHandled.current || !sessionId) return;
+    startOrderHandled.current = true;
+    router.setParams({ startOrder: undefined });
+    openOrderMenu();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startOrder]);
 
   const [isRequestingCollection, setIsRequestingCollection] = useState(false);
 
@@ -1715,18 +1742,7 @@ export default function TableDetail() {
 
   const actionRowJsx = (
     <View style={styles.actionRow}>
-      {actionCard('add', 'add-circle-outline', 'Add items', () => router.push({
-        pathname: '/(staff)/order-menu',
-        params: {
-          tableId: String(tableId),
-          tableNum,
-          tableDbId: tableDbId ?? '',
-          sessionId,
-          customerPhone: sessionCustomerPhone ?? '',
-          customerName: sessionCustomerName ?? '',
-          zoneName: (paramZoneName ?? '').trim(),
-        },
-      }), addItemsReason)}
+      {actionCard('add', 'add-circle-outline', 'Add items', openOrderMenu, addItemsReason)}
       {actionCard('qr', 'qr-code-outline', 'UPI QR', () => {
         setUpiAmount(''); setUpiUri(null); setShowUpiModal(true);
       }, upiQrReason)}

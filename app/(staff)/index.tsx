@@ -1932,6 +1932,8 @@ export default function StaffDashboard() {
           sessionId: res.session_id,
           tableDbId: table.id,
           zoneName: table.zoneName ?? '',
+          // Empty table → the menu, with the table screen underneath.
+          startOrder: '1',
         },
       };
       setStartSessionJob({ phase: 'done', tableLabel });
@@ -2164,6 +2166,7 @@ export default function StaffDashboard() {
         customerPhone: '',
         groupLabel: res.party_slot ? `G${res.party_slot}` : '',
         zoneName: table.zoneName ?? '',
+        startOrder: '1',
       } });
     } catch (e: any) {
       setGroupPicker(null);
