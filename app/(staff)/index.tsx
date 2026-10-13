@@ -2325,56 +2325,48 @@ export default function StaffDashboard() {
     <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
       <View style={styles.topBar}>
         <View style={styles.topBarLeft}>
-          <TouchableOpacity
-            style={styles.burgerBtn}
-            onPress={() => router.push('/(staff)/more')}
-            activeOpacity={0.7}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <Ionicons name="menu" size={26} color={QuinckleColors.textPrimary} />
-          </TouchableOpacity>
-
-          {/* Tablet: search/refresh/filter live inline beside the burger icon
-              instead of their own row below — more width to spare here. */}
-          {activeTab === 'tables' && isTablet && (
-            <View style={styles.topBarControls}>{tableControls}</View>
-          )}
-        </View>
-
-        {/* The splash wordmark, centred between the burger and the cash icon.
-            A flex slot rather than absolute centring: on tablet the table
-            controls sit beside the burger, so the logo takes the gap left
-            over and shrinks instead of overlapping them. */}
-        <View style={styles.headerLogoSlot} pointerEvents="none">
           <Image
             source={require('../../assets/images/logo/quinckle crew logo header.webp')}
             style={styles.headerLogo}
             resizeMode="contain"
             accessibilityLabel="Quinckle Crew"
           />
+
+          {/* Tablet: search/refresh/filter live inline beside the logo
+              instead of their own row below — more width to spare here. */}
+          {activeTab === 'tables' && isTablet && (
+            <View style={styles.topBarControls}>{tableControls}</View>
+          )}
         </View>
 
-        <View style={styles.headerActions}>
+        {/* One toolbar on the right: review, cash, menu. A single container
+            gives every icon the same height and centre line; the menu sits
+            at the edge where people reach for it. */}
+        <View style={styles.headerGroup}>
           {/* Google review card — only when the owner has set a review link. */}
           {reviewTarget && (
-            <TouchableOpacity
-              style={styles.cashIconBtn}
-              onPress={() => setShowReview(true)}
-              activeOpacity={0.7}
-              accessibilityLabel="Ask for a Google review"
-            >
-              <Ionicons name="star-outline" size={24} color={QuinckleColors.textPrimary} />
-            </TouchableOpacity>
+            <>
+              <TouchableOpacity
+                style={styles.headerGroupBtn}
+                onPress={() => setShowReview(true)}
+                activeOpacity={0.6}
+                accessibilityLabel="Ask for a Google review"
+              >
+                <Ionicons name="star-outline" size={21} color={QuinckleColors.textPrimary} />
+              </TouchableOpacity>
+              <View style={styles.headerGroupDivider} />
+            </>
           )}
 
-          {/* Cash-collection icon: tap to see pending requests + today's history.
-                Red dot appears when there's at least one unresolved request. */}
+          {/* Cash-collection: pending requests + today's history. The badge
+              counts unresolved requests. */}
           <TouchableOpacity
-            style={styles.cashIconBtn}
+            style={styles.headerGroupBtn}
             onPress={() => router.push('/(staff)/cash-collection')}
-            activeOpacity={0.7}
+            activeOpacity={0.6}
+            accessibilityLabel="Cash collection"
           >
-            <Ionicons name="cash-outline" size={26} color={QuinckleColors.textPrimary} />
+            <Ionicons name="cash-outline" size={22} color={QuinckleColors.textPrimary} />
             {pendingCashCount > 0 && (
               <View style={styles.cashBadge}>
                 <Text style={styles.cashBadgeText}>
@@ -2383,9 +2375,18 @@ export default function StaffDashboard() {
               </View>
             )}
           </TouchableOpacity>
+          <View style={styles.headerGroupDivider} />
 
-          {/* Profile now lives behind the burger → Menu → Profile, so the
-              header carries one nav affordance instead of two. */}
+          {/* Profile lives behind Menu → Profile, so the header carries one
+              nav affordance instead of two. */}
+          <TouchableOpacity
+            style={styles.headerGroupBtn}
+            onPress={() => router.push('/(staff)/more')}
+            activeOpacity={0.6}
+            accessibilityLabel="Menu"
+          >
+            <Ionicons name="menu" size={23} color={QuinckleColors.textPrimary} />
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -3378,23 +3379,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.sm,
   },
-  headerLogoSlot: {
-    flex: 1,
-    minWidth: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: Spacing.sm,
-  },
   headerLogo: {
-    width: '100%',
-    maxWidth: 102,
+    // The wordmark is 612×180; 102×30 keeps it crisp at that ratio.
+    width: 102,
     height: 30,
-  },
-  burgerBtn: {
-    width: 42,
-    height: 42,
-    alignItems: 'center',
-    justifyContent: 'center',
+    flexShrink: 1,
   },
   brandGroup: {
     gap: 4,
@@ -3454,10 +3443,26 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 10,
   },
-  headerActions: {
+  headerGroup: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.sm,
+    height: 42,
+    paddingHorizontal: 2,
+    borderRadius: 14,
+    backgroundColor: QuinckleColors.surface,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+  },
+  headerGroupBtn: {
+    width: 44,
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerGroupDivider: {
+    width: StyleSheet.hairlineWidth,
+    height: 18,
+    backgroundColor: QuinckleColors.borderStrong,
   },
   refreshBtn: {
     width: 36,
@@ -3469,21 +3474,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  cashIconBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    alignItems: 'center',
-    justifyContent: 'center',
-    position: 'relative',
-    overflow: 'visible',
-    top: 5
-  },
-
   cashBadge: {
     position: 'absolute',
-    top: -2,
-    right: -2,
+    top: 2,
+    right: 4,
     minWidth: 18,
     height: 18,
     paddingHorizontal: 4,
