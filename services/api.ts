@@ -847,7 +847,7 @@ export const crewMemberships = {
 
 // ── Crew Orders (STEWARD/ADMIN) ───────────────────────────────────────────────
 
-export interface ActiveOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; served_qty?: number; }
+export interface ActiveOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; served_qty?: number; /** Diner note, or "Combo: <title>" on a combo's dishes. */ note?: string | null; }
 export interface ActiveOrder { order_id: string; table_number: number; channel?: Channel; pickup_token?: string | null; session_id: string; status: 'received' | 'preparing' | 'ready' | 'served'; placed_at: string; served_at?: string; items: ActiveOrderItem[]; }
 
 export interface TakeawayOrder {
