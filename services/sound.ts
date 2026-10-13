@@ -5,7 +5,7 @@
 
 import { Audio } from 'expo-av';
 
-async function play(file: number): Promise<void> {
+export async function play(file: number): Promise<void> {
   try {
     await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
     const { sound } = await Audio.Sound.createAsync(file);
