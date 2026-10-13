@@ -44,6 +44,7 @@ import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { CenteredModal } from '../../components/ui/CenteredModal';
 import { StartSessionOverlay, type StartSessionJob } from '../../components/ui/StartSessionOverlay';
+import { GoogleReviewCard } from '../../components/ui/GoogleReviewCard';
 import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { MergeTableSheet } from '../../components/ui/MergeTableSheet';
 import { GroupPickerSheet } from '../../components/ui/GroupPickerSheet';
@@ -378,6 +379,9 @@ export default function StaffDashboard() {
   // tap unambiguously means "open this table". StartSessionOverlay is the
   // only feedback while the create-session call is in flight.
   const [startSessionJob, setStartSessionJob] = useState<StartSessionJob | null>(null);
+  // Header star → full-screen Google review QR. Null hides the star.
+  const [reviewTarget, setReviewTarget] = useState<{ url: string; name: string; logoUrl: string | null } | null>(null);
+  const [showReview, setShowReview] = useState(false);
   const pendingSessionNav = useRef<Parameters<typeof router.push>[0] | null>(null);
   // Shared seating: which occupied table's group picker sheet is open.
   const [groupPicker, setGroupPicker] = useState<{ table: Table; groups: TableGroup[]; canAddParty: boolean } | null>(null);
@@ -1336,6 +1340,10 @@ export default function StaffDashboard() {
       .then((res) => {
         if (cancelled || !res?.success) return;
         dualChannelRef.current = (res.data.dinerStatusMode ?? 'SIMPLE') === 'DUAL_CHANNEL';
+        const reviewUrl = (res.data.googleReviewUrl ?? '').trim();
+        setReviewTarget(/^https?:\/\//i.test(reviewUrl)
+          ? { url: reviewUrl, name: res.data.name, logoUrl: res.data.logoUrl }
+          : null);
       })
       .catch(() => { /* non-fatal — stays SIMPLE, no toasts */ });
     return () => { cancelled = true; };
@@ -2347,6 +2355,18 @@ export default function StaffDashboard() {
         </View>
 
         <View style={styles.headerActions}>
+          {/* Google review card — only when the owner has set a review link. */}
+          {reviewTarget && (
+            <TouchableOpacity
+              style={styles.cashIconBtn}
+              onPress={() => setShowReview(true)}
+              activeOpacity={0.7}
+              accessibilityLabel="Ask for a Google review"
+            >
+              <Ionicons name="star-outline" size={24} color={QuinckleColors.textPrimary} />
+            </TouchableOpacity>
+          )}
+
           {/* Cash-collection icon: tap to see pending requests + today's history.
                 Red dot appears when there's at least one unresolved request. */}
           <TouchableOpacity
@@ -3099,6 +3119,15 @@ export default function StaffDashboard() {
           handleTablePress) — this overlay is the only feedback while it's
           in flight, no confirm step. */}
       <StartSessionOverlay job={startSessionJob} onDismiss={onDismissStartSession} />
+      {reviewTarget && (
+        <GoogleReviewCard
+          visible={showReview}
+          onClose={() => setShowReview(false)}
+          url={reviewTarget.url}
+          venueName={reviewTarget.name}
+          logoUrl={reviewTarget.logoUrl}
+        />
+      )}
 
       {/* Manage occupied table — bottom sheet (Swap / Free) */}
       <BottomSheet
