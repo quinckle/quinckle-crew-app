@@ -399,6 +399,9 @@ export default function CookDashboard() {
     const unsubTakeawayAutoPrint = subscribeChannel(`partner:${restaurantId}`, 'takeaway_autoprint_changed', (data: any) => {
       applyAutoPrintSettings(data);
     });
+    const unsubPrintSettings = subscribeChannel(`partner:${restaurantId}`, 'print_settings_changed', (data: any) => {
+      applyAutoPrintSettings(data);
+    });
 
     // Registry changes + bills dispatched to a printer this device drives —
     // the SAME shared implementation the staff dashboard uses.
@@ -412,6 +415,7 @@ export default function CookDashboard() {
       unsubReprint();
       unsubAutoPrint();
       unsubTakeawayAutoPrint();
+      unsubPrintSettings();
       unsubPrinterPaired();
       unsubPrinterUnpaired();
       unsubDispatch();

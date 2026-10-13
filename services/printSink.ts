@@ -33,7 +33,7 @@ import { Platform } from 'react-native';
 import notifee, { AndroidImportance, AndroidForegroundServiceType } from '@notifee/react-native';
 import {
   printKot, getStatus as getPrinterStatus, flushAckOutbox, unpair,
-  printDispatchedBill, syncLocalPrinters, getPrinters, type LocalPrinter,
+  printDispatchedBill, syncLocalPrinters, getPrinters, applyBillPrintSettings, type LocalPrinter,
 } from './printer';
 import { printerApi, printersApi, type RegisteredPrinter } from './api';
 import { subscribeChannel } from './realtime';
@@ -73,9 +73,9 @@ export function setSinkContext(opts: {
 }
 
 /**
- * Apply the venue's auto-print toggles from /print/status, or from the
- * kot_autoprint_changed / takeaway_autoprint_changed pushes (their fields are
- * named the same). Fields that are absent keep their last known value, so a
+ * Apply the venue's printer settings from /print/status, or from the
+ * print_settings_changed / kot_autoprint_changed / takeaway_autoprint_changed
+ * pushes (their fields are named the same). Fields that are absent keep their last known value, so a
  * transient failure never silently disables printing.
  */
 export function applyAutoPrintSettings(data: {
@@ -87,6 +87,8 @@ export function applyAutoPrintSettings(data: {
   if (typeof data.kotAutoPrint === 'boolean') _autoPrintEnabled = data.kotAutoPrint;
   if (typeof data.takeawayKotAutoPrint === 'boolean') _takeawayKotAutoPrint = data.takeawayKotAutoPrint;
   if (typeof data.takeawayInvoiceAutoPrint === 'boolean') _takeawayInvoiceAutoPrint = data.takeawayInvoiceAutoPrint;
+  // Same payloads carry the bill settings (per-channel QR, logo position).
+  applyBillPrintSettings(data as Record<string, unknown>);
 }
 
 /**

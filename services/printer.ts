@@ -161,6 +161,29 @@ let _printUpiQr = true;
 export type UpiQrMode = 'amount' | 'static';
 let _upiQrMode: UpiQrMode = 'amount';
 
+// Venue-wide printer settings (partner dashboard / partner app / this app's
+// Printer screen), pushed from /print/status and print_settings_changed. The
+// defaults are what a venue that never opened those screens gets — today's
+// behaviour exactly. Delivery and every other non-takeaway channel follow the
+// dine-in settings.
+export type QrAmountMode = 'ASK' | 'AMOUNT' | 'STATIC';
+export type PaidQrMode = 'OFF' | 'STATIC' | 'AMOUNT';
+export type LogoPosition = 'TOP' | 'BOTTOM';
+export interface BillPrintSettings {
+  dineInQrAmountMode: QrAmountMode;
+  takeawayQrAmountMode: QrAmountMode;
+  dineInPaidQr: PaidQrMode;
+  takeawayPaidQr: PaidQrMode;
+  billLogoPosition: LogoPosition;
+}
+const _billSettings: BillPrintSettings = {
+  dineInQrAmountMode: 'ASK',
+  takeawayQrAmountMode: 'ASK',
+  dineInPaidQr: 'OFF',
+  takeawayPaidQr: 'OFF',
+  billLogoPosition: 'TOP',
+};
+
 // Venue logo on printed bills. OFF until someone turns it on for this device:
 // not every uploaded logo prints well, so it's opt-in per printer station.
 let _printBillLogo = false;
@@ -340,6 +363,40 @@ export async function setUpiQrMode(mode: UpiQrMode): Promise<void> {
   try {
     await AsyncStorage.setItem(KEY_UPI_QR_MODE, mode);
   } catch { /* non-fatal — in-memory value still applies this session */ }
+}
+
+// ── Venue-wide bill settings ──────────────────────────────────────────────────
+
+const pickOne = <T extends string>(allowed: readonly T[], v: unknown): T | undefined =>
+  typeof v === 'string' && (allowed as readonly string[]).includes(v) ? (v as T) : undefined;
+
+/**
+ * Take whatever bill settings a /print/status body or a print_settings_changed
+ * push carries. Absent or unknown values keep the last known one, so an older
+ * backend (which sends none of them) leaves today's behaviour in place.
+ */
+export function applyBillPrintSettings(data: Record<string, unknown> | null | undefined): void {
+  if (!data) return;
+  const QR = ['ASK', 'AMOUNT', 'STATIC'] as const;
+  const PAID = ['OFF', 'STATIC', 'AMOUNT'] as const;
+  _billSettings.dineInQrAmountMode = pickOne(QR, data.dineInQrAmountMode) ?? _billSettings.dineInQrAmountMode;
+  _billSettings.takeawayQrAmountMode = pickOne(QR, data.takeawayQrAmountMode) ?? _billSettings.takeawayQrAmountMode;
+  _billSettings.dineInPaidQr = pickOne(PAID, data.dineInPaidQr) ?? _billSettings.dineInPaidQr;
+  _billSettings.takeawayPaidQr = pickOne(PAID, data.takeawayPaidQr) ?? _billSettings.takeawayPaidQr;
+  _billSettings.billLogoPosition = pickOne(['TOP', 'BOTTOM'] as const, data.billLogoPosition) ?? _billSettings.billLogoPosition;
+}
+
+export function getBillPrintSettings(): BillPrintSettings {
+  return { ..._billSettings };
+}
+
+/** ASK → show the with/without-amount sheet; otherwise print that QR straight away. */
+export function qrAmountModeFor(channel: string | null | undefined): QrAmountMode {
+  return channel === 'TAKEAWAY' ? _billSettings.takeawayQrAmountMode : _billSettings.dineInQrAmountMode;
+}
+
+export function paidQrFor(channel: string | null | undefined): PaidQrMode {
+  return channel === 'TAKEAWAY' ? _billSettings.takeawayPaidQr : _billSettings.dineInPaidQr;
 }
 
 // ── Runtime Bluetooth permissions ────────────────────────────────────────────
@@ -633,8 +690,15 @@ export async function printBill(
 ): Promise<'printed' | 'failed'> {
   const printer = findPrinter(opts.printerId) ?? billPrinter();
   if (!printer) return 'failed';
+  // Venue settings fill in what the bill does not say. A server-built bill
+  // already says (it read the same settings), so it wins.
+  const withSettings: InvoiceBill = {
+    ...bill,
+    paidUpiQr: bill.paidUpiQr ?? paidQrFor(bill.channel),
+    logoPosition: bill.logoPosition ?? _billSettings.billLogoPosition,
+  };
   // Honour the on-device QR toggle by dropping the VPA the template gates on.
-  const billToPrint = _printUpiQr ? bill : { ...bill, upiVpa: null };
+  const billToPrint = _printUpiQr ? withSettings : { ...withSettings, upiVpa: null };
   const profile = profileOf(printer);
   const logoDataUri = await billLogoFor(profile);
   try {

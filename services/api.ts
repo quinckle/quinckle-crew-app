@@ -1838,6 +1838,28 @@ export interface PrintStatus {
   /** Takeaway-only overrides. Absent from older backends — read as true / false. */
   takeawayKotAutoPrint?: boolean;
   takeawayInvoiceAutoPrint?: boolean;
+  /** Printer settings v2. Absent from older backends — read as the defaults. */
+  dineInQrAmountMode?: QrAmountSetting;
+  takeawayQrAmountMode?: QrAmountSetting;
+  dineInPaidQr?: PaidQrSetting;
+  takeawayPaidQr?: PaidQrSetting;
+  billLogoPosition?: 'TOP' | 'BOTTOM';
+}
+
+/** ASK = crew picks per print (default); AMOUNT / STATIC = always that QR. */
+export type QrAmountSetting = 'ASK' | 'AMOUNT' | 'STATIC';
+/** Whether a paid bill still carries a QR: OFF (default) | STATIC | AMOUNT. */
+export type PaidQrSetting = 'OFF' | 'STATIC' | 'AMOUNT';
+
+export interface PrintSettingsPatch {
+  kotAutoPrint?: boolean;
+  takeawayKotAutoPrint?: boolean;
+  takeawayInvoiceAutoPrint?: boolean;
+  dineInQrAmountMode?: QrAmountSetting;
+  takeawayQrAmountMode?: QrAmountSetting;
+  dineInPaidQr?: PaidQrSetting;
+  takeawayPaidQr?: PaidQrSetting;
+  billLogoPosition?: 'TOP' | 'BOTTOM';
 }
 
 // ── Printer API ───────────────────────────────────────────────────────────────
@@ -2066,6 +2088,15 @@ export const printerApi = {
       'PATCH',
       '/api/crew/print/autoprint',
       { enabled },
+      true,
+    ),
+
+  /** Any venue printer setting; send only what changed. Returns them all. */
+  updatePrintSettings: (patch: PrintSettingsPatch) =>
+    request<{ success: true; data: Required<PrintSettingsPatch> }>(
+      'PATCH',
+      '/api/crew/print/settings',
+      patch,
       true,
     ),
 

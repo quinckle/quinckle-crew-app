@@ -43,7 +43,7 @@ import {
 } from '../services/printer';
 import {
   printerApi, printersApi,
-  type RegisteredPrinter, type PrinterRole, type PrinterInputBody,
+  type RegisteredPrinter, type PrinterRole, type PrinterInputBody, type QrAmountSetting, type PaidQrSetting,
 } from '../services/api';
 import { refreshLocalPrinters, applyAutoPrintSettings } from '../services/printSink';
 import { invalidateInvoicePrinters } from '../services/billPrint';
@@ -82,6 +82,38 @@ const TRANSPORT_LABEL: Record<string, string> = {
   usb: ' · USB',
 };
 
+type BillSettingsState = {
+  dineInQrAmountMode: QrAmountSetting;
+  takeawayQrAmountMode: QrAmountSetting;
+  dineInPaidQr: PaidQrSetting;
+  takeawayPaidQr: PaidQrSetting;
+  billLogoPosition: 'TOP' | 'BOTTOM';
+};
+const DEFAULT_BILL_SETTINGS: BillSettingsState = {
+  dineInQrAmountMode: 'ASK',
+  takeawayQrAmountMode: 'ASK',
+  dineInPaidQr: 'OFF',
+  takeawayPaidQr: 'OFF',
+  billLogoPosition: 'TOP',
+};
+const QR_AMOUNT_CHOICES = [
+  { value: 'ASK', label: 'Ask' },
+  { value: 'AMOUNT', label: 'With amount' },
+  { value: 'STATIC', label: 'Without amount' },
+] as const;
+const PAID_QR_CHOICES = [
+  { value: 'OFF', label: 'Off' },
+  { value: 'STATIC', label: 'Without amount' },
+  { value: 'AMOUNT', label: 'With amount' },
+] as const;
+const LOGO_CHOICES = [
+  { value: 'TOP', label: 'Top' },
+  { value: 'BOTTOM', label: 'Bottom' },
+] as const;
+const paidQrHint = (v: PaidQrSetting) => v === 'AMOUNT'
+  ? 'The guest has already paid — an amount QR can get scanned twice'
+  : 'Whether a paid bill still carries a scan-to-pay QR';
+
 export default function PrinterScreen() {
   const insets = useSafeAreaInsets();
   const { staffInfo } = useAuth();
@@ -103,6 +135,8 @@ export default function PrinterScreen() {
   const [takeawayKot, setTakeawayKot] = useState(true);
   const [takeawayInvoice, setTakeawayInvoice] = useState(false);
   const [takeawaySaving, setTakeawaySaving] = useState(false);
+  // Per-channel UPI QR + logo position — venue-wide, defaults until loaded.
+  const [billSettings, setBillSettings] = useState<BillSettingsState>(DEFAULT_BILL_SETTINGS);
 
   const [isScanning, setIsScanning] = useState(false);
   const [devices, setDevices] = useState<BluetoothDevice[]>([]);
@@ -156,8 +190,75 @@ export default function PrinterScreen() {
       }
       if (typeof res.data?.takeawayKotAutoPrint === 'boolean') setTakeawayKot(res.data.takeawayKotAutoPrint);
       if (typeof res.data?.takeawayInvoiceAutoPrint === 'boolean') setTakeawayInvoice(res.data.takeawayInvoiceAutoPrint);
+      setBillSettings((prev) => ({
+        dineInQrAmountMode: res.data?.dineInQrAmountMode ?? prev.dineInQrAmountMode,
+        takeawayQrAmountMode: res.data?.takeawayQrAmountMode ?? prev.takeawayQrAmountMode,
+        dineInPaidQr: res.data?.dineInPaidQr ?? prev.dineInPaidQr,
+        takeawayPaidQr: res.data?.takeawayPaidQr ?? prev.takeawayPaidQr,
+        billLogoPosition: res.data?.billLogoPosition ?? prev.billLogoPosition,
+      }));
     } catch { /* non-fatal */ }
   }, []);
+
+  const handleBillSetting = async <K extends keyof BillSettingsState>(key: K, value: BillSettingsState[K]) => {
+    const previous = billSettings[key];
+    if (previous === value) return;
+    setBillSettings((s) => ({ ...s, [key]: value }));
+    void Haptics.selectionAsync();
+    try {
+      const res = await printerApi.updatePrintSettings({ [key]: value });
+      // Don't wait for the push to reach this phone's own print path.
+      applyAutoPrintSettings(res?.data);
+    } catch {
+      setBillSettings((s) => ({ ...s, [key]: previous }));
+      showToast('Could not update print setting', false);
+    }
+  };
+
+  const renderToggle = (label: string, sub: string, value: boolean, onPress: () => void, disabled: boolean) => (
+    <View style={styles.autoPrintRow}>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.autoPrintLabel}>{label}</Text>
+        <Text style={styles.autoPrintSub}>{sub}</Text>
+      </View>
+      <TouchableOpacity
+        onPress={onPress}
+        disabled={disabled}
+        activeOpacity={0.8}
+        style={[styles.toggleTrack, value && styles.toggleTrackOn]}
+      >
+        <View style={[styles.toggleThumb, value && styles.toggleThumbOn]} />
+      </TouchableOpacity>
+    </View>
+  );
+
+  const renderChoice = <T extends string>(
+    label: string,
+    sub: string,
+    choices: readonly { value: T; label: string }[],
+    value: T,
+    onPick: (v: T) => void,
+  ) => (
+    <View style={styles.choiceRow}>
+      <Text style={styles.autoPrintLabel}>{label}</Text>
+      <Text style={styles.autoPrintSub}>{sub}</Text>
+      <View style={styles.choiceChips}>
+        {choices.map((c) => {
+          const on = c.value === value;
+          return (
+            <TouchableOpacity
+              key={c.value}
+              onPress={() => onPick(c.value)}
+              activeOpacity={0.8}
+              style={[styles.choiceChip, on && styles.choiceChipOn]}
+            >
+              <Text style={[styles.choiceChipText, on && styles.choiceChipTextOn]}>{c.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+    </View>
+  );
 
   const handleTakeawayToggle = async (which: 'kot' | 'invoice') => {
     if (takeawaySaving) return;
@@ -795,6 +896,26 @@ export default function PrinterScreen() {
           })}
         </View>
 
+        {/* Venue-wide printer settings — the same ones the partner dashboard and
+            partner app edit. Every crew device follows them. */}
+        <View style={styles.card}>
+          <Text style={styles.sectionLabel}>PRINT SETTINGS · ALL DEVICES</Text>
+
+          <Text style={styles.settingsGroup}>Dine-in</Text>
+          {renderToggle('Auto-print KOT', 'Every new order except takeaway (delivery too)', kotAutoPrint, handleAutoPrintToggle, autoPrintSaving)}
+          {renderChoice('UPI QR on unpaid bills', 'Ask lets the crew pick each time', QR_AMOUNT_CHOICES, billSettings.dineInQrAmountMode, (v) => handleBillSetting('dineInQrAmountMode', v))}
+          {renderChoice('UPI QR on paid bills', paidQrHint(billSettings.dineInPaidQr), PAID_QR_CHOICES, billSettings.dineInPaidQr, (v) => handleBillSetting('dineInPaidQr', v))}
+
+          <Text style={styles.settingsGroup}>Takeaway</Text>
+          {renderToggle('Auto-print invoice', 'Print the bill the moment a takeaway order is placed', takeawayInvoice, () => { void handleTakeawayToggle('invoice'); }, takeawaySaving)}
+          {renderToggle('Auto-print KOT', 'Print the kitchen ticket for every new takeaway order', takeawayKot, () => { void handleTakeawayToggle('kot'); }, takeawaySaving)}
+          {renderChoice('UPI QR on unpaid bills', 'Ask lets the crew pick each time', QR_AMOUNT_CHOICES, billSettings.takeawayQrAmountMode, (v) => handleBillSetting('takeawayQrAmountMode', v))}
+          {renderChoice('UPI QR on paid bills', paidQrHint(billSettings.takeawayPaidQr), PAID_QR_CHOICES, billSettings.takeawayPaidQr, (v) => handleBillSetting('takeawayPaidQr', v))}
+
+          <Text style={styles.settingsGroup}>All bills</Text>
+          {renderChoice('Logo position', 'Where the logo prints, when the logo is on', LOGO_CHOICES, billSettings.billLogoPosition, (v) => handleBillSetting('billLogoPosition', v))}
+        </View>
+
         {/* Status card */}
         <View style={styles.card}>
           <Text style={styles.sectionLabel}>THIS DEVICE</Text>
@@ -827,54 +948,6 @@ export default function PrinterScreen() {
                 <Text style={styles.statusName}>No printer paired</Text>
               )}
             </View>
-          </View>
-
-          {/* Auto-print toggle */}
-          <View style={styles.autoPrintRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.autoPrintLabel}>Auto-print KOT</Text>
-              <Text style={styles.autoPrintSub}>Every new order — takeaway has its own switches below</Text>
-            </View>
-            <TouchableOpacity
-              onPress={handleAutoPrintToggle}
-              disabled={autoPrintSaving}
-              activeOpacity={0.8}
-              style={[styles.toggleTrack, kotAutoPrint && styles.toggleTrackOn]}
-            >
-              <View style={[styles.toggleThumb, kotAutoPrint && styles.toggleThumbOn]} />
-            </TouchableOpacity>
-          </View>
-
-          {/* Takeaway-only auto-print — venue-wide, like Auto-print KOT. The
-              invoice goes to the default bill printer, whichever device drives it. */}
-          <View style={styles.autoPrintRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.autoPrintLabel}>Takeaway · auto-print invoice</Text>
-              <Text style={styles.autoPrintSub}>Print the bill the moment a takeaway order is placed</Text>
-            </View>
-            <TouchableOpacity
-              onPress={() => { void handleTakeawayToggle('invoice'); }}
-              disabled={takeawaySaving}
-              activeOpacity={0.8}
-              style={[styles.toggleTrack, takeawayInvoice && styles.toggleTrackOn]}
-            >
-              <View style={[styles.toggleThumb, takeawayInvoice && styles.toggleThumbOn]} />
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.autoPrintRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.autoPrintLabel}>Takeaway · auto-print KOT</Text>
-              <Text style={styles.autoPrintSub}>Print the kitchen ticket for every new takeaway order</Text>
-            </View>
-            <TouchableOpacity
-              onPress={() => { void handleTakeawayToggle('kot'); }}
-              disabled={takeawaySaving}
-              activeOpacity={0.8}
-              style={[styles.toggleTrack, takeawayKot && styles.toggleTrackOn]}
-            >
-              <View style={[styles.toggleThumb, takeawayKot && styles.toggleThumbOn]} />
-            </TouchableOpacity>
           </View>
 
           {/* UPI scan-to-pay QR on bills */}
@@ -1275,6 +1348,29 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   toggleThumbOn: { alignSelf: 'flex-end' },
+  settingsGroup: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: QuinckleColors.textSecondary,
+    marginTop: Spacing.lg,
+  },
+  choiceRow: {
+    marginTop: Spacing.md,
+    paddingTop: Spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: QuinckleColors.border,
+  },
+  choiceChips: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginTop: Spacing.sm },
+  choiceChip: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 6,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: QuinckleColors.borderStrong,
+  },
+  choiceChipOn: { backgroundColor: QuinckleColors.primary, borderColor: QuinckleColors.primary },
+  choiceChipText: { fontSize: 12, fontWeight: '600', color: QuinckleColors.textSecondary },
+  choiceChipTextOn: { color: '#fff' },
 
   actionsCard: {
     backgroundColor: QuinckleColors.surface,

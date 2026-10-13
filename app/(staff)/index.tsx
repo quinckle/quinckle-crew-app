@@ -25,7 +25,7 @@ import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewTakea
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { invalidateCache } from '../../services/dataCache';
 import {
-  printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode,
+  printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode, qrAmountModeFor,
   getPrinters,
 } from '../../services/printer';
 import { printBillFromHere, type InvoicePrinterChoice } from '../../services/billPrint';
@@ -534,6 +534,8 @@ export default function StaffDashboard() {
     taxRate?: number | null;
     displayMode?: 'combined' | 'split';
     pricesIncludeTax?: boolean;
+    billThankYouMsg?: string | null;
+    billFooterNote?: string | null;
   } | null>(null);
   const [upiId, setUpiId] = useState<string | null>(null);
   const [upiName, setUpiName] = useState('');
@@ -561,6 +563,8 @@ export default function StaffDashboard() {
           taxRate: res.data.taxConfig?.taxRate ?? null,
           displayMode: (res.data.taxConfig?.displayMode as 'combined' | 'split') ?? 'combined',
           pricesIncludeTax: res.data.taxConfig?.pricesIncludeTax ?? false,
+          billThankYouMsg: res.data.billThankYouMsg ?? null,
+          billFooterNote: res.data.billFooterNote ?? null,
         });
         if (res.data.upiId) {
           setUpiId(res.data.upiId);
@@ -651,6 +655,8 @@ export default function StaffDashboard() {
               taxRate: res.data.taxConfig?.taxRate ?? null,
               displayMode: (res.data.taxConfig?.displayMode as 'combined' | 'split') ?? 'combined',
               pricesIncludeTax: res.data.taxConfig?.pricesIncludeTax ?? false,
+              billThankYouMsg: res.data.billThankYouMsg ?? null,
+              billFooterNote: res.data.billFooterNote ?? null,
             };
             setRestaurantInvoiceMeta(meta);
             if (res.data.upiId) {
@@ -723,6 +729,9 @@ export default function StaffDashboard() {
         upiOmitAmount,
         orderDateTime: order.createdAt,
         generatedAt: new Date().toISOString(),
+        // Bill Settings text — dine-in bills always carried it; takeaway did not.
+        thankYouMessage: meta?.billThankYouMsg ?? null,
+        footerNote: meta?.billFooterNote ?? null,
         },
       });
       if (outcome.status === 'printed') {
@@ -747,8 +756,11 @@ export default function StaffDashboard() {
     };
 
     const qrWillPrint = !isPaid && !!upiId && isUpiQrEnabled();
-    if (!qrWillPrint) {
-      await runPrint(false);
+    // Takeaway set to "Always with / without amount" (Printer settings) skips
+    // the sheet — the fast-billing counter's one-tap print.
+    const qrMode = qrAmountModeFor('TAKEAWAY');
+    if (!qrWillPrint || qrMode !== 'ASK') {
+      await runPrint(qrWillPrint && qrMode === 'STATIC');
       return;
     }
     // QR-choice sheet shown IMMEDIATELY (prep runs behind it). The chosen
@@ -1511,6 +1523,9 @@ export default function StaffDashboard() {
     const offTakeawayAutoPrint = subscribeChannel(`partner:${restaurantId}`, 'takeaway_autoprint_changed', (data: any) => {
       applyAutoPrintSettings(data);
     });
+    const offPrintSettings = subscribeChannel(`partner:${restaurantId}`, 'print_settings_changed', (data: any) => {
+      applyAutoPrintSettings(data);
+    });
 
     const off4 = subscribeChannel(`waiter:${restaurantId}`, 'session_ended', () => {
       refetchPickup();
@@ -1665,7 +1680,7 @@ export default function StaffDashboard() {
 
     return () => {
       Object.values(timers).forEach(clearTimeout);
-      off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off6d(); off6e(); off6f(); off7(); off7b(); off7c(); off8(); off9(); offReprint(); offAutoPrint(); offTakeawayAutoPrint(); offPrinterPaired(); offPrinterUnpaired();
+      off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off6d(); off6e(); off6f(); off7(); off7b(); off7c(); off8(); off9(); offReprint(); offAutoPrint(); offTakeawayAutoPrint(); offPrintSettings(); offPrinterPaired(); offPrinterUnpaired();
       offDispatch();
     };
   }, [
