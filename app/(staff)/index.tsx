@@ -258,7 +258,7 @@ function formatBackAt(iso: string): string {
   return m === 0 ? `${h12} ${suffix}` : `${h12}:${String(m).padStart(2, '0')} ${suffix}`;
 }
 
-type PickupItem = { id: string; name: string; qty: number; servedQty: number; orderedAt: string; isServed: boolean; isReady: boolean };
+type PickupItem = { id: string; name: string; qty: number; servedQty: number; orderedAt: string; isServed: boolean; isReady: boolean; note?: string | null };
 type PickupOrder = { id: string; tableNo: string; items: PickupItem[]; completedAt?: string };
 
 function mapCompletedOrder(order: any): PickupOrder {
@@ -279,6 +279,7 @@ function mapCompletedOrder(order: any): PickupOrder {
       })(),
       isServed: true,
       isReady: true,
+      note: item.note ?? null,
     })),
   };
 }
@@ -1247,6 +1248,8 @@ export default function StaffDashboard() {
           // In the simplified flow kitchen does not mark items — all unserved
           // items are immediately available for staff to serve.
           isReady: !item.served,
+          // Combo dishes carry "Combo: <title>" — same line the table screen shows.
+          note: item.note ?? null,
         })),
       }));
 
