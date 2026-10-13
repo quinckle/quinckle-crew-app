@@ -31,7 +31,7 @@ import {
 import { printBillFromHere, type InvoicePrinterChoice } from '../../services/billPrint';
 import { useInvoicePrinterPicker } from '../../hooks/useInvoicePrinterPicker';
 import type { InvoiceBill } from '../../services/invoiceTemplate';
-import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded, watchPrintDispatch } from '../../services/printSink';
+import { applyAutoPrintSettings, kotAutoPrintFor, drainPendingPrintJobs, handleSinkSuperseded, watchPrintDispatch } from '../../services/printSink';
 import { getPrintDeviceId } from '../../services/printDevice';
 import type { TakeawayOrder } from '../../services/api';
 import { router, useFocusEffect } from 'expo-router';
@@ -858,27 +858,18 @@ export default function StaffDashboard() {
     }
   };
 
-  // KOT auto-print toggle — loaded from server and retained in a ref so
-  // realtime callbacks always see the current value without forcing renders.
-  const kotAutoPrintRef = useRef(true);
-  const setKotAutoPrintSync = useCallback((v: boolean) => {
-    kotAutoPrintRef.current = v;
-    setSinkContext({ autoPrint: v }); // keep the background FGS gate in sync
-  }, []);
-
-  // Sync the KOT auto-print toggle from the server. Auto-print itself gates on
-  // the *live* local printer connection (getPrinterStatus), never on staff
-  // identity — the Bluetooth pairing is the real single-sink guarantee, so any
-  // crew member on the paired device drives printing. Default toggle stays true
-  // so a transient status-fetch failure never silently disables printing.
+  // Sync the auto-print toggles from the server into the print sink, which
+  // owns them (kotAutoPrintFor reads them for the live push and the drain
+  // alike). Auto-print itself gates on the *live* local printer connection
+  // (getPrinterStatus), never on staff identity — the Bluetooth pairing is the
+  // real single-sink guarantee, so any crew member on the paired device drives
+  // printing. A failed fetch keeps the last known values.
   const refreshPrintSinkOwnership = useCallback(async () => {
     try {
       const res = await printerApi.getStatus();
-      if (typeof res?.data?.kotAutoPrint === 'boolean') {
-        setKotAutoPrintSync(res.data.kotAutoPrint);
-      }
+      applyAutoPrintSettings(res?.data);
     } catch { /* keep last known toggle value */ }
-  }, [setKotAutoPrintSync]);
+  }, []);
 
   // ── KOT print backstop (server pull-queue) ──────────────────────────────────
   // The live Ably `new_order` push is the fast path, but it only fires while the
@@ -886,7 +877,7 @@ export default function StaffDashboard() {
   // printSink.ts (also used by the cook screen + FGS) is the guarantee: it
   // flushes the ack outbox, pulls the server queue (first prints + durable
   // reprints) with this device's sink identity, and prints anything that
-  // slipped through. The auto-print toggle reaches it via setSinkContext.
+  // slipped through. The auto-print toggles reach it via applyAutoPrintSettings.
 
   // `nextQty` is the ABSOLUTE served count the line should stand at — one tap
   // sends servedQty + 1, a hold sends the full qty. The card only celebrates
@@ -1486,7 +1477,7 @@ export default function StaffDashboard() {
       // foreground drain is the backstop; printKot de-dupes so push + drain
       // never double-print.
       if (
-        kotAutoPrintRef.current &&
+        kotAutoPrintFor(data?.channel) &&
         getPrinterStatus() === 'connected' &&
         data?.orderId
       ) {
@@ -1513,9 +1504,12 @@ export default function StaffDashboard() {
       }
     });
 
-    // Sync auto-print toggle from any device (crew app or partner dashboard)
+    // Sync auto-print toggles from any device (crew app or partner dashboard)
     const offAutoPrint = subscribeChannel(`partner:${restaurantId}`, 'kot_autoprint_changed', (data: any) => {
-      if (typeof data?.enabled === 'boolean') setKotAutoPrintSync(data.enabled);
+      if (typeof data?.enabled === 'boolean') applyAutoPrintSettings({ kotAutoPrint: data.enabled });
+    });
+    const offTakeawayAutoPrint = subscribeChannel(`partner:${restaurantId}`, 'takeaway_autoprint_changed', (data: any) => {
+      applyAutoPrintSettings(data);
     });
 
     const off4 = subscribeChannel(`waiter:${restaurantId}`, 'session_ended', () => {
@@ -1671,7 +1665,7 @@ export default function StaffDashboard() {
 
     return () => {
       Object.values(timers).forEach(clearTimeout);
-      off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off6d(); off6e(); off6f(); off7(); off7b(); off7c(); off8(); off9(); offReprint(); offAutoPrint(); offPrinterPaired(); offPrinterUnpaired();
+      off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off6d(); off6e(); off6f(); off7(); off7b(); off7c(); off8(); off9(); offReprint(); offAutoPrint(); offTakeawayAutoPrint(); offPrinterPaired(); offPrinterUnpaired();
       offDispatch();
     };
   }, [
@@ -1681,7 +1675,6 @@ export default function StaffDashboard() {
     loadPickupOrders,
     loadTakeawayOrders,
     loadServedToday,
-    setKotAutoPrintSync,
   ]);
 
   // C1: Track Ably connection health — show a warning when the waiter channel drops.

@@ -48,6 +48,10 @@ const NOTIFICATION_ID = 'kot-print-sink';
 let _restaurantName = '';
 let _authed = false;
 let _autoPrintEnabled = true;
+// Takeaway-only overrides from the Printer screen. Defaults match a backend
+// that predates them: takeaway KOTs print, takeaway bills wait for a tap.
+let _takeawayKotAutoPrint = true;
+let _takeawayInvoiceAutoPrint = false;
 let _runnerRegistered = false;
 let _serviceRunning = false;
 
@@ -58,10 +62,40 @@ export function setSinkContext(opts: {
   restaurantName?: string;
   authed?: boolean;
   autoPrint?: boolean;
+  takeawayKot?: boolean;
+  takeawayInvoice?: boolean;
 }): void {
   if (opts.restaurantName !== undefined) _restaurantName = opts.restaurantName;
   if (opts.authed !== undefined) _authed = opts.authed;
   if (opts.autoPrint !== undefined) _autoPrintEnabled = opts.autoPrint;
+  if (opts.takeawayKot !== undefined) _takeawayKotAutoPrint = opts.takeawayKot;
+  if (opts.takeawayInvoice !== undefined) _takeawayInvoiceAutoPrint = opts.takeawayInvoice;
+}
+
+/**
+ * Apply the venue's auto-print toggles from /print/status, or from the
+ * kot_autoprint_changed / takeaway_autoprint_changed pushes (their fields are
+ * named the same). Fields that are absent keep their last known value, so a
+ * transient failure never silently disables printing.
+ */
+export function applyAutoPrintSettings(data: {
+  kotAutoPrint?: unknown;
+  takeawayKotAutoPrint?: unknown;
+  takeawayInvoiceAutoPrint?: unknown;
+} | null | undefined): void {
+  if (!data) return;
+  if (typeof data.kotAutoPrint === 'boolean') _autoPrintEnabled = data.kotAutoPrint;
+  if (typeof data.takeawayKotAutoPrint === 'boolean') _takeawayKotAutoPrint = data.takeawayKotAutoPrint;
+  if (typeof data.takeawayInvoiceAutoPrint === 'boolean') _takeawayInvoiceAutoPrint = data.takeawayInvoiceAutoPrint;
+}
+
+/**
+ * Should a first-print KOT for this channel print without anyone asking?
+ * Takeaway follows its own toggle; everything else follows Auto-print KOT.
+ * The ONE gate for the live push (both dashboards) and the queue drain.
+ */
+export function kotAutoPrintFor(channel: string | null | undefined): boolean {
+  return channel === 'TAKEAWAY' ? _takeawayKotAutoPrint : _autoPrintEnabled;
 }
 
 /**
@@ -125,7 +159,7 @@ export async function drainPendingPrintJobs(): Promise<void> {
 
   for (const job of jobs) {
     const isReprint = Boolean(job.isReprint);
-    if (!isReprint && !_autoPrintEnabled) continue;
+    if (!isReprint && !kotAutoPrintFor(job.channel)) continue;
     await printKot(
       {
         id: job.id,
@@ -359,8 +393,10 @@ export function watchPrintSinkLifecycle(): () => void {
 
   const reconcile = () => {
     // Run the service only when it can actually do something: signed in, this
-    // device holds the printer, and auto-print is enabled.
-    const shouldRun = _authed && _autoPrintEnabled && getPrinterStatus() === 'connected';
+    // device holds the printer, and something prints without a tap — a KOT
+    // either way, or a takeaway bill the server dispatches on placement.
+    const anyAutoPrint = _autoPrintEnabled || _takeawayKotAutoPrint || _takeawayInvoiceAutoPrint;
+    const shouldRun = _authed && anyAutoPrint && getPrinterStatus() === 'connected';
     if (shouldRun && !_serviceRunning) {
       void startPrintSink();
     } else if (!shouldRun && _serviceRunning) {
