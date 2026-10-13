@@ -25,6 +25,8 @@ import { ThemedDialog } from '../components/ui/themed-dialog';
 import { WidthPickerSheet } from '../components/ui/WidthPickerSheet';
 import { RolePickerSheet } from '../components/ui/RolePickerSheet';
 import { NamePrinterSheet } from '../components/ui/NamePrinterSheet';
+import { PrinterActionsSheet } from '../components/ui/PrinterActionsSheet';
+import { PrinterResultSheet, type PrinterResult } from '../components/ui/PrinterResultSheet';
 import {
   scan,
   unpair,
@@ -43,9 +45,9 @@ import {
 } from '../services/printer';
 import {
   printerApi, printersApi,
-  type RegisteredPrinter, type PrinterRole, type PrinterInputBody, type QrAmountSetting, type PaidQrSetting,
+  type RegisteredPrinter, type PrinterRole, type PrinterInputBody,
 } from '../services/api';
-import { refreshLocalPrinters, applyAutoPrintSettings } from '../services/printSink';
+import { refreshLocalPrinters } from '../services/printSink';
 import { invalidateInvoicePrinters } from '../services/billPrint';
 import { getPrintDeviceId } from '../services/printDevice';
 import { useAuth } from '../context/AuthContext';
@@ -82,37 +84,12 @@ const TRANSPORT_LABEL: Record<string, string> = {
   usb: ' · USB',
 };
 
-type BillSettingsState = {
-  dineInQrAmountMode: QrAmountSetting;
-  takeawayQrAmountMode: QrAmountSetting;
-  dineInPaidQr: PaidQrSetting;
-  takeawayPaidQr: PaidQrSetting;
-  billLogoPosition: 'TOP' | 'BOTTOM';
+/** What the result sheet says a printer will now do. */
+const ROLE_RESULT: Record<string, { added: string; removed: string }> = {
+  KOT: { added: 'New kitchen tickets will print here.', removed: 'Kitchen tickets will stop printing on it.' },
+  BILL: { added: 'Bills will print here.', removed: 'Bills will stop printing on it.' },
+  BOTH: { added: 'Kitchen tickets and bills will print here.', removed: 'Kitchen tickets and bills will stop printing on it.' },
 };
-const DEFAULT_BILL_SETTINGS: BillSettingsState = {
-  dineInQrAmountMode: 'ASK',
-  takeawayQrAmountMode: 'ASK',
-  dineInPaidQr: 'OFF',
-  takeawayPaidQr: 'OFF',
-  billLogoPosition: 'TOP',
-};
-const QR_AMOUNT_CHOICES = [
-  { value: 'ASK', label: 'Ask' },
-  { value: 'AMOUNT', label: 'With amount' },
-  { value: 'STATIC', label: 'Without amount' },
-] as const;
-const PAID_QR_CHOICES = [
-  { value: 'OFF', label: 'Off' },
-  { value: 'STATIC', label: 'Without amount' },
-  { value: 'AMOUNT', label: 'With amount' },
-] as const;
-const LOGO_CHOICES = [
-  { value: 'TOP', label: 'Top' },
-  { value: 'BOTTOM', label: 'Bottom' },
-] as const;
-const paidQrHint = (v: PaidQrSetting) => v === 'AMOUNT'
-  ? 'The guest has already paid — an amount QR can get scanned twice'
-  : 'Whether a paid bill still carries a scan-to-pay QR';
 
 export default function PrinterScreen() {
   const insets = useSafeAreaInsets();
@@ -128,15 +105,6 @@ export default function PrinterScreen() {
     kitchenMode: string;
     kotAutoPrint?: boolean;
   } | null>(null);
-  const [kotAutoPrint, setKotAutoPrint] = useState(true);
-  const [autoPrintSaving, setAutoPrintSaving] = useState(false);
-  // Takeaway-only: fast-billing counters print the bill the moment a takeaway
-  // is punched, and can keep or drop the KOT for those orders.
-  const [takeawayKot, setTakeawayKot] = useState(true);
-  const [takeawayInvoice, setTakeawayInvoice] = useState(false);
-  const [takeawaySaving, setTakeawaySaving] = useState(false);
-  // Per-channel UPI QR + logo position — venue-wide, defaults until loaded.
-  const [billSettings, setBillSettings] = useState<BillSettingsState>(DEFAULT_BILL_SETTINGS);
 
   const [isScanning, setIsScanning] = useState(false);
   const [devices, setDevices] = useState<BluetoothDevice[]>([]);
@@ -185,115 +153,8 @@ export default function PrinterScreen() {
     try {
       const res = await printerApi.getStatus();
       setServerStatus(res.data);
-      if (typeof res.data?.kotAutoPrint === 'boolean') {
-        setKotAutoPrint(res.data.kotAutoPrint);
-      }
-      if (typeof res.data?.takeawayKotAutoPrint === 'boolean') setTakeawayKot(res.data.takeawayKotAutoPrint);
-      if (typeof res.data?.takeawayInvoiceAutoPrint === 'boolean') setTakeawayInvoice(res.data.takeawayInvoiceAutoPrint);
-      setBillSettings((prev) => ({
-        dineInQrAmountMode: res.data?.dineInQrAmountMode ?? prev.dineInQrAmountMode,
-        takeawayQrAmountMode: res.data?.takeawayQrAmountMode ?? prev.takeawayQrAmountMode,
-        dineInPaidQr: res.data?.dineInPaidQr ?? prev.dineInPaidQr,
-        takeawayPaidQr: res.data?.takeawayPaidQr ?? prev.takeawayPaidQr,
-        billLogoPosition: res.data?.billLogoPosition ?? prev.billLogoPosition,
-      }));
     } catch { /* non-fatal */ }
   }, []);
-
-  const handleBillSetting = async <K extends keyof BillSettingsState>(key: K, value: BillSettingsState[K]) => {
-    const previous = billSettings[key];
-    if (previous === value) return;
-    setBillSettings((s) => ({ ...s, [key]: value }));
-    void Haptics.selectionAsync();
-    try {
-      const res = await printerApi.updatePrintSettings({ [key]: value });
-      // Don't wait for the push to reach this phone's own print path.
-      applyAutoPrintSettings(res?.data);
-    } catch {
-      setBillSettings((s) => ({ ...s, [key]: previous }));
-      showToast('Could not update print setting', false);
-    }
-  };
-
-  const renderToggle = (label: string, sub: string, value: boolean, onPress: () => void, disabled: boolean) => (
-    <View style={styles.autoPrintRow}>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.autoPrintLabel}>{label}</Text>
-        <Text style={styles.autoPrintSub}>{sub}</Text>
-      </View>
-      <TouchableOpacity
-        onPress={onPress}
-        disabled={disabled}
-        activeOpacity={0.8}
-        style={[styles.toggleTrack, value && styles.toggleTrackOn]}
-      >
-        <View style={[styles.toggleThumb, value && styles.toggleThumbOn]} />
-      </TouchableOpacity>
-    </View>
-  );
-
-  const renderChoice = <T extends string>(
-    label: string,
-    sub: string,
-    choices: readonly { value: T; label: string }[],
-    value: T,
-    onPick: (v: T) => void,
-  ) => (
-    <View style={styles.choiceRow}>
-      <Text style={styles.autoPrintLabel}>{label}</Text>
-      <Text style={styles.autoPrintSub}>{sub}</Text>
-      <View style={styles.choiceChips}>
-        {choices.map((c) => {
-          const on = c.value === value;
-          return (
-            <TouchableOpacity
-              key={c.value}
-              onPress={() => onPick(c.value)}
-              activeOpacity={0.8}
-              style={[styles.choiceChip, on && styles.choiceChipOn]}
-            >
-              <Text style={[styles.choiceChipText, on && styles.choiceChipTextOn]}>{c.label}</Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-    </View>
-  );
-
-  const handleTakeawayToggle = async (which: 'kot' | 'invoice') => {
-    if (takeawaySaving) return;
-    const set = which === 'kot' ? setTakeawayKot : setTakeawayInvoice;
-    const next = which === 'kot' ? !takeawayKot : !takeawayInvoice;
-    set(next);
-    setTakeawaySaving(true);
-    try {
-      const res = await printerApi.setTakeawayAutoPrint({ [which]: next });
-      // Don't wait for the push to reach this phone's own print gate.
-      applyAutoPrintSettings(res?.data);
-      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    } catch {
-      set(!next); // revert on failure
-      showToast('Could not update auto-print setting', false);
-    } finally {
-      setTakeawaySaving(false);
-    }
-  };
-
-  const handleAutoPrintToggle = async () => {
-    if (autoPrintSaving) return;
-    const next = !kotAutoPrint;
-    setKotAutoPrint(next);
-    setAutoPrintSaving(true);
-    try {
-      await printerApi.setAutoPrint(next);
-      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    } catch {
-      setKotAutoPrint(!next); // revert on failure
-      showToast('Could not update auto-print setting', false);
-    } finally {
-      setAutoPrintSaving(false);
-    }
-  };
 
   useEffect(() => {
     loadServerStatus();
@@ -438,13 +299,41 @@ export default function PrinterScreen() {
 
   useEffect(() => { void loadPrinters(); }, [loadPrinters]);
 
+  // Green / red sheet after a printer is added or removed. `resultOpen` is
+  // separate from its content so the text doesn't blank out mid-slide.
+  const [resultOpen, setResultOpen] = useState(false);
+  const [result, setResult] = useState<PrinterResult | null>(null);
+  const [resultPrinter, setResultPrinter] = useState<RegisteredPrinter | null>(null);
+
+  function showResult(next: PrinterResult, printer: RegisteredPrinter | null = null) {
+    setResult(next);
+    setResultPrinter(printer);
+    setResultOpen(true);
+  }
+
+  // The ⋯ menu on a printer's row.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPrinter, setMenuPrinter] = useState<RegisteredPrinter | null>(null);
+
+  /** Close the ⋯ menu, then run the action once it has slid away. */
+  function fromMenu(action: (printer: RegisteredPrinter) => void) {
+    const printer = menuPrinter;
+    setMenuOpen(false);
+    if (printer) setTimeout(() => action(printer), 280);
+  }
+
   /** Register a printer this device can physically reach, and take its host slot. */
-  const registerPrinter = useCallback(async (body: PrinterInputBody, label: string) => {
+  const registerPrinter = useCallback(async (body: PrinterInputBody) => {
     const deviceId = await getPrintDeviceId();
-    await printersApi.create({ ...body, hostDeviceId: deviceId });
+    const res = await printersApi.create({ ...body, hostDeviceId: deviceId });
     await loadPrinters();
-    showToast(`${label} added`, true);
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    const transport = TRANSPORT_LABEL[String(body.transport).toLowerCase()] ?? ' · Bluetooth';
+    showResult({
+      kind: 'connected',
+      title: 'Printer connected',
+      detail: `${body.name} · ${body.paperWidth}mm${transport}`,
+      message: ROLE_RESULT[body.role]?.added ?? ROLE_RESULT.KOT.added,
+    }, res?.data ?? null);
   }, [loadPrinters]);
 
   const handleRename = useCallback((printer: RegisteredPrinter) => {
@@ -551,17 +440,25 @@ export default function PrinterScreen() {
         ? 'Bills will stop printing here.'
         : 'Kitchen tickets will stop printing here.',
       actions: [
-        { label: 'Cancel', onPress: () => {} },
+        // ThemedDialog never closes itself — each button must, or its overlay
+        // stays up and swallows every tap until the back button.
+        { label: 'Cancel', onPress: () => setDialog((d) => ({ ...d, visible: false })) },
         {
           label: 'Remove',
           variant: 'danger' as const,
           onPress: () => {
+            setDialog((d) => ({ ...d, visible: false }));
             void (async () => {
               setBusyPrinterId(printer.id);
               try {
                 await printersApi.remove(printer.id);
                 await loadPrinters();
-                showToast(`${printer.name} removed`, true);
+                showResult({
+                  kind: 'removed',
+                  title: 'Printer removed',
+                  detail: printer.name,
+                  message: ROLE_RESULT[printer.role]?.removed ?? ROLE_RESULT.KOT.removed,
+                });
               } catch {
                 showToast(`Could not remove ${printer.name}`, false);
               } finally {
@@ -603,7 +500,7 @@ export default function PrinterScreen() {
         transport: 'BLUETOOTH',
         address: device.address,
         paperWidth: width,
-      }, `${name} · ${width}mm`);
+      });
       setShowScanView(false);
     } catch (err: any) {
       showToast(
@@ -642,7 +539,7 @@ export default function PrinterScreen() {
         name,
         systemName: `Network printer (${ip})`,
         role, transport: 'NETWORK', ip, port, paperWidth: width,
-      }, `${name} · ${width}mm`);
+      });
       setShowScanView(false);
       setShowNetworkForm(false);
     } catch (err: any) {
@@ -690,7 +587,7 @@ export default function PrinterScreen() {
         usbVendorId: device.vendorId,
         usbProductId: device.productId,
         paperWidth: width,
-      }, `${name} · ${width}mm`);
+      });
       setShowScanView(false);
     } catch (err: any) {
       showToast(
@@ -724,13 +621,19 @@ export default function PrinterScreen() {
           label: 'Unpair', variant: 'danger', onPress: async () => {
             setDialog((d) => ({ ...d, visible: false }));
             setIsUnpairing(true);
+            const name = config?.name ?? 'Printer';
             try {
               await unpair();
               await printerApi.setPairing({ pairedTo: null });
               setLocalStatus('unpaired');
               setConfig(null);
               await loadServerStatus();
-              showToast('Printer has been unpaired', false);
+              showResult({
+                kind: 'removed',
+                title: 'Printer unpaired',
+                detail: name,
+                message: 'This phone no longer prints. You can pair again any time.',
+              });
             } catch {
               showToast('Failed to unpair', false);
             } finally {
@@ -825,40 +728,6 @@ export default function PrinterScreen() {
                 </View>
 
                 <View style={styles.printerActions}>
-                  <TouchableOpacity
-                    style={styles.printerAction}
-                    onPress={() => handleRename(printer)}
-                    disabled={busy}
-                    activeOpacity={0.75}
-                  >
-                    <Ionicons name="pencil-outline" size={16} color={QuinckleColors.textPrimary} />
-                    <Text style={styles.printerActionText}>Rename</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.printerAction}
-                    onPress={() => handleChangeRole(printer)}
-                    disabled={busy}
-                    activeOpacity={0.75}
-                  >
-                    <Ionicons name="swap-horizontal-outline" size={16} color={QuinckleColors.textPrimary} />
-                    <Text style={styles.printerActionText}>Prints</Text>
-                  </TouchableOpacity>
-
-                  {invoicePrinterCount >= 2
-                    && (printer.role === 'BILL' || printer.role === 'BOTH')
-                    && !printer.isDefaultBill && (
-                    <TouchableOpacity
-                      style={styles.printerAction}
-                      onPress={() => void handleMakeDefault(printer)}
-                      disabled={busy}
-                      activeOpacity={0.75}
-                    >
-                      <Ionicons name="star-outline" size={16} color={QuinckleColors.textPrimary} />
-                      <Text style={styles.printerActionText}>Make default</Text>
-                    </TouchableOpacity>
-                  )}
-
                   {mine ? (
                     <TouchableOpacity
                       style={styles.printerAction}
@@ -883,12 +752,12 @@ export default function PrinterScreen() {
 
                   <TouchableOpacity
                     style={styles.printerAction}
-                    onPress={() => handleRemovePrinter(printer)}
+                    onPress={() => { setMenuPrinter(printer); setMenuOpen(true); }}
                     disabled={busy}
                     activeOpacity={0.75}
+                    accessibilityLabel={`More actions for ${printer.name}`}
                   >
-                    <Ionicons name="trash-outline" size={16} color={QuinckleColors.danger} />
-                    <Text style={[styles.printerActionText, { color: QuinckleColors.danger }]}>Remove</Text>
+                    <Ionicons name="ellipsis-horizontal" size={16} color={QuinckleColors.textPrimary} />
                   </TouchableOpacity>
                 </View>
               </View>
@@ -896,24 +765,15 @@ export default function PrinterScreen() {
           })}
         </View>
 
-        {/* Venue-wide printer settings — the same ones the partner dashboard and
-            partner app edit. Every crew device follows them. */}
-        <View style={styles.card}>
-          <Text style={styles.sectionLabel}>PRINT SETTINGS · ALL DEVICES</Text>
-
-          <Text style={styles.settingsGroup}>Dine-in</Text>
-          {renderToggle('Auto-print KOT', 'Every new order except takeaway (delivery too)', kotAutoPrint, handleAutoPrintToggle, autoPrintSaving)}
-          {renderChoice('UPI QR on unpaid bills', 'Ask lets the crew pick each time', QR_AMOUNT_CHOICES, billSettings.dineInQrAmountMode, (v) => handleBillSetting('dineInQrAmountMode', v))}
-          {renderChoice('UPI QR on paid bills', paidQrHint(billSettings.dineInPaidQr), PAID_QR_CHOICES, billSettings.dineInPaidQr, (v) => handleBillSetting('dineInPaidQr', v))}
-
-          <Text style={styles.settingsGroup}>Takeaway</Text>
-          {renderToggle('Auto-print invoice', 'Print the bill the moment a takeaway order is placed', takeawayInvoice, () => { void handleTakeawayToggle('invoice'); }, takeawaySaving)}
-          {renderToggle('Auto-print KOT', 'Print the kitchen ticket for every new takeaway order', takeawayKot, () => { void handleTakeawayToggle('kot'); }, takeawaySaving)}
-          {renderChoice('UPI QR on unpaid bills', 'Ask lets the crew pick each time', QR_AMOUNT_CHOICES, billSettings.takeawayQrAmountMode, (v) => handleBillSetting('takeawayQrAmountMode', v))}
-          {renderChoice('UPI QR on paid bills', paidQrHint(billSettings.takeawayPaidQr), PAID_QR_CHOICES, billSettings.takeawayPaidQr, (v) => handleBillSetting('takeawayPaidQr', v))}
-
-          <Text style={styles.settingsGroup}>All bills</Text>
-          {renderChoice('Logo position', 'Where the logo prints, when the logo is on', LOGO_CHOICES, billSettings.billLogoPosition, (v) => handleBillSetting('billLogoPosition', v))}
+        {/* Venue-wide print settings (auto-print, bill QR, logo position) are
+            edited in the partner app and dashboard; crew devices only follow
+            them. Editing them here let any crew phone switch off auto-print
+            for the whole venue. */}
+        <View style={styles.noteRow}>
+          <Ionicons name="information-circle-outline" size={16} color={QuinckleColors.textTertiary} />
+          <Text style={styles.noteText}>
+            Auto-print and bill QR settings are managed in the Partner app.
+          </Text>
         </View>
 
         {/* Status card */}
@@ -1187,6 +1047,33 @@ export default function PrinterScreen() {
         </View>
       )}
 
+      <PrinterActionsSheet
+        visible={menuOpen}
+        printerName={menuPrinter?.name ?? 'Printer'}
+        canMakeDefault={
+          !!menuPrinter
+          && invoicePrinterCount >= 2
+          && (menuPrinter.role === 'BILL' || menuPrinter.role === 'BOTH')
+          && !menuPrinter.isDefaultBill
+        }
+        onRename={() => fromMenu(handleRename)}
+        onChangeRole={() => fromMenu(handleChangeRole)}
+        onMakeDefault={() => fromMenu((p) => void handleMakeDefault(p))}
+        onRemove={() => fromMenu(handleRemovePrinter)}
+        onClose={() => setMenuOpen(false)}
+      />
+
+      <PrinterResultSheet
+        visible={resultOpen}
+        result={result}
+        onClose={() => setResultOpen(false)}
+        onTestPrint={resultPrinter ? () => {
+          const printer = resultPrinter;
+          setResultOpen(false);
+          void handleTestPrinter(printer);
+        } : undefined}
+      />
+
       <ThemedDialog
         visible={dialog.visible}
         title={dialog.title}
@@ -1225,6 +1112,15 @@ export default function PrinterScreen() {
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
+  noteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginHorizontal: Spacing.lg,
+    marginTop: Spacing.md,
+    paddingHorizontal: Spacing.xs,
+  },
+  noteText: { flex: 1, fontSize: 12, color: QuinckleColors.textTertiary },
   printerRow: {
     paddingVertical: Spacing.md,
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -1348,30 +1244,6 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   toggleThumbOn: { alignSelf: 'flex-end' },
-  settingsGroup: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: QuinckleColors.textSecondary,
-    marginTop: Spacing.lg,
-  },
-  choiceRow: {
-    marginTop: Spacing.md,
-    paddingTop: Spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: QuinckleColors.border,
-  },
-  choiceChips: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginTop: Spacing.sm },
-  choiceChip: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 6,
-    borderRadius: Radius.pill,
-    borderWidth: 1,
-    borderColor: QuinckleColors.borderStrong,
-  },
-  choiceChipOn: { backgroundColor: QuinckleColors.primary, borderColor: QuinckleColors.primary },
-  choiceChipText: { fontSize: 12, fontWeight: '600', color: QuinckleColors.textSecondary },
-  choiceChipTextOn: { color: '#fff' },
-
   actionsCard: {
     backgroundColor: QuinckleColors.surface,
     borderRadius: Radius.lg,
