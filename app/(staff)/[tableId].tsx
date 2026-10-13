@@ -8,7 +8,7 @@ import { QuinckleColors, Radius, Spacing , Typography } from '../../constants/Co
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { crewSessions, crewTables, crewOrders, restaurantApi, printerApi } from '../../services/api';
 import type { SessionBill, BillOrderItem, BillOrder } from '../../services/api';
-import { printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
+import { printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode, qrAmountModeFor } from '../../services/printer';
 import { printBillFromHere, type InvoicePrinterChoice } from '../../services/billPrint';
 import { mergeBillLines } from '../../services/mergeBillLines';
 import { useInvoicePrinterPicker } from '../../hooks/useInvoicePrinterPicker';
@@ -1166,10 +1166,12 @@ export default function TableDetail() {
     };
 
     // Only ask which QR to print when a QR would actually be printed
-    // (unpaid + a VPA configured + the on-device QR toggle is on).
+    // (unpaid + a VPA configured + the on-device QR toggle is on), and only
+    // when the venue left dine-in on "Ask every time" (Printer settings).
     const qrWillPrint = !isPaid && !!upiId && isUpiQrEnabled();
-    if (!qrWillPrint) {
-      await runPrint(false);
+    const qrMode = qrAmountModeFor('DINE_IN');
+    if (!qrWillPrint || qrMode !== 'ASK') {
+      await runPrint(qrWillPrint && qrMode === 'STATIC');
       return;
     }
 

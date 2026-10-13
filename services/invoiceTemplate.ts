@@ -97,6 +97,12 @@ export interface InvoiceBill {
   /** Print the static restaurant QR (payee only, no amount) instead of the
    *  exact-amount QR. Diner types the amount in their UPI app. */
   upiOmitAmount?: boolean;
+  /** Printer settings: whether a PAID bill still carries a QR, and which —
+   *  'STATIC' (payee only) or 'AMOUNT'. Absent/'OFF' → no QR once paid. */
+  paidUpiQr?: 'OFF' | 'STATIC' | 'AMOUNT';
+  /** Printer settings: logo above the restaurant name (default) or at the
+   *  foot of the bill, under the venue's own footer text. */
+  logoPosition?: 'TOP' | 'BOTTOM';
   generatedAt?: string; // ISO string — defaults to now
   orderDateTime?: string; // ISO string of order/session time
   /** Owner's custom "thank you" line (Bill Settings). Replaces the default
@@ -481,7 +487,8 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   // DantSu wants an image alone on its line, with a single alignment tag.
   // The blank line after it keeps the big restaurant name off the logo's
   // bottom edge — printed flush, they touched.
-  if (bill.logoDataUri) {
+  const logoAtBottom = bill.logoPosition === 'BOTTOM';
+  if (bill.logoDataUri && !logoAtBottom) {
     lines.push(`[C]<img>${bill.logoDataUri}</img>`);
     lines.push('[L]');
   }
@@ -694,11 +701,14 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
     lines.push(`[L]${D}`);
   }
 
-  // ── Scan-to-pay UPI QR (unpaid bills with a configured VPA only) ──────────
-  // `upiOmitAmount` prints the restaurant's static QR (payee only, diner enters
-  // the amount); otherwise the exact bill amount is baked into the intent.
-  if (!bill.isPaid && bill.upiVpa) {
-    const staticQr = bill.upiOmitAmount === true;
+  // ── Scan-to-pay UPI QR (configured VPA only) ──────────────────────────────
+  // Unpaid bills: `upiOmitAmount` prints the restaurant's static QR (payee
+  // only, diner enters the amount); otherwise the exact bill amount is baked
+  // into the intent. Paid bills carry one only when the venue chose to
+  // (Printer settings → QR on paid bills), and then the kind it chose.
+  const paidQr = bill.paidUpiQr ?? 'OFF';
+  if (bill.upiVpa && (!bill.isPaid || paidQr !== 'OFF')) {
+    const staticQr = bill.isPaid ? paidQr === 'STATIC' : bill.upiOmitAmount === true;
     const upiString = buildUpiPayString({
       pa: bill.upiVpa,
       pn: bill.upiName || bill.restaurantName,
@@ -739,6 +749,12 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   // "WiFi: guest123"), printed below the thank-you line when set.
   if (bill.footerNote?.trim()) {
     for (const ln of wrapText(bill.footerNote.trim(), W)) lines.push(`[C]${ln}`);
+  }
+  // Logo at the foot: under the venue's own words, above Quinckle's lines.
+  if (bill.logoDataUri && logoAtBottom) {
+    lines.push('[L]');
+    lines.push(`[C]<img>${bill.logoDataUri}</img>`);
+    lines.push('[L]');
   }
   lines.push('[C]Support & feedback:');
   lines.push('[C]quinckle.com/support');
