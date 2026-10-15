@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import { View } from 'react-native';
 import { QuinckleColors } from '../../constants/Colors';
 import { ItemReadyToast } from '../../components/ui/ItemReadyToast';
+import { PujaGreeting } from '../../components/ui/PujaGreeting';
 import { useItemReadyToasts, dismissReady, clearReady } from '../../stores/itemReadyToast';
 
 export default function StaffLayout() {
@@ -74,6 +75,10 @@ export default function StaffLayout() {
         <Stack.Screen name="order-detail" />
         <Stack.Screen name="delivery" />
       </Stack>
+
+      {/* One-time Puja thank-you. Mounted before the item-ready cards so a
+          "table ready" card always lands on top of it. */}
+      <PujaGreeting />
 
       <ItemReadyToast
         toasts={toasts}
