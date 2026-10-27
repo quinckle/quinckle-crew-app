@@ -59,6 +59,7 @@ import { MergeTableSheet } from '../../components/ui/MergeTableSheet';
 import { GroupPickerSheet } from '../../components/ui/GroupPickerSheet';
 import { UndoSnackbar } from '../../components/ui/UndoSnackbar';
 import { CollectPaymentPanel } from '../../components/ui/CollectPaymentPanel';
+import { useManagerApproval, type MintGrant } from '../../components/ui/ManagerPinSheet';
 // FreeTableOverlay (center "table cleared" modal) removed — every free now uses
 // the bottom UndoSnackbar so it never blocks the floor during a rush.
 import { addReady, pruneToActive, type ReadyNav } from '../../stores/itemReadyToast';
@@ -282,6 +283,122 @@ const STATUS_META: Record<TableStatus, { label: string; color: string }> = {
   offline: { label: 'Offline', color: QuinckleColors.textTertiary },
 };
 
+// ── Takeaway: one card per customer ──────────────────────────────────────────
+// Every round a takeaway customer orders is its own Order (its own KOT), all on
+// the same session. The board shows ONE card per session — items merged into
+// rows, one total, one "collect what is still due" — the way a table works.
+// Actions still go to the real orders underneath (`orders`, `lines`).
+
+const TAKEAWAY_PAID = ['PAID_CASH', 'PAID_UPI_DIRECT', 'PAID_ONLINE', 'PAID_MIXED', 'WAIVED'];
+const TAKEAWAY_COLLECTIBLE = ['PENDING_STAFF_COLLECTION', 'PENDING_CASH', 'PENDING_UPI_DIRECT', 'UNPAID'];
+const TAKEAWAY_STATUS_RANK: Record<string, number> = { RECEIVED: 0, PREPARING: 1, READY: 2, SERVED: 3 };
+const payStatus = (o: TakeawayOrder) => String(o.paymentStatus ?? '').toUpperCase();
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
+/** One real order line behind a merged takeaway row. */
+type TakeawayLine = { orderId: string; itemId: string; qty: number; paid: boolean; at: string };
+type TakeawayRowItem = TakeawayOrder['items'][number] & { lines: TakeawayLine[] };
+/** A takeaway customer's whole visit. Still a TakeawayOrder in shape, so every
+ *  card and sheet that took one keeps working; `orderId` is the first round's. */
+type TakeawayGroup = Omit<TakeawayOrder, 'items'> & {
+  items: TakeawayRowItem[];
+  orders: TakeawayOrder[];
+  /** Rounds still owing money — what Collect charges for. */
+  unpaidOrders: TakeawayOrder[];
+  dueTotal: number;
+  paidTotal: number;
+};
+
+/** Same dish + options + unit price — the bill's merge rule (services/mergeBillLines.ts). */
+const takeawayRowKey = (it: { menuItemId?: string; name: string; unitPrice: number; modifiers: string | null }) =>
+  [it.menuItemId || it.name, Number(it.unitPrice).toFixed(2), it.modifiers ?? ''].join('\u0000');
+
+function mergeTakeaway(list: TakeawayOrder[]): TakeawayGroup {
+  const orders = [...list].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const first = orders[0]!;
+  const isPaid = (o: TakeawayOrder) => TAKEAWAY_PAID.includes(payStatus(o));
+  const unpaidOrders = orders.filter((o) => TAKEAWAY_COLLECTIBLE.includes(payStatus(o)));
+  const lineOf = (o: TakeawayOrder, it: TakeawayOrder['items'][number]): TakeawayLine =>
+    ({ orderId: o.orderId, itemId: it.itemId, qty: it.qty, paid: isPaid(o), at: o.createdAt });
+
+  // A single round keeps its lines exactly as they are (the long-press manage
+  // sheet deletes by line); only several rounds get merged into rows.
+  let items: TakeawayRowItem[];
+  if (orders.length === 1) {
+    items = first.items.map((it) => ({ ...it, lines: [lineOf(first, it)] }));
+  } else {
+    const rows = new Map<string, TakeawayRowItem>();
+    for (const o of orders) for (const it of o.items) {
+      const k = takeawayRowKey(it);
+      const row = rows.get(k);
+      if (row) { row.qty += it.qty; row.lines.push(lineOf(o, it)); }
+      else rows.set(k, { ...it, lines: [lineOf(o, it)] });
+    }
+    items = [...rows.values()];
+  }
+
+  const sum = (f: (o: TakeawayOrder) => number | undefined | null) => r2(orders.reduce((n, o) => n + (Number(f(o)) || 0), 0));
+  const charges = new Map<string, { id: string; name: string; amount: number }>();
+  const taxes = new Map<number, { rate: number; taxableValue: number; cgst: number; sgst: number; amount: number }>();
+  for (const o of orders) {
+    for (const c of o.chargeLines ?? []) {
+      const cur = charges.get(c.id);
+      if (cur) cur.amount = r2(cur.amount + c.amount); else charges.set(c.id, { ...c });
+    }
+    for (const t of o.taxLines ?? []) {
+      const cur = taxes.get(t.rate);
+      if (cur) {
+        cur.taxableValue = r2(cur.taxableValue + t.taxableValue);
+        cur.cgst = r2(cur.cgst + t.cgst); cur.sgst = r2(cur.sgst + t.sgst); cur.amount = r2(cur.amount + t.amount);
+      } else taxes.set(t.rate, { ...t });
+    }
+  }
+
+  const live = orders.filter((o) => o.status !== 'SERVED');
+  const status = live.length === 0 ? 'SERVED'
+    : live.reduce((a, o) => ((TAKEAWAY_STATUS_RANK[o.status] ?? 0) < (TAKEAWAY_STATUS_RANK[a] ?? 0) ? o.status : a), live[0]!.status);
+  const paymentStatus = unpaidOrders.length > 0 ? unpaidOrders[0]!.paymentStatus
+    : orders.every(isPaid) ? (new Set(orders.map(payStatus)).size === 1 ? first.paymentStatus : 'PAID_MIXED')
+    : orders.find((o) => !isPaid(o))!.paymentStatus; // e.g. DUE (on khata)
+  const total = sum((o) => o.total);
+  const dueTotal = r2(unpaidOrders.reduce((n, o) => n + (Number(o.total) || 0), 0));
+
+  return {
+    ...first,
+    customerName: orders.find((o) => o.customerName)?.customerName ?? null,
+    customerPhone: orders.find((o) => o.customerPhone)?.customerPhone ?? null,
+    items,
+    status,
+    subtotal: sum((o) => o.subtotal),
+    discount: sum((o) => o.discount),
+    manualDiscount: sum((o) => o.manualDiscount),
+    manualDiscountNote: orders.find((o) => o.manualDiscountNote)?.manualDiscountNote ?? null,
+    tax: sum((o) => o.tax),
+    serviceCharge: sum((o) => o.serviceCharge),
+    chargeLines: [...charges.values()],
+    taxLines: [...taxes.values()],
+    roundOff: sum((o) => o.roundOff),
+    total,
+    paymentStatus,
+    paymentMethod: new Set(orders.map((o) => o.paymentMethod)).size === 1 ? first.paymentMethod : null,
+    orders,
+    unpaidOrders,
+    dueTotal,
+    paidTotal: r2(total - dueTotal),
+  };
+}
+
+/** The board's list, newest-first order kept by each group's first appearance. */
+function groupTakeawayOrders(orders: TakeawayOrder[]): TakeawayGroup[] {
+  const bySession = new Map<string, TakeawayOrder[]>();
+  for (const o of orders) {
+    const k = o.sessionId || o.orderId;
+    const list = bySession.get(k);
+    if (list) list.push(o); else bySession.set(k, [o]);
+  }
+  return [...bySession.values()].map(mergeTakeaway);
+}
+
 export default function StaffDashboard() {
   const insets = useSafeAreaInsets();
   const { staffInfo, capabilities } = useAuth();
@@ -293,6 +410,11 @@ export default function StaffDashboard() {
   // this is the only screen left to show the "placed" confirmation.
   const placedParams = useLocalSearchParams<{ placedAmount?: string; placedCount?: string; collectedLabel?: string; tab?: string; selectOrderId?: string }>();
   const [placedMessage, setPlacedMessage] = useState<string | null>(null);
+  // Takeaway twin of the table panel's order-placed curtain: order-menu lands
+  // here with the new order selected, and the green beat plays over the
+  // takeaway panel before revealing it. Only drawn on wide layouts — the
+  // takeaway panel does not exist on phones.
+  const [takeawayPlacedCurtainId, setTakeawayPlacedCurtainId] = useState<string | null>(null);
   useEffect(() => {
     if (!placedParams.placedAmount) return;
     const n = Number(placedParams.placedCount) || 0;
@@ -306,7 +428,10 @@ export default function StaffDashboard() {
     // once loadTakeawayOrders' fetch lands).
     if (placedParams.tab === 'takeaway') {
       setActiveTab('takeaway');
-      if (placedParams.selectOrderId) setSelectedTakeawayId(placedParams.selectOrderId);
+      if (placedParams.selectOrderId) {
+        setSelectedTakeawayId(placedParams.selectOrderId);
+        setTakeawayPlacedCurtainId(placedParams.selectOrderId);
+      }
     }
     router.setParams({ placedAmount: undefined, placedCount: undefined, collectedLabel: undefined, tab: undefined, selectOrderId: undefined });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -487,16 +612,23 @@ export default function StaffDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tables]);
   tablesRef.current = tables;
-  // The order-placed curtain plays over the panel above exactly once — keyed
-  // on the session so a later re-select of the same table (or a second party
-  // landing on it) can't replay it. takeOrderPlacedSignal self-clears, so this
-  // only ever fires for the table order-menu actually just marked.
+  // The order-placed curtain plays over the panel above exactly once per
+  // placed order — takeOrderPlacedSignal self-clears, so it only ever fires
+  // for the table order-menu actually just marked.
+  //
+  // A FOCUS effect, not a plain one: after "Add items" on a table already in
+  // the panel, order-menu pops back to this screen with the panel unchanged,
+  // so an effect keyed on `tablePanel` never re-ran and the curtain never
+  // played. Returning to the screen is the moment to check; a panel change
+  // while focused still re-runs it (the callback's deps change).
   const [curtainSessionId, setCurtainSessionId] = useState<string | null>(null);
-  useEffect(() => {
-    if (tablePanel?.status === 'occupied' && takeOrderPlacedSignal(tablePanel.tableDbId)) {
-      setCurtainSessionId(tablePanel.sessionId);
-    }
-  }, [tablePanel]);
+  useFocusEffect(
+    useCallback(() => {
+      if (tablePanel?.status === 'occupied' && takeOrderPlacedSignal(tablePanel.tableDbId)) {
+        setCurtainSessionId(tablePanel.sessionId);
+      }
+    }, [tablePanel]),
+  );
   const [isLoadingTables, setIsLoadingTables] = useState(true);
   // Freeing UX: every free path (single, group, batch) raises the same bottom
   // Undo snackbar, which holds the closed sessions to reopen and a busy flag
@@ -556,6 +688,11 @@ export default function StaffDashboard() {
   const [completingIds, setCompletingIds] = useState<string[]>([]);
   // ── Takeaway state ──
   const [takeawayOrders, setTakeawayOrders] = useState<TakeawayOrder[]>([]);
+  // One card per customer (see groupTakeawayOrders). Everything the board and
+  // panel draw reads these; `takeawayOrders` stays the raw per-round list.
+  const takeawayGroups = useMemo(() => groupTakeawayOrders(takeawayOrders), [takeawayOrders]);
+  const groupOfTakeaway = (order: TakeawayOrder): TakeawayGroup =>
+    takeawayGroups.find((g) => g.orders.some((o) => o.orderId === order.orderId)) ?? mergeTakeaway([order]);
   const [takeawaySubTab, setTakeawaySubTab] = useState<'preparing' | 'handed'>('preparing');
   // Wide toolbar's Preparing/Handed switcher — a dropdown instead of two
   // tabs. Position is measured off the trigger button (measureInWindow) and
@@ -593,6 +730,23 @@ export default function StaffDashboard() {
   // no snapshot: it's just an id, resolved against the live `takeawayOrders`
   // array on every render, so the panel updates itself as that list refreshes.
   const [selectedTakeawayId, setSelectedTakeawayId] = useState<string | null>(null);
+  // The placed curtain belongs to the order it was raised for; once the crew
+  // moves the selection away, it must not replay on coming back later.
+  useEffect(() => {
+    if (takeawayPlacedCurtainId && selectedTakeawayId !== takeawayPlacedCurtainId) setTakeawayPlacedCurtainId(null);
+  }, [selectedTakeawayId, takeawayPlacedCurtainId]);
+  // ── Takeaway panel: Edit quantities (− qty + ×) and Add ──
+  // Same rules as the table screen: a DRAFT of target quantities until Save,
+  // one reason for every removal, one new order (its own KOT) for every "+".
+  // A takeaway line that is already PAID cannot be cut (that is a refund), so
+  // "−" stops at the paid units.
+  const [twEditing, setTwEditing] = useState(false);
+  const [twDraft, setTwDraft] = useState<Record<string, number>>({});
+  const [twReasonOpen, setTwReasonOpen] = useState(false);
+  const [twSaving, setTwSaving] = useState(false);
+  const { sheet: managerPinSheet, runWithApproval } = useManagerApproval();
+  useEffect(() => { setTwEditing(false); setTwDraft({}); }, [selectedTakeawayId]);
+
   const takeawayOrderUrl = staffInfo?.restaurantId
     ? `https://quinckle.com/takeaway/${staffInfo.restaurantId}`
     : '';
@@ -633,6 +787,16 @@ export default function StaffDashboard() {
 
   const isTakeawayPaid = (order: TakeawayOrder) =>
     ['PAID_CASH', 'PAID_UPI_DIRECT', 'PAID_ONLINE', 'PAID_MIXED', 'WAIVED'].includes(String(order.paymentStatus ?? '').toUpperCase());
+
+  // "Paid", "Pending", or — once a customer added to a paid order —
+  // "Paid ₹398 · Due ₹120".
+  const takeawayPayLabel = (order: TakeawayOrder): string => {
+    const g = groupOfTakeaway(order);
+    if (isTakeawayPaid(g)) return 'Paid';
+    return g.paidTotal > 0.005 && g.dueTotal > 0.005
+      ? `Paid ₹${Math.round(g.paidTotal)} · Due ₹${Math.round(g.dueTotal)}`
+      : 'Pending';
+  };
 
   const isTakeawayPendingCollection = (order: TakeawayOrder) =>
     ['PENDING_STAFF_COLLECTION', 'PENDING_CASH', 'PENDING_UPI_DIRECT', 'UNPAID'].includes(String(order.paymentStatus ?? '').toUpperCase());
@@ -877,36 +1041,47 @@ export default function StaffDashboard() {
   // panel (like the table's), so collecting opens the same kind of embedded
   // sheet the table panel uses — see takeawayCollectTarget below — instead of
   // pushing the phone's full-screen payment-collect.tsx.
-  const [takeawayCollectTarget, setTakeawayCollectTarget] = useState<TakeawayOrder | null>(null);
+  const [takeawayCollectTarget, setTakeawayCollectTarget] = useState<TakeawayGroup | null>(null);
+  // Collects what the customer still owes: one unpaid round goes through the
+  // single-order collect, several through the session collect with their ids
+  // (the same path dine-in uses for a table's rounds).
   const handleCollectTakeaway = (order: TakeawayOrder) => {
+    const g = groupOfTakeaway(order);
+    if (g.unpaidOrders.length === 0) return;
     if (isDesktop()) {
-      setTakeawayCollectTarget(order);
+      setTakeawayCollectTarget(g);
       return;
     }
+    const single = g.unpaidOrders.length === 1 ? g.unpaidOrders[0]! : null;
     router.push({
       pathname: '/(staff)/payment-collect',
       params: {
-        orderId: order.orderId,
-        sessionId: '',
-        orderIds: '',
+        orderId: (single ?? g.unpaidOrders[0]!).orderId,
+        sessionId: single ? '' : (g.sessionId ?? ''),
+        orderIds: single ? '' : JSON.stringify(g.unpaidOrders.map((o) => o.orderId)),
         tableNumber: '',
         channel: 'TAKEAWAY',
-        pickupToken: order.pickupToken ?? '',
-        amount: String(order.total ?? 0),
-        customerName: order.customerName ?? '',
-        customerPhone: order.customerPhone ?? '',
+        pickupToken: g.pickupToken ?? '',
+        amount: String(g.dueTotal),
+        customerName: g.customerName ?? '',
+        customerPhone: g.customerPhone ?? '',
       },
     });
   };
 
+  // Hands over EVERY round of the customer's visit, together: the server
+  // closes the session on the first handover, so a round left behind could
+  // never be handed over — or added to — again.
   const handleHandover = async (orderId: string) => {
+    const g = takeawayGroups.find((x) => x.orders.some((o) => o.orderId === orderId));
+    const ids = g ? g.orders.filter((o) => o.status !== 'SERVED').map((o) => o.orderId) : [orderId];
     setHandingOverIds((prev) => [...prev, orderId]);
     try {
-      await crewOrders.handoverTakeaway(orderId);
+      for (const id of ids) await crewOrders.handoverTakeaway(id);
       setTakeawayOrders((prev) =>
-        prev.map((o) => (o.orderId === orderId ? { ...o, status: 'SERVED' } : o)),
+        prev.map((o) => (ids.includes(o.orderId) ? { ...o, status: 'SERVED' } : o)),
       );
-      if (selectedTakeawayId === orderId) setHandoverCurtainId(orderId);
+      if (selectedTakeawayId && (selectedTakeawayId === orderId || ids.includes(selectedTakeawayId))) setHandoverCurtainId(orderId);
     } catch (err: any) {
       const code = String(err?.code ?? err?.message ?? '');
       showDialog(
@@ -939,6 +1114,9 @@ export default function StaffDashboard() {
   // Long-press a takeaway card to open the manage sheet (item / whole-order
   // delete). Only offered on orders that are still deletable.
   const openTakeawayManage = (order: TakeawayOrder) => {
+    // Several rounds: the panel's Edit handles them (it knows which lines are
+    // already paid). The sheet below deletes one order's lines by id.
+    if (groupOfTakeaway(order).orders.length > 1) { setSelectedTakeawayId(order.orderId); return; }
     if (!canDeleteTakeaway(order)) return;
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setManageOrder(order);
@@ -2548,9 +2726,118 @@ export default function StaffDashboard() {
     outputRange: [winWidth, Math.max(0, winWidth * 0.6 - Spacing.lg * 2)],
   });
 
-  const selectedTakeawayOrder = selectedTakeawayId
-    ? takeawayOrders.find((o) => o.orderId === selectedTakeawayId) ?? null
+  const selectedTakeawayOrder: TakeawayGroup | null = selectedTakeawayId
+    ? takeawayGroups.find((g) => g.orders.some((o) => o.orderId === selectedTakeawayId)) ?? null
     : null;
+
+  const twPaidUnits = (row: TakeawayRowItem) => row.lines.reduce((n, l) => n + (l.paid ? l.qty : 0), 0);
+  const twQty = (row: TakeawayRowItem) => twDraft[takeawayRowKey(row)] ?? row.qty;
+  const twSetQty = (row: TakeawayRowItem, qty: number) => {
+    const key = takeawayRowKey(row);
+    const next = Math.max(twPaidUnits(row), Math.min(row.qty + 50, qty));
+    setTwDraft((d) => {
+      const out = { ...d };
+      if (next === row.qty) delete out[key]; else out[key] = next;
+      return out;
+    });
+  };
+  const twCanEdit = !!selectedTakeawayOrder && selectedTakeawayOrder.status !== 'SERVED'
+    && !!selectedTakeawayOrder.sessionId && selectedTakeawayOrder.items.length > 0;
+
+  const twPlan = useMemo(() => {
+    const removals: { line: TakeawayLine; units: number; name: string; unitPrice: number }[] = [];
+    const additions: { row: TakeawayRowItem; units: number }[] = [];
+    let changedRows = 0;
+    for (const row of selectedTakeawayOrder?.items ?? []) {
+      const target = twDraft[takeawayRowKey(row)];
+      if (target == null) continue;
+      if (target < row.qty) {
+        changedRows += 1;
+        // Newest unpaid round first: least likely to be cooked, and paid
+        // lines can only be refunded.
+        let left = row.qty - target;
+        for (const line of [...row.lines].reverse()) {
+          if (left <= 0) break;
+          if (line.paid) continue;
+          const units = Math.min(line.qty, left);
+          removals.push({ line, units, name: row.name, unitPrice: row.unitPrice });
+          left -= units;
+        }
+      } else if (target > row.qty && row.menuItemId) {
+        changedRows += 1;
+        additions.push({ row, units: target - row.qty });
+      }
+    }
+    const removedValue = removals.reduce((n, r) => n + r.unitPrice * r.units, 0);
+    return { removals, additions, removedValue, changedRows };
+  }, [selectedTakeawayOrder, twDraft]);
+
+  const twSave = () => {
+    if (twSaving || twPlan.changedRows === 0) return;
+    if (twPlan.removals.length > 0) setTwReasonOpen(true);
+    else void twApply(null);
+  };
+
+  const twApply = async (reason: CancelReason | null) => {
+    const g = selectedTakeawayOrder;
+    if (!g?.sessionId || twSaving) return;
+    const { removals, additions, removedValue } = twPlan;
+    // Survives the manager-PIN retry: nothing that went through goes twice.
+    const done = new Set<string>();
+    let added = additions.length === 0;
+    const attempt = async (mint?: MintGrant) => {
+      try {
+        for (const r of removals) {
+          const key = `${r.line.orderId}:${r.line.itemId}`;
+          if (done.has(key)) continue;
+          const grantId = mint ? await mint(r.line.orderId, r.unitPrice * r.units) : undefined;
+          await crewOrders.cancelItem(r.line.orderId, r.line.itemId, reason ?? undefined, { qty: r.units, grantId });
+          done.add(key);
+        }
+        if (!added) {
+          // Lands as a new, unpaid round on the same customer — its own KOT,
+          // and "Due" on the card until it is collected.
+          await crewOrders.placeOrder(g.sessionId!, additions.map((a) => ({
+            item_id: a.row.menuItemId!,
+            qty: a.units,
+            ...(a.row.selectedModifiers?.length ? { selectedModifiers: a.row.selectedModifiers } : {}),
+            ...(a.row.modifiers ? { modifiers_summary: a.row.modifiers } : {}),
+          })));
+          added = true;
+        }
+      } catch (e) {
+        void loadTakeawayOrders();
+        throw e;
+      }
+      setTwEditing(false);
+      setTwDraft({});
+      await loadTakeawayOrders();
+    };
+    setTwSaving(true);
+    try {
+      await runWithApproval({ action: 'VOID_AFTER_BILL', amount: removedValue }, attempt);
+    } catch (e: any) {
+      showDialog('Could not save changes', takeawayCancelMessage(e), [{ label: 'OK', onPress: () => {} }]);
+    } finally {
+      setTwSaving(false);
+    }
+  };
+
+  // Add to this customer's order: the menu, on THEIR session — the new round
+  // prints its own KOT and joins this card with its own "Due".
+  const addToTakeaway = (g: TakeawayGroup) => {
+    if (!g.sessionId || g.status === 'SERVED') return;
+    router.push({
+      pathname: '/(staff)/order-menu',
+      params: {
+        channel: 'TAKEAWAY',
+        sessionId: g.sessionId,
+        pickupToken: g.pickupToken ?? '',
+        customerName: g.customerName ?? '',
+        customerPhone: g.customerPhone ?? '',
+      },
+    });
+  };
 
   // Same shape [tableId].tsx builds for its own chevron-up breakdown
   // (explainedBill) — nothing here computes money, every figure comes
@@ -2586,8 +2873,8 @@ export default function StaffDashboard() {
 
   const takeawayListData = (
     takeawaySubTab === 'preparing'
-      ? takeawayOrders.filter((o) => o.status !== 'SERVED')
-      : takeawayOrders.filter((o) => o.status === 'SERVED')
+      ? takeawayGroups.filter((o) => o.status !== 'SERVED')
+      : takeawayGroups.filter((o) => o.status === 'SERVED')
   ).filter(matchesTakeawaySearch);
 
   // The desktop grid's cards are `flex: 1` so every column shares the row
@@ -2670,25 +2957,103 @@ export default function StaffDashboard() {
                 {selectedTakeawayOrder.items.length} {selectedTakeawayOrder.items.length === 1 ? 'item' : 'items'}
                 {selectedTakeawayOrder.sessionRef ? `  ·  ${selectedTakeawayOrder.sessionRef}` : ''}
               </Text>
-              <Text style={[
-                styles.twpSectionLabel,
-                { color: isTakeawayPaid(selectedTakeawayOrder) ? QuinckleColors.success : QuinckleColors.warning },
-              ]}>
-                {isTakeawayPaid(selectedTakeawayOrder) ? 'Paid' : 'Pending'}
-              </Text>
+              {twEditing ? (
+                <View style={styles.twEditBar}>
+                  <TouchableOpacity onPress={() => { setTwEditing(false); setTwDraft({}); }} disabled={twSaving} activeOpacity={0.7} hitSlop={8}>
+                    <Text style={styles.twEditCancel}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={twSave}
+                    disabled={twSaving || twPlan.changedRows === 0}
+                    activeOpacity={0.8}
+                    style={[styles.twEditSave, (twSaving || twPlan.changedRows === 0) && { opacity: 0.4 }]}
+                  >
+                    {twSaving
+                      ? <ActivityIndicator size="small" color="#fff" />
+                      : <Text style={styles.twEditSaveText}>{twPlan.changedRows > 0 ? `Save (${twPlan.changedRows})` : 'Save'}</Text>}
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View style={styles.twEditBar}>
+                  <Text style={[
+                    styles.twpSectionLabel,
+                    { color: isTakeawayPaid(selectedTakeawayOrder) ? QuinckleColors.success : QuinckleColors.warning },
+                  ]}>
+                    {takeawayPayLabel(selectedTakeawayOrder)}
+                  </Text>
+                  {twCanEdit && (
+                    <TouchableOpacity onPress={() => setTwEditing(true)} activeOpacity={0.7} hitSlop={8} accessibilityRole="button" accessibilityLabel="Edit quantities">
+                      <Text style={styles.twEditLink}>Edit</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              )}
             </View>
 
             <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.twpListContent}>
-              {selectedTakeawayOrder.items.map((it, j) => (
-                <View key={j} style={styles.twpRow}>
-                  <Text style={styles.twpRowQty}>{it.qty}×</Text>
-                  <View style={styles.twpRowBody}>
-                    <Text style={styles.twpRowName} numberOfLines={1}>{it.name}</Text>
-                    {it.modifiers ? <Text style={styles.twpRowSub} numberOfLines={1}>{it.modifiers}</Text> : null}
+              {selectedTakeawayOrder.items.map((it, j) => {
+                // "1 at 06:11 · 2 at 06:34" once a dish spans several rounds.
+                const rounds = new Set(it.lines.map((l) => l.orderId)).size > 1
+                  ? it.lines.map((l) => `${l.qty} at ${new Date(l.at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`).join(' · ')
+                  : null;
+                const sub = [it.modifiers, rounds].filter(Boolean).join(' · ');
+                if (twEditing) {
+                  const q = twQty(it);
+                  const floor = twPaidUnits(it);
+                  const changed = q !== it.qty;
+                  return (
+                    <View key={j} style={[styles.twpRow, q === 0 && { opacity: 0.5 }]}>
+                      <View style={styles.twpRowBody}>
+                        <Text style={[styles.twpRowName, q === 0 && styles.twStruck]} numberOfLines={1}>{it.name}</Text>
+                        <Text style={styles.twpRowSub} numberOfLines={1}>
+                          {floor > 0 ? `${floor} paid — refund to remove` : (sub || (changed ? `was ${it.qty}` : ''))}
+                        </Text>
+                      </View>
+                      <Text style={styles.twpRowPrice}>{(q * it.unitPrice).toFixed(0)}</Text>
+                      <View style={styles.twStepper}>
+                        <TouchableOpacity
+                          style={[styles.twStepBtn, q <= floor && styles.twStepBtnOff]}
+                          onPress={() => twSetQty(it, q - 1)}
+                          disabled={q <= floor || twSaving}
+                          activeOpacity={0.7}
+                          accessibilityLabel={`One less ${it.name}`}
+                        >
+                          <Ionicons name="remove" size={16} color={QuinckleColors.textPrimary} />
+                        </TouchableOpacity>
+                        <Text style={[styles.twStepQty, changed && { color: QuinckleColors.primary }]}>{q}</Text>
+                        <TouchableOpacity
+                          style={[styles.twStepBtn, !it.menuItemId && styles.twStepBtnOff]}
+                          onPress={() => twSetQty(it, q + 1)}
+                          disabled={!it.menuItemId || twSaving}
+                          activeOpacity={0.7}
+                          accessibilityLabel={`One more ${it.name}`}
+                        >
+                          <Ionicons name="add" size={16} color={QuinckleColors.textPrimary} />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.twStepRemove, (floor > 0) && styles.twStepBtnOff]}
+                          onPress={() => twSetQty(it, q === floor ? it.qty : floor)}
+                          disabled={floor > 0 || twSaving}
+                          activeOpacity={0.7}
+                          accessibilityLabel={q === 0 ? `Keep ${it.name}` : `Remove ${it.name}`}
+                        >
+                          <Ionicons name={q === 0 ? 'arrow-undo' : 'close'} size={15} color={QuinckleColors.danger} />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  );
+                }
+                return (
+                  <View key={j} style={styles.twpRow}>
+                    <Text style={styles.twpRowQty}>{it.qty}×</Text>
+                    <View style={styles.twpRowBody}>
+                      <Text style={styles.twpRowName} numberOfLines={1}>{it.name}</Text>
+                      {sub ? <Text style={styles.twpRowSub} numberOfLines={1}>{sub}</Text> : null}
+                    </View>
+                    <Text style={styles.twpRowPrice}>{(it.qty * it.unitPrice).toFixed(0)}</Text>
                   </View>
-                  <Text style={styles.twpRowPrice}>{(it.qty * it.unitPrice).toFixed(0)}</Text>
-                </View>
-              ))}
+                );
+              })}
             </ScrollView>
 
             <View style={styles.twpBill}>
@@ -2723,7 +3088,9 @@ export default function StaffDashboard() {
                   accessibilityLabel="Send to payment collection"
                 >
                   <Ionicons name="cash-outline" size={15} color="#fff" />
-                  <Text style={styles.twpCollectText}>Collect Payment</Text>
+                  <Text style={styles.twpCollectText}>
+                    {selectedTakeawayOrder.paidTotal > 0.005 ? `Collect ₹${Math.round(selectedTakeawayOrder.dueTotal)}` : 'Collect Payment'}
+                  </Text>
                 </TouchableOpacity>
               ) : (
                 <TouchableOpacity
@@ -2750,6 +3117,18 @@ export default function StaffDashboard() {
 
           {selectedTakeawayOrder.status !== 'SERVED' && (
             <View style={styles.twpRail}>
+              {selectedTakeawayOrder.sessionId && (
+                <TouchableOpacity
+                  style={styles.twpRailBtn}
+                  onPress={() => addToTakeaway(selectedTakeawayOrder)}
+                  activeOpacity={0.6}
+                  accessibilityRole="button"
+                  accessibilityLabel="Add items to this order"
+                >
+                  <Ionicons name="add-circle-outline" size={20} color={QuinckleColors.textSecondary} />
+                  <Text style={styles.twpRailLabel}>Add</Text>
+                </TouchableOpacity>
+              )}
               <TouchableOpacity
                 style={styles.twpRailBtn}
                 onPress={() => setPrintTakeawayOrder(selectedTakeawayOrder)}
@@ -2790,6 +3169,14 @@ export default function StaffDashboard() {
         bill={explainedTakeawayBill}
       />
 
+      {/* Order placed — the same green beat as the table panel. Keyed to the
+          order it was raised for, so picking another order mid-animation
+          does not play it over the wrong one. Unlike the handover curtain it
+          leaves the order selected: the crew wants to see what they placed. */}
+      {takeawayPlacedCurtainId && takeawayPlacedCurtainId === selectedTakeawayId && !handoverCurtainId && (
+        <OrderPlacedCurtain onDone={() => setTakeawayPlacedCurtainId(null)} />
+      )}
+
       {/* Handed over — a brief celebration, same component the table panel
           uses for "order placed", then fall back to the idle placeholder
           instead of leaving a settled order sitting in the panel. */}
@@ -2819,8 +3206,13 @@ export default function StaffDashboard() {
           dismissible={false}
         >
           <CollectPaymentPanel
-            orderId={takeawayCollectTarget.orderId}
-            amount={takeawayCollectTarget.total}
+            {...(takeawayCollectTarget.unpaidOrders.length === 1
+              ? { orderId: takeawayCollectTarget.unpaidOrders[0]!.orderId }
+              : {
+                  sessionId: takeawayCollectTarget.sessionId,
+                  orderIds: takeawayCollectTarget.unpaidOrders.map((o) => o.orderId),
+                })}
+            amount={takeawayCollectTarget.dueTotal}
             tableLabel={takeawayCollectTarget.pickupToken ?? 'Takeaway'}
             staffId={staffInfo?.id ?? ''}
             customerName={takeawayCollectTarget.customerName}
@@ -2829,7 +3221,9 @@ export default function StaffDashboard() {
             secondaryAction={{
               label: 'Hand over',
               run: async () => {
-                await crewOrders.handoverTakeaway(takeawayCollectTarget.orderId);
+                for (const o of takeawayCollectTarget.orders) {
+                  if (o.status !== 'SERVED') await crewOrders.handoverTakeaway(o.orderId);
+                }
                 handedOverViaCollectRef.current = true;
               },
             }}
@@ -2839,7 +3233,7 @@ export default function StaffDashboard() {
               void loadTakeawayOrders();
               if (handedOverViaCollectRef.current) {
                 handedOverViaCollectRef.current = false;
-                if (selectedTakeawayId === orderId) setHandoverCurtainId(orderId);
+                if (selectedTakeawayOrder?.orderId === orderId) setHandoverCurtainId(orderId);
               }
             }}
           />
@@ -2981,6 +3375,11 @@ export default function StaffDashboard() {
                     // Amber, not green: green means done. A printed, unpaid bill
                     // is the window where cutting it needs a manager.
                     const billPrinted = showStatusIcons && !paid && item.billPrintedUnpaid === true;
+                    // Where the card carries the round print button (wide layouts,
+                    // single party), THAT button is the printed marker; the small
+                    // receipt icon is only for cards without one (phones, and
+                    // multi-party tables, which get no print button).
+                    const hasPrintFab = isWide && item.status === 'occupied' && (item.groups?.length ?? 0) <= 1;
                     const timeLeft = item.status === 'occupied' ? formatTimeLeft(item.expiresAt, now, item.occupiedSince) : null;
                     const isOccupied = item.status === 'occupied';
                     const selected = selectedIds.has(item.id);
@@ -3041,12 +3440,14 @@ export default function StaffDashboard() {
                                     size={14}
                                     color={allServed ? QuinckleColors.success : QuinckleColors.textTertiary}
                                   />
-                                  <Ionicons
-                                    name={billPrinted ? 'receipt' : 'receipt-outline'}
-                                    size={14}
-                                    color={billPrinted ? QuinckleColors.warning : QuinckleColors.textTertiary}
-                                    accessibilityLabel={billPrinted ? 'Bill printed, not paid' : undefined}
-                                  />
+                                  {!hasPrintFab && (
+                                    <Ionicons
+                                      name={billPrinted ? 'receipt' : 'receipt-outline'}
+                                      size={14}
+                                      color={billPrinted ? QuinckleColors.warning : QuinckleColors.textTertiary}
+                                      accessibilityLabel={billPrinted ? 'Bill printed, not paid' : undefined}
+                                    />
+                                  )}
                                   <Ionicons
                                     name={paid ? 'card' : 'card-outline'}
                                     size={14}
@@ -3120,9 +3521,12 @@ export default function StaffDashboard() {
                     const quickAction = !isWide ? null
                       : item.status === 'occupied' && (item.groups?.length ?? 0) <= 1
                         ? {
-                            icon: 'print-outline' as const,
-                            label: 'Print',
-                            color: meta.color,
+                            // Printed and unpaid: filled amber, so a glance at the
+                            // floor shows which guests already hold their bill.
+                            icon: billPrinted ? 'print' as const : 'print-outline' as const,
+                            label: billPrinted ? 'Print again — bill already printed' : 'Print',
+                            color: billPrinted ? QuinckleColors.background : meta.color,
+                            printed: billPrinted,
                             onPress: () => openTableQuickPrint(item, item.groups?.[0]),
                           }
                         : item.status === 'available'
@@ -3142,7 +3546,7 @@ export default function StaffDashboard() {
                           <>
                             <View style={styles.tableCardActionNotch} pointerEvents="none" />
                             <TouchableOpacity
-                              style={styles.tableCardActionFab}
+                              style={[styles.tableCardActionFab, 'printed' in quickAction && quickAction.printed && styles.tableCardActionFabPrinted]}
                               onPress={quickAction.onPress}
                               activeOpacity={0.8}
                               hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
@@ -3347,7 +3751,7 @@ export default function StaffDashboard() {
               return (
                 <View style={styles.menuRow}>
                   <ScrollView
-                    style={styles.menuCategoryRail}
+                    style={[styles.menuCategoryRail, { width: winWidth * 0.2 }]}
                     showsVerticalScrollIndicator={false}
                     contentContainerStyle={styles.menuCategoryRailContent}
                   >
@@ -3496,8 +3900,8 @@ export default function StaffDashboard() {
                 <View style={styles.twDropdownCount}>
                   <Text style={styles.twDropdownCountText}>
                     {takeawaySubTab === 'preparing'
-                      ? takeawayOrders.filter((o) => o.status !== 'SERVED').length
-                      : takeawayOrders.filter((o) => o.status === 'SERVED').length}
+                      ? takeawayGroups.filter((o) => o.status !== 'SERVED').length
+                      : takeawayGroups.filter((o) => o.status === 'SERVED').length}
                   </Text>
                 </View>
                 <Ionicons name="chevron-down" size={16} color={QuinckleColors.textSecondary} />
@@ -3535,8 +3939,8 @@ export default function StaffDashboard() {
               <View style={styles.segmentWrap}>
                 <PickupSegmented
                   items={[
-                    { key: 'preparing', label: 'Preparing', count: takeawayOrders.filter((o) => o.status !== 'SERVED').length },
-                    { key: 'handed', label: 'Handed', count: takeawayOrders.filter((o) => o.status === 'SERVED').length },
+                    { key: 'preparing', label: 'Preparing', count: takeawayGroups.filter((o) => o.status !== 'SERVED').length },
+                    { key: 'handed', label: 'Handed', count: takeawayGroups.filter((o) => o.status === 'SERVED').length },
                   ]}
                   active={takeawaySubTab}
                   onChange={(key) => setTakeawaySubTab(key as 'preparing' | 'handed')}
@@ -3597,7 +4001,7 @@ export default function StaffDashboard() {
                 >
                   <Text style={[styles.twDropdownRowText, takeawaySubTab === 'preparing' && styles.twDropdownRowTextActive]}>Preparing</Text>
                   <Text style={[styles.twDropdownRowText, takeawaySubTab === 'preparing' && styles.twDropdownRowTextActive]}>
-                    {takeawayOrders.filter((o) => o.status !== 'SERVED').length}
+                    {takeawayGroups.filter((o) => o.status !== 'SERVED').length}
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -3607,7 +4011,7 @@ export default function StaffDashboard() {
                 >
                   <Text style={[styles.twDropdownRowText, takeawaySubTab === 'handed' && styles.twDropdownRowTextActive]}>Handed</Text>
                   <Text style={[styles.twDropdownRowText, takeawaySubTab === 'handed' && styles.twDropdownRowTextActive]}>
-                    {takeawayOrders.filter((o) => o.status === 'SERVED').length}
+                    {takeawayGroups.filter((o) => o.status === 'SERVED').length}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -3639,7 +4043,7 @@ export default function StaffDashboard() {
               <Pressable
                 style={({ pressed }) => [
                   styles.takeawayGridCard,
-                  item.orderId === selectedTakeawayId && styles.takeawayGridCardActive,
+                  item.orderId === selectedTakeawayOrder?.orderId && styles.takeawayGridCardActive,
                   pressed && styles.takeawayCardPressed,
                 ]}
                 onPress={() => setSelectedTakeawayId(item.orderId)}
@@ -3655,7 +4059,7 @@ export default function StaffDashboard() {
                     styles.takeawayStatusText,
                     { color: isTakeawayPaid(item) ? QuinckleColors.success : QuinckleColors.warning },
                   ]}>
-                    {isTakeawayPaid(item) ? 'Paid' : 'Pending'}
+                    {takeawayPayLabel(item)}
                   </Text>
                 </View>
                 <View style={styles.takeawayGridFooterRow}>
@@ -3750,7 +4154,7 @@ export default function StaffDashboard() {
                         styles.takeawayStatusText,
                         { color: isTakeawayPaid(item) ? QuinckleColors.success : QuinckleColors.warning },
                       ]}>
-                        {isTakeawayPaid(item) ? 'Paid' : 'Pending'}
+                        {takeawayPayLabel(item)}
                       </Text>
                       <Text style={styles.takeawayTotal}>₹{item.total}</Text>
                     </View>
@@ -4103,6 +4507,28 @@ export default function StaffDashboard() {
         onConfirm={(reason) => void confirmDeleteWholeTakeaway(reason)}
         onClose={() => setDeleteWholeTarget(null)}
       />
+
+      {/* Takeaway Edit: one reason for every removal on Save. */}
+      <ReasonSheet
+        visible={twReasonOpen}
+        title="Take these off the order?"
+        subject={(selectedTakeawayOrder?.items ?? [])
+          .filter((row) => twDraft[takeawayRowKey(row)] != null && twQty(row) < row.qty)
+          .map((row) => `${row.qty - twQty(row)}× ${row.name}`)
+          .join(', ')}
+        note={`₹${Math.round(twPlan.removedValue)} will be removed.${
+          twPlan.additions.length > 0 ? ' The added items go to the kitchen as a new order.' : ''
+        }`}
+        confirmLabel="Remove"
+        busy={twSaving}
+        onConfirm={(reason) => {
+          setTwReasonOpen(false);
+          // Let the sheet close before a manager-PIN sheet can open over it.
+          setTimeout(() => void twApply(reason), 220);
+        }}
+        onClose={() => setTwReasonOpen(false)}
+      />
+      {managerPinSheet}
 
       <QrChoiceSheet
         visible={!!qrSheet}
@@ -4562,6 +4988,24 @@ const styles = StyleSheet.create({
     borderRadius: 23,
     backgroundColor: QuinckleColors.background,
   },
+  twEditBar: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  twEditLink: { color: QuinckleColors.primary, fontSize: 13, fontWeight: '700' },
+  twEditCancel: { color: QuinckleColors.textSecondary, fontSize: 13, fontWeight: '600' },
+  twEditSave: { minWidth: 72, alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: QuinckleColors.primary },
+  twEditSaveText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  twStepper: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: Spacing.sm },
+  twStepBtn: {
+    width: 32, height: 32, borderRadius: 8, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: QuinckleColors.borderSubtle, backgroundColor: QuinckleColors.surfaceMuted,
+  },
+  twStepBtnOff: { opacity: 0.3 },
+  twStepQty: { minWidth: 22, textAlign: 'center', color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  twStepRemove: {
+    width: 32, height: 32, borderRadius: 8, alignItems: 'center', justifyContent: 'center', marginLeft: 2,
+    backgroundColor: QuinckleColors.dangerSoft,
+  },
+  twStruck: { textDecorationLine: 'line-through', color: QuinckleColors.textTertiary },
+  tableCardActionFabPrinted: { backgroundColor: QuinckleColors.warning, borderColor: QuinckleColors.warning },
   tableCardActionFab: {
     position: 'absolute',
     left: '50%',
@@ -4806,7 +5250,7 @@ const styles = StyleSheet.create({
   // Desktop/tablet-landscape Menu tab: category rail (20% width) + content pane,
   // same two-pane shape order-menu.tsx uses for its own category rail.
   menuRow: { flex: 1, flexDirection: 'row' },
-  menuCategoryRail: { width: '20%', paddingRight: Spacing.md },
+  menuCategoryRail: { paddingRight: Spacing.md, flexGrow: 0, flexShrink: 0 },
   menuCategoryRailContent: { paddingVertical: Spacing.sm },
   menuRowDivider: { width: 1, backgroundColor: QuinckleColors.border, marginHorizontal: Spacing.sm },
   menuRightPane: { flex: 1 },

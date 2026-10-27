@@ -858,7 +858,12 @@ export interface TakeawayOrder {
   sessionRef: string | null;
   customerName: string | null;
   customerPhone: string | null;
-  items: { itemId: string; name: string; qty: number; unitPrice: number; modifiers: string | null; itemStatus: string }[];
+  items: {
+    itemId: string; name: string; qty: number; unitPrice: number; modifiers: string | null; itemStatus: string;
+    /** What the takeaway panel's "+" re-orders. Absent on backends before it. */
+    menuItemId?: string;
+    selectedModifiers?: { groupId: string; optionId: string }[];
+  }[];
   status: string;
   subtotal: number;
   discount: number;

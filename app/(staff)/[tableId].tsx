@@ -105,6 +105,29 @@ function groupRows(items: FlatItem[]): ItemRow[] {
   });
 }
 
+/** A serve the screen already shows but the server has not confirmed yet. */
+type PendingServe = { orderId: string; target: number; at: number };
+
+/**
+ * Lay unconfirmed serves over a bill. A reload that raced the serve (the
+ * item_served echo arrives before the write is readable, or an older /bill
+ * response lands late) would otherwise un-tick the plate for a moment and
+ * tick it again. Never lowers a count the server already has higher.
+ */
+function withPendingServes(orders: BillOrder[], pending: Map<string, PendingServe>): BillOrder[] {
+  if (pending.size === 0) return orders;
+  return orders.map((o) => ({
+    ...o,
+    items: o.items.map((i) => {
+      const p = pending.get(i.item_id);
+      if (!p || i.item_status === 'cancelled') return i;
+      const server = i.served_qty ?? (i.served ? i.qty : 0);
+      const shown = Math.min(i.qty, Math.max(server, p.target));
+      return shown === server ? i : { ...i, served_qty: shown, served: shown >= i.qty };
+    }),
+  }));
+}
+
 // In DUAL_CHANNEL mode the kitchen's per-item "done" marking surfaces to the
 // steward as a distinct "ready to serve" state, so they can see which plates
 // are up on the pass without walking to the kitchen. In SIMPLE mode this
@@ -546,10 +569,21 @@ export function TableDetailScreen(props: TableDetailScreenProps) {
     setExtendSheetOpen(true);
   };
 
+  // ── Serving is instant on screen; the server catches up behind it ──
+  // pendingServes: item_id → the served count the screen shows but the server
+  // has not confirmed. servesInFlight: items with a request running (one at a
+  // time per item, so taps can never land out of order). billSeq: only the
+  // newest /bill request may write, so a slow older response cannot win.
+  const pendingServes = useRef(new Map<string, PendingServe>());
+  const servesInFlight = useRef(new Set<string>());
+  const billSeq = useRef(0);
+
   const loadBill = useCallback(async () => {
     if (!sessionId) { setIsLoading(false); return; }
+    const seq = ++billSeq.current;
     try {
       const bill = await crewSessions.getBill(sessionId);
+      if (seq !== billSeq.current) return; // a newer reload is on its way
       // Prefer the canonical breakdown when present; fall back to legacy flat
       // fields for older backend responses.
       const bd = bill.breakdown;
@@ -572,7 +606,17 @@ export function TableDetailScreen(props: TableDetailScreenProps) {
         : Math.max(0, Math.round((subt + tax + charges + tipV + roundV - explicitGrand) * 100) / 100);
       const disc    = inferredDisc;
       const grand   = explicitGrand ?? (subt + tax + charges + tipV - disc + roundV);
-      setOrders(bill.orders);
+      // Drop pending serves the server now shows (or can no longer apply);
+      // keep the rest laid over this response.
+      for (const [itemId, p] of pendingServes.current) {
+        const item = bill.orders.flatMap((o) => o.items).find((i) => i.item_id === itemId);
+        const server = item ? (item.served_qty ?? (item.served ? item.qty : 0)) : 0;
+        const stale = Date.now() - p.at > 20_000 && !servesInFlight.current.has(itemId);
+        if (!item || item.item_status === 'cancelled' || server >= p.target || stale) {
+          pendingServes.current.delete(itemId);
+        }
+      }
+      setOrders(withPendingServes(bill.orders, pendingServes.current));
       setSessionTotal(subt);
       setBillTaxRate(rate);
       setTaxTotal(tax);
@@ -768,41 +812,55 @@ export function TableDetailScreen(props: TableDetailScreenProps) {
 
   // `nextQty` is the ABSOLUTE served count the line should stand at. A tap
   // hands over one more unit; a hold on the button hands over the rest.
-  const handleServe = async (item: FlatItem, nextQty: number) => {
+  // The tick is instant; the request runs behind it (see syncServe).
+  const handleServe = (item: FlatItem, nextQty: number) => {
     if (item.status === 'served') return; // already served, no-op
     const target = Math.max(0, Math.min(item.qty, nextQty));
-    const previousQty = item.servedQty;
-    // Optimistic update
-    setOrders(prev => prev.map(o => {
-      if (o.order_id !== item.order_id) return o;
-      return { ...o, items: o.items.map(i => i.item_id === item.item_id
-        ? { ...i, served_qty: target, served: target >= i.qty }
-        : i) };
-    }));
+    if (target <= item.servedQty) return;
+    pendingServes.current.set(item.item_id, { orderId: item.order_id, target, at: Date.now() });
+    setOrders((prev) => withPendingServes(prev, pendingServes.current));
+    void syncServe(item.item_id);
+  };
+
+  // One request at a time per item, always carrying the NEWEST target: three
+  // quick taps on "Serve 1/4" send 1, then 3 — never 3 then a late 2.
+  const syncServe = async (itemId: string) => {
+    if (servesInFlight.current.has(itemId)) return; // the running loop picks up the new target
+    servesInFlight.current.add(itemId);
+    let failed = false;
     try {
-      await crewOrders.serveItem(item.order_id, item.item_id, target);
-      await loadBill(); // refresh from server — same pattern as kitchen
-    } catch {
-      // Revert on failure
-      setOrders(prev => prev.map(o => {
-        if (o.order_id !== item.order_id) return o;
-        return { ...o, items: o.items.map(i => i.item_id === item.item_id
-          ? { ...i, served_qty: previousQty, served: previousQty >= i.qty }
-          : i) };
-      }));
+      let sent = -1;
+      for (;;) {
+        const want = pendingServes.current.get(itemId);
+        if (!want || want.target === sent) break;
+        sent = want.target;
+        try {
+          await crewOrders.serveItem(want.orderId, itemId, want.target);
+          want.at = Date.now();
+        } catch {
+          // Undo on screen: dropping the overlay lets the reload below show
+          // what the server really has.
+          failed = true;
+          pendingServes.current.delete(itemId);
+          break;
+        }
+      }
+    } finally {
+      servesInFlight.current.delete(itemId);
     }
+    if (failed) setHint('Could not mark that served. Check the connection and try again.');
+    void loadBill();
   };
 
   // A row's served count is spread over its rounds, oldest first — the plate
   // that has waited longest goes out first. `nextQty` is the row's absolute
   // served count, like handleServe's.
-  const serveRow = async (row: ItemRow, nextQty: number) => {
-    if (row.lines.length === 1) return handleServe(row.lines[0]!, nextQty);
+  const serveRow = (row: ItemRow, nextQty: number) => {
     let left = Math.max(0, Math.min(row.qty, nextQty));
     for (const line of row.lines) {
       const target = Math.min(line.qty, left);
       left -= target;
-      if (target > line.servedQty) await handleServe(line, target);
+      if (target > line.servedQty) handleServe(line, target);
     }
   };
 
@@ -2099,7 +2157,7 @@ export function TableDetailScreen(props: TableDetailScreenProps) {
                 </Text>
                 {isServed ? (
                   <View style={styles.cmdServed}>
-                    <Ionicons name="checkmark" size={13} color={QuinckleColors.success} />
+                    <Ionicons name="checkmark" size={17} color={QuinckleColors.success} />
                   </View>
                 ) : (
                   <View style={styles.cmdServeWrap}>
@@ -3631,34 +3689,36 @@ const styles = StyleSheet.create({
 
   cmdRow: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    paddingVertical: 7, paddingHorizontal: 6, marginHorizontal: -6,
+    paddingVertical: 12, paddingHorizontal: 8, marginHorizontal: -8,
     borderRadius: Radius.sm,
     borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: QuinckleColors.borderSubtle,
   },
   cmdRowSelected: { backgroundColor: QuinckleColors.surfaceMuted, borderBottomColor: 'transparent' },
   cmdRowNum: {
-    width: 16, textAlign: 'right',
-    fontSize: 11, fontWeight: '600', color: QuinckleColors.textMuted,
+    width: 22, textAlign: 'right',
+    fontSize: 13, fontWeight: '600', color: QuinckleColors.textMuted,
     fontVariant: ['tabular-nums'] as any,
   },
   cmdRowNumSelected: { color: QuinckleColors.primary },
   cmdRowBody: { flex: 1, minWidth: 0 },
-  cmdRowName: { fontSize: 13.5, fontWeight: '600', color: QuinckleColors.textPrimary },
-  cmdRowSub: { fontSize: 11, fontWeight: '500', color: QuinckleColors.textTertiary, marginTop: 1 },
+  // Sized to be read at arm's length from a till, not leaned into.
+  cmdRowName: { fontSize: 17, fontWeight: '600', color: QuinckleColors.textPrimary },
+  cmdRowSub: { fontSize: 13, fontWeight: '500', color: QuinckleColors.textTertiary, marginTop: 3 },
   cmdRowPrice: {
-    fontSize: 12.5, fontWeight: '600', color: QuinckleColors.textSecondary,
-    minWidth: 46, textAlign: 'right',
+    fontSize: 16, fontWeight: '600', color: QuinckleColors.textSecondary,
+    minWidth: 56, textAlign: 'right',
     fontVariant: ['tabular-nums'] as any,
   },
-  cmdServed: { width: 62, alignItems: 'center' },
-  cmdServeWrap: { width: 62, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 4 },
-  cmdReadyDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: QuinckleColors.success },
+  // Wide enough for "Serve 1/4" — a fixed 62 let it spill over the price.
+  cmdServed: { width: 104, alignItems: 'center' },
+  cmdServeWrap: { width: 104, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 6 },
+  cmdReadyDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: QuinckleColors.success },
   cmdServeBtn: {
-    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6,
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8,
     borderWidth: 1, borderColor: QuinckleColors.primarySoftBorder,
     backgroundColor: QuinckleColors.primarySoft,
   },
-  cmdServeText: { color: QuinckleColors.primary, fontSize: 10.5, fontWeight: '700' },
+  cmdServeText: { color: QuinckleColors.primary, fontSize: 13, fontWeight: '700' },
 
   cmdKeys: {
     paddingHorizontal: Spacing.lg, paddingVertical: 6,

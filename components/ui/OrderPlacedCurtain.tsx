@@ -1,6 +1,6 @@
 /**
  * OrderPlacedCurtain — full-panel reveal for the desktop table panel right
- * after a fresh table's first order is placed (order-menu's isWide
+ * after an order is placed from it (order-menu's isWide
  * router.back() path; see services/orderPlacedSignal.ts). TableDetailScreen
  * is already mounted underneath, fetching its own data, while this plays on
  * top: a green "confirming" beat, a checkmark, then the sheet lifts away

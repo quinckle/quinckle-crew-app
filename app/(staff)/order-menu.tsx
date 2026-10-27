@@ -1182,11 +1182,11 @@ export default function OrderMenuScreen() {
         // on its own next refresh (loadTables already runs once the
         // background session-start settles).
         //
-        // pendingStart === '1' only on the "was free, first order" path —
-        // mark it so the panel plays the order-placed curtain instead of
-        // just swapping the placeholder for the bill. "Add items" on a table
-        // already showing its bill has nothing to reveal, so it's skipped.
-        if (pendingStart === '1' && tableDbId) signalOrderPlaced(tableDbId);
+        // Mark the table so the panel plays the order-placed curtain — on
+        // EVERY order, not just a free table's first one: after "Add items"
+        // the crew still needs the same unmistakable "it went through" beat
+        // before they look away from the screen.
+        if (tableDbId) signalOrderPlaced(tableDbId);
         router.back();
       } else {
         // Dine-in returns to [tableId] with the bill breakdown forced open —

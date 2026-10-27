@@ -18,11 +18,13 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useResponsive } from '../hooks/useResponsive';
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { QuinckleColors, Radius, Spacing } from '../constants/Colors';
 import { ThemedDialog } from '../components/ui/themed-dialog';
 import { WidthPickerSheet } from '../components/ui/WidthPickerSheet';
+import { PrinterSkeleton } from '../components/ui/PrinterSkeleton';
 import { RolePickerSheet } from '../components/ui/RolePickerSheet';
 import {
   scan,
@@ -64,6 +66,7 @@ const TRANSPORT_LABEL: Record<string, string> = {
 export default function PrinterScreen() {
   const insets = useSafeAreaInsets();
   const { staffInfo } = useAuth();
+  const { isWide } = useResponsive();
 
   const [localStatus, setLocalStatus] = useState<PrinterStatus>(getStatus());
   const [config, setConfig] = useState(getConfig());
@@ -207,6 +210,7 @@ export default function PrinterScreen() {
   // ── The venue's printer registry ────────────────────────────────────────────
 
   const [registered, setRegistered] = useState<RegisteredPrinter[]>([]);
+  const [isLoadingPrinters, setIsLoadingPrinters] = useState(true);
   const [myDeviceId, setMyDeviceId] = useState<string>('');
   const [busyPrinterId, setBusyPrinterId] = useState<string | null>(null);
 
@@ -238,6 +242,8 @@ export default function PrinterScreen() {
       setConfig(getConfig());
     } catch {
       /* offline — the cached local list still prints */
+    } finally {
+      setIsLoadingPrinters(false);
     }
   }, []);
 
@@ -513,373 +519,417 @@ export default function PrinterScreen() {
         <View style={{ width: 36 }} />
       </View>
 
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={{ paddingBottom: insets.bottom + Spacing.xl }}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* The venue's printers. Every device sees the same list; the ones this
-            device physically drives are marked, and only those can be tested
-            from here. */}
-        <View style={styles.card}>
-          <Text style={styles.sectionLabel}>PRINTERS</Text>
+      {isLoadingPrinters ? <PrinterSkeleton isWide={isWide} /> : (() => {
+        // The venue's printers. Every device sees the same list; the ones this
+        // device physically drives are marked, and only those can be tested
+        // from here. On desktop the rows become cards in a wrapping grid —
+        // one screen's worth of printers reads as a grid, not a long list.
+        const printersSectionJsx = (
+          <View style={styles.card}>
+            <Text style={styles.sectionLabel}>PRINTERS</Text>
 
-          {registered.length === 0 && (
-            <Text style={styles.emptyText}>
-              No printers yet. Add one below and choose what it prints.
-            </Text>
-          )}
+            {registered.length === 0 && (
+              <Text style={styles.emptyText}>
+                No printers yet. Add one below and choose what it prints.
+              </Text>
+            )}
 
-          {registered.map((printer) => {
-            const mine = printer.hostDeviceId === myDeviceId;
-            const busy = busyPrinterId === printer.id;
-            return (
-              <View key={printer.id} style={styles.printerRow}>
-                <View style={styles.printerHead}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.printerName} numberOfLines={1}>{printer.name}</Text>
-                    <Text style={styles.printerMeta}>
-                      {ROLE_LABEL[printer.role]} · {printer.paperWidth}mm
-                      {TRANSPORT_LABEL[printer.transport.toLowerCase()] ?? ''}
-                    </Text>
-                    <Text style={[styles.printerHost, mine && styles.printerHostMine]}>
-                      {mine
-                        ? 'Connected to this device'
-                        : printer.hostDeviceId
-                          ? 'Connected to another device'
-                          : 'Not connected to any device'}
-                      {printer.lastError ? ' · last print failed' : ''}
-                    </Text>
+            {registered.map((printer) => {
+              const mine = printer.hostDeviceId === myDeviceId;
+              const busy = busyPrinterId === printer.id;
+              return (
+                <View key={printer.id} style={styles.printerRow}>
+                  <View style={styles.printerHead}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.printerName} numberOfLines={1}>{printer.name}</Text>
+                      <Text style={styles.printerMeta}>
+                        {ROLE_LABEL[printer.role]} · {printer.paperWidth}mm
+                        {TRANSPORT_LABEL[printer.transport.toLowerCase()] ?? ''}
+                      </Text>
+                      <Text style={[styles.printerHost, mine && styles.printerHostMine]}>
+                        {mine
+                          ? 'Connected to this device'
+                          : printer.hostDeviceId
+                            ? 'Connected to another device'
+                            : 'Not connected to any device'}
+                        {printer.lastError ? ' · last print failed' : ''}
+                      </Text>
+                    </View>
+                    {busy && <ActivityIndicator size="small" color={QuinckleColors.primary} />}
                   </View>
-                  {busy && <ActivityIndicator size="small" color={QuinckleColors.primary} />}
-                </View>
 
-                <View style={styles.printerActions}>
-                  <TouchableOpacity
-                    style={styles.printerAction}
-                    onPress={() => handleChangeRole(printer)}
-                    disabled={busy}
-                    activeOpacity={0.75}
-                  >
-                    <Ionicons name="swap-horizontal-outline" size={16} color={QuinckleColors.textPrimary} />
-                    <Text style={styles.printerActionText}>Prints</Text>
-                  </TouchableOpacity>
-
-                  {mine ? (
+                  <View style={styles.printerActions}>
                     <TouchableOpacity
                       style={styles.printerAction}
-                      onPress={() => void handleTestPrinter(printer)}
+                      onPress={() => handleChangeRole(printer)}
                       disabled={busy}
                       activeOpacity={0.75}
                     >
-                      <Ionicons name="print-outline" size={16} color={QuinckleColors.primary} />
-                      <Text style={[styles.printerActionText, { color: QuinckleColors.primary }]}>Test</Text>
+                      <Ionicons name="swap-horizontal-outline" size={16} color={QuinckleColors.textPrimary} />
+                      <Text style={styles.printerActionText}>Prints</Text>
                     </TouchableOpacity>
-                  ) : (
+
+                    {mine ? (
+                      <TouchableOpacity
+                        style={styles.printerAction}
+                        onPress={() => void handleTestPrinter(printer)}
+                        disabled={busy}
+                        activeOpacity={0.75}
+                      >
+                        <Ionicons name="print-outline" size={16} color={QuinckleColors.primary} />
+                        <Text style={[styles.printerActionText, { color: QuinckleColors.primary }]}>Test</Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <TouchableOpacity
+                        style={styles.printerAction}
+                        onPress={() => void handleTakeOverHost(printer)}
+                        disabled={busy}
+                        activeOpacity={0.75}
+                      >
+                        <Ionicons name="phone-portrait-outline" size={16} color={QuinckleColors.primary} />
+                        <Text style={[styles.printerActionText, { color: QuinckleColors.primary }]}>Use this device</Text>
+                      </TouchableOpacity>
+                    )}
+
                     <TouchableOpacity
                       style={styles.printerAction}
-                      onPress={() => void handleTakeOverHost(printer)}
+                      onPress={() => handleRemovePrinter(printer)}
                       disabled={busy}
                       activeOpacity={0.75}
                     >
-                      <Ionicons name="phone-portrait-outline" size={16} color={QuinckleColors.primary} />
-                      <Text style={[styles.printerActionText, { color: QuinckleColors.primary }]}>Use this device</Text>
+                      <Ionicons name="trash-outline" size={16} color={QuinckleColors.danger} />
+                      <Text style={[styles.printerActionText, { color: QuinckleColors.danger }]}>Remove</Text>
                     </TouchableOpacity>
-                  )}
-
-                  <TouchableOpacity
-                    style={styles.printerAction}
-                    onPress={() => handleRemovePrinter(printer)}
-                    disabled={busy}
-                    activeOpacity={0.75}
-                  >
-                    <Ionicons name="trash-outline" size={16} color={QuinckleColors.danger} />
-                    <Text style={[styles.printerActionText, { color: QuinckleColors.danger }]}>Remove</Text>
-                  </TouchableOpacity>
+                  </View>
                 </View>
+              );
+            })}
+          </View>
+        );
+
+        const thisDeviceCardJsx = (
+          <View style={styles.card}>
+            <Text style={styles.sectionLabel}>THIS DEVICE</Text>
+
+            <View style={styles.statusRow}>
+              <View style={[
+                styles.statusDot,
+                localStatus === 'connected' ? styles.dotGreen
+                  : localStatus === 'disconnected' ? styles.dotYellow
+                    : styles.dotGrey,
+              ]} />
+              <View style={{ flex: 1 }}>
+                {isPairedLocally && config ? (
+                  <>
+                    <Text style={styles.statusName}>{config.name}</Text>
+                    <Text style={styles.statusSub}>
+                      {localStatus === 'connected'
+                        ? `Connected · ${config.paperWidth}mm${TRANSPORT_LABEL[config.transport] ?? ''}`
+                        : 'Disconnected — tap re-pair to reconnect'}
+                    </Text>
+                  </>
+                ) : serverStatus?.paired ? (
+                  <>
+                    <Text style={styles.statusName}>{serverStatus.printerName ?? 'Printer'}</Text>
+                    <Text style={styles.statusSub}>
+                      Paired by {serverStatus.pairedByName ?? 'another device'} · tap below to take over
+                    </Text>
+                  </>
+                ) : (
+                  <Text style={styles.statusName}>No printer paired</Text>
+                )}
               </View>
-            );
-          })}
-        </View>
-
-        {/* Status card */}
-        <View style={styles.card}>
-          <Text style={styles.sectionLabel}>THIS DEVICE</Text>
-
-          <View style={styles.statusRow}>
-            <View style={[
-              styles.statusDot,
-              localStatus === 'connected' ? styles.dotGreen
-                : localStatus === 'disconnected' ? styles.dotYellow
-                  : styles.dotGrey,
-            ]} />
-            <View style={{ flex: 1 }}>
-              {isPairedLocally && config ? (
-                <>
-                  <Text style={styles.statusName}>{config.name}</Text>
-                  <Text style={styles.statusSub}>
-                    {localStatus === 'connected'
-                      ? `Connected · ${config.paperWidth}mm${TRANSPORT_LABEL[config.transport] ?? ''}`
-                      : 'Disconnected — tap re-pair to reconnect'}
-                  </Text>
-                </>
-              ) : serverStatus?.paired ? (
-                <>
-                  <Text style={styles.statusName}>{serverStatus.printerName ?? 'Printer'}</Text>
-                  <Text style={styles.statusSub}>
-                    Paired by {serverStatus.pairedByName ?? 'another device'} · tap below to take over
-                  </Text>
-                </>
-              ) : (
-                <Text style={styles.statusName}>No printer paired</Text>
-              )}
             </View>
-          </View>
 
-          {/* Auto-print toggle */}
-          <View style={styles.autoPrintRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.autoPrintLabel}>Auto-print KOT</Text>
-              <Text style={styles.autoPrintSub}>Print automatically on every new order</Text>
-            </View>
-            <TouchableOpacity
-              onPress={handleAutoPrintToggle}
-              disabled={autoPrintSaving}
-              activeOpacity={0.8}
-              style={[styles.toggleTrack, kotAutoPrint && styles.toggleTrackOn]}
-            >
-              <View style={[styles.toggleThumb, kotAutoPrint && styles.toggleThumbOn]} />
-            </TouchableOpacity>
-          </View>
-
-          {/* UPI scan-to-pay QR on bills */}
-          <View style={styles.autoPrintRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.autoPrintLabel}>Print UPI QR on bills</Text>
-              <Text style={styles.autoPrintSub}>Scan-to-pay QR with the exact amount on unpaid bills</Text>
-            </View>
-            <TouchableOpacity
-              onPress={() => handleUpiQrToggle(!upiQr)}
-              activeOpacity={0.8}
-              style={[styles.toggleTrack, upiQr && styles.toggleTrackOn]}
-            >
-              <View style={[styles.toggleThumb, upiQr && styles.toggleThumbOn]} />
-            </TouchableOpacity>
-          </View>
-
-          {/* Venue logo at the top of bills — Android only, the iOS printer
-              bridge can't print images. */}
-          {Platform.OS === 'android' && (
+            {/* Auto-print toggle */}
             <View style={styles.autoPrintRow}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.autoPrintLabel}>Print logo on bills</Text>
-                <Text style={styles.autoPrintSub}>Your restaurant logo at the top of every bill from this device</Text>
+                <Text style={styles.autoPrintLabel}>Auto-print KOT</Text>
+                <Text style={styles.autoPrintSub}>Print automatically on every new order</Text>
               </View>
               <TouchableOpacity
-                onPress={() => handleBillLogoToggle(!billLogo)}
+                onPress={handleAutoPrintToggle}
+                disabled={autoPrintSaving}
                 activeOpacity={0.8}
-                style={[styles.toggleTrack, billLogo && styles.toggleTrackOn]}
+                style={[styles.toggleTrack, kotAutoPrint && styles.toggleTrackOn]}
               >
-                <View style={[styles.toggleThumb, billLogo && styles.toggleThumbOn]} />
+                <View style={[styles.toggleThumb, kotAutoPrint && styles.toggleThumbOn]} />
               </TouchableOpacity>
             </View>
-          )}
-        </View>
 
-        {/* Actions */}
-        {isPairedLocally && (
-          <View style={styles.actionsCard}>
-            <TouchableOpacity
-              style={[styles.actionBtn, isTesting && styles.actionBtnDisabled]}
-              onPress={handleTestPrint}
-              disabled={isTesting}
-              activeOpacity={0.75}
-            >
-              {isTesting
-                ? <ActivityIndicator size="small" color={QuinckleColors.primary} />
-                : <Ionicons name="print-outline" size={18} color={QuinckleColors.primary} />
-              }
-              <Text style={styles.actionBtnText}>Print test page</Text>
-            </TouchableOpacity>
-
-            <View style={styles.actionDivider} />
-
-            <TouchableOpacity
-              style={[styles.actionBtn, styles.actionBtnSecondary]}
-              onPress={handleScan}
-              activeOpacity={0.75}
-            >
-              <Ionicons name="bluetooth" size={18} color={QuinckleColors.textPrimary} />
-              <Text style={[styles.actionBtnText, { color: QuinckleColors.textPrimary }]}>Re-pair printer</Text>
-            </TouchableOpacity>
-
-            <View style={styles.actionDivider} />
-
-            <TouchableOpacity
-              style={[styles.actionBtn, isUnpairing && styles.actionBtnDisabled]}
-              onPress={confirmUnpair}
-              disabled={isUnpairing}
-              activeOpacity={0.75}
-            >
-              {isUnpairing
-                ? <ActivityIndicator size="small" color={QuinckleColors.danger} />
-                : <Ionicons name="trash-outline" size={18} color={QuinckleColors.danger} />
-              }
-              <Text style={[styles.actionBtnText, { color: QuinckleColors.danger }]}>Unpair</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {/* Pair button for unpaired device */}
-        {!isPairedLocally && !showScanView && (
-          <TouchableOpacity
-            style={styles.pairCta}
-            onPress={handleScan}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="bluetooth" size={20} color="#fff" />
-            <Text style={styles.pairCtaText}>
-              {serverPairedBySomeoneElse ? 'Pair printer (take over)' : 'Pair Printer'}
-            </Text>
-          </TouchableOpacity>
-        )}
-
-        {/* Device scan list */}
-        {showScanView && (
-          <View style={styles.scanCard}>
-            <View style={styles.scanHeader}>
-              <Text style={styles.sectionLabel}>NEARBY BLUETOOTH DEVICES</Text>
-              {isScanning && <ActivityIndicator size="small" color={QuinckleColors.primary} />}
-            </View>
-
-            {devices.length === 0 && !isScanning && (
-              <Text style={styles.emptyText}>No devices found. Ensure printer is powered on.</Text>
-            )}
-
-            {devices.map((device) => (
+            {/* UPI scan-to-pay QR on bills */}
+            <View style={styles.autoPrintRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.autoPrintLabel}>Print UPI QR on bills</Text>
+                <Text style={styles.autoPrintSub}>Scan-to-pay QR with the exact amount on unpaid bills</Text>
+              </View>
               <TouchableOpacity
-                key={device.address}
-                style={[styles.deviceRow, isPairing && selectedDevice?.address === device.address && styles.deviceRowLoading]}
-                onPress={() => handlePair(device)}
-                disabled={isPairing}
-                activeOpacity={0.75}
+                onPress={() => handleUpiQrToggle(!upiQr)}
+                activeOpacity={0.8}
+                style={[styles.toggleTrack, upiQr && styles.toggleTrackOn]}
               >
-                <Ionicons name="print-outline" size={20} color={QuinckleColors.textSecondary} />
-                <View style={{ flex: 1, marginLeft: Spacing.sm }}>
-                  <Text style={styles.deviceName}>{device.name}</Text>
-                  <Text style={styles.deviceAddress}>{device.address}</Text>
-                </View>
-                {isPairing && selectedDevice?.address === device.address
-                  ? <ActivityIndicator size="small" color={QuinckleColors.primary} />
-                  : <Ionicons name="chevron-forward" size={16} color={QuinckleColors.textTertiary} />
-                }
+                <View style={[styles.toggleThumb, upiQr && styles.toggleThumbOn]} />
               </TouchableOpacity>
-            ))}
+            </View>
 
-            {!isScanning && (
-              <TouchableOpacity style={styles.rescanBtn} onPress={handleScan} activeOpacity={0.7}>
-                <Ionicons name="refresh-outline" size={15} color={QuinckleColors.primary} />
-                <Text style={styles.rescanText}>Scan again</Text>
+            {/* Venue logo at the top of bills — Android only, the iOS printer
+                bridge can't print images. */}
+            {Platform.OS === 'android' && (
+              <View style={styles.autoPrintRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.autoPrintLabel}>Print logo on bills</Text>
+                  <Text style={styles.autoPrintSub}>Your restaurant logo at the top of every bill from this device</Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => handleBillLogoToggle(!billLogo)}
+                  activeOpacity={0.8}
+                  style={[styles.toggleTrack, billLogo && styles.toggleTrackOn]}
+                >
+                  <View style={[styles.toggleThumb, billLogo && styles.toggleThumbOn]} />
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        );
+
+        const actionsSectionJsx = (
+          <>
+            {/* Actions */}
+            {isPairedLocally && (
+              <View style={styles.actionsCard}>
+                <TouchableOpacity
+                  style={[styles.actionBtn, isTesting && styles.actionBtnDisabled]}
+                  onPress={handleTestPrint}
+                  disabled={isTesting}
+                  activeOpacity={0.75}
+                >
+                  {isTesting
+                    ? <ActivityIndicator size="small" color={QuinckleColors.primary} />
+                    : <Ionicons name="print-outline" size={18} color={QuinckleColors.primary} />
+                  }
+                  <Text style={styles.actionBtnText}>Print test page</Text>
+                </TouchableOpacity>
+
+                <View style={styles.actionDivider} />
+
+                <TouchableOpacity
+                  style={[styles.actionBtn, styles.actionBtnSecondary]}
+                  onPress={handleScan}
+                  activeOpacity={0.75}
+                >
+                  <Ionicons name="bluetooth" size={18} color={QuinckleColors.textPrimary} />
+                  <Text style={[styles.actionBtnText, { color: QuinckleColors.textPrimary }]}>Re-pair printer</Text>
+                </TouchableOpacity>
+
+                <View style={styles.actionDivider} />
+
+                <TouchableOpacity
+                  style={[styles.actionBtn, isUnpairing && styles.actionBtnDisabled]}
+                  onPress={confirmUnpair}
+                  disabled={isUnpairing}
+                  activeOpacity={0.75}
+                >
+                  {isUnpairing
+                    ? <ActivityIndicator size="small" color={QuinckleColors.danger} />
+                    : <Ionicons name="trash-outline" size={18} color={QuinckleColors.danger} />
+                  }
+                  <Text style={[styles.actionBtnText, { color: QuinckleColors.danger }]}>Unpair</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Pair button for unpaired device */}
+            {!isPairedLocally && !showScanView && (
+              <TouchableOpacity
+                style={styles.pairCta}
+                onPress={handleScan}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="bluetooth" size={20} color="#fff" />
+                <Text style={styles.pairCtaText}>
+                  {serverPairedBySomeoneElse ? 'Pair printer (take over)' : 'Pair Printer'}
+                </Text>
               </TouchableOpacity>
             )}
 
-            {/* USB / OTG printers — hidden entirely on builds without the
-                native USB bridge (see usbAvailable). */}
-            {usbAvailable && (
-              <>
-                <View style={styles.netDivider} />
+            {/* Device scan list */}
+            {showScanView && (
+              <View style={styles.scanCard}>
                 <View style={styles.scanHeader}>
-                  <Text style={styles.sectionLabel}>USB PRINTERS</Text>
-                  {isUsbScanning && <ActivityIndicator size="small" color={QuinckleColors.primary} />}
+                  <Text style={styles.sectionLabel}>NEARBY BLUETOOTH DEVICES</Text>
+                  {isScanning && <ActivityIndicator size="small" color={QuinckleColors.primary} />}
                 </View>
 
-                {usbDevices.length === 0 && !isUsbScanning && (
-                  <Text style={styles.emptyText}>
-                    No USB printer detected. Connect it with an OTG cable and make sure it is powered on.
-                  </Text>
+                {devices.length === 0 && !isScanning && (
+                  <Text style={styles.emptyText}>No devices found. Ensure printer is powered on.</Text>
                 )}
 
-                {usbDevices.map((device) => (
+                {devices.map((device) => (
                   <TouchableOpacity
-                    key={`${device.vendorId}:${device.productId}`}
-                    style={[
-                      styles.deviceRow,
-                      isPairing
-                        && selectedUsb?.vendorId === device.vendorId
-                        && selectedUsb?.productId === device.productId
-                        && styles.deviceRowLoading,
-                    ]}
-                    onPress={() => handlePairUsb(device)}
+                    key={device.address}
+                    style={[styles.deviceRow, isPairing && selectedDevice?.address === device.address && styles.deviceRowLoading]}
+                    onPress={() => handlePair(device)}
                     disabled={isPairing}
                     activeOpacity={0.75}
                   >
-                    <Ionicons name="hardware-chip-outline" size={20} color={QuinckleColors.textSecondary} />
+                    <Ionicons name="print-outline" size={20} color={QuinckleColors.textSecondary} />
                     <View style={{ flex: 1, marginLeft: Spacing.sm }}>
-                      <Text style={styles.deviceName}>{device.deviceName}</Text>
-                      <Text style={styles.deviceAddress}>USB · {device.vendorId}:{device.productId}</Text>
+                      <Text style={styles.deviceName}>{device.name}</Text>
+                      <Text style={styles.deviceAddress}>{device.address}</Text>
                     </View>
-                    {isPairing
-                      && selectedUsb?.vendorId === device.vendorId
-                      && selectedUsb?.productId === device.productId
+                    {isPairing && selectedDevice?.address === device.address
                       ? <ActivityIndicator size="small" color={QuinckleColors.primary} />
                       : <Ionicons name="chevron-forward" size={16} color={QuinckleColors.textTertiary} />
                     }
                   </TouchableOpacity>
                 ))}
 
-                {!isUsbScanning && (
-                  <TouchableOpacity style={styles.rescanBtn} onPress={() => void refreshUsbDevices()} activeOpacity={0.7}>
+                {!isScanning && (
+                  <TouchableOpacity style={styles.rescanBtn} onPress={handleScan} activeOpacity={0.7}>
                     <Ionicons name="refresh-outline" size={15} color={QuinckleColors.primary} />
-                    <Text style={styles.rescanText}>Check for USB printers</Text>
+                    <Text style={styles.rescanText}>Scan again</Text>
                   </TouchableOpacity>
                 )}
-              </>
-            )}
 
-            {/* Network / WiFi printer entry */}
-            <View style={styles.netDivider} />
-            {!showNetworkForm ? (
-              <TouchableOpacity style={styles.rescanBtn} onPress={() => setShowNetworkForm(true)} activeOpacity={0.7}>
-                <Ionicons name="wifi-outline" size={15} color={QuinckleColors.primary} />
-                <Text style={styles.rescanText}>Add a network / WiFi printer</Text>
-              </TouchableOpacity>
-            ) : (
-              <View style={styles.netForm}>
-                <Text style={styles.netLabel}>NETWORK PRINTER (LAN / WiFi)</Text>
-                <TextInput
-                  style={styles.netInput}
-                  placeholder="Printer IP (e.g. 192.168.1.50)"
-                  placeholderTextColor={QuinckleColors.textTertiary}
-                  value={networkIp}
-                  onChangeText={setNetworkIp}
-                  keyboardType="numbers-and-punctuation"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-                <TextInput
-                  style={styles.netInput}
-                  placeholder="Port (default 9100)"
-                  placeholderTextColor={QuinckleColors.textTertiary}
-                  value={networkPort}
-                  onChangeText={setNetworkPort}
-                  keyboardType="number-pad"
-                />
-                <TouchableOpacity
-                  style={[styles.netConnectBtn, isPairing && styles.actionBtnDisabled]}
-                  onPress={handlePairNetwork}
-                  disabled={isPairing}
-                  activeOpacity={0.85}
-                >
-                  {isPairing
-                    ? <ActivityIndicator size="small" color="#fff" />
-                    : <Ionicons name="print-outline" size={16} color="#fff" />}
-                  <Text style={styles.netConnectText}>Connect network printer</Text>
-                </TouchableOpacity>
+                {/* USB / OTG printers — hidden entirely on builds without the
+                    native USB bridge (see usbAvailable). */}
+                {usbAvailable && (
+                  <>
+                    <View style={styles.netDivider} />
+                    <View style={styles.scanHeader}>
+                      <Text style={styles.sectionLabel}>USB PRINTERS</Text>
+                      {isUsbScanning && <ActivityIndicator size="small" color={QuinckleColors.primary} />}
+                    </View>
+
+                    {usbDevices.length === 0 && !isUsbScanning && (
+                      <Text style={styles.emptyText}>
+                        No USB printer detected. Connect it with an OTG cable and make sure it is powered on.
+                      </Text>
+                    )}
+
+                    {usbDevices.map((device) => (
+                      <TouchableOpacity
+                        key={`${device.vendorId}:${device.productId}`}
+                        style={[
+                          styles.deviceRow,
+                          isPairing
+                            && selectedUsb?.vendorId === device.vendorId
+                            && selectedUsb?.productId === device.productId
+                            && styles.deviceRowLoading,
+                        ]}
+                        onPress={() => handlePairUsb(device)}
+                        disabled={isPairing}
+                        activeOpacity={0.75}
+                      >
+                        <Ionicons name="hardware-chip-outline" size={20} color={QuinckleColors.textSecondary} />
+                        <View style={{ flex: 1, marginLeft: Spacing.sm }}>
+                          <Text style={styles.deviceName}>{device.deviceName}</Text>
+                          <Text style={styles.deviceAddress}>USB · {device.vendorId}:{device.productId}</Text>
+                        </View>
+                        {isPairing
+                          && selectedUsb?.vendorId === device.vendorId
+                          && selectedUsb?.productId === device.productId
+                          ? <ActivityIndicator size="small" color={QuinckleColors.primary} />
+                          : <Ionicons name="chevron-forward" size={16} color={QuinckleColors.textTertiary} />
+                        }
+                      </TouchableOpacity>
+                    ))}
+
+                    {!isUsbScanning && (
+                      <TouchableOpacity style={styles.rescanBtn} onPress={() => void refreshUsbDevices()} activeOpacity={0.7}>
+                        <Ionicons name="refresh-outline" size={15} color={QuinckleColors.primary} />
+                        <Text style={styles.rescanText}>Check for USB printers</Text>
+                      </TouchableOpacity>
+                    )}
+                  </>
+                )}
+
+                {/* Network / WiFi printer entry */}
+                <View style={styles.netDivider} />
+                {!showNetworkForm ? (
+                  <TouchableOpacity style={styles.rescanBtn} onPress={() => setShowNetworkForm(true)} activeOpacity={0.7}>
+                    <Ionicons name="wifi-outline" size={15} color={QuinckleColors.primary} />
+                    <Text style={styles.rescanText}>Add a network / WiFi printer</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <View style={styles.netForm}>
+                    <Text style={styles.netLabel}>NETWORK PRINTER (LAN / WiFi)</Text>
+                    <TextInput
+                      style={styles.netInput}
+                      placeholder="Printer IP (e.g. 192.168.1.50)"
+                      placeholderTextColor={QuinckleColors.textTertiary}
+                      value={networkIp}
+                      onChangeText={setNetworkIp}
+                      keyboardType="numbers-and-punctuation"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                    <TextInput
+                      style={styles.netInput}
+                      placeholder="Port (default 9100)"
+                      placeholderTextColor={QuinckleColors.textTertiary}
+                      value={networkPort}
+                      onChangeText={setNetworkPort}
+                      keyboardType="number-pad"
+                    />
+                    <TouchableOpacity
+                      style={[styles.netConnectBtn, isPairing && styles.actionBtnDisabled]}
+                      onPress={handlePairNetwork}
+                      disabled={isPairing}
+                      activeOpacity={0.85}
+                    >
+                      {isPairing
+                        ? <ActivityIndicator size="small" color="#fff" />
+                        : <Ionicons name="print-outline" size={16} color="#fff" />}
+                      <Text style={styles.netConnectText}>Connect network printer</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
               </View>
             )}
-          </View>
-        )}
-      </ScrollView>
+          </>
+        );
+
+        // Desktop: printers become a card grid on the left, with a fixed
+        // inspector rail on the right for this device's status, toggles and
+        // pairing actions — a master/detail split instead of one long list.
+        if (isWide) {
+          return (
+            <View style={styles.wideRow}>
+              <ScrollView
+                style={styles.wideLeftPane}
+                contentContainerStyle={{ paddingBottom: insets.bottom + Spacing.xl }}
+                showsVerticalScrollIndicator={false}
+              >
+                {printersSectionJsx}
+              </ScrollView>
+
+              <View style={styles.wideDivider} />
+
+              <ScrollView
+                style={styles.wideRightRail}
+                contentContainerStyle={{ paddingBottom: insets.bottom + Spacing.xl }}
+                showsVerticalScrollIndicator={false}
+              >
+                {thisDeviceCardJsx}
+                {actionsSectionJsx}
+              </ScrollView>
+            </View>
+          );
+        }
+
+        return (
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={{ paddingBottom: insets.bottom + Spacing.xl }}
+            showsVerticalScrollIndicator={false}
+          >
+            {printersSectionJsx}
+            {thisDeviceCardJsx}
+            {actionsSectionJsx}
+          </ScrollView>
+        );
+      })()}
 
       {/* Toast */}
       {toast && (
@@ -949,6 +999,15 @@ const styles = StyleSheet.create({
     borderColor: QuinckleColors.border,
   },
   printerActionText: { fontSize: 12, fontWeight: '600', color: QuinckleColors.textPrimary },
+
+  // Desktop ("Printer grid + inspector rail"): printers as wrapping cards on
+  // the left, a fixed-width rail for this device's status/toggles/actions on
+  // the right — see hooks/useResponsive.ts's isWide.
+  wideRow: { flex: 1, flexDirection: 'row' },
+  wideLeftPane: { flex: 1 },
+  wideDivider: { width: 1, backgroundColor: QuinckleColors.border, flexGrow: 0, flexShrink: 0 },
+  wideRightRail: { width: 560, flexGrow: 0, flexShrink: 0 },
+
   root: { flex: 1, backgroundColor: QuinckleColors.background },
   header: {
     flexDirection: 'row',
