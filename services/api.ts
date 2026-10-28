@@ -1776,6 +1776,21 @@ export const crewActivity = {
   },
 };
 
+// ── Plan billing (PLAN_BILLING_PLAN.md) ─────────────────────────────────────────
+// The venue's Quinckle plan, worded for staff: never an amount. `paused` is only
+// true once the owner's plan has run out AND pausing is switched on.
+export interface CrewPlanStatus {
+  paused: boolean;
+  state: string;
+  pauseAt: string | null;
+  banner: { tone: 'amber' | 'red'; title: string; body: string } | null;
+}
+
+export const crewPlan = {
+  getStatus: () =>
+    request<{ success: true; data: CrewPlanStatus }>('GET', '/api/crew/plan/status', undefined, true).then((r) => r.data),
+};
+
 export const restaurantApi = {
   get: (restaurantId: string) =>
     request<{ success: true; data: Restaurant }>('GET', `/api/v1/restaurants/${restaurantId}`),
