@@ -8,11 +8,12 @@ import { QuinckleColors } from '@/constants/Colors';
 import { initPrinter } from '@/services/printer';
 import { registerPrintSinkRunner, watchPrintSinkLifecycle } from '@/services/printSink';
 import { watchForOtaUpdates } from '@/services/otaUpdate';
+import { isSpokenNewOrderNotification } from '@/services/voiceAlerts';
 
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
+  handleNotification: async (n) => ({
     shouldShowAlert: true,
-    shouldPlaySound: true,
+    shouldPlaySound: !isSpokenNewOrderNotification(n.request.content),
     shouldSetBadge: false,
   } as any),
 });

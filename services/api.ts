@@ -3,6 +3,7 @@ import { API_BASE_URL } from '../constants/env';
 import type { CancelReason } from '../constants/adjustmentReasons';
 import type { LivenessTelemetry } from './face';
 import type { Channel } from '../constants/channel';
+import type { StockBaseUnit, StockEntryUnit, WastageReason } from '../constants/stock';
 
 let _crewToken: string | null = null;
 let _on401: (() => void) | null = null;
@@ -55,7 +56,7 @@ interface RawCrewBypassResponse {
 // ── HTTP client ───────────────────────────────────────────────────────────────
 
 async function request<T>(
-  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   path: string,
   body?: object,
   useAuth = false,
@@ -214,7 +215,7 @@ export const kitchen = {
 // ── Manager authorization (POS adjustments C2) ────────────────────────────────
 
 /** Actions a manager PIN can approve. Must match the backend's PrivilegedAction. */
-export type PrivilegedAction = 'VOID_POST_KOT' | 'COMP_ORDER' | 'EXEMPT_SESSION' | 'REFUND';
+export type PrivilegedAction = 'VOID_POST_KOT' | 'VOID_AFTER_BILL' | 'COMP_ORDER' | 'EXEMPT_SESSION' | 'REFUND';
 
 export const crewAuthorization = {
   /**
@@ -230,10 +231,10 @@ export const crewAuthorization = {
 // ── Crew Tables (STEWARD/ADMIN) ───────────────────────────────────────────────
 
 /** `cart_item_count` = items on the diner's phone they have not ordered yet. */
-export interface CrewTableGroup { session_id: string; party_slot: number; label: string; occupied_since: string | null; expires_at?: string | null; customer_name?: string | null; customer_phone?: string | null; bill_subtotal?: number; bill_tax?: number; bill_total?: number; items_served?: number; items_total?: number; payment_settled?: boolean; cart_item_count?: number; }
+export interface CrewTableGroup { session_id: string; party_slot: number; label: string; occupied_since: string | null; expires_at?: string | null; customer_name?: string | null; customer_phone?: string | null; bill_subtotal?: number; bill_tax?: number; bill_total?: number; items_served?: number; items_total?: number; payment_settled?: boolean; bill_printed?: boolean; bill_out_of_date?: boolean; cart_item_count?: number; }
 // `groups` (shared seating): one entry per live party on the table, slot order.
 // Single-party tables have one entry mirroring the legacy top-level fields.
-export interface CrewTable { table_id: string; table_number: number; capacity: number; status: 'available' | 'occupied' | 'reserved' | 'offline'; session_id: string | null; occupied_since: string | null; expires_at?: string | null; customer_name?: string | null; customer_phone?: string | null; bill_subtotal?: number; bill_tax?: number; bill_total?: number; items_served?: number; items_total?: number; payment_settled?: boolean; groups?: CrewTableGroup[]; max_parties?: number; }
+export interface CrewTable { table_id: string; table_number: number; capacity: number; status: 'available' | 'occupied' | 'reserved' | 'offline'; session_id: string | null; occupied_since: string | null; expires_at?: string | null; customer_name?: string | null; customer_phone?: string | null; bill_subtotal?: number; bill_tax?: number; bill_total?: number; items_served?: number; items_total?: number; payment_settled?: boolean; bill_printed?: boolean; bill_out_of_date?: boolean; groups?: CrewTableGroup[]; max_parties?: number; }
 
 export const crewTables = {
   list: () => request<{ tables: CrewTable[] }>('GET', '/api/crew/tables', undefined, true),
@@ -373,7 +374,14 @@ export const crewMenu = {
 
 // ── Crew Sessions (STEWARD/ADMIN) ─────────────────────────────────────────────
 
-export interface BillOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done' | 'cancelled'; served: boolean; served_qty?: number; modifiers_summary?: string | null; }
+export interface BillOrderItem {
+  item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done' | 'cancelled'; served: boolean; served_qty?: number; modifiers_summary?: string | null;
+  /** The per-item note ("no onion"). Absent from backends before it was sent. */
+  note?: string | null;
+  /** What the table screen's "+" re-orders. Absent from backends before the qty stepper. */
+  menu_item_id?: string;
+  selected_modifiers?: { groupId: string; optionId: string }[];
+}
 export interface BillOrder { order_id: string; placed_at: string; status: 'received' | 'preparing' | 'ready' | 'served'; items: BillOrderItem[]; order_total: number; }
 /**
  * Canonical bill breakdown — same shape returned by /dine/cart/preview and
@@ -839,7 +847,7 @@ export const crewMemberships = {
 
 // ── Crew Orders (STEWARD/ADMIN) ───────────────────────────────────────────────
 
-export interface ActiveOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; served_qty?: number; }
+export interface ActiveOrderItem { item_id: string; name: string; qty: number; price: number; item_status: 'pending' | 'done'; served: boolean; served_qty?: number; /** Diner note, or "Combo: <title>" on a combo's dishes. */ note?: string | null; }
 export interface ActiveOrder { order_id: string; table_number: number; channel?: Channel; pickup_token?: string | null; session_id: string; status: 'received' | 'preparing' | 'ready' | 'served'; placed_at: string; served_at?: string; items: ActiveOrderItem[]; }
 
 export interface TakeawayOrder {
@@ -852,7 +860,7 @@ export interface TakeawayOrder {
   sessionRef: string | null;
   customerName: string | null;
   customerPhone: string | null;
-  items: { itemId: string; name: string; qty: number; unitPrice: number; modifiers: string | null; itemStatus: string }[];
+  items: { itemId: string; name: string; qty: number; unitPrice: number; modifiers: string | null; notes?: string | null; itemStatus: string }[];
   status: string;
   subtotal: number;
   discount: number;
@@ -887,6 +895,14 @@ export interface CrewOffer {
   maxDiscount: number | null;
   freeItemId: string | null;
   freeItemQty: number;
+  // Exclusions — absent from servers older than these fields.
+  excludeCombos?: boolean;
+  excludedItemIds?: string[];
+  excludedCategories?: string[];
+  /** false = excluded items do NOT count toward minOrderValue. */
+  excludedCountToThreshold?: boolean;
+  /** The table's earlier rounds that count toward THIS offer (its excluded lines dropped). */
+  priorTowardThreshold?: number;
 }
 
 export const crewOffers = {
@@ -900,6 +916,23 @@ export const crewOffers = {
       true,
     ),
 };
+
+export interface PreviewTaxLine { rate: number; taxableValue: number; cgst: number; sgst: number; amount: number }
+export interface PreviewChargeLine { id: string; name: string; amount: number }
+export interface CrewOrderPreview {
+  order: {
+    subtotal: number; discount: number; discount_note: string | null;
+    charge_lines: PreviewChargeLine[]; tax_lines: PreviewTaxLine[];
+    tax_total: number; round_off: number; total: number;
+  };
+  /** The bill before this order. 0 on a table's first order. */
+  current_total: number;
+  projected: {
+    subtotal: number; discount: number;
+    charge_lines: PreviewChargeLine[]; tax_lines: PreviewTaxLine[];
+    tax_total: number; tip: number; round_off: number; total: number;
+  };
+}
 
 export const crewOrders = {
   getActive: () =>
@@ -933,16 +966,22 @@ export const crewOrders = {
   // total server-side; returns the new total + whether the order is now empty.
   // `reason` is optional on the wire so older builds keep working; the picker
   // always supplies one. An unknown code is rejected 400 INVALID_REASON.
-  cancelItem: (orderId: string, itemId: string, reason?: CancelReason) =>
-    request<{ success: boolean; order_id: string; session_id: string; item_id: string; new_order_total: number; order_cancelled: boolean }>(
-      'PATCH', `/api/crew/orders/${orderId}/items/${itemId}/cancel`, reason, true,
+  //
+  // `qty` cancels only that many units of the line (the table screen's "−");
+  // omitted, the whole line goes. Once the bill has been printed the server
+  // answers AUTHORIZATION_REQUIRED until a manager-PIN `grantId` comes along.
+  cancelItem: (orderId: string, itemId: string, reason?: CancelReason, opts?: { qty?: number; grantId?: string | null }) =>
+    request<{ success: boolean; order_id: string; session_id: string; item_id: string; new_order_total: number; order_cancelled: boolean; units_cancelled?: number }>(
+      'PATCH', `/api/crew/orders/${orderId}/items/${itemId}/cancel`,
+      { ...(reason ?? {}), ...(opts?.qty ? { qty: opts.qty } : {}), ...(opts?.grantId ? { grantId: opts.grantId } : {}) },
+      true,
     ),
 
   // Delete a whole order (all lines) before payment is settled — takeaway
   // "delete order". Marks the order CANCELLED server-side; it drops off the list.
-  cancelOrder: (orderId: string, reason?: CancelReason) =>
+  cancelOrder: (orderId: string, reason?: CancelReason, grantId?: string | null) =>
     request<{ success: boolean; order_id: string; session_id: string; intent_voided: boolean; reverted_order_ids: string[] }>(
-      'PATCH', `/api/crew/orders/${orderId}/cancel`, reason, true,
+      'PATCH', `/api/crew/orders/${orderId}/cancel`, { ...(reason ?? {}), ...(grantId ? { grantId } : {}) }, true,
     ),
 
   /**
@@ -972,8 +1011,24 @@ export const crewOrders = {
 
   // Response `total` is the order's full payable amount (breakdown.total, tax
   // included) — no follow-up payment-context fetch is needed to display it.
+  /**
+   * Price an order WITHOUT placing it: this order alone, and the whole bill once
+   * it lands (CGST/SGST by rate). Same body as placeOrder; read-only.
+   */
+  previewOrder: (sessionId: string, items: { item_id: string; qty: number; note?: string; selectedModifiers?: { groupId: string; optionId: string }[]; modifiers_summary?: string }[]) =>
+    request<{ success: boolean; data: CrewOrderPreview }>(
+      'POST',
+      '/api/crew/orders/preview',
+      { session_id: sessionId, items },
+      true,
+    ),
+
   placeOrder: (sessionId: string, items: { item_id: string; qty: number; note?: string; selectedModifiers?: { groupId: string; optionId: string }[]; modifiers_summary?: string }[]) =>
-    request<{ success: boolean; order_id: string; status: string; total: number }>(
+    request<{
+      success: boolean; order_id: string; status: string; total: number;
+      /** Only when the venue auto-prints takeaway invoices (Printer screen). */
+      auto_invoice?: { status: 'sent'; printer_name: string } | { status: 'failed'; reason: string };
+    }>(
       'POST',
       '/api/crew/orders',
       { session_id: sessionId, items },
@@ -1292,7 +1347,109 @@ export interface CrewStockItem {
   isLow: boolean; isOut: boolean;
 }
 
+/**
+ * Stock V2 shapes (STOCK_V2_PLAN.md · CREW_STOCK_PLAN.md). Quantities are in
+ * BASE units (g / ml / pcs) — `constants/stock.ts` turns them into kitchen
+ * units for display and back again for entry.
+ */
+export interface CrewMaterial {
+  id: string; name: string; unit: StockBaseUnit;
+  currentQty: number; lowStockAt: number | null;
+  isLow: boolean; isOut: boolean; usedByCount: number | null;
+  /** 86 every dish that uses it while it is out; un-hidden on restock. */
+  hideDishesWhenOut: boolean;
+  /** Present on the paged list — the section this row belongs to. */
+  state?: MaterialState;
+}
+
+/** The three sections the crew list groups by. OUT is what costs sales now. */
+export type MaterialState = 'OUT' | 'LOW' | 'OK';
+
+/** Stock low→high is the default: the list should open on what runs out first. */
+export type MaterialSort = 'qty_asc' | 'qty_desc' | 'name';
+
+export interface CrewMaterialPage {
+  items: CrewMaterial[];
+  counts: { out: number; low: number; ok: number; total: number };
+  /** Offset to request next, or null at the end of the list. */
+  nextOffset: number | null;
+}
+
+export interface CrewMovement {
+  id: string; type: string; label: string;
+  qtyDelta: number; value: number | null; reason: string | null;
+  vendorName: string | null;
+  /** Who did it. Null for automatic movements (a sale, a cancelled order). */
+  by: string | null;
+  billUrls: string[]; orderId: string | null; createdAt: string;
+}
+
+export interface CrewMaterialDetail extends CrewMaterial {
+  usedBy: { menuItemId: string; name: string; qty: number }[];
+  movements: CrewMovement[];
+}
+
+export interface CrewWastageEntry {
+  id: string; kind: 'MATERIAL' | 'DISH'; name: string;
+  qty: number; unit: StockBaseUnit | 'PLATE' | null;
+  reason: string; note: string | null; costValue: number;
+  /** The server's field is `recordedBy` (a stored name), not a staff id. */
+  recordedBy: string | null; createdAt: string;
+}
+
+export interface CrewDish {
+  menuItemId: string; name: string; category: string | null;
+  /** Null for the many dishes that have no photo — the app draws a placeholder. */
+  imageUrl?: string | null;
+  /** How many materials its recipe uses. 0 = not linked yet. */
+  materials: number;
+  /** Of those, how many amounts came from a bulk link and were never confirmed. */
+  estimated: number;
+  /** The first few recipe lines, for chips on the row. */
+  lines?: { name: string; qty: number; unit: StockBaseUnit }[];
+}
+
+/** What the Menu linking tab opens on. */
+export interface CrewLinkingOverview {
+  coverage: { category: string; linked: number; total: number }[];
+  linked: number;
+  total: number;
+  priority: {
+    days: number;
+    dishes: { menuItemId: string; name: string; units: number }[];
+    /** Share of everything sold that these unlinked dishes account for. */
+    sharePct: number;
+  };
+}
+
+/** One dish as the bulk linker sees it: what it takes of ONE material. */
+export interface CrewDishForMaterial {
+  menuItemId: string; name: string; category: string | null;
+  /** In the material's base unit; null when this dish does not use it. */
+  qty: number | null;
+  isEstimated: boolean;
+}
+
+export interface CrewDishesForMaterial {
+  material: { id: string; name: string; unit: StockBaseUnit };
+  items: CrewDishForMaterial[];
+  counts: { linked: number; unlinked: number; total: number };
+  nextOffset: number | null;
+}
+
+/** A recipe as crew sees it — amounts and stock levels, no money. */
+export interface CrewRecipe {
+  menuItemId: string; name: string; category: string | null; stockOut: boolean;
+  lines: { stockItemId: string; name: string; unit: StockBaseUnit; qty: number; inStock: number; isEstimated: boolean }[];
+}
+
+/** One line of a multi-line wastage write-off — a material, or whole plates of a dish. */
+export type CrewWastageLine =
+  | { kind: 'MATERIAL'; stockItemId: string; qty: number; unit: StockEntryUnit; reason: WastageReason; note?: string | null }
+  | { kind: 'DISH'; menuItemId: string; plates: number; reason: WastageReason; note?: string | null };
+
 export const crewStock = {
+  /** V1 shape — kept for the legacy callers that still read `currentQty` flat. */
   list: (low?: boolean, search?: string) => {
     const q = new URLSearchParams();
     if (low) q.set('low', 'true');
@@ -1300,6 +1457,140 @@ export const crewStock = {
     const s = q.toString();
     return request<{ success: true; data: { items: CrewStockItem[]; valuation: number; lowCount: number } }>('GET', `/api/crew/stock${s ? `?${s}` : ''}`, undefined, true);
   },
+
+  /** The whole list in one go — still used where a full picker is needed. */
+  materials: (low?: boolean, search?: string) => {
+    const q = new URLSearchParams();
+    if (low) q.set('low', 'true');
+    if (search) q.set('search', search);
+    const s = q.toString();
+    return request<{ success: true; data: { items: CrewMaterial[]; valuation: number; lowCount: number } }>(
+      'GET', `/api/crew/stock/materials${s ? `?${s}` : ''}`, undefined, true);
+  },
+
+  /**
+   * One page of the grouped list. Ordering is OUT → LOW → OK then `sort`, done
+   * on the server, so a page is a slice of one ordered list and a section header
+   * never appears twice.
+   */
+  materialsPage: (opts: {
+    search?: string; state?: 'all' | 'alert' | 'out' | 'low'; sort?: MaterialSort;
+    /** false = one flat list in pure sort order, no sections. */
+    grouped?: boolean;
+    limit?: number; offset?: number;
+  }) => {
+    const q = new URLSearchParams();
+    q.set('limit', String(opts.limit ?? 40));
+    q.set('offset', String(opts.offset ?? 0));
+    if (opts.search) q.set('search', opts.search);
+    if (opts.state && opts.state !== 'all') q.set('state', opts.state);
+    if (opts.sort) q.set('sort', opts.sort);
+    if (opts.grouped === false) q.set('group', 'false');
+    return request<{ success: true; data: CrewMaterialPage }>(
+      'GET', `/api/crew/stock/materials?${q.toString()}`, undefined, true);
+  },
+
+  /** Material settings — rename, low threshold (in kitchen units), 86-when-out. */
+  updateMaterial: (id: string, body: {
+    name?: string; lowStockAt?: number | null; lowStockUnit?: StockEntryUnit; hideDishesWhenOut?: boolean;
+  }) => request<{ success: true; data: CrewMaterial }>('PATCH', `/api/crew/stock/materials/${id}`, body, true),
+
+  material: (id: string) =>
+    request<{ success: true; data: CrewMaterialDetail }>('GET', `/api/crew/stock/materials/${id}`, undefined, true),
+
+  /** 409-ish duplicate comes back as NAME_TAKEN so the caller can offer the existing one. */
+  createMaterial: (body: { name: string; unit: StockEntryUnit; lowStockAt?: number | null; openingQty?: number | null }) =>
+    request<{ success: true; data: CrewMaterial }>('POST', '/api/crew/stock/materials', body, true),
+
+  restock: (id: string, body: {
+    qty: number; unit: StockEntryUnit; totalPaid?: number | null;
+    vendorId?: string | null; vendorName?: string | null;
+    billUrls?: string[]; note?: string | null; recordExpense?: boolean;
+  }) => request<{ success: true; data: { newQty: number } }>('POST', `/api/crew/stock/materials/${id}/restock`, body, true),
+
+  count: (id: string, body: { countedQty: number; unit: StockEntryUnit; note?: string | null }) =>
+    request<{ success: true; data: { newQty: number } }>('POST', `/api/crew/stock/materials/${id}/count`, body, true),
+
+  /**
+   * Dishes. Default `with` = only those that already have a recipe, which is
+   * what the wastage picker needs (only they can come off stock as plates).
+   * The recipe tab asks for `all` / `without`.
+   */
+  dishes: (
+    search?: string,
+    filter?: 'all' | 'with' | 'without' | 'estimated',
+    page?: { limit: number; offset: number },
+    /** One category as the coverage list names it; 'Uncategorised' is a real value. */
+    category?: string,
+  ) => {
+    const q = new URLSearchParams();
+    if (search) q.set('search', search);
+    if (filter) q.set('filter', filter);
+    if (category) q.set('category', category);
+    if (page) { q.set('limit', String(page.limit)); q.set('offset', String(page.offset)); }
+    const s = q.toString();
+    return request<{
+      success: true; data: CrewDish[];
+      meta?: { withRecipe: number; estimated: number; total: number; matched: number; nextOffset: number | null };
+    }>('GET', `/api/crew/stock/dishes${s ? `?${s}` : ''}`, undefined, true);
+  },
+
+  /** Coverage per category + the unlinked dishes that are actually selling. */
+  linkingOverview: () =>
+    request<{ success: true; data: CrewLinkingOverview }>('GET', '/api/crew/stock/dishes/overview', undefined, true),
+
+  /** Every dish with what it takes of ONE material — the bulk linker's list. */
+  dishesForMaterial: (materialId: string, opts: {
+    search?: string; filter?: 'all' | 'linked' | 'unlinked'; limit?: number; offset?: number;
+  } = {}) => {
+    const q = new URLSearchParams();
+    q.set('limit', String(opts.limit ?? 40));
+    q.set('offset', String(opts.offset ?? 0));
+    if (opts.search) q.set('search', opts.search);
+    if (opts.filter && opts.filter !== 'all') q.set('filter', opts.filter);
+    return request<{ success: true; data: CrewDishesForMaterial }>(
+      'GET', `/api/crew/stock/materials/${materialId}/dishes?${q.toString()}`, undefined, true);
+  },
+
+  /**
+   * Write many dish links for one material in a single transaction. Each line
+   * carries its own amount — portions differ per dish. `qty: null` unlinks.
+   */
+  linkDishes: (materialId: string, lines: {
+    menuItemId: string; qty: number | null; unit?: StockEntryUnit; isEstimated?: boolean;
+  }[]) => request<{ success: true; data: { linked: number; unlinked: number; estimated: number } }>(
+    'POST', `/api/crew/stock/materials/${materialId}/dishes`, { lines }, true),
+
+  recipe: (menuItemId: string) =>
+    request<{ success: true; data: CrewRecipe }>('GET', `/api/crew/stock/dishes/${menuItemId}/recipe`, undefined, true),
+
+  setRecipe: (menuItemId: string, lines: { stockItemId: string; qty: number; unit: StockEntryUnit; isEstimated?: boolean }[]) =>
+    request<{ success: true; data: CrewRecipe }>('PUT', `/api/crew/stock/dishes/${menuItemId}/recipe`, { lines }, true),
+
+  /**
+   * Ranges the server actually understands: `today`, `month`, `custom`, and
+   * anything else = the last 7 days. Do not invent a `30d` — it silently
+   * returns 7 days under a wrong label.
+   */
+  wastageLog: (range: 'today' | '7d' | 'month' = 'today') =>
+    request<{ success: true; data: { entries: CrewWastageEntry[]; totalCost: number; count: number } }>(
+      'GET', `/api/crew/stock/wastage?range=${range}`, undefined, true),
+
+  recordWastage: (lines: CrewWastageLine[]) =>
+    request<{ success: true; data: { entries: number } }>('POST', '/api/crew/stock/wastage', { lines }, true),
+
+  vendors: () =>
+    request<{ success: true; data: { id: string; name: string }[] }>('GET', '/api/crew/stock/vendors', undefined, true),
+
+  /**
+   * One bill photo per call — a failed photo must never cost the restock, so
+   * the URLs are collected first and sent with the restock afterwards.
+   * Pass raw base64; the server resizes, WebP-encodes and returns a CDN URL.
+   */
+  uploadBill: (photoBase64: string) =>
+    request<{ success: true; data: { url: string } }>('POST', '/api/crew/stock/bill-photo', { photoBase64 }, true),
+
+  /** V1 — still used by nothing in-app, kept while older installs are live. */
   adjust: (id: string, countedQty: number) =>
     request<{ success: true; data: { newQty: number } }>('POST', `/api/crew/stock/${id}/adjust`, { countedQty, reason: 'Stock-take' }, true),
   wastage: (id: string, qty: number, reason: string) =>
@@ -1485,6 +1776,21 @@ export const crewActivity = {
   },
 };
 
+// ── Plan billing (PLAN_BILLING_PLAN.md) ─────────────────────────────────────────
+// The venue's Quinckle plan, worded for staff: never an amount. `paused` is only
+// true once the owner's plan has run out AND pausing is switched on.
+export interface CrewPlanStatus {
+  paused: boolean;
+  state: string;
+  pauseAt: string | null;
+  banner: { tone: 'amber' | 'red'; title: string; body: string } | null;
+}
+
+export const crewPlan = {
+  getStatus: () =>
+    request<{ success: true; data: CrewPlanStatus }>('GET', '/api/crew/plan/status', undefined, true).then((r) => r.data),
+};
+
 export const restaurantApi = {
   get: (restaurantId: string) =>
     request<{ success: true; data: Restaurant }>('GET', `/api/v1/restaurants/${restaurantId}`),
@@ -1520,6 +1826,8 @@ export const restaurantApi = {
         // Owner's custom bill text — printed on the invoice footer.
         billThankYouMsg?: string | null;
         billFooterNote?: string | null;
+        // Owner's Google review link (partner profile) — the floor's review card.
+        googleReviewUrl?: string | null;
         taxConfig?: { gstRegistered: boolean; gstin: string | null; taxRate: number | null; displayMode: string; pricesIncludeTax?: boolean };
       };
     }>('GET', `/api/v1/dine/restaurant/${restaurantId}`),
@@ -1544,6 +1852,31 @@ export interface PrintStatus {
   pairedByName: string | null;
   pairedById: string | null;
   kotAutoPrint: boolean;
+  /** Takeaway-only overrides. Absent from older backends — read as true / false. */
+  takeawayKotAutoPrint?: boolean;
+  takeawayInvoiceAutoPrint?: boolean;
+  /** Printer settings v2. Absent from older backends — read as the defaults. */
+  dineInQrAmountMode?: QrAmountSetting;
+  takeawayQrAmountMode?: QrAmountSetting;
+  dineInPaidQr?: PaidQrSetting;
+  takeawayPaidQr?: PaidQrSetting;
+  billLogoPosition?: 'TOP' | 'BOTTOM';
+}
+
+/** ASK = crew picks per print (default); AMOUNT / STATIC = always that QR. */
+export type QrAmountSetting = 'ASK' | 'AMOUNT' | 'STATIC';
+/** Whether a paid bill still carries a QR: OFF (default) | STATIC | AMOUNT. */
+export type PaidQrSetting = 'OFF' | 'STATIC' | 'AMOUNT';
+
+export interface PrintSettingsPatch {
+  kotAutoPrint?: boolean;
+  takeawayKotAutoPrint?: boolean;
+  takeawayInvoiceAutoPrint?: boolean;
+  dineInQrAmountMode?: QrAmountSetting;
+  takeawayQrAmountMode?: QrAmountSetting;
+  dineInPaidQr?: PaidQrSetting;
+  takeawayPaidQr?: PaidQrSetting;
+  billLogoPosition?: 'TOP' | 'BOTTOM';
 }
 
 // ── Printer API ───────────────────────────────────────────────────────────────
@@ -1553,6 +1886,9 @@ export interface CrewLadder {
   step: number;
   totalSteps: number;
   completesLadder: boolean;
+  /** After the last step: RESET starts again at step 1; HOLD_LAST / CUSTOM
+   *  never do. Absent on older backends. */
+  policy?: 'RESET' | 'HOLD_LAST' | 'CUSTOM';
   optedIn: boolean;
   /**
    * What this visit earns. Null when the diner has not joined or the step is
@@ -1609,11 +1945,17 @@ export const printerApi = {
   /**
    * Report a print result to the backend (printed or failed).
    */
-  ack: (orderId: string, status: 'printed' | 'failed', errorMessage?: string, isAddOn?: boolean) =>
+  ack: (
+    orderId: string,
+    status: 'printed' | 'failed',
+    errorMessage?: string,
+    isAddOn?: boolean,
+    printerId?: string,
+  ) =>
     request<{ success: true; data: any }>(
       'POST',
       '/api/crew/print/ack',
-      { orderId, status, errorMessage, isAddOn },
+      { orderId, status, errorMessage, isAddOn, printerId },
       true,
     ),
 
@@ -1640,12 +1982,25 @@ export const printerApi = {
     ),
 
   /**
+   * The venue logo for the top of the bill, already black-on-white and sized
+   * to `widthDots`. `data` is null when Bill Settings "Show logo" is off or the
+   * venue has no logo.
+   */
+  getBillLogo: (widthDots: number) =>
+    request<{ success: true; data: { dataUri: string } | null }>(
+      'GET',
+      `/api/crew/print/bill-logo?width=${Math.round(widthDots)}`,
+      undefined,
+      true,
+    ),
+
+  /**
    * Durable pull queue. `deviceId` identifies this device as the sink — the
    * server answers 403 PRINTER_SINK_MISMATCH if another device has since
    * paired, so the caller can clear its stale local pairing.
    */
   getPending: (limit = 25, deviceId?: string) =>
-    request<{ success: true; data: Array<{
+    request<{ success: true; bills?: BillPrintJob[]; data: Array<{
       id: string;
       orderNumber?: string | number;
       sessionId: string;
@@ -1658,6 +2013,11 @@ export const printerApi = {
       isAddOn: boolean;
       isReprint?: boolean;
       reprintRequestedAt?: number | null;
+      /** Which registered printer this ticket is addressed to. */
+      printerId?: string;
+      printerName?: string;
+      paperWidth?: number;
+      dpi?: number;
       items: Array<{
         name: string;
         quantity: number;
@@ -1668,6 +2028,54 @@ export const printerApi = {
       'GET',
       `/api/crew/print/pending?limit=${Math.max(1, Math.min(limit, 100))}`,
       undefined,
+      true,
+      deviceId
+        // x-print-registry tells the server we understand per-printer
+        // addressing. Without it we would be served the legacy single-sink
+        // queue — which is exactly what an older bundle should get.
+        ? { 'x-print-device': deviceId, 'x-print-registry': '1' }
+        : { 'x-print-registry': '1' },
+    ),
+
+  /**
+   * Ask the venue's bill printer to print a session's bill — from ANY crew
+   * device, whether or not it can reach a printer itself. The server builds the
+   * bill; we never send totals.
+   */
+  requestBillPrint: (body: {
+    sessionId: string;
+    printerId?: string;
+    /** One, all, or a chosen subset of invoice printers. Absent → venue default. */
+    printerIds?: string[];
+    upiOmitAmount?: boolean;
+  }) =>
+    request<{
+      success: true;
+      data: {
+        jobId: string;
+        printerId: string;
+        printerName: string;
+        /** One per printer the bill was sent to (older backends: absent). */
+        jobs?: { jobId: string; printerId: string; printerName: string }[];
+        /** Asked for but unusable, with the reason. */
+        skipped?: { printerId: string; printerName: string | null; reason: string }[];
+      };
+    }>(
+      'POST',
+      '/api/crew/print/bill',
+      body,
+      true,
+    ),
+
+  /** The host device reports how a dispatched bill job went. */
+  ackBillPrint: (
+    body: { jobId: string; status: 'printed' | 'failed'; errorMessage?: string; printerId?: string; sessionId?: string },
+    deviceId?: string,
+  ) =>
+    request<{ success: true; data: any }>(
+      'POST',
+      '/api/crew/print/bill-ack',
+      body,
       true,
       deviceId ? { 'x-print-device': deviceId } : undefined,
     ),
@@ -1698,6 +2106,120 @@ export const printerApi = {
       '/api/crew/print/autoprint',
       { enabled },
       true,
+    ),
+
+  /** Any venue printer setting; send only what changed. Returns them all. */
+  updatePrintSettings: (patch: PrintSettingsPatch) =>
+    request<{ success: true; data: Required<PrintSettingsPatch> }>(
+      'PATCH',
+      '/api/crew/print/settings',
+      patch,
+      true,
+    ),
+
+  /** Takeaway-only toggles. Send either one alone; the other is kept. */
+  setTakeawayAutoPrint: (body: { kot?: boolean; invoice?: boolean }) =>
+    request<{ success: true; data: { takeawayKotAutoPrint: boolean; takeawayInvoiceAutoPrint: boolean } }>(
+      'PATCH',
+      '/api/crew/print/takeaway-autoprint',
+      body,
+      true,
+    ),
+};
+
+// ── Printer registry (PRINTER_STATIONS_PLAN.md) ──────────────────────────────
+
+export type PrinterRole = 'KOT' | 'BILL' | 'BOTH';
+export type PrinterTransportServer = 'BLUETOOTH' | 'NETWORK' | 'USB';
+
+/** One registered printer, as the server holds it. */
+export interface RegisteredPrinter {
+  id: string;
+  /** What staff call it — "Counter". Shown everywhere. */
+  name: string;
+  /** What the hardware reported at pairing — shown underneath. */
+  systemName?: string | null;
+  role: PrinterRole;
+  transport: PrinterTransportServer;
+  address?: string | null;
+  ip?: string | null;
+  port?: number | null;
+  usbVendorId?: number | null;
+  usbProductId?: number | null;
+  usbSerial?: string | null;
+  usbPath?: string | null;
+  paperWidth: number;
+  dpi: number;
+  /** App-install UUID of the device that physically drives this printer. */
+  hostDeviceId?: string | null;
+  hostStaffId?: string | null;
+  isDefaultBill: boolean;
+  enabled: boolean;
+  lastSeenAt?: string | null;
+  lastError?: string | null;
+  lastErrorAt?: string | null;
+  createdAt?: string | null;
+}
+
+/** A bill the server wants this device's printer to put on paper. */
+export interface BillPrintJob {
+  jobId: string;
+  printerId: string;
+  printerName: string;
+  sessionId: string;
+  requestedBy: string;
+  requestedAt: number;
+  paperWidth: number;
+  dpi?: number;
+  /** The fully-built invoice — shaped for printBill, never recomputed here. */
+  bill: any;
+}
+
+export interface PrinterInputBody {
+  name: string;
+  /** Create only — what the hardware reported. */
+  systemName?: string | null;
+  role: PrinterRole;
+  transport: PrinterTransportServer;
+  address?: string | null;
+  ip?: string | null;
+  port?: number | null;
+  usbVendorId?: number | null;
+  usbProductId?: number | null;
+  usbSerial?: string | null;
+  usbPath?: string | null;
+  paperWidth?: number;
+  dpi?: number;
+  hostDeviceId?: string | null;
+  isDefaultBill?: boolean;
+  enabled?: boolean;
+}
+
+export const printersApi = {
+  list: () =>
+    request<{ success: true; data: RegisteredPrinter[] }>(
+      'GET', '/api/crew/printers', undefined, true,
+    ),
+
+  create: (body: PrinterInputBody) =>
+    request<{ success: true; data: RegisteredPrinter }>(
+      'POST', '/api/crew/printers', body, true,
+    ),
+
+  update: (printerId: string, body: Partial<PrinterInputBody>) =>
+    request<{ success: true; data: RegisteredPrinter }>(
+      'PATCH', `/api/crew/printers/${printerId}`, body, true,
+    ),
+
+  remove: (printerId: string) =>
+    request<{ success: true }>(
+      'DELETE', `/api/crew/printers/${printerId}`, undefined, true,
+    ),
+
+  /** Declare this device the one that physically drives the printer. */
+  claimHost: (printerId: string, deviceId: string) =>
+    request<{ success: true; data: RegisteredPrinter }>(
+      'POST', `/api/crew/printers/${printerId}/claim-host`, { deviceId }, true,
     ),
 };
 

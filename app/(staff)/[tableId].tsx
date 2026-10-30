@@ -1,4 +1,4 @@
-import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
+import { useLocalSearchParams, useNavigation, useRouter, useFocusEffect } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, FlatList, Image, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
@@ -8,7 +8,10 @@ import { QuinckleColors, Radius, Spacing , Typography } from '../../constants/Co
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { crewSessions, crewTables, crewOrders, restaurantApi, printerApi } from '../../services/api';
 import type { SessionBill, BillOrderItem, BillOrder } from '../../services/api';
-import { printBill, printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
+import { printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode, qrAmountModeFor } from '../../services/printer';
+import { printBillFromHere, type InvoicePrinterChoice } from '../../services/billPrint';
+import { mergeBillLines } from '../../services/mergeBillLines';
+import { useInvoicePrinterPicker } from '../../hooks/useInvoicePrinterPicker';
 import { loyaltyApi, type CrewLadder } from '../../services/api';
 import type { InvoiceBill, LoyaltyNudge } from '../../services/invoiceTemplate';
 import { useAuth } from '../../context/AuthContext';
@@ -23,10 +26,11 @@ import { BillExplainContent, BillExplainSheet, type ExplainedBill } from '../../
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { HintToast } from '../../components/ui/HintToast';
 import { ReasonSheet, ReasonChips } from '../../components/ui/ReasonSheet';
-import { useManagerApproval } from '../../components/ui/ManagerPinSheet';
+import { useManagerApproval, type MintGrant } from '../../components/ui/ManagerPinSheet';
 import { WAIVE_REASONS, isReasonComplete, toReasonPayload, type CancelReason } from '../../constants/adjustmentReasons';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { useResponsive } from '../../hooks/useResponsive';
+import { useResyncOnReturn } from '../../hooks/useResyncOnReturn';
 
 type ItemStatus = 'prep' | 'ready' | 'served';
 
@@ -36,6 +40,8 @@ type FlatItem = {
   order_id: string;
   name: string;
   modifiersSummary?: string | null;
+  /** The per-item note the diner (or crew) typed — "no onion". */
+  note?: string | null;
   status: ItemStatus;
   cancelled: boolean;
   price: number;
@@ -43,7 +49,86 @@ type FlatItem = {
   qty: number;
   /** Units of `qty` already handed over. status === 'served' iff servedQty >= qty. */
   servedQty: number;
+  /** The dish name alone — `name` carries the "3× " prefix. */
+  label: string;
+  unitPrice: number;
+  /** What "+" re-orders; absent on a backend that predates the stepper. */
+  menuItemId?: string;
+  selectedModifiers?: { groupId: string; optionId: string }[];
 };
+
+/**
+ * One row on screen. Every round of ordering is its own Order (its own KOT), so
+ * a dish ordered at 06:11 and again at 06:34 arrives as two lines; the crew
+ * sees it as one row — "4× Garlic Bread · 1 at 06:11 · 3 at 06:34". `lines`
+ * are the real order lines behind it, oldest round first; every action on a
+ * row is spread across them (serve oldest first, remove newest first).
+ */
+type ItemRow = FlatItem & { lines: FlatItem[] };
+
+/**
+ * Same dish, same options, same unit price — the rule the printed bill uses too
+ * (services/mergeBillLines.ts) — and the same note: a "no onion" plate must not
+ * fold into a plain one, or the note vanishes from the row.
+ */
+const rowKeyOf = (i: FlatItem) => [i.menuItemId || i.label, i.unitPrice.toFixed(2), i.modifiersSummary ?? '', i.note ?? ''].join('\u0000');
+
+function groupRows(items: FlatItem[]): ItemRow[] {
+  const rows: ItemRow[] = [];
+  const open = new Map<string, ItemRow>();
+  for (const it of items) {
+    // A cancelled line stays its own struck-through row: it is the visible
+    // trace that something came off the bill.
+    if (it.cancelled) { rows.push({ ...it, lines: [it] }); continue; }
+    const k = rowKeyOf(it);
+    const row = open.get(k);
+    if (row) { row.lines.push(it); continue; }
+    // Keyed by the dish, not the line, so the row keeps its identity (and any
+    // edit draft on it) when another round of the same dish lands.
+    const fresh: ItemRow = { ...it, key: `row:${k}`, lines: [it] };
+    open.set(k, fresh);
+    rows.push(fresh);
+  }
+  return rows.map((r) => {
+    if (r.lines.length === 1) return r;
+    const qty = r.lines.reduce((n, l) => n + l.qty, 0);
+    const servedQty = r.lines.reduce((n, l) => n + Math.min(l.qty, l.servedQty), 0);
+    const status: ItemStatus = r.lines.every((l) => l.status === 'served') ? 'served'
+      : r.lines.some((l) => l.status === 'ready') ? 'ready' : 'prep';
+    return {
+      ...r,
+      qty,
+      servedQty,
+      status,
+      name: `${qty}× ${r.label}`,
+      price: r.lines.reduce((n, l) => n + l.price, 0),
+      orderedAt: r.lines.map((l) => `${l.qty} at ${l.orderedAt}`).join(' · '),
+    };
+  });
+}
+
+/** A serve the screen already shows but the server has not confirmed yet. */
+type PendingServe = { orderId: string; target: number; at: number };
+
+/**
+ * Lay unconfirmed serves over a bill. A reload that raced the serve (the
+ * item_served echo arrives before the write is readable, or an older /bill
+ * response lands late) would otherwise un-tick the plate for a moment and
+ * tick it again. Never lowers a count the server already has higher.
+ */
+function withPendingServes(orders: BillOrder[], pending: Map<string, PendingServe>): BillOrder[] {
+  if (pending.size === 0) return orders;
+  return orders.map((o) => ({
+    ...o,
+    items: o.items.map((i) => {
+      const p = pending.get(i.item_id);
+      if (!p || i.item_status === 'cancelled') return i;
+      const server = i.served_qty ?? (i.served ? i.qty : 0);
+      const shown = Math.min(i.qty, Math.max(server, p.target));
+      return shown === server ? i : { ...i, served_qty: shown, served: shown >= i.qty };
+    }),
+  }));
+}
 
 // In DUAL_CHANNEL mode the kitchen's per-item "done" marking surfaces to the
 // steward as a distinct "ready to serve" state, so they can see which plates
@@ -94,7 +179,7 @@ export default function TableDetail() {
   // sit in a left pane, ordered items alone fill the right pane. Phone and
   // tablet-portrait keep the original single-column stack.
   const { isWide } = useResponsive();
-  const { tableId, sessionId: paramSessionId, tableDbId, occupiedSince, expiresAt: paramExpiresAt, customerName: paramCustomerName, customerPhone: paramCustomerPhone, groupLabel: paramGroupLabel, zoneName: paramZoneName, openBill } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string; occupiedSince: string; expiresAt: string; customerName: string; customerPhone: string; groupLabel?: string; zoneName?: string; openBill?: string }>();
+  const { tableId, sessionId: paramSessionId, tableDbId, occupiedSince, expiresAt: paramExpiresAt, customerName: paramCustomerName, customerPhone: paramCustomerPhone, groupLabel: paramGroupLabel, zoneName: paramZoneName, openBill, startOrder } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string; occupiedSince: string; expiresAt: string; customerName: string; customerPhone: string; groupLabel?: string; zoneName?: string; openBill?: string; startOrder?: string }>();
   const router = useRouter();
   const { staffInfo } = useAuth();
 
@@ -210,6 +295,33 @@ export default function TableDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openBill]);
 
+  const openOrderMenu = () => router.push({
+    pathname: '/(staff)/order-menu',
+    params: {
+      tableId: String(tableId),
+      tableNum,
+      tableDbId: tableDbId ?? '',
+      sessionId,
+      customerPhone: sessionCustomerPhone ?? '',
+      customerName: sessionCustomerName ?? '',
+      zoneName: (paramZoneName ?? '').trim(),
+    },
+  });
+
+  // A table the floor just opened (see index.tsx's startSessionForTable) goes
+  // straight on to the menu — taking the first order is the only thing to do
+  // on an empty table. This screen stays underneath, so Back from the menu and
+  // placing the order both land here as they would via "Add items". The ref
+  // guards a re-run if dismissTo hands the params back merged.
+  const startOrderHandled = useRef(false);
+  useEffect(() => {
+    if (startOrder !== '1' || startOrderHandled.current || !sessionId) return;
+    startOrderHandled.current = true;
+    router.setParams({ startOrder: undefined });
+    openOrderMenu();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startOrder]);
+
   const [isRequestingCollection, setIsRequestingCollection] = useState(false);
 
   // UPI QR generator
@@ -261,7 +373,8 @@ export default function TableDetail() {
       params: {
         sessionId,
         subtitle: `Table T${tableNum}`,
-        zone: (paramZoneName ?? '').trim(),
+        // Same placeholder as this screen's own header, so the two read alike.
+        zone: (paramZoneName ?? '').trim() || 'Dine-in',
         total: String(grandTotal),
       },
     });
@@ -325,10 +438,21 @@ export default function TableDetail() {
     setExtendSheetOpen(true);
   };
 
+  // ── Serving is instant on screen; the server catches up behind it ──
+  // pendingServes: item_id → the served count the screen shows but the server
+  // has not confirmed. servesInFlight: items with a request running (one at a
+  // time per item, so taps can never land out of order). billSeq: only the
+  // newest /bill request may write, so a slow older response cannot win.
+  const pendingServes = useRef(new Map<string, PendingServe>());
+  const servesInFlight = useRef(new Set<string>());
+  const billSeq = useRef(0);
+
   const loadBill = useCallback(async () => {
     if (!sessionId) { setIsLoading(false); return; }
+    const seq = ++billSeq.current;
     try {
       const bill = await crewSessions.getBill(sessionId);
+      if (seq !== billSeq.current) return; // a newer reload is on its way
       // Prefer the canonical breakdown when present; fall back to legacy flat
       // fields for older backend responses.
       const bd = bill.breakdown;
@@ -337,17 +461,31 @@ export default function TableDetail() {
       const tax     = bd?.taxAmount ?? bill.tax_total ?? (subt * (rate / 100));
       const charges = bd?.chargesTotal ?? bill.service_charge_total ?? 0;
       const tipV    = bd?.tip ?? bill.tip_total ?? 0;
-      const explicitDisc = bd?.discount ?? bill.discount_total ?? 0;
+      const explicitDisc = bd?.discount ?? bill.discount_total;
       const explicitGrand = bd?.total ?? bill.total_payable;
       // Rupee round-off. 0 on older backends and on legacy bills, where the tax
       // was already whole rupees and nothing needed rounding.
       const roundV  = bd?.roundOff ?? bill.round_off ?? 0;
-      const inferredDisc = explicitDisc > 0 || explicitGrand == null
-        ? explicitDisc
+      // Inferred ONLY when the backend reports no discount at all. A reported 0
+      // is a real 0: at a tax-inclusive venue the GST is inside the prices, so
+      // "subtotal + tax − total" is the embedded GST, not a discount — this
+      // used to print a phantom "Discount −48" on every inclusive bill.
+      const inferredDisc = explicitDisc != null || explicitGrand == null
+        ? (explicitDisc ?? 0)
         : Math.max(0, Math.round((subt + tax + charges + tipV + roundV - explicitGrand) * 100) / 100);
       const disc    = inferredDisc;
       const grand   = explicitGrand ?? (subt + tax + charges + tipV - disc + roundV);
-      setOrders(bill.orders);
+      // Drop pending serves the server now shows (or can no longer apply);
+      // keep the rest laid over this response.
+      for (const [itemId, p] of pendingServes.current) {
+        const item = bill.orders.flatMap((o) => o.items).find((i) => i.item_id === itemId);
+        const server = item ? (item.served_qty ?? (item.served ? item.qty : 0)) : 0;
+        const stale = Date.now() - p.at > 20_000 && !servesInFlight.current.has(itemId);
+        if (!item || item.item_status === 'cancelled' || server >= p.target || stale) {
+          pendingServes.current.delete(itemId);
+        }
+      }
+      setOrders(withPendingServes(bill.orders, pendingServes.current));
       setSessionTotal(subt);
       setBillTaxRate(rate);
       setTaxTotal(tax);
@@ -393,10 +531,19 @@ export default function TableDetail() {
 
   // Refresh bill whenever screen regains focus — ensures the "Collect Payment"
   // button and paid badge settle immediately after returning from payment-collect.
+  // The session ended while another screen covered this one (see the
+  // session_ended handler below) — leave now that we're visible again.
+  const navigation = useNavigation();
+  const endedWhileCoveredRef = useRef(false);
   useFocusEffect(
     useCallback(() => {
+      if (endedWhileCoveredRef.current) {
+        endedWhileCoveredRef.current = false;
+        router.back();
+        return;
+      }
       void loadBill();
-    }, [loadBill]),
+    }, [loadBill, router]),
   );
 
 
@@ -453,10 +600,15 @@ export default function TableDetail() {
       subscribeChannel(`waiter:${restaurantId}`, 'payment_confirmed', refetch),
       // If this session ends from another device (or via diner/partner),
       // pop the modal so the waiter isn't left staring at a stale bill.
+      // Only while this screen is on top: router.back() pops whatever IS on
+      // top, so firing it under the payment sheet (which auto-frees the table
+      // and fires this very event) would yank the sheet away mid-success.
+      // Covered, it waits and pops on the next focus instead.
       subscribeChannel(`waiter:${restaurantId}`, 'session_ended', (data: any) => {
         const endedId = data?.sessionId as string | undefined;
         if (endedId && endedId === sessionId) {
-          router.back();
+          if (navigation.isFocused()) router.back();
+          else endedWhileCoveredRef.current = true;
         }
       }),
     ];
@@ -464,7 +616,14 @@ export default function TableDetail() {
       if (refetchTimer) clearTimeout(refetchTimer);
       unsubs.forEach(u => u());
     };
-  }, [staffInfo?.restaurantId, sessionId, router, loadBill]);
+  }, [staffInfo?.restaurantId, sessionId, router, navigation, loadBill]);
+
+  // Pushes missed while the phone was locked or offline never arrive — reload
+  // the bill once it's back.
+  useResyncOnReturn(
+    staffInfo?.restaurantId && sessionId ? `waiter:${staffInfo.restaurantId}` : null,
+    () => void loadBill(),
+  );
 
 
   // Flat list of all items across all orders
@@ -476,6 +635,7 @@ export default function TableDetail() {
         order_id: order.order_id,
         name: `${item.qty}× ${item.name}`,
         modifiersSummary: item.modifiers_summary,
+        note: item.note ?? null,
         status: itemStatus(item, dinerStatusMode === 'DUAL_CHANNEL'),
         cancelled: item.item_status === 'cancelled',
         price: item.price * item.qty,
@@ -483,6 +643,10 @@ export default function TableDetail() {
         qty: item.qty,
         // Fall back for a backend that predates partial ticking.
         servedQty: item.served_qty ?? (item.served ? item.qty : 0),
+        label: item.name,
+        unitPrice: item.price,
+        menuItemId: item.menu_item_id,
+        selectedModifiers: item.selected_modifiers,
       }))
     ), [orders, dinerStatusMode]);
 
@@ -492,7 +656,8 @@ export default function TableDetail() {
   const totalCount = flatItems.reduce((n, i) => n + (i.cancelled ? 0 : i.qty), 0);
   const serviceProgress = totalCount > 0 ? servedCount / totalCount : 0;
   const progressAnim = React.useRef(new Animated.Value(serviceProgress)).current;
-  const billableFlatItems = useMemo(() => flatItems.filter(item => !item.cancelled), [flatItems]);
+  const rows = useMemo(() => groupRows(flatItems), [flatItems]);
+  const billableRows = useMemo(() => rows.filter(row => !row.cancelled), [rows]);
 
   useEffect(() => {
     Animated.spring(progressAnim, { toValue: serviceProgress, useNativeDriver: false, bounciness: 4, speed: 12 }).start();
@@ -502,7 +667,7 @@ export default function TableDetail() {
   const grandTotal = payableTotal;
 
   const explainedBill = useMemo<ExplainedBill>(() => ({
-    items: billableFlatItems.map((i) => ({ key: `${i.order_id}:${i.key}`, name: i.name, modifiersSummary: i.modifiersSummary, price: i.price })),
+    items: billableRows.map((i) => ({ key: i.key, name: i.name, modifiersSummary: i.modifiersSummary, price: i.price })),
     subtotal: sessionTotal,
     discountTotal,
     discountLines,
@@ -514,70 +679,234 @@ export default function TableDetail() {
     tip: tipTotal,
     roundOff: roundOffTotal,
     total: grandTotal,
-  }), [billableFlatItems, sessionTotal, discountTotal, discountLines, serviceChargeTotal, chargeLines, tax, billTaxRate, sessionTaxLines, tipTotal, roundOffTotal, grandTotal]);
+    pricesIncludeTax: restaurantInvoiceMeta?.pricesIncludeTax,
+  }), [billableRows, sessionTotal, discountTotal, discountLines, serviceChargeTotal, chargeLines, tax, billTaxRate, sessionTaxLines, tipTotal, roundOffTotal, grandTotal, restaurantInvoiceMeta?.pricesIncludeTax]);
 
 
   // `nextQty` is the ABSOLUTE served count the line should stand at. A tap
   // hands over one more unit; a hold on the button hands over the rest.
-  const handleServe = async (item: FlatItem, nextQty: number) => {
+  // The tick is instant; the request runs behind it (see syncServe).
+  const handleServe = (item: FlatItem, nextQty: number) => {
     if (item.status === 'served') return; // already served, no-op
     const target = Math.max(0, Math.min(item.qty, nextQty));
-    const previousQty = item.servedQty;
-    // Optimistic update
-    setOrders(prev => prev.map(o => {
-      if (o.order_id !== item.order_id) return o;
-      return { ...o, items: o.items.map(i => i.item_id === item.item_id
-        ? { ...i, served_qty: target, served: target >= i.qty }
-        : i) };
-    }));
+    if (target <= item.servedQty) return;
+    pendingServes.current.set(item.item_id, { orderId: item.order_id, target, at: Date.now() });
+    setOrders((prev) => withPendingServes(prev, pendingServes.current));
+    void syncServe(item.item_id);
+  };
+
+  // One request at a time per item, always carrying the NEWEST target: three
+  // quick taps on "Serve 1/4" send 1, then 3 — never 3 then a late 2.
+  const syncServe = async (itemId: string) => {
+    if (servesInFlight.current.has(itemId)) return; // the running loop picks up the new target
+    servesInFlight.current.add(itemId);
+    let failed = false;
     try {
-      await crewOrders.serveItem(item.order_id, item.item_id, target);
-      await loadBill(); // refresh from server — same pattern as kitchen
-    } catch {
-      // Revert on failure
-      setOrders(prev => prev.map(o => {
-        if (o.order_id !== item.order_id) return o;
-        return { ...o, items: o.items.map(i => i.item_id === item.item_id
-          ? { ...i, served_qty: previousQty, served: previousQty >= i.qty }
-          : i) };
-      }));
+      let sent = -1;
+      for (;;) {
+        const want = pendingServes.current.get(itemId);
+        if (!want || want.target === sent) break;
+        sent = want.target;
+        try {
+          await crewOrders.serveItem(want.orderId, itemId, want.target);
+          want.at = Date.now();
+        } catch {
+          // Undo on screen: dropping the overlay lets the reload below show
+          // what the server really has.
+          failed = true;
+          pendingServes.current.delete(itemId);
+          break;
+        }
+      }
+    } finally {
+      servesInFlight.current.delete(itemId);
+    }
+    if (failed) setHint('Could not mark that served. Check the connection and try again.');
+    void loadBill();
+  };
+
+  // A row's served count is spread over its rounds, oldest first — the plate
+  // that has waited longest goes out first. `nextQty` is the row's absolute
+  // served count, like handleServe's.
+  const serveRow = (row: ItemRow, nextQty: number) => {
+    let left = Math.max(0, Math.min(row.qty, nextQty));
+    for (const line of row.lines) {
+      const target = Math.min(line.qty, left);
+      left -= target;
+      if (target > line.servedQty) handleServe(line, target);
     }
   };
 
-  // ── Item cancel (whole line, before payment is settled) ───────────────────
-  const [cancelTarget, setCancelTarget] = useState<FlatItem | null>(null);
+  // ── Item cancel (a whole row: every round of that dish) ───────────────────
+  const [cancelTarget, setCancelTarget] = useState<ItemRow | null>(null);
   const [cancelling, setCancelling] = useState(false);
 
+  // The backend returns a 409 with a specific code/message for states where a
+  // cancel is not allowed (paid, collection in progress, etc.).
+  const cancelErrorMessage = (e: any): string => {
+    const code = e?.code as string | undefined;
+    return code === 'COLLECTION_IN_PROGRESS'
+      ? 'The diner is paying for this online right now. Wait for it to finish (or have them cancel), then remove the item.'
+      : code === 'ORDER_ALREADY_PAID'
+      ? 'This order is already paid and can no longer be changed.'
+      : code === 'ITEM_ALREADY_CANCELLED' || code === 'ORDER_CANCELLED'
+      ? 'This item has already been cancelled.'
+      : code === 'INVALID_QTY'
+      ? 'This item changed on another phone. Check the list and try again.'
+      : (typeof e?.message === 'string' && e.message) || 'Something went wrong. Please try again.';
+  };
+
+  // Once the bill is printed the server wants a manager for any cancel; the
+  // approval hook asks for the PIN only when the server says so.
   const handleCancelItem = async (reason: CancelReason) => {
     if (!cancelTarget || cancelling) return;
+    const target = cancelTarget;
     setCancelling(true);
+    // Survives the PIN retry: the approval hook re-runs the attempt from the
+    // top, and a line that already went must not be cancelled twice.
+    const done = new Set<string>();
     try {
-      const res = await crewOrders.cancelItem(cancelTarget.order_id, cancelTarget.item_id, reason);
-      if (!res?.success) {
-        setCancelTarget(null);
-        showDialog('Could not cancel', 'This item could not be cancelled. The order may already be paid.', [{ label: 'OK', onPress: () => {} }]);
-        return;
-      }
-      await loadBill(); // refresh totals + the new collection amount
-      setCancelTarget(null);
+      await runWithApproval({ action: 'VOID_AFTER_BILL', amount: target.price }, async (mint) => {
+        for (const line of target.lines) {
+          if (done.has(line.key)) continue;
+          const grantId = mint ? await mint(line.order_id, line.unitPrice * line.qty) : undefined;
+          await crewOrders.cancelItem(line.order_id, line.item_id, reason, { grantId });
+          done.add(line.key);
+        }
+        await loadBill(); // refresh totals + the new collection amount
+      });
     } catch (e: any) {
-      setCancelTarget(null);
-      // The backend returns a 409 with a specific code/message for states
-      // where a cancel is not allowed (paid, collection in progress, etc.).
-      const code = e?.code as string | undefined;
-      const message =
-        code === 'COLLECTION_IN_PROGRESS'
-          ? 'The diner is paying for this online right now. Wait for it to finish (or have them cancel), then remove the item.'
-          : code === 'ORDER_ALREADY_PAID'
-          ? 'This order is already paid and can no longer be changed.'
-          : code === 'ITEM_ALREADY_CANCELLED' || code === 'ORDER_CANCELLED'
-          ? 'This item has already been cancelled.'
-          : (typeof e?.message === 'string' && e.message) || 'Something went wrong. Please try again.';
-      showDialog('Could not cancel', message, [{ label: 'OK', onPress: () => {} }]);
+      if (done.size > 0) void loadBill();
+      showDialog('Could not cancel', cancelErrorMessage(e), [{ label: 'OK', onPress: () => {} }]);
     } finally {
+      setCancelTarget(null);
       setCancelling(false);
     }
   };
+
+  // ── Edit quantities (− qty + ×) ───────────────────────────────────────────
+  // Changes are a DRAFT until Save: tapping "−" three times must not fire
+  // three voids, three reason prompts and — after the bill is printed — three
+  // PIN prompts. Save sends one reason for every removal and one new order
+  // for every addition. "+" is a new order (its own ADD-ON KOT), never a
+  // bigger number on a line the kitchen has already printed.
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<Record<string, number>>({});
+  const [editReasonOpen, setEditReasonOpen] = useState(false);
+  const [savingEdits, setSavingEdits] = useState(false);
+
+  // Keyed by ROW and holding the row's target quantity — absolute, not a
+  // delta — so a Save that half-failed is corrected by the reload: the plan
+  // is recomputed against whatever actually went through.
+  const draftQty = (item: ItemRow) => draft[item.key] ?? item.qty;
+  const setDraftQty = (item: ItemRow, qty: number) => {
+    setDraft((d) => {
+      const next = { ...d };
+      if (qty === item.qty) delete next[item.key];
+      else next[item.key] = Math.max(0, Math.min(item.qty + 50, qty));
+      return next;
+    });
+  };
+
+  const editPlan = useMemo(() => {
+    const removals: { item: FlatItem; units: number; row: ItemRow }[] = [];
+    const additions: { item: ItemRow; units: number }[] = [];
+    let changedRows = 0;
+    for (const row of rows) {
+      if (row.cancelled || draft[row.key] == null) continue;
+      const target = draft[row.key]!;
+      if (target < row.qty) {
+        changedRows += 1;
+        // Newest round first: it is the one least likely to be cooked yet.
+        let left = row.qty - target;
+        for (const line of [...row.lines].reverse()) {
+          if (left <= 0) break;
+          const units = Math.min(line.qty, left);
+          removals.push({ item: line, units, row });
+          left -= units;
+        }
+      } else if (target > row.qty && row.menuItemId) {
+        changedRows += 1;
+        additions.push({ item: row, units: target - row.qty });
+      }
+    }
+    const removedValue = removals.reduce((s, r) => s + r.item.unitPrice * r.units, 0);
+    return { removals, additions, removedValue, changedRows };
+  }, [rows, draft]);
+  const editCount = editPlan.changedRows;
+  // `menu_item_id` ships in the same backend release that understands `qty`.
+  // An older backend ignores `qty` and would cancel the WHOLE line on one "−",
+  // so without that marker the stepper is not offered at all.
+  const stepperSupported = flatItems.some((i) => !!i.menuItemId);
+  const canEdit = stepperSupported && !!sessionId && !isPaid && sessionStatus === 'active' && flatItems.some((i) => !i.cancelled);
+
+  const exitEditing = () => { setEditing(false); setDraft({}); };
+
+  const saveEdits = () => {
+    if (savingEdits || editCount === 0) return;
+    if (editPlan.removals.length > 0) setEditReasonOpen(true);
+    else void applyEdits(null);
+  };
+
+  const applyEdits = async (reason: CancelReason | null) => {
+    if (!sessionId || savingEdits) return;
+    const { removals, additions, removedValue } = editPlan;
+    // Survive the PIN retry: the approval hook re-runs `attempt` from the top,
+    // so anything that already went through must not go again.
+    const done = new Set<string>();
+    let added = additions.length === 0;
+
+    const attempt = async (mint?: MintGrant) => {
+      try {
+        for (const r of removals) {
+          if (done.has(r.item.key)) continue;
+          const grantId = mint ? await mint(r.item.order_id, r.item.unitPrice * r.units) : undefined;
+          await crewOrders.cancelItem(r.item.order_id, r.item.item_id, reason ?? undefined, { qty: r.units, grantId });
+          done.add(r.item.key);
+        }
+        if (!added) {
+          await crewOrders.placeOrder(sessionId, additions.map((a) => ({
+            item_id: a.item.menuItemId!,
+            qty: a.units,
+            ...(a.item.selectedModifiers?.length ? { selectedModifiers: a.item.selectedModifiers } : {}),
+            ...(a.item.modifiersSummary ? { modifiers_summary: a.item.modifiersSummary } : {}),
+            // Same plate, same note — but not a combo's "Combo: …" tag, which
+            // is the server's, and a re-order is priced as the plain dish.
+            ...(a.item.note && !a.item.note.startsWith('Combo:') ? { note: a.item.note.slice(0, 200) } : {}),
+          })));
+          added = true;
+        }
+      } catch (e) {
+        // Some lines may have gone through before this one failed. The draft
+        // holds target quantities, so reloading is enough: a second Save plans
+        // only what is still missing.
+        void loadBill();
+        throw e;
+      }
+      exitEditing();
+      await loadBill();
+    };
+
+    setSavingEdits(true);
+    try {
+      await runWithApproval({ action: 'VOID_AFTER_BILL', amount: removedValue }, attempt);
+    } catch (e: any) {
+      showDialog('Could not save changes', cancelErrorMessage(e), [{ label: 'OK', onPress: () => {} }]);
+    } finally {
+      setSavingEdits(false);
+    }
+  };
+
+  // Paid or closed from another phone mid-edit: nothing left to edit.
+  useEffect(() => {
+    if (editing && !canEdit) exitEditing();
+  }, [editing, canEdit]);
+
+  // One entry per row, however many rounds the units come out of.
+  const editSummary = rows
+    .filter((row) => editPlan.removals.some((r) => r.row.key === row.key))
+    .map((row) => `${row.qty - draftQty(row)}× ${row.label}`)
+    .join(', ');
 
   // Cash collection lives in app/(staff)/cash-collection.tsx now — accessible
   // via the cash icon in the staff dashboard header. The table screen no
@@ -647,6 +976,7 @@ export default function TableDetail() {
         items: latestOrder.items.map((item) => ({
           name: item.name,
           quantity: item.qty,
+          notes: item.note ?? undefined,
           modifiersSummary: item.modifiers_summary ?? undefined,
         })),
         isAddOn: false,
@@ -681,23 +1011,22 @@ export default function TableDetail() {
 
   const handlePrintInvoice = async (buyer?: InvoiceBuyer) => {
     setPrintMenuOpen(false);
-    if (getPrinterStatus() !== 'connected') {
-      showDialog(
-        'No Printer Paired',
-        'No Bluetooth printer is connected to this device. Go to Profile → Printer Settings to pair one.',
-        [{ label: 'OK', onPress: () => {} }],
-      );
-      return;
-    }
+    // No local-printer gate: a bill no longer needs one. When this device
+    // drives no bill printer the request goes to the venue's, and the failure
+    // path below reports the real reason (no bill printer configured, host
+    // offline) instead of this device guessing from its own pairing.
 
-    const invoiceItems: InvoiceBill['items'] = orders.flatMap(order =>
+    // One line per dish for the guest, across ordering rounds (the KOTs stay
+    // one per round — they never come through here).
+    const invoiceItems: InvoiceBill['items'] = mergeBillLines(orders.flatMap(order =>
       order.items.filter(item => item.item_status !== 'cancelled').map(item => ({
         name: item.name,
         qty: item.qty,
         unitPrice: item.price,
         modifiersSummary: item.modifiers_summary,
+        menuItemId: item.menu_item_id ?? null,
       })),
-    );
+    ));
 
     // Three independent server calls gate the print; run them CONCURRENTLY so
     // the tap-to-paper delay is one round trip, not three stacked ones. The
@@ -717,10 +1046,12 @@ export default function TableDetail() {
     const buyerChanged = buyerGstin !== sessionBuyerGstin || buyerName !== sessionBuyerName;
 
     const prep = (async () => {
-      const [brandingRes, buyerRes, finalizeRes] = await Promise.allSettled([
+      const [brandingRes, buyerRes, finalizeRes, ladderRes] = await Promise.allSettled([
         staffInfo?.restaurantId ? restaurantApi.getBranding(staffInfo.restaurantId) : Promise.resolve(null),
         buyerChanged ? crewSessions.saveBuyer(sessionId, buyerGstin, buyerName) : Promise.resolve(null),
         crewSessions.finalizeInvoice(sessionId),
+        // Fresh, not the screen's copy: the bill-so-far decides the min-bill line.
+        loyaltyApi.balance(sessionId),
       ]);
 
       let invoiceMeta = restaurantInvoiceMeta;
@@ -762,18 +1093,38 @@ export default function TableDetail() {
         setSessionInvoiceNumber(invoiceNumber);
       }
 
-      return { invoiceMeta, invoiceNumber, loyalty };
+      // Stands in for the snapshot on a bill printed before payment.
+      const liveLadder = ladderRes.status === 'fulfilled' ? (ladderRes.value?.data?.ladder ?? null) : null;
+
+      return { invoiceMeta, invoiceNumber, loyalty, liveLadder };
     })();
+
+    // Which invoice printer(s) — asked only when the venue has two or more, so
+    // a one-printer venue never sees an extra tap. prep keeps running behind
+    // the sheet, exactly as it does behind the QR sheet below.
+    const targets = await chooseInvoicePrinters();
+    if (targets === null) return; // sheet dismissed — print nothing
 
     // upiOmitAmount = true → static restaurant QR (diner types amount);
     // false → exact-amount QR. Ignored when no QR prints (paid / no VPA / toggle off).
-    const runPrint = async (upiOmitAmount: boolean) => {
+    // `only` narrows a retry to the printers that failed, so the ones that
+    // worked don't get a second copy.
+    const runPrint = async (upiOmitAmount: boolean, only?: InvoicePrinterChoice) => {
       // Usually resolved already (prep ran while the QR sheet was up), so the
       // preparing phase is a flash at most.
       setPrintJob({ phase: 'preparing', label: 'Invoice' });
-      const { invoiceMeta, invoiceNumber, loyalty } = await prep;
+      const { invoiceMeta, invoiceNumber, loyalty, liveLadder } = await prep;
       setPrintJob({ phase: 'printing', label: 'Invoice' });
-      const result = await printBill({
+      // Prints here when this device drives a bill printer; otherwise the
+      // server builds the bill and the counter device prints it. The `bill`
+      // below is used only on the local path — see services/billPrint.ts.
+      const outcome = await printBillFromHere({
+        restaurantId: staffInfo?.restaurantId ?? '',
+        sessionId,
+        upiOmitAmount,
+        targets: only ?? targets,
+        onDispatched: (printerName) => setPrintJob({ phase: 'printing', label: `Invoice → ${printerName}` }),
+        bill: {
         restaurantName: staffInfo?.restaurantName ?? '',
         restaurantAddress: invoiceMeta?.address ?? null,
         restaurantPhone: invoiceMeta?.phone ?? null,
@@ -793,6 +1144,9 @@ export default function TableDetail() {
         charges: serviceChargeTotal,
         chargeLines,
         tax: taxTotal,
+        // Its own line after GST, never taxed. Without it TOTAL carried money
+        // no line explained (and the inclusive-GST split read it as GST).
+        tip: tipTotal > 0 ? tipTotal : undefined,
         taxRate: billTaxRate,
         taxDisplayMode: invoiceMeta?.displayMode,
         taxLines: sessionTaxLines,
@@ -802,6 +1156,8 @@ export default function TableDetail() {
         isPaid,
         paymentMethod: billPaymentMethod,
         customerName: sessionCustomerName,
+        customerPhone: sessionCustomerPhone,
+        billerName: staffInfo?.name ?? null,
         upiVpa: upiId,
         upiName: upiName || null,
         upiOmitAmount,
@@ -811,25 +1167,38 @@ export default function TableDetail() {
         thankYouMessage: invoiceMeta?.billThankYouMsg ?? null,
         footerNote: invoiceMeta?.billFooterNote ?? null,
         loyalty,
+        liveLadder,
+        },
       });
 
-      if (result === 'failed') {
+      if (outcome.status === 'printed') {
+        setPrintJob({ phase: 'done', label: 'Invoice' });
+      } else {
         setPrintJob({
           phase: 'failed',
           label: 'Invoice',
-          message: 'Could not print the invoice. Check that the printer is nearby and powered on.',
-          onRetry: () => { void runPrint(upiOmitAmount); },
+          message: outcome.message
+            ?? 'Could not print the invoice. Check that the printer is nearby and powered on.',
+          onRetry: () => {
+            const chosen = only ?? targets;
+            void runPrint(
+              upiOmitAmount,
+              chosen && outcome.failedPrinterIds?.length
+                ? { ids: outcome.failedPrinterIds, names: chosen.names }
+                : chosen,
+            );
+          },
         });
-      } else {
-        setPrintJob({ phase: 'done', label: 'Invoice' });
       }
     };
 
     // Only ask which QR to print when a QR would actually be printed
-    // (unpaid + a VPA configured + the on-device QR toggle is on).
+    // (unpaid + a VPA configured + the on-device QR toggle is on), and only
+    // when the venue left dine-in on "Ask every time" (Printer settings).
     const qrWillPrint = !isPaid && !!upiId && isUpiQrEnabled();
-    if (!qrWillPrint) {
-      await runPrint(false);
+    const qrMode = qrAmountModeFor('DINE_IN');
+    if (!qrWillPrint || qrMode !== 'ASK') {
+      await runPrint(qrWillPrint && qrMode === 'STATIC');
       return;
     }
 
@@ -940,6 +1309,9 @@ export default function TableDetail() {
   // is context; "bring a cappuccino" is the job.
   const [ladder, setLadder] = useState<CrewLadder | null>(null);
   const [ladderOpen, setLadderOpen] = useState(false);
+  // Above every early return — a hook below `if (isLoading) return` crashed
+  // every table screen once (2026-09-16).
+  const { chooseInvoicePrinters, invoicePrinterSheet } = useInvoicePrinterPicker();
 
   useEffect(() => {
     if (!sessionId) { setLadder(null); return; }
@@ -1146,18 +1518,22 @@ export default function TableDetail() {
    * withheld. Screen readers get the reason via accessibilityHint and still hear
    * "disabled", so they never need the toast at all.
    */
+  const billPrintedUnpaid = !!sessionInvoiceNumber && !isPaid;
+
   const actionCard = (
     key: string,
     icon: React.ComponentProps<typeof Ionicons>['name'],
     label: string,
     onPress: () => void,
     disabledReason: string | null,
+    tone?: 'warning',
   ) => {
     const enabled = !disabledReason;
+    const warn = enabled && tone === 'warning';
     return (
       <TouchableOpacity
         key={key}
-        style={[styles.actionCard, !enabled && styles.actionCardDisabled]}
+        style={[styles.actionCard, warn && styles.actionCardWarning, !enabled && styles.actionCardDisabled]}
         onPress={enabled ? onPress : () => setHint(disabledReason)}
         activeOpacity={enabled ? 0.75 : 0.9}
         accessibilityRole="button"
@@ -1168,9 +1544,9 @@ export default function TableDetail() {
         <Ionicons
           name={icon}
           size={20}
-          color={enabled ? QuinckleColors.textPrimary : QuinckleColors.textTertiary}
+          color={warn ? QuinckleColors.warning : enabled ? QuinckleColors.textPrimary : QuinckleColors.textTertiary}
         />
-        <Text style={[styles.actionCardLabel, !enabled && styles.actionCardLabelDisabled]} numberOfLines={1}>
+        <Text style={[styles.actionCardLabel, warn && styles.actionCardLabelWarning, !enabled && styles.actionCardLabelDisabled]} numberOfLines={1}>
           {label}
         </Text>
       </TouchableOpacity>
@@ -1366,24 +1742,15 @@ export default function TableDetail() {
 
   const actionRowJsx = (
     <View style={styles.actionRow}>
-      {actionCard('add', 'add-circle-outline', 'Add items', () => router.push({
-        pathname: '/(staff)/order-menu',
-        params: {
-          tableId: String(tableId),
-          tableNum,
-          tableDbId: tableDbId ?? '',
-          sessionId,
-          customerPhone: sessionCustomerPhone ?? '',
-          customerName: sessionCustomerName ?? '',
-          zoneName: (paramZoneName ?? '').trim(),
-        },
-      }), addItemsReason)}
+      {actionCard('add', 'add-circle-outline', 'Add items', openOrderMenu, addItemsReason)}
       {actionCard('qr', 'qr-code-outline', 'UPI QR', () => {
         setUpiAmount(''); setUpiUri(null); setShowUpiModal(true);
       }, upiQrReason)}
-      {actionCard('print', 'print-outline', 'Print', () => {
+      {/* Printed and not yet paid: amber, so anyone can see the guest already
+          holds this bill — and that cutting it now needs a manager. */}
+      {actionCard('print', billPrintedUnpaid ? 'receipt' : 'print-outline', billPrintedUnpaid ? 'Printed' : 'Print', () => {
         setActionMenuOpen(false); setPrintMenuOpen(true);
-      }, null)}
+      }, null, billPrintedUnpaid ? 'warning' : undefined)}
     </View>
   );
 
@@ -1392,8 +1759,41 @@ export default function TableDetail() {
       <View style={styles.sectionHeader}>
         <View style={styles.sectionTitleRow}>
           <Text style={styles.sectionTitle}>Active Orders</Text>
-          <Text style={styles.progressText}>{servedCount}/{totalCount} served</Text>
+          {editing ? (
+            <View style={styles.editBar}>
+              <TouchableOpacity onPress={exitEditing} disabled={savingEdits} activeOpacity={0.7} hitSlop={8}>
+                <Text style={styles.editBarCancel}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={saveEdits}
+                disabled={savingEdits || editCount === 0}
+                activeOpacity={0.8}
+                style={[styles.editBarSave, (savingEdits || editCount === 0) && styles.editBarSaveOff]}
+              >
+                {savingEdits
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <Text style={styles.editBarSaveText}>{editCount > 0 ? `Save (${editCount})` : 'Save'}</Text>}
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.editBar}>
+              <Text style={styles.progressText}>{servedCount}/{totalCount} served</Text>
+              {canEdit ? (
+                <TouchableOpacity onPress={() => setEditing(true)} activeOpacity={0.7} hitSlop={8} accessibilityRole="button" accessibilityLabel="Edit quantities">
+                  <Text style={styles.editLink}>Edit</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          )}
         </View>
+        {editing && sessionInvoiceNumber ? (
+          <View style={styles.billPrintedNote}>
+            <Ionicons name="lock-closed-outline" size={12} color={QuinckleColors.warning} />
+            <Text style={styles.billPrintedNoteText}>
+              The bill is printed. Taking anything off needs a manager&apos;s PIN, and the owner is told.
+            </Text>
+          </View>
+        ) : null}
         <View style={styles.serviceProgressTrack}>
           <Animated.View
             style={[styles.serviceProgressFill, {
@@ -1405,7 +1805,10 @@ export default function TableDetail() {
 
       <FlatList
         style={isWide ? styles.wideFlatList : undefined}
-        data={flatItems}
+        data={rows}
+        // Edit mode and its draft change what a row draws without changing
+        // `data` — without this the list keeps showing the old rows.
+        extraData={`${editing}|${savingEdits}|${JSON.stringify(draft)}`}
         keyExtractor={item => item.key}
         // Tablet's list is not overlaid by the docked bar — it lives in its own
         // pane — so it keeps the base clearance.
@@ -1442,6 +1845,59 @@ export default function TableDetail() {
               </View>
             );
           }
+          if (editing) {
+            const q = draftQty(item);
+            const removed = q === 0;
+            const changed = q !== item.qty;
+            const canAdd = !!item.menuItemId;
+            return (
+              <View style={[styles.orderItemRow, removed && { opacity: 0.5 }]}>
+                <View style={styles.orderItemLeft}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.itemName, removed && styles.itemNameCancelled]} numberOfLines={2}>{item.label}</Text>
+                    {item.modifiersSummary ? (
+                      <Text style={styles.itemModifiers} numberOfLines={1}>{item.modifiersSummary}</Text>
+                    ) : null}
+                    {item.note ? <Text style={styles.itemNote} numberOfLines={2}>“{item.note}”</Text> : null}
+                    <View style={styles.itemMetaRow}>
+                      <Text style={styles.itemPrice}>₹{(item.unitPrice * q).toFixed(0)}</Text>
+                      {changed ? <Text style={styles.stepWas}>was {item.qty}</Text> : null}
+                    </View>
+                  </View>
+                </View>
+                <View style={styles.stepper}>
+                  <TouchableOpacity
+                    style={[styles.stepBtn, q === 0 && styles.stepBtnOff]}
+                    onPress={() => setDraftQty(item, q - 1)}
+                    disabled={q === 0 || savingEdits}
+                    activeOpacity={0.7}
+                    accessibilityLabel={`One less ${item.label}`}
+                  >
+                    <Ionicons name="remove" size={16} color={QuinckleColors.textPrimary} />
+                  </TouchableOpacity>
+                  <Text style={[styles.stepQty, changed && styles.stepQtyChanged]}>{q}</Text>
+                  <TouchableOpacity
+                    style={[styles.stepBtn, !canAdd && styles.stepBtnOff]}
+                    onPress={() => setDraftQty(item, q + 1)}
+                    disabled={!canAdd || savingEdits}
+                    activeOpacity={0.7}
+                    accessibilityLabel={`One more ${item.label}`}
+                  >
+                    <Ionicons name="add" size={16} color={QuinckleColors.textPrimary} />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.stepRemove, removed && styles.stepRemoveOn]}
+                    onPress={() => setDraftQty(item, removed ? item.qty : 0)}
+                    disabled={savingEdits}
+                    activeOpacity={0.7}
+                    accessibilityLabel={removed ? `Keep ${item.label}` : `Remove ${item.label}`}
+                  >
+                    <Ionicons name={removed ? 'arrow-undo' : 'close'} size={15} color={QuinckleColors.danger} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            );
+          }
           return (
             <TouchableOpacity
               activeOpacity={0.9}
@@ -1455,6 +1911,7 @@ export default function TableDetail() {
                   {item.modifiersSummary ? (
                     <Text style={styles.itemModifiers} numberOfLines={1}>{item.modifiersSummary}</Text>
                   ) : null}
+                  {item.note ? <Text style={styles.itemNote} numberOfLines={3}>“{item.note}”</Text> : null}
                   {isPartial ? (
                     <Text style={styles.itemPartialServed}>{servedQty} of {item.qty} served</Text>
                   ) : null}
@@ -1491,8 +1948,8 @@ export default function TableDetail() {
                       hold = hand over the rest. */}
                   <TouchableOpacity
                     style={styles.markServedBtn}
-                    onPress={() => void handleServe(item, servedQty + 1)}
-                    onLongPress={holdable ? () => void handleServe(item, item.qty) : undefined}
+                    onPress={() => void serveRow(item, servedQty + 1)}
+                    onLongPress={holdable ? () => void serveRow(item, item.qty) : undefined}
                     delayLongPress={350}
                     activeOpacity={0.75}
                   >
@@ -1906,6 +2363,24 @@ export default function TableDetail() {
         onClose={() => setCancelTarget(null)}
       />
 
+      {/* ── Edit quantities: one reason for every removal on Save ── */}
+      <ReasonSheet
+        visible={editReasonOpen}
+        title="Take these off the bill?"
+        subject={editSummary}
+        note={`₹${Math.round(editPlan.removedValue)} will be removed from the bill.${
+          editPlan.additions.length > 0 ? ' The added items go to the kitchen as a new order.' : ''
+        }${sessionInvoiceNumber ? ' The bill is already printed, so a manager must approve.' : ''}`}
+        confirmLabel="Remove"
+        busy={savingEdits}
+        onConfirm={(reason) => {
+          setEditReasonOpen(false);
+          // Let the sheet close before a PIN sheet can open over it.
+          setTimeout(() => void applyEdits(reason), 220);
+        }}
+        onClose={() => setEditReasonOpen(false)}
+      />
+
       {/* ── UPI QR modal ── */}
       <Modal visible={showUpiModal} transparent animationType="fade" onRequestClose={() => setShowUpiModal(false)}>
         <View style={styles.swapBackdrop}>
@@ -1998,6 +2473,7 @@ export default function TableDetail() {
       />
 
       {/* Tap-to-paper print progress */}
+      {invoicePrinterSheet}
       <PrintProgressOverlay job={printJob} onDismiss={() => setPrintJob(null)} />
 
       {/* Swap-table bottom sheet */}
@@ -2505,6 +2981,8 @@ const styles = StyleSheet.create({
   actionCardDisabled: { opacity: 0.4, borderColor: QuinckleColors.borderSubtle },
   actionCardLabel: { fontSize: 12, fontWeight: '600', color: QuinckleColors.textPrimary },
   actionCardLabelDisabled: { color: QuinckleColors.textTertiary },
+  actionCardWarning: { borderColor: 'rgba(245,158,11,0.45)', backgroundColor: QuinckleColors.warningSoft },
+  actionCardLabelWarning: { color: QuinckleColors.warning },
 
   sessionGroup: {
     backgroundColor: QuinckleColors.surface,
@@ -2550,6 +3028,31 @@ const styles = StyleSheet.create({
   serviceProgressTrack: { height: 3, backgroundColor: QuinckleColors.surfaceMutedHover, borderRadius: 2, overflow: 'hidden' },
   serviceProgressFill: { height: '100%', backgroundColor: QuinckleColors.success },
   listContent: { paddingBottom: 290 },
+  editBar: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  editLink: { color: QuinckleColors.primary, fontSize: 13, fontWeight: '700' },
+  editBarCancel: { color: QuinckleColors.textSecondary, fontSize: 13, fontWeight: '600' },
+  editBarSave: { minWidth: 72, alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: QuinckleColors.primary },
+  editBarSaveOff: { opacity: 0.4 },
+  editBarSaveText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  billPrintedNote: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginBottom: Spacing.sm,
+    paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, backgroundColor: QuinckleColors.warningSoft,
+  },
+  billPrintedNoteText: { flex: 1, color: QuinckleColors.warning, fontSize: 12, fontWeight: '600', lineHeight: 16 },
+  stepper: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: Spacing.sm },
+  stepBtn: {
+    width: 32, height: 32, borderRadius: 8, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: QuinckleColors.borderSubtle, backgroundColor: QuinckleColors.surfaceMuted,
+  },
+  stepBtnOff: { opacity: 0.3 },
+  stepQty: { minWidth: 22, textAlign: 'center', color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  stepQtyChanged: { color: QuinckleColors.primary },
+  stepWas: { color: QuinckleColors.textTertiary, fontSize: 11, fontWeight: '500' },
+  stepRemove: {
+    width: 32, height: 32, borderRadius: 8, alignItems: 'center', justifyContent: 'center', marginLeft: 2,
+    backgroundColor: QuinckleColors.dangerSoft,
+  },
+  stepRemoveOn: { borderWidth: 1, borderColor: QuinckleColors.danger },
   orderItemRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: Spacing.md, borderBottomWidth: 1, borderBottomColor: QuinckleColors.borderSubtle },
   orderItemLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, flex: 1 },
   checkCircle: { width: 22, height: 22, borderRadius: 11, borderWidth: 1.5, borderColor: QuinckleColors.borderStrong, alignItems: 'center', justifyContent: 'center' },
@@ -2558,6 +3061,8 @@ const styles = StyleSheet.create({
   itemName: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '600' },
   itemNameServed: { textDecorationLine: 'line-through', color: QuinckleColors.textTertiary },
   itemModifiers: { color: QuinckleColors.textTertiary, fontSize: 12, marginTop: 1, fontStyle: 'italic' },
+  // Amber, not grey: a note is an instruction to act on, not a detail to skim.
+  itemNote: { color: QuinckleColors.warning, fontSize: 12, marginTop: 2, fontWeight: '500' },
   itemPartialServed: { color: QuinckleColors.success, fontSize: 12, fontWeight: '600', marginTop: 2 },
   itemMetaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 3, gap: 6 },
   itemPrice: { color: QuinckleColors.textTertiary, fontSize: 12, fontWeight: '500' },

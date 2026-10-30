@@ -20,6 +20,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { BottomSheet } from './BottomSheet';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import type { BillBreakdown, SessionBill } from '../../services/api';
+import { splitBillTax } from '../../services/billTax';
 
 export type DiscountKind = 'LOYALTY' | 'MEMBERSHIP' | 'OFFER' | 'STAFF' | 'OTHER' | string;
 
@@ -36,6 +37,10 @@ export interface ExplainedBill {
   tip: number;
   roundOff: number;
   total: number;
+  /** Venue's inclusive-pricing setting, when known (see billTax.ts). */
+  pricesIncludeTax?: boolean;
+  /** Built from a bare breakdown whose tip/discount may be missing. */
+  partialFigures?: boolean;
 }
 
 /**
@@ -51,10 +56,12 @@ export function explainSessionBill(bill: SessionBill): ExplainedBill {
   const charges = bd?.chargesTotal ?? bill.service_charge_total ?? 0;
   const tip = bd?.tip ?? bill.tip_total ?? 0;
   const roundOff = bd?.roundOff ?? bill.round_off ?? 0;
-  const explicitDisc = bd?.discount ?? bill.discount_total ?? 0;
+  const explicitDisc = bd?.discount ?? bill.discount_total;
   const explicitTotal = bd?.total ?? bill.total_payable;
-  const discount = explicitDisc > 0 || explicitTotal == null
-    ? explicitDisc
+  // Inferred only when no discount is reported at all — a reported 0 is real
+  // (at an inclusive venue the gap is embedded GST, not a discount).
+  const discount = explicitDisc != null || explicitTotal == null
+    ? (explicitDisc ?? 0)
     : Math.max(0, Math.round((subtotal + tax + charges + tip + roundOff - explicitTotal) * 100) / 100);
   const total = explicitTotal ?? subtotal + tax + charges + tip - discount + roundOff;
   return {
@@ -97,6 +104,9 @@ export function explainBreakdown(bd: BillBreakdown): ExplainedBill {
     tip: bd.tip,
     roundOff: bd.roundOff ?? 0,
     total: bd.total,
+    // Some callers build this from a payment context that zeroes tip and
+    // discount — never let those gaps be read as GST.
+    partialFigures: true,
   };
 }
 
@@ -186,6 +196,54 @@ export function BillExplainContent({ bill, pinned = false, inset = true, onGiveD
   const multiRate = taxLines.length > 1;
   const taxable = taxLines.reduce((n, l) => n + l.taxableValue, 0);
   const hasRoundOff = Math.abs(bill.roundOff) >= 0.005;
+  // GST already inside the prices (inclusive venue / charge) is not added, so
+  // it can't sit among the lines that sum to the total — it gets its own
+  // breakup instead. All-exclusive bills render exactly as before.
+  const taxSplit = splitBillTax({
+    subtotal: bill.subtotal,
+    discount: bill.discountTotal,
+    charges: bill.chargesTotal,
+    tip: bill.tip,
+    roundOff: bill.roundOff,
+    tax: bill.taxTotal,
+    total: bill.total,
+    pricesIncludeTax: bill.pricesIncludeTax,
+    partialFigures: bill.partialFigures,
+  });
+  const taxIncluded = taxSplit.included > 0;
+
+  const gstRows = (tone?: 'muted') =>
+    taxLines.length > 0 ? (
+      <>
+        <Row label="Taxable value" value={rupees(taxable, true)} tone={tone} />
+        {taxLines.map((l) => (
+          <React.Fragment key={l.rate}>
+            <Row
+              label={multiRate ? `CGST ${pct(l.rate / 2)} on ${rupees(l.taxableValue)}` : `CGST ${pct(l.rate / 2)}`}
+              value={rupees(l.cgst, true)}
+              tone={tone}
+            />
+            <Row
+              label={multiRate ? `SGST ${pct(l.rate / 2)} on ${rupees(l.taxableValue)}` : `SGST ${pct(l.rate / 2)}`}
+              value={rupees(l.sgst, true)}
+              tone={tone}
+            />
+          </React.Fragment>
+        ))}
+      </>
+    ) : bill.taxTotal > 0 ? (
+      // No per-rate lines from this backend: the one GST figure, not an invented split.
+      <Row label={bill.taxRate > 0 ? `GST ${pct(bill.taxRate)}` : 'Tax'} value={rupees(bill.taxTotal, true)} tone={tone} />
+    ) : null;
+
+  const gstBreakup = taxIncluded ? (
+    <Section title={taxSplit.added > 0 ? 'GST breakup' : 'GST included in total'}>
+      {gstRows('muted')}
+      {taxSplit.added > 0 && (
+        <Row label="Already in prices" value={rupees(taxSplit.included, true)} tone="muted" />
+      )}
+    </Section>
+  ) : null;
 
   const body = (
     <>
@@ -222,32 +280,15 @@ export function BillExplainContent({ bill, pinned = false, inset = true, onGiveD
         </Section>
       )}
 
-      {(chargeRows.length > 0 || bill.taxTotal > 0 || bill.tip > 0 || hasRoundOff) && (
+      {(chargeRows.length > 0 || taxSplit.added > 0 || bill.tip > 0 || hasRoundOff) && (
         <Section title="Charges and tax">
           {chargeRows.map((c) => (
             <Row key={c.id} label={c.name} value={`${c.amount < 0 ? '−' : ''}${rupees(c.amount)}`} tone={c.amount < 0 ? 'credit' : undefined} />
           ))}
 
-          {taxLines.length > 0 ? (
-            <>
-              <Row label="Taxable value" value={rupees(taxable, true)} />
-              {taxLines.map((l) => (
-                <React.Fragment key={l.rate}>
-                  <Row
-                    label={multiRate ? `CGST ${pct(l.rate / 2)} on ${rupees(l.taxableValue)}` : `CGST ${pct(l.rate / 2)}`}
-                    value={rupees(l.cgst, true)}
-                  />
-                  <Row
-                    label={multiRate ? `SGST ${pct(l.rate / 2)} on ${rupees(l.taxableValue)}` : `SGST ${pct(l.rate / 2)}`}
-                    value={rupees(l.sgst, true)}
-                  />
-                </React.Fragment>
-              ))}
-            </>
-          ) : bill.taxTotal > 0 ? (
-            // No per-rate lines from this backend: the one GST figure, not an invented split.
-            <Row label={bill.taxRate > 0 ? `GST ${pct(bill.taxRate)}` : 'Tax'} value={rupees(bill.taxTotal, true)} />
-          ) : null}
+          {taxIncluded
+            ? taxSplit.added > 0 && <Row label="GST added" value={rupees(taxSplit.added, true)} />
+            : gstRows()}
 
           {bill.tip > 0 && <Row label="Tip" value={rupees(bill.tip)} />}
           {hasRoundOff && (
@@ -287,12 +328,12 @@ export function BillExplainContent({ bill, pinned = false, inset = true, onGiveD
   if (pinned) {
     return (
       <View style={[{ flex: 1 }, pad]}>
-        <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>{body}</ScrollView>
+        <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>{body}{gstBreakup}</ScrollView>
         {total}
       </View>
     );
   }
-  return <View style={pad}>{body}{total}</View>;
+  return <View style={pad}>{body}{total}{gstBreakup}</View>;
 }
 
 export function BillExplainSheet({ visible, onClose, bill, title = 'Bill breakdown' }: {

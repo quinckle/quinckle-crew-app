@@ -6,7 +6,8 @@
  *
  * Features:
  *  - Category dropdown next to search bar (not a chips row)
- *  - Item image + veg/non-veg icon + real & discounted price + discount % badge
+ *  - Full-bleed photo tiles: name/price on a scrim over the item photo,
+ *    veg/non-veg icon, real & discounted price, discount % badge
  *  - Collapsible per-item note input
  *  - KeyboardAvoidingView so search bar never hides behind keyboard
  *  - Modifier bottom sheet (BottomSheet component)
@@ -22,6 +23,7 @@ import {
   LayoutAnimation,
   Modal,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -31,6 +33,8 @@ import {
   View,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { LinearGradient } from 'expo-linear-gradient';
+import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -41,7 +45,7 @@ import { normalizeChannel, isOffPremise, channelLabel } from '../../constants/ch
 import {
   crewSessions, crewOrders, crewDiners, crewMemberships, restaurantApi, crewOffers,
 } from '../../services/api';
-import type { MenuItem, ModifierGroup, CrewOffer } from '../../services/api';
+import type { MenuItem, ModifierGroup, CrewOffer, CrewOrderPreview } from '../../services/api';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { CartReviewSheet, type CartLine } from '../../components/ui/CartReviewSheet';
 import { Skeleton } from '../../components/ui/Skeleton';
@@ -77,177 +81,33 @@ const vegStyles = StyleSheet.create({
 
 // ── Skeleton row ──────────────────────────────────────────────────────────────
 
-function ItemSkeleton() {
-  return (
-    <View style={styles.itemRow}>
-      <Skeleton width={76} height={76} radius={Radius.md} style={{ flexShrink: 0 }} />
-      <View style={{ flex: 1, paddingLeft: Spacing.md, gap: 8 }}>
-        <Skeleton width="70%" height={15} />
-        <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
-          <Skeleton width={14} height={14} radius={2} />
-          <Skeleton width={56} height={11} radius={Radius.pill} />
-        </View>
-        <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-          <Skeleton width={48} height={16} />
-          <Skeleton width={38} height={13} />
-        </View>
-      </View>
-      <Skeleton width={68} height={34} radius={Radius.md} style={{ flexShrink: 0 }} />
-    </View>
-  );
-}
-
 // ── Menu item row ─────────────────────────────────────────────────────────────
 
 // media.quinckle.com uploads have Sharp-generated R2 variants (same convention
 // as the diner web themes): `<base>.webp-thumb.webp` is the 400px thumb —
-// plenty for this 76px render at 3x DPR. Legacy uploads without variants fall
+// enough for a ~170dp tile at 2-3x DPR. Legacy uploads without variants fall
 // back to the base URL via onError.
 const menuThumbUrl = (url: string) =>
   url.includes('media.quinckle.com') && url.endsWith('.webp') ? `${url}-thumb.webp` : url;
 
-// Memoized so a cart tap only re-renders the touched row, not every visible
-// one. All props are per-row slices; callbacks must be identity-stable.
-const MenuItemRow = React.memo(function MenuItemRow({
-  item, qty, note, noteOpen, mods, onAdd, onRemove, onToggleNote, onChangeNote,
+// One tile for every width — phone gets two columns, wider screens more.
+// The photo IS the card: it fills the tile and the name/price sit on a scrim
+// over its bottom edge, so a grid of food reads as food and not as a grid of
+// buttons. Tapping anywhere adds one (items with options open the options
+// sheet, same as before); the - qty + control appears on the scrim once
+// something is in the order. Items with no photo keep the same tile shape and
+// fall back to a watermark glyph, so rows never go ragged.
+// Memoized: every prop is a per-card slice and every callback is identity-
+// stable in the parent, so a tap re-renders only the card that changed.
+const MenuItemCard = React.memo(function MenuItemCard({
+  item, qty, note, onAdd, onRemove, onEditNote,
 }: {
   item: MenuItem;
   qty: number;
   note: string;
-  noteOpen: boolean;
-  mods: { groupId: string; optionId: string }[] | undefined;
   onAdd: (item: MenuItem) => void;
   onRemove: (itemId: string) => void;
-  onToggleNote: (itemId: string) => void;
-  onChangeNote: (itemId: string, text: string) => void;
-}) {
-  const [imgFailed, setImgFailed] = useState(false);
-  const hasImage = !!item.imageUrl;
-  const price = parseFloat(item.price);
-  const origPrice = item.originalPrice ? parseFloat(item.originalPrice) : null;
-  const discountPct = origPrice && origPrice > price
-    ? Math.round(((origPrice - price) / origPrice) * 100) : 0;
-
-  const modSummary = (() => {
-    if (!mods?.length) return null;
-    return mods.map(({ groupId, optionId }) => {
-      const g = item.modifierGroups?.find(g => g.id === groupId);
-      return g?.options.find(o => o.id === optionId)?.name;
-    }).filter(Boolean).join(', ') || null;
-  })();
-
-  return (
-    <View style={styles.itemRow}>
-      {/* Image — disk-cached thumb variant; base URL if the variant 404s */}
-      {hasImage ? (
-        <Image
-          source={{ uri: imgFailed ? item.imageUrl! : menuThumbUrl(item.imageUrl!) }}
-          style={styles.itemImg}
-          contentFit="cover"
-          cachePolicy="disk"
-          transition={0}
-          onError={() => setImgFailed(true)}
-        />
-      ) : (
-        <View style={styles.itemImgPlaceholder}>
-          <Ionicons name="fast-food-outline" size={26} color={QuinckleColors.textMuted} />
-        </View>
-      )}
-
-      {/* Info col */}
-      <View style={styles.itemInfo}>
-        <Text style={styles.itemName} numberOfLines={2}>{item.name}</Text>
-
-        {/* Meta row: veg icon + category */}
-        <View style={styles.itemMeta}>
-          <VegIcon isVeg={item.isVeg} />
-          <View style={styles.catChip}>
-            <Text style={styles.catChipText} numberOfLines={1}>{item.category}</Text>
-          </View>
-          {(item.modifierGroups?.length ?? 0) > 0 && (
-            <Text style={styles.optionsLabel}>+ options</Text>
-          )}
-        </View>
-
-        {/* Price row */}
-        <View style={styles.priceRow}>
-          <Text style={styles.price}>₹{price.toFixed(0)}</Text>
-          {origPrice && discountPct > 0 && (
-            <>
-              <Text style={styles.originalPrice}>₹{origPrice.toFixed(0)}</Text>
-              <View style={styles.discountBadge}>
-                <Text style={styles.discountText}>{discountPct}% OFF</Text>
-              </View>
-            </>
-          )}
-        </View>
-
-        {/* Modifier summary */}
-        {modSummary ? <Text style={styles.modSummary} numberOfLines={1}>{modSummary}</Text> : null}
-
-        {/* Note toggle — always rendered to reserve height, invisible when qty=0 */}
-        <TouchableOpacity
-          style={[styles.noteToggle, qty === 0 && { opacity: 0 }]}
-          onPress={() => qty > 0 && onToggleNote(item.id)}
-          activeOpacity={qty > 0 ? 0.7 : 1}
-        >
-          <Ionicons
-            name={noteOpen ? 'chevron-up' : 'create-outline'}
-            size={12}
-            color={QuinckleColors.textMuted}
-          />
-          <Text style={styles.noteToggleText}>
-            {noteOpen ? 'Hide note' : note ? `Note: ${note}` : 'Add note'}
-          </Text>
-        </TouchableOpacity>
-        {qty > 0 && noteOpen && (
-          <TextInput
-            style={styles.noteInput}
-            placeholder="e.g. no onions, extra spicy…"
-            placeholderTextColor={QuinckleColors.textMuted}
-            value={note}
-            onChangeText={text => onChangeNote(item.id, text)}
-            returnKeyType="done"
-            autoFocus
-          />
-        )}
-      </View>
-
-      {/* Qty control */}
-      <View style={styles.qtyWrap}>
-        {qty > 0 ? (
-          <View style={styles.qtyControl}>
-            <TouchableOpacity onPress={() => onRemove(item.id)} style={styles.qtyBtn} hitSlop={6}>
-              <Ionicons name="remove" size={16} color={QuinckleColors.primary} />
-            </TouchableOpacity>
-            <Text style={styles.qtyText}>{qty}</Text>
-            <TouchableOpacity onPress={() => onAdd(item)} style={styles.qtyBtn} hitSlop={6}>
-              <Ionicons name="add" size={16} color={QuinckleColors.primary} />
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <TouchableOpacity onPress={() => onAdd(item)} style={styles.addBtn} activeOpacity={0.8}>
-            <Ionicons name="add" size={15} color={QuinckleColors.primary} />
-            <Text style={styles.addBtnText}>Add</Text>
-          </TouchableOpacity>
-        )}
-      </View>
-    </View>
-  );
-});
-
-// ── Menu item card (tablet-landscape POS grid) ───────────────────────────────
-
-// Square-ish tile used in the wide two-pane grid: image on top with a veg
-// badge + discount overlay, name/price below, and an Add / qty control docked
-// to the bottom edge so every card is the same height regardless of name len.
-const MenuItemCard = React.memo(function MenuItemCard({
-  item, qty, onAdd, onRemove,
-}: {
-  item: MenuItem;
-  qty: number;
-  onAdd: (item: MenuItem) => void;
-  onRemove: (itemId: string) => void;
+  onEditNote: (itemId: string) => void;
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   const hasImage = !!item.imageUrl;
@@ -257,11 +117,20 @@ const MenuItemCard = React.memo(function MenuItemCard({
     ? Math.round(((origPrice - price) / origPrice) * 100) : 0;
   const hasMods = (item.modifierGroups?.length ?? 0) > 0;
 
+  const add = () => {
+    void Haptics.selectionAsync();
+    onAdd(item);
+  };
+
   return (
-    <View style={[cardStyles.card, qty > 0 && cardStyles.cardActive]}>
-      {/* Image */}
-      <View style={cardStyles.imgWrap}>
-        {hasImage ? (
+    <Pressable
+      onPress={add}
+      style={({ pressed }) => [cardStyles.card, qty > 0 && cardStyles.cardActive, pressed && cardStyles.cardPressed]}
+      accessibilityRole="button"
+      accessibilityLabel={`Add ${item.name}, ₹${price.toFixed(0)}${qty > 0 ? `, ${qty} in order` : ''}`}
+    >
+      {hasImage ? (
+        <>
           <Image
             source={{ uri: imgFailed ? item.imageUrl! : menuThumbUrl(item.imageUrl!) }}
             style={cardStyles.img}
@@ -270,24 +139,37 @@ const MenuItemCard = React.memo(function MenuItemCard({
             transition={0}
             onError={() => setImgFailed(true)}
           />
-        ) : (
-          <View style={[cardStyles.img, cardStyles.imgPlaceholder]}>
-            <Ionicons name="fast-food-outline" size={30} color={QuinckleColors.textMuted} />
-          </View>
-        )}
-        <View style={cardStyles.vegBadge}>
-          <VegIcon isVeg={item.isVeg} />
+          {/* Keeps the name legible over a bright photo without dimming the dish. */}
+          <LinearGradient
+            colors={['transparent', 'rgba(10,10,11,0.55)', 'rgba(10,10,11,0.94)']}
+            locations={[0, 0.45, 1]}
+            style={cardStyles.scrim}
+            pointerEvents="none"
+          />
+        </>
+      ) : (
+        <View style={cardStyles.watermark} pointerEvents="none">
+          <Ionicons name="fast-food-outline" size={34} color={QuinckleColors.textMuted} />
         </View>
-        {discountPct > 0 && (
-          <View style={cardStyles.discountBadge}>
-            <Text style={cardStyles.discountText}>{discountPct}% OFF</Text>
-          </View>
-        )}
-      </View>
+      )}
 
-      {/* Body */}
-      <View style={cardStyles.body}>
-        <Text style={cardStyles.name} numberOfLines={2}>{item.name}</Text>
+      {discountPct > 0 && (
+        <View style={cardStyles.discountBadge}>
+          <Text style={cardStyles.discountText}>{discountPct}% OFF</Text>
+        </View>
+      )}
+      {/* How many are in the order, readable from across the grid. */}
+      {qty > 0 && (
+        <View style={cardStyles.qtyBadge}>
+          <Text style={cardStyles.qtyBadgeText}>{qty}</Text>
+        </View>
+      )}
+
+      <View style={cardStyles.info}>
+        <View style={cardStyles.nameRow}>
+          <VegIcon isVeg={item.isVeg} />
+          <Text style={cardStyles.name} numberOfLines={2}>{item.name}</Text>
+        </View>
         <View style={cardStyles.priceRow}>
           <Text style={cardStyles.price}>₹{price.toFixed(0)}</Text>
           {origPrice && discountPct > 0 && (
@@ -295,70 +177,95 @@ const MenuItemCard = React.memo(function MenuItemCard({
           )}
           {hasMods && <Text style={cardStyles.optionsLabel}>+ options</Text>}
         </View>
+        {!!note && <Text style={cardStyles.note} numberOfLines={1}>{note}</Text>}
 
-        {/* Add / qty control — docked at the bottom */}
-        {qty > 0 ? (
-          <View style={cardStyles.qtyControl}>
-            <TouchableOpacity onPress={() => onRemove(item.id)} style={cardStyles.qtyBtn} hitSlop={6}>
-              <Ionicons name="remove" size={18} color={QuinckleColors.primary} />
-            </TouchableOpacity>
-            <Text style={cardStyles.qtyText}>{qty}</Text>
-            <TouchableOpacity onPress={() => onAdd(item)} style={cardStyles.qtyBtn} hitSlop={6}>
-              <Ionicons name="add" size={18} color={QuinckleColors.primary} />
+        {/* Only once something is in the order — an empty tile stays all photo.
+            The buttons take their own presses, so - never also adds. */}
+        {qty > 0 && (
+          <View style={cardStyles.controls}>
+            <View style={cardStyles.qtyControl}>
+              <TouchableOpacity onPress={() => onRemove(item.id)} style={cardStyles.qtyBtn} hitSlop={6} accessibilityLabel={`One less ${item.name}`}>
+                <Ionicons name="remove" size={17} color={QuinckleColors.primary} />
+              </TouchableOpacity>
+              <Text style={cardStyles.qtyText}>{qty}</Text>
+              <TouchableOpacity onPress={add} style={cardStyles.qtyBtn} hitSlop={6} accessibilityLabel={`One more ${item.name}`}>
+                <Ionicons name="add" size={17} color={QuinckleColors.primary} />
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              onPress={() => onEditNote(item.id)}
+              style={[cardStyles.noteBtn, !!note && cardStyles.noteBtnOn]}
+              hitSlop={4}
+              accessibilityLabel={note ? `Edit note for ${item.name}` : `Add note for ${item.name}`}
+            >
+              <Ionicons name="create-outline" size={15} color={note ? QuinckleColors.primary : QuinckleColors.textSecondary} />
             </TouchableOpacity>
           </View>
-        ) : (
-          <TouchableOpacity onPress={() => onAdd(item)} style={cardStyles.addBtn} activeOpacity={0.85}>
-            <Ionicons name="add" size={16} color="#fff" />
-            <Text style={cardStyles.addBtnText}>Add</Text>
-          </TouchableOpacity>
         )}
       </View>
-    </View>
+    </Pressable>
   );
 });
 
+function CardSkeleton() {
+  // Darker than the tile so the pulsing block reads against it.
+  return (
+    <View style={[cardStyles.card, { backgroundColor: QuinckleColors.surface }]}>
+      <Skeleton radius={0} style={StyleSheet.absoluteFillObject} />
+    </View>
+  );
+}
+
 const cardStyles = StyleSheet.create({
+  // Portrait tile: tall enough for the photo to carry the card, short enough
+  // that two rows still fit on a phone screen.
   card: {
     flex: 1,
-    backgroundColor: QuinckleColors.surface,
+    aspectRatio: 0.82,
+    backgroundColor: QuinckleColors.surfaceElevated,
     borderRadius: Radius.lg,
     borderWidth: 1,
     borderColor: QuinckleColors.border,
     overflow: 'hidden',
+    justifyContent: 'flex-end',
   },
-  cardActive: { borderColor: QuinckleColors.primarySoftBorder },
-  imgWrap: { width: '100%', aspectRatio: 1.3, backgroundColor: QuinckleColors.surfaceElevated },
-  img: { width: '100%', height: '100%' },
-  imgPlaceholder: { alignItems: 'center', justifyContent: 'center' },
-  vegBadge: {
-    position: 'absolute', top: 6, left: 6,
-    backgroundColor: QuinckleColors.surface, borderRadius: 4, padding: 2,
-  },
+  cardActive: { borderColor: QuinckleColors.primary, borderWidth: 2 },
+  cardPressed: { opacity: 0.85 },
+  img: { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%' },
+  scrim: { position: 'absolute', left: 0, right: 0, bottom: 0, height: '62%' },
+  watermark: { position: 'absolute', left: 0, right: 0, top: 0, height: '58%', alignItems: 'center', justifyContent: 'center' },
   discountBadge: {
-    position: 'absolute', top: 6, right: 6,
-    backgroundColor: QuinckleColors.successSoft, borderRadius: Radius.pill,
-    paddingHorizontal: 6, paddingVertical: 2, borderWidth: 1, borderColor: QuinckleColors.successBorder,
+    position: 'absolute', top: 7, left: 7,
+    backgroundColor: QuinckleColors.success, borderRadius: Radius.pill,
+    paddingHorizontal: 7, paddingVertical: 3,
   },
-  discountText: { fontSize: 10, fontWeight: '700', color: QuinckleColors.success },
-  body: { padding: Spacing.md, gap: 6, flex: 1 },
-  name: { ...Typography.caption, color: QuinckleColors.textPrimary, fontWeight: '600', lineHeight: 17, minHeight: 34 },
-  priceRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
-  price: { fontSize: 15, fontWeight: '700', color: QuinckleColors.primary, letterSpacing: -0.3 },
-  originalPrice: { fontSize: 12, color: QuinckleColors.textMuted, textDecorationLine: 'line-through' },
-  optionsLabel: { fontSize: 10, fontWeight: '600', color: QuinckleColors.primary },
-  addBtn: {
-    marginTop: 'auto', flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 4, backgroundColor: QuinckleColors.primary, borderRadius: Radius.md, height: 38,
+  discountText: { fontSize: 10, fontWeight: '700', color: '#0A0A0B' },
+  qtyBadge: {
+    position: 'absolute', top: 7, right: 7, minWidth: 26, height: 26, paddingHorizontal: 7,
+    borderRadius: 13, backgroundColor: QuinckleColors.primary, alignItems: 'center', justifyContent: 'center',
   },
-  addBtnText: { fontSize: 14, color: '#fff', fontWeight: '700' },
+  qtyBadgeText: { color: '#fff', fontSize: 13, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  info: { padding: Spacing.sm + 2, gap: 4 },
+  nameRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 5 },
+  name: { flex: 1, ...Typography.caption, color: '#FAFAFA', fontWeight: '600', lineHeight: 16 },
+  priceRow: { flexDirection: 'row', alignItems: 'baseline', gap: 5, flexWrap: 'wrap' },
+  price: { fontSize: 15, fontWeight: '700', color: '#FAFAFA', letterSpacing: -0.3 },
+  originalPrice: { fontSize: 11, color: 'rgba(255,255,255,0.55)', textDecorationLine: 'line-through' },
+  optionsLabel: { fontSize: 10, fontWeight: '600', color: QuinckleColors.primaryLight },
+  note: { fontSize: 11, color: 'rgba(255,255,255,0.6)', fontStyle: 'italic' },
+  controls: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
   qtyControl: {
-    marginTop: 'auto', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: QuinckleColors.primarySoft, borderRadius: Radius.md,
-    borderWidth: 1, borderColor: QuinckleColors.primarySoftBorder, height: 38, overflow: 'hidden',
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: 'rgba(10,10,11,0.72)', borderRadius: Radius.md,
+    borderWidth: 1, borderColor: QuinckleColors.primarySoftBorder, height: 32, overflow: 'hidden',
   },
-  qtyBtn: { width: 44, height: '100%', alignItems: 'center', justifyContent: 'center' },
-  qtyText: { ...Typography.body, color: QuinckleColors.primary, fontWeight: '700', minWidth: 20, textAlign: 'center' },
+  qtyBtn: { width: 34, height: '100%', alignItems: 'center', justifyContent: 'center' },
+  qtyText: { fontSize: 14, color: QuinckleColors.primary, fontWeight: '700', minWidth: 16, textAlign: 'center' },
+  noteBtn: {
+    width: 32, height: 32, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: QuinckleColors.borderStrong, backgroundColor: 'rgba(10,10,11,0.72)',
+  },
+  noteBtnOn: { borderColor: QuinckleColors.primarySoftBorder },
 });
 
 // ── Modifier bottom sheet ─────────────────────────────────────────────────────
@@ -420,6 +327,20 @@ function ModifierSheet({
 // Left category rail width in the tablet-landscape two-pane layout.
 const RAIL_WIDTH = 208;
 
+/** The success card's line for the takeaway bill the server auto-printed. */
+function autoInvoiceLine(
+  r: { status: 'sent'; printer_name: string } | { status: 'failed'; reason: string } | undefined,
+): { ok: boolean; text: string } | undefined {
+  if (!r) return undefined;
+  if (r.status === 'sent') return { ok: true, text: `Invoice printing at ${r.printer_name || 'the counter'}` };
+  const why = r.reason === 'NO_BILL_PRINTER'
+    ? 'no invoice printer is set up'
+    : r.reason === 'PRINTER_NO_HOST'
+      ? 'the invoice printer is not connected to any device'
+      : 'it could not be sent';
+  return { ok: false, text: `Invoice not printed — ${why}. Print it from the takeaway list.` };
+}
+
 export default function OrderMenuScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -428,10 +349,13 @@ export default function OrderMenuScreen() {
 
   // Grid columns for the wide POS layout — target ~200dp per card in the space
   // left of the category rail, clamped so cards never get comically wide/thin.
+  // Off the wide layout (phones, tablet portrait) the grid has the full width:
+  // two cards on a phone, three or four on a tablet held upright.
   const gridColumns = useMemo(() => {
-    const avail = width - RAIL_WIDTH - Spacing.xl * 2;
-    return Math.max(2, Math.min(5, Math.floor(avail / 200)));
-  }, [width]);
+    const avail = isWide ? width - RAIL_WIDTH - Spacing.xl * 2 : width - Spacing.lg * 2;
+    const target = isWide ? 200 : 170;
+    return Math.max(2, Math.min(isWide ? 5 : 4, Math.floor(avail / target)));
+  }, [width, isWide]);
 
   const {
     tableId,
@@ -480,7 +404,6 @@ export default function OrderMenuScreen() {
   const [cart, setCart] = useState<Record<string, number>>({});
   const [cartNotes, setCartNotes] = useState<Record<string, string>>({});
   const [cartModifiers, setCartModifiers] = useState<Record<string, { groupId: string; optionId: string }[]>>({});
-  const [noteExpanded, setNoteExpanded] = useState<Record<string, boolean>>({});
   const [reviewOpen, setReviewOpen] = useState(false);
 
   // ── Modifiers ──────────────────────────────────────────────────────────────
@@ -501,7 +424,11 @@ export default function OrderMenuScreen() {
   const [coVisits, setCoVisits] = useState<number | null>(null);
   const [coMember, setCoMember] = useState<boolean | null>(null);
   // Brief "order placed" confirmation shown before opening payment collection.
-  const [placed, setPlaced] = useState<{ amount: number } | null>(null);
+  const [placed, setPlaced] = useState<{
+    amount: number;
+    /** Set when the venue auto-prints takeaway invoices (Printer screen). */
+    invoice?: { ok: boolean; text: string };
+  } | null>(null);
   const navTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (navTimerRef.current) clearTimeout(navTimerRef.current); }, []);
   // Card scale/fade-in, then the checkmark pops in a beat later — makes the
@@ -585,7 +512,7 @@ export default function OrderMenuScreen() {
     return () => { cancelled = true; };
   }, [staffInfo?.restaurantId, sessionId, isTakeaway, channel]);
 
-  // ── Cart helpers — identity-stable so MenuItemRow's React.memo holds ───────
+  // ── Cart helpers — identity-stable so MenuItemCard's React.memo holds ──────
   const addToCart = useCallback((itemId: string, mods?: { groupId: string; optionId: string }[]) => {
     setCart(prev => ({ ...prev, [itemId]: (prev[itemId] ?? 0) + 1 }));
     if (mods) setCartModifiers(prev => ({ ...prev, [itemId]: mods }));
@@ -597,14 +524,13 @@ export default function OrderMenuScreen() {
       if (qty <= 0) {
         const next = { ...prev }; delete next[itemId];
         setCartModifiers(pm => { const nm = { ...pm }; delete nm[itemId]; return nm; });
-        setNoteExpanded(ne => { const nn = { ...ne }; delete nn[itemId]; return nn; });
         return next;
       }
       return { ...prev, [itemId]: qty };
     });
   }, []);
 
-  const cartTotal = useMemo(() => Object.entries(cart).reduce((sum, [id, qty]) => {
+  const cartLineValue = useCallback((id: string, qty: number) => {
     const item = menuItems.find(m => m.id === id);
     let base = parseFloat(item?.price ?? '0') * qty;
     (cartModifiers[id] ?? []).forEach(({ groupId, optionId }) => {
@@ -612,8 +538,12 @@ export default function OrderMenuScreen() {
       const opt = g?.options.find(o => o.id === optionId);
       if (opt) base += parseFloat(opt.priceAdjustment ?? '0') * qty;
     });
-    return sum + base;
-  }, 0), [cart, menuItems, cartModifiers]);
+    return base;
+  }, [menuItems, cartModifiers]);
+
+  const cartTotal = useMemo(() => Object.entries(cart).reduce(
+    (sum, [id, qty]) => sum + cartLineValue(id, qty), 0,
+  ), [cart, cartLineValue]);
 
   // Flattened cart lines for the review sheet — one entry per cart key (an item
   // keeps a single line regardless of qty), with its modifier-adjusted unit
@@ -650,16 +580,31 @@ export default function OrderMenuScreen() {
     const spendOffers = offers.filter(o => o.minOrderValue != null && o.minOrderValue > 0);
     if (spendOffers.length === 0) return null;
 
-    // Same threshold base the discount engine uses: prior orders on the table
-    // + the current cart.
-    const base = priorSubtotal + cartTotal;
+    // Same threshold base the discount engine uses (resolve-discount.service):
+    // the table's earlier rounds that count toward THIS offer, plus the cart —
+    // minus the offer's excluded items/categories unless the partner chose
+    // "excluded items still count toward the minimum".
+    const baseFor = (o: CrewOffer) => {
+      const prior = o.priorTowardThreshold ?? priorSubtotal;
+      if (o.excludedCountToThreshold !== false) return prior + cartTotal;
+      const exIds = new Set(o.excludedItemIds ?? []);
+      const exCats = new Set(o.excludedCategories ?? []);
+      let counted = 0;
+      for (const [id, qty] of Object.entries(cart)) {
+        const cat = menuItems.find(m => m.id === id)?.category;
+        if (exIds.has(id) || (cat && exCats.has(cat))) continue;
+        counted += cartLineValue(id, qty);
+      }
+      return prior + counted;
+    };
 
     const locked = spendOffers
-      .filter(o => base < (o.minOrderValue as number))
+      .filter(o => baseFor(o) < (o.minOrderValue as number))
       .sort((a, b) => (a.minOrderValue as number) - (b.minOrderValue as number));
     if (locked.length > 0) {
       const o = locked[0];
       const min = o.minOrderValue as number;
+      const base = baseFor(o);
       return {
         unlocked: false,
         name: o.name,
@@ -671,7 +616,7 @@ export default function OrderMenuScreen() {
     // All spend offers met → celebrate the highest-threshold one.
     const best = spendOffers.sort((a, b) => (b.minOrderValue as number) - (a.minOrderValue as number))[0];
     return { unlocked: true, name: best.name, reward: reward(best), remaining: 0, progress: 1 };
-  }, [offers, cartTotal, priorSubtotal]);
+  }, [offers, cart, cartTotal, priorSubtotal, menuItems, cartLineValue]);
 
   // ── Offer nudge animations ──────────────────────────────────────────────────
   const offerProgressAnim = useRef(new Animated.Value(0)).current; // 0→1 bar fill
@@ -730,9 +675,10 @@ export default function OrderMenuScreen() {
     }
   }, [addToCart]);
 
-  const handleToggleNote = useCallback((itemId: string) => {
-    setNoteExpanded(prev => ({ ...prev, [itemId]: !prev[itemId] }));
-  }, []);
+  // Notes live in a sheet now — a two-column card has no room for an inline
+  // field. The pencil on a card that's in the order opens it.
+  const [noteItemId, setNoteItemId] = useState<string | null>(null);
+  const handleEditNote = useCallback((itemId: string) => setNoteItemId(itemId), []);
 
   const handleChangeNote = useCallback((itemId: string, text: string) => {
     setCartNotes(prev => ({ ...prev, [itemId]: text }));
@@ -822,27 +768,57 @@ export default function OrderMenuScreen() {
     if (digits.length === 10) void lookupGuest(digits);
   };
 
+  // The exact payload placeOrder sends — the bill preview posts the same one,
+  // so the projection is priced from what will actually be ordered.
+  const buildOrderItems = useCallback(() => Object.entries(cart).map(([item_id, qty]) => {
+    const mods = cartModifiers[item_id];
+    const menuItem = menuItems.find(m => m.id === item_id);
+    const modSummary = mods?.length
+      ? mods.map(({ groupId, optionId }) => {
+        const g = menuItem?.modifierGroups?.find(g => g.id === groupId);
+        return g?.options.find(o => o.id === optionId)?.name;
+      }).filter(Boolean).join(', ')
+      : undefined;
+    return {
+      item_id, qty,
+      ...(cartNotes[item_id]?.trim() ? { note: cartNotes[item_id].trim() } : {}),
+      ...(mods?.length ? { selectedModifiers: mods, modifiers_summary: modSummary } : {}),
+    };
+  }), [cart, cartModifiers, cartNotes, menuItems]);
+
+  // Projected bill for the order summary (dine-in): this order plus what the
+  // table already owes, CGST/SGST split, priced by the server with the same
+  // code that places the order. Nothing is computed here. Debounced, and a
+  // late answer for an older cart never overwrites a newer one.
+  const [billPreview, setBillPreview] = useState<CrewOrderPreview | null>(null);
+  const [billPreviewState, setBillPreviewState] = useState<'idle' | 'loading' | 'error'>('idle');
+  const previewSeq = useRef(0);
+  const showBillPreview = !isTakeaway && !!sessionId;
+  useEffect(() => {
+    if (!reviewOpen || !showBillPreview) return;
+    const items = buildOrderItems();
+    if (items.length === 0) { setBillPreview(null); return; }
+    const seq = ++previewSeq.current;
+    setBillPreviewState('loading');
+    const t = setTimeout(() => {
+      crewOrders.previewOrder(sessionId!, items)
+        .then((res) => {
+          if (seq !== previewSeq.current) return;
+          setBillPreview(res.data);
+          setBillPreviewState('idle');
+        })
+        .catch(() => { if (seq === previewSeq.current) setBillPreviewState('error'); });
+    }, 300);
+    return () => clearTimeout(t);
+  }, [reviewOpen, showBillPreview, sessionId, buildOrderItems]);
+
   const confirmAndPlace = async () => {
     const phone = coPhone.replace(/\D/g, '');
     if (phone.length > 0 && phone.length !== 10) {
       setCoError('Enter a valid 10-digit number, or leave blank for a walk-in guest.');
       return;
     }
-    const items = Object.entries(cart).map(([item_id, qty]) => {
-      const mods = cartModifiers[item_id];
-      const menuItem = menuItems.find(m => m.id === item_id);
-      const modSummary = mods?.length
-        ? mods.map(({ groupId, optionId }) => {
-          const g = menuItem?.modifierGroups?.find(g => g.id === groupId);
-          return g?.options.find(o => o.id === optionId)?.name;
-        }).filter(Boolean).join(', ')
-        : undefined;
-      return {
-        item_id, qty,
-        ...(cartNotes[item_id]?.trim() ? { note: cartNotes[item_id].trim() } : {}),
-        ...(mods?.length ? { selectedModifiers: mods, modifiers_summary: modSummary } : {}),
-      };
-    });
+    const items = buildOrderItems();
     if (items.length === 0) { setCoError('Cart is empty.'); return; }
     if (!sessionId) { setCoError('No active session. Go back and try again.'); return; }
 
@@ -865,7 +841,6 @@ export default function OrderMenuScreen() {
       setCart({});
       setCartNotes({});
       setCartModifiers({});
-      setNoteExpanded({});
 
       // placeOrder already returns the full payable total (tax included) —
       // payment-collect re-fetches its own context anyway, so no extra
@@ -888,7 +863,9 @@ export default function OrderMenuScreen() {
       // the stack — the one we were pushed from — updating its params. Using
       // replace here mounted a *second* [tableId] on top of the original, which
       // is why the crew had to hit Back twice to reach the table floor.
-      setPlaced({ amount: orderTotal });
+      const invoice = autoInvoiceLine(orderRes?.auto_invoice);
+      setPlaced({ amount: orderTotal, invoice });
+      // A failed auto-invoice holds the card long enough to read why.
       navTimerRef.current = setTimeout(() => {
         if (isTakeaway) {
           router.replace({
@@ -915,28 +892,13 @@ export default function OrderMenuScreen() {
             },
           });
         }
-      }, 500);
+      }, invoice && !invoice.ok ? 2500 : 500);
     } catch (e: any) {
       setCoError(e?.message ?? 'Failed to place order. Try again.');
     } finally {
       setCoSubmitting(false);
     }
   };
-
-  // ── Render each item — memoized row; only the touched row re-renders ──────
-  const renderItem = useCallback(({ item }: { item: MenuItem }) => (
-    <MenuItemRow
-      item={item}
-      qty={cart[item.id] ?? 0}
-      note={cartNotes[item.id] ?? ''}
-      noteOpen={!!noteExpanded[item.id]}
-      mods={cartModifiers[item.id]}
-      onAdd={handleAddPress}
-      onRemove={removeFromCart}
-      onToggleNote={handleToggleNote}
-      onChangeNote={handleChangeNote}
-    />
-  ), [cart, cartNotes, noteExpanded, cartModifiers, handleAddPress, removeFromCart, handleToggleNote, handleChangeNote]);
 
   // Pad the last grid row with invisible fillers so an incomplete final row
   // doesn't let its flex:1 cards stretch to fill the width (FlatList would
@@ -950,18 +912,42 @@ export default function OrderMenuScreen() {
     return [...filteredItems, ...fillers];
   }, [filteredItems, gridColumns]);
 
-  // Grid card renderer for the tablet-landscape POS layout.
+  // Grid card renderer — phone and tablet alike.
   const renderCard = useCallback(({ item }: { item: MenuItem }) => {
     if ((item as any).__filler) return <View style={{ flex: 1 }} />;
     return (
       <MenuItemCard
         item={item}
         qty={cart[item.id] ?? 0}
+        note={cartNotes[item.id] ?? ''}
         onAdd={handleAddPress}
         onRemove={removeFromCart}
+        onEditNote={handleEditNote}
       />
     );
-  }, [cart, handleAddPress, removeFromCart]);
+  }, [cart, cartNotes, handleAddPress, removeFromCart, handleEditNote]);
+
+  const noteItem = noteItemId ? menuItems.find(m => m.id === noteItemId) ?? null : null;
+  const noteSheetJsx = (
+    <BottomSheet visible={!!noteItem} onClose={() => setNoteItemId(null)} title={noteItem ? `Note · ${noteItem.name}` : 'Note'}>
+      <View style={{ paddingHorizontal: Spacing.xl, paddingBottom: Spacing.lg, gap: Spacing.md }}>
+        <TextInput
+          style={styles.noteSheetInput}
+          placeholder="e.g. no onions, extra spicy…"
+          placeholderTextColor={QuinckleColors.textMuted}
+          value={noteItemId ? cartNotes[noteItemId] ?? '' : ''}
+          onChangeText={text => noteItemId && handleChangeNote(noteItemId, text)}
+          returnKeyType="done"
+          onSubmitEditing={() => setNoteItemId(null)}
+          autoFocus
+          maxLength={200}
+        />
+        <TouchableOpacity style={styles.coConfirm} onPress={() => setNoteItemId(null)} activeOpacity={0.8}>
+          <Text style={styles.coConfirmText}>Done</Text>
+        </TouchableOpacity>
+      </View>
+    </BottomSheet>
+  );
 
   // ── Guest details — its own screen (not a modal), pushed in place of the ──
   // menu when "Place Order" is tapped. Same fields/CRM lookup as before.
@@ -1000,6 +986,11 @@ export default function OrderMenuScreen() {
               <Text style={styles.placedSub}>
                 {isTakeaway ? (pickupToken ?? orderLabel) : `Table T${tableNum}`} · ₹{placed.amount.toFixed(0)}
               </Text>
+              {placed.invoice && (
+                <Text style={[styles.placedInvoice, !placed.invoice.ok && styles.placedInvoiceFailed]}>
+                  {placed.invoice.text}
+                </Text>
+              )}
               <Text style={styles.placedHint}>Opening payment collection…</Text>
             </Animated.View>
           </View>
@@ -1226,7 +1217,6 @@ export default function OrderMenuScreen() {
       </TouchableOpacity>
       <TouchableOpacity style={styles.placeBtn} onPress={openCheckout} activeOpacity={0.85}>
         <Text style={styles.placeBtnText}>Place Order</Text>
-        <Ionicons name="arrow-forward" size={16} color="#fff" />
       </TouchableOpacity>
     </Animated.View>
   );
@@ -1241,6 +1231,7 @@ export default function OrderMenuScreen() {
       onInc={addToCart}
       onDec={removeFromCart}
       onCheckout={() => { setReviewOpen(false); openCheckout(); }}
+      bill={showBillPreview ? { data: billPreview, state: billPreviewState } : undefined}
     />
   );
 
@@ -1353,6 +1344,7 @@ export default function OrderMenuScreen() {
 
         {/* ── Cart review (right-side drawer on tablet-landscape) ── */}
         {cartReviewJsx}
+        {noteSheetJsx}
       </View>
     );
   }
@@ -1439,20 +1431,31 @@ export default function OrderMenuScreen() {
         keyboardVerticalOffset={0}
       >
         {isMenuLoading ? (
-          <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
-            {Array.from({ length: 8 }).map((_, i) => <ItemSkeleton key={i} />)}
-            <View style={{ height: Spacing.huge }} />
+          <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={styles.gridSkeleton}>
+            {Array.from({ length: gridColumns * 3 }).map((_, i) => (
+              <View key={i} style={{ width: `${100 / gridColumns - 3}%` }}><CardSkeleton /></View>
+            ))}
           </ScrollView>
         ) : filteredItems.length === 0 ? (
           emptyJsx
         ) : (
           <FlatList
-            data={filteredItems}
+            key={`grid-${gridColumns}`}
+            data={gridData}
             keyExtractor={item => item.id}
-            renderItem={renderItem}
+            renderItem={renderCard}
+            numColumns={gridColumns}
+            columnWrapperStyle={{ gap: Spacing.sm + 2 }}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
-            contentContainerStyle={{ paddingBottom: footerMounted ? 100 : Spacing.xxl }}
+            initialNumToRender={gridColumns * 4}
+            windowSize={7}
+            contentContainerStyle={{
+              paddingHorizontal: Spacing.lg,
+              paddingTop: Spacing.sm,
+              gap: Spacing.sm + 2,
+              paddingBottom: footerMounted ? 100 : Spacing.xxl,
+            }}
           />
         )}
 
@@ -1471,6 +1474,7 @@ export default function OrderMenuScreen() {
 
       {/* ── Cart review (bottom sheet on phone) ── */}
       {cartReviewJsx}
+      {noteSheetJsx}
 
     </View>
   );
@@ -1571,6 +1575,8 @@ const styles = StyleSheet.create({
   // Note toggle + input
   noteToggle: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
   noteToggleText: { fontSize: 11, color: QuinckleColors.textMuted, fontWeight: '500' },
+  noteSheetInput: { backgroundColor: QuinckleColors.surfaceElevated, borderRadius: Radius.md, borderWidth: 1, borderColor: QuinckleColors.border, paddingHorizontal: Spacing.md, paddingVertical: 12, color: QuinckleColors.textPrimary, fontSize: 15 },
+  gridSkeleton: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: Spacing.sm + 2, paddingHorizontal: Spacing.lg, paddingTop: Spacing.sm },
   noteInput: { marginTop: 6, backgroundColor: QuinckleColors.surfaceElevated, borderRadius: Radius.sm, borderWidth: 1, borderColor: QuinckleColors.border, paddingHorizontal: Spacing.sm, paddingVertical: 6, color: QuinckleColors.textPrimary, fontSize: 12 },
 
   // Qty + Add
@@ -1644,4 +1650,6 @@ const styles = StyleSheet.create({
   placedTitle: { ...Typography.title, color: QuinckleColors.textPrimary, fontWeight: '800' },
   placedSub: { ...Typography.body, color: QuinckleColors.textSecondary },
   placedHint: { ...Typography.caption, color: QuinckleColors.textTertiary, marginTop: 6 },
+  placedInvoice: { ...Typography.caption, color: QuinckleColors.success, fontWeight: '600', marginTop: 8, textAlign: 'center' },
+  placedInvoiceFailed: { color: QuinckleColors.danger },
 });
