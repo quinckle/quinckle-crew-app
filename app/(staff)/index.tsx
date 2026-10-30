@@ -2486,6 +2486,33 @@ export default function StaffDashboard() {
                 </TouchableOpacity>
               </View>
 
+              {/* Add / edit items and combos (MENU_EDIT — the same capability
+                  that shows this tab). Kept as one self-contained button so the
+                  tab's own layout stays untouched. */}
+              <TouchableOpacity
+                onPress={() => router.push('/(staff)/menu-admin')}
+                activeOpacity={0.8}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 10,
+                  paddingHorizontal: 14,
+                  paddingVertical: 12,
+                  marginBottom: 12,
+                  borderRadius: 14,
+                  borderWidth: 1,
+                  borderColor: QuinckleColors.primarySoftBorder,
+                  backgroundColor: QuinckleColors.primarySoft,
+                }}
+              >
+                <Ionicons name="create-outline" size={18} color={QuinckleColors.primary} />
+                <Text style={{ flex: 1, color: QuinckleColors.textPrimary, fontWeight: '600', fontSize: 14 }}>
+                  Manage menu
+                </Text>
+                <Text style={{ color: QuinckleColors.textSecondary, fontSize: 12 }}>Add · edit · history</Text>
+                <Ionicons name="chevron-forward" size={16} color={QuinckleColors.textMuted} />
+              </TouchableOpacity>
+
               {/* Search + Refresh + Category chips */}
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                 <View style={[styles.searchBoxFull, { flex: 1, marginBottom: 0 }]}>

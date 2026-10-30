@@ -30,6 +30,9 @@ export const CAP = {
   ATTENDANCE_STATION: 'ATTENDANCE_STATION',
   WRITE_OFF: 'WRITE_OFF',
   ADJUSTMENTS: 'ADJUSTMENTS',
+  // Deleting menu items / combos / modifiers. Separate from MENU_EDIT because
+  // a deleted combo cannot be brought back; every edit is in the change log.
+  MENU_DELETE: 'MENU_DELETE',
 } as const;
 
 export type Capability = (typeof CAP)[keyof typeof CAP];
@@ -59,6 +62,7 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   ATTENDANCE_STATION: 'Attendance station',
   WRITE_OFF: 'Write off bills',
   ADJUSTMENTS: 'Voids, comps & refunds',
+  MENU_DELETE: 'Delete menu items & combos',
 };
 
 /**
