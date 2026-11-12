@@ -1,5 +1,5 @@
 import { AuthProvider } from '@/context/AuthContext';
-import { Stack } from 'expo-router';
+import { Stack, usePathname, type ErrorBoundaryProps } from 'expo-router';
 import * as Notifications from 'expo-notifications';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
@@ -9,6 +9,14 @@ import { initPrinter } from '@/services/printer';
 import { registerPrintSinkRunner, watchPrintSinkLifecycle } from '@/services/printSink';
 import { watchForOtaUpdates } from '@/services/otaUpdate';
 import { isSpokenNewOrderNotification } from '@/services/voiceAlerts';
+import { installCrashReporting, setCrashRoute } from '@/services/crashReport';
+import CrashScreen from '@/components/ui/CrashScreen';
+
+// A screen that throws while rendering shows this instead of unmounting the
+// whole app onto a black background. See components/ui/CrashScreen.tsx.
+export function ErrorBoundary(props: ErrorBoundaryProps) {
+  return <CrashScreen {...props} />;
+}
 
 Notifications.setNotificationHandler({
   handleNotification: async (n) => ({
@@ -24,6 +32,13 @@ Notifications.setNotificationHandler({
 registerPrintSinkRunner();
 
 export default function RootLayout() {
+  // Record uncaught errors and send them once the crew is signed in.
+  useEffect(() => installCrashReporting(), []);
+
+  // So a crash report says which screen it came from.
+  const pathname = usePathname();
+  useEffect(() => { setCrashRoute(pathname); }, [pathname]);
+
   // Restore the saved Bluetooth printer config so printing survives restarts.
   // Without this, getStatus() reports 'unpaired' on every launch and all KOT/
   // bill printing (and the cook's pending-print drain) is silently skipped.
