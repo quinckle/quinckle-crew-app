@@ -21,12 +21,17 @@ import QRCode from 'react-native-qrcode-svg';
 
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
-import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewTakeaway, crewDelivery, restaurantApi, printerApi, type ClosedSessionInfo } from '../../services/api';
+import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewTakeaway, crewDelivery, restaurantApi, printerApi, loyaltyApi, type ClosedSessionInfo } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
 import { invalidateCache } from '../../services/dataCache';
-import { printKot, printBill, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode } from '../../services/printer';
+import {
+  printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode, qrAmountModeFor,
+  getPrinters,
+} from '../../services/printer';
+import { printBillFromHere, type InvoicePrinterChoice } from '../../services/billPrint';
+import { useInvoicePrinterPicker } from '../../hooks/useInvoicePrinterPicker';
 import type { InvoiceBill } from '../../services/invoiceTemplate';
-import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded } from '../../services/printSink';
+import { applyAutoPrintSettings, kotAutoPrintFor, drainPendingPrintJobs, handleSinkSuperseded, watchPrintDispatch } from '../../services/printSink';
 import { getPrintDeviceId } from '../../services/printDevice';
 import type { TakeawayOrder } from '../../services/api';
 import { router, useFocusEffect } from 'expo-router';
@@ -39,6 +44,7 @@ import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { CenteredModal } from '../../components/ui/CenteredModal';
 import { StartSessionOverlay, type StartSessionJob } from '../../components/ui/StartSessionOverlay';
+import { GoogleReviewCard } from '../../components/ui/GoogleReviewCard';
 import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { MergeTableSheet } from '../../components/ui/MergeTableSheet';
 import { GroupPickerSheet } from '../../components/ui/GroupPickerSheet';
@@ -63,8 +69,10 @@ import { DeliveryBoard } from '../../components/delivery/DeliveryBoard';
 import { RiderRuns } from '../../components/delivery/RiderRuns';
 import { CAP, deliveryViewFor, hasCapability, type Capability } from '../../constants/capabilities';
 import { useResponsive } from '../../hooks/useResponsive';
+import { useResyncOnReturn } from '../../hooks/useResyncOnReturn';
 import { expiryLevel, expiryColor, expiryChipStyle, type ExpiryLevel } from '../../constants/sessionExpiry';
 import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
+import { announceNewOrders, isSpokenNewOrderNotification } from '../../services/voiceAlerts';
 
 async function playSound(file: any) {
   try {
@@ -104,10 +112,10 @@ function formatTimeLeft(
 }
 
 Notifications.setNotificationHandler({
-  handleNotification: async () => {
+  handleNotification: async (n) => {
     return {
       shouldShowAlert: true,
-      shouldPlaySound: true,
+      shouldPlaySound: !isSpokenNewOrderNotification(n.request.content),
       shouldSetBadge: false,
     } as any;
   },
@@ -132,6 +140,10 @@ type Table = {
   itemsServed?: number;
   itemsTotal?: number;
   paymentSettled?: boolean;
+  /** Some party's bill is printed and not yet paid — cutting it needs a manager. */
+  billPrintedUnpaid?: boolean;
+  /** Orders landed after the bill was printed — reprint before collecting. */
+  billOutOfDate?: boolean;
   // Shared seating: one entry per live party (slot order). >1 → the tap
   // opens a group picker and the card shows a groups badge + combined total.
   groups?: TableGroup[];
@@ -158,6 +170,8 @@ type TableGroup = {
   items_served?: number;
   items_total?: number;
   payment_settled?: boolean;
+  bill_printed?: boolean;
+  bill_out_of_date?: boolean;
   // Items the diner has put in their cart but not ordered yet.
   cart_item_count?: number;
 };
@@ -246,7 +260,7 @@ function formatBackAt(iso: string): string {
   return m === 0 ? `${h12} ${suffix}` : `${h12}:${String(m).padStart(2, '0')} ${suffix}`;
 }
 
-type PickupItem = { id: string; name: string; qty: number; servedQty: number; orderedAt: string; isServed: boolean; isReady: boolean };
+type PickupItem = { id: string; name: string; qty: number; servedQty: number; orderedAt: string; isServed: boolean; isReady: boolean; note?: string | null };
 type PickupOrder = { id: string; tableNo: string; items: PickupItem[]; completedAt?: string };
 
 function mapCompletedOrder(order: any): PickupOrder {
@@ -267,6 +281,7 @@ function mapCompletedOrder(order: any): PickupOrder {
       })(),
       isServed: true,
       isReady: true,
+      note: item.note ?? null,
     })),
   };
 }
@@ -364,6 +379,9 @@ export default function StaffDashboard() {
   // tap unambiguously means "open this table". StartSessionOverlay is the
   // only feedback while the create-session call is in flight.
   const [startSessionJob, setStartSessionJob] = useState<StartSessionJob | null>(null);
+  // Header star → full-screen Google review QR. Null hides the star.
+  const [reviewTarget, setReviewTarget] = useState<{ url: string; name: string; logoUrl: string | null } | null>(null);
+  const [showReview, setShowReview] = useState(false);
   const pendingSessionNav = useRef<Parameters<typeof router.push>[0] | null>(null);
   // Shared seating: which occupied table's group picker sheet is open.
   const [groupPicker, setGroupPicker] = useState<{ table: Table; groups: TableGroup[]; canAddParty: boolean } | null>(null);
@@ -426,6 +444,19 @@ export default function StaffDashboard() {
   const [pendingCashCount, setPendingCashCount] = useState(0);
   const [pickupOrders, setPickupOrders] = useState<PickupOrder[]>([]);
   const pickupOrderIdsRef = useRef<Set<string>>(new Set());
+  // Mirror of pickupOrders for event handlers that need the current list
+  // without reading it inside a setState updater (which may run later).
+  const pickupOrdersRef = useRef<PickupOrder[]>([]);
+  useEffect(() => { pickupOrdersRef.current = pickupOrders; }, [pickupOrders]);
+  // Serve ticks sent but not yet confirmed, itemId → { qty, seq }. A refetch
+  // that lands meanwhile still has the old count and used to untick the line
+  // the crew just ticked; loadPickupOrders lays these over the server's count.
+  const pendingServesRef = useRef<Map<string, { qty: number; seq: number }>>(new Map());
+  const serveSeqRef = useRef(0);
+  // Bumped per loadPickupOrders call. A slow response that lands after a newer
+  // one is dropped — otherwise an old, empty list could replace a full one and
+  // the tab showed "All caught up" with food still owed.
+  const pickupLoadSeqRef = useRef(0);
 
   // DUAL_CHANNEL "item ready" toast cards. In DUAL_CHANNEL the kitchen marks
   // items done; loadPickupOrders diffs item_status transitions (pending → done)
@@ -435,6 +466,8 @@ export default function StaffDashboard() {
   const dualChannelRef = useRef(false);
   const prevItemStatusRef = useRef<Map<string, 'pending' | 'done'>>(new Map());
   const pickupSeededRef = useRef(false);
+  // First floor-list load done — orders found on app open aren't announced as new.
+  const pickupLoadedRef = useRef(false);
   const [completedPickupOrders, setCompletedPickupOrders] = useState<PickupOrder[]>([]);
   const [completedPage, setCompletedPage] = useState(1);
   const [completedHasMore, setCompletedHasMore] = useState(false);
@@ -522,6 +555,8 @@ export default function StaffDashboard() {
     taxRate?: number | null;
     displayMode?: 'combined' | 'split';
     pricesIncludeTax?: boolean;
+    billThankYouMsg?: string | null;
+    billFooterNote?: string | null;
   } | null>(null);
   const [upiId, setUpiId] = useState<string | null>(null);
   const [upiName, setUpiName] = useState('');
@@ -529,6 +564,7 @@ export default function StaffDashboard() {
   // Tap-to-paper progress overlay for the manual takeaway prints; null = hidden.
   const [printJob, setPrintJob] = useState<PrintJob | null>(null);
   const [qrSheet, setQrSheet] = useState<{ grandTotal: number } | null>(null);
+  const { chooseInvoicePrinters, invoicePrinterSheet } = useInvoicePrinterPicker();
   const qrRunRef = useRef<((omitAmount: boolean) => void) | null>(null);
 
   useEffect(() => {
@@ -548,6 +584,8 @@ export default function StaffDashboard() {
           taxRate: res.data.taxConfig?.taxRate ?? null,
           displayMode: (res.data.taxConfig?.displayMode as 'combined' | 'split') ?? 'combined',
           pricesIncludeTax: res.data.taxConfig?.pricesIncludeTax ?? false,
+          billThankYouMsg: res.data.billThankYouMsg ?? null,
+          billFooterNote: res.data.billFooterNote ?? null,
         });
         if (res.data.upiId) {
           setUpiId(res.data.upiId);
@@ -580,6 +618,7 @@ export default function StaffDashboard() {
       items: order.items.map((item) => ({
         name: item.name,
         quantity: item.qty,
+        notes: item.notes ?? undefined,
         modifiersSummary: item.modifiers ?? undefined,
       })),
       isAddOn: false,
@@ -598,14 +637,10 @@ export default function StaffDashboard() {
 
   const handlePrintTakeawayInvoice = async (order: TakeawayOrder, buyer?: InvoiceBuyer) => {
     setPrintTakeawayOrder(null);
-    if (getPrinterStatus() !== 'connected') {
-      showDialog(
-        'No Printer Paired',
-        'No Bluetooth printer is connected to this device. Go to Profile → Printer Settings to pair one.',
-        [{ label: 'OK', onPress: () => {} }],
-      );
-      return;
-    }
+    // No local-printer gate: a bill no longer needs one. When this device
+    // drives no bill printer the request goes to the venue's, and the failure
+    // path below reports the real reason (no bill printer configured, host
+    // offline) instead of this device guessing from its own pairing.
 
     const isPaid = isTakeawayPaid(order);
     const invoiceItems: InvoiceBill['items'] = order.items.map((item) => ({
@@ -620,6 +655,11 @@ export default function StaffDashboard() {
     // an app restart. Offline/failure falls back to the mount-time snapshot.
     // Not awaited here: when the QR-choice sheet is shown, the refresh runs
     // behind it so choosing a QR overlaps the round-trip.
+    // The takeaway's stamp card, printed as "pay to collect" before payment.
+    const ladderPrep = order.sessionId
+      ? loyaltyApi.balance(order.sessionId).then((r) => r?.data?.ladder ?? null).catch(() => null)
+      : Promise.resolve(null);
+
     const prep = (async () => {
       let meta = restaurantInvoiceMeta;
       if (staffInfo?.restaurantId) {
@@ -636,6 +676,8 @@ export default function StaffDashboard() {
               taxRate: res.data.taxConfig?.taxRate ?? null,
               displayMode: (res.data.taxConfig?.displayMode as 'combined' | 'split') ?? 'combined',
               pricesIncludeTax: res.data.taxConfig?.pricesIncludeTax ?? false,
+              billThankYouMsg: res.data.billThankYouMsg ?? null,
+              billFooterNote: res.data.billFooterNote ?? null,
             };
             setRestaurantInvoiceMeta(meta);
             if (res.data.upiId) {
@@ -648,13 +690,27 @@ export default function StaffDashboard() {
       return meta;
     })();
 
-    const runPrint = async (upiOmitAmount: boolean) => {
+    // Which invoice printer(s) — asked only when the venue has two or more.
+    // prep keeps running behind the sheet, as it does behind the QR sheet.
+    const targets = await chooseInvoicePrinters();
+    if (targets === null) return; // sheet dismissed — print nothing
+
+    // `only` narrows a retry to the printers that failed.
+    const runPrint = async (upiOmitAmount: boolean, only?: InvoicePrinterChoice) => {
       // Usually resolved already (prep ran while the QR sheet was up), so the
       // preparing phase is a flash at most.
       setPrintJob({ phase: 'preparing', label: 'Invoice' });
-      const meta = await prep;
+      const [meta, liveLadder] = await Promise.all([prep, ladderPrep]);
       setPrintJob({ phase: 'printing', label: 'Invoice' });
-      const result = await printBill({
+      // Local when this device drives a bill printer, otherwise dispatched to
+      // the one that does — see services/billPrint.ts.
+      const outcome = await printBillFromHere({
+        restaurantId: staffInfo?.restaurantId ?? '',
+        sessionId: order.sessionId ?? '',
+        upiOmitAmount,
+        targets: only ?? targets,
+        onDispatched: (printerName) => setPrintJob({ phase: 'printing', label: `Invoice → ${printerName}` }),
+        bill: {
         restaurantName: staffInfo?.restaurantName ?? '',
         restaurantAddress: meta?.address ?? null,
         restaurantPhone: meta?.phone ?? null,
@@ -685,27 +741,47 @@ export default function StaffDashboard() {
         grandTotal: order.total,
         isPaid,
         paymentMethod: order.paymentMethod ?? undefined,
+        customerName: order.customerName,
+        customerPhone: order.customerPhone,
+        billerName: staffInfo?.name ?? null,
+        liveLadder,
         upiVpa: upiId,
         upiName: upiName || null,
         upiOmitAmount,
         orderDateTime: order.createdAt,
         generatedAt: new Date().toISOString(),
+        // Bill Settings text — dine-in bills always carried it; takeaway did not.
+        thankYouMessage: meta?.billThankYouMsg ?? null,
+        footerNote: meta?.billFooterNote ?? null,
+        },
       });
-      if (result === 'failed') {
+      if (outcome.status === 'printed') {
+        setPrintJob({ phase: 'done', label: 'Invoice' });
+      } else {
         setPrintJob({
           phase: 'failed',
           label: 'Invoice',
-          message: 'Could not print the invoice. Check that the printer is nearby and powered on.',
-          onRetry: () => { void runPrint(upiOmitAmount); },
+          message: outcome.message
+            ?? 'Could not print the invoice. Check that the printer is nearby and powered on.',
+          onRetry: () => {
+            const chosen = only ?? targets;
+            void runPrint(
+              upiOmitAmount,
+              chosen && outcome.failedPrinterIds?.length
+                ? { ids: outcome.failedPrinterIds, names: chosen.names }
+                : chosen,
+            );
+          },
         });
-      } else {
-        setPrintJob({ phase: 'done', label: 'Invoice' });
       }
     };
 
     const qrWillPrint = !isPaid && !!upiId && isUpiQrEnabled();
-    if (!qrWillPrint) {
-      await runPrint(false);
+    // Takeaway set to "Always with / without amount" (Printer settings) skips
+    // the sheet — the fast-billing counter's one-tap print.
+    const qrMode = qrAmountModeFor('TAKEAWAY');
+    if (!qrWillPrint || qrMode !== 'ASK') {
+      await runPrint(qrWillPrint && qrMode === 'STATIC');
       return;
     }
     // QR-choice sheet shown IMMEDIATELY (prep runs behind it). The chosen
@@ -762,6 +838,8 @@ export default function StaffDashboard() {
       return 'This order is already paid and can no longer be changed.';
     if (code === 'ITEM_ALREADY_CANCELLED' || code === 'ORDER_CANCELLED')
       return 'This has already been removed.';
+    if (code === 'AUTHORIZATION_REQUIRED')
+      return 'The bill for this order is already printed. Ask a manager to remove it.';
     return (typeof err?.message === 'string' && err.message) || 'Something went wrong. Please try again.';
   };
 
@@ -813,27 +891,18 @@ export default function StaffDashboard() {
     }
   };
 
-  // KOT auto-print toggle — loaded from server and retained in a ref so
-  // realtime callbacks always see the current value without forcing renders.
-  const kotAutoPrintRef = useRef(true);
-  const setKotAutoPrintSync = useCallback((v: boolean) => {
-    kotAutoPrintRef.current = v;
-    setSinkContext({ autoPrint: v }); // keep the background FGS gate in sync
-  }, []);
-
-  // Sync the KOT auto-print toggle from the server. Auto-print itself gates on
-  // the *live* local printer connection (getPrinterStatus), never on staff
-  // identity — the Bluetooth pairing is the real single-sink guarantee, so any
-  // crew member on the paired device drives printing. Default toggle stays true
-  // so a transient status-fetch failure never silently disables printing.
+  // Sync the auto-print toggles from the server into the print sink, which
+  // owns them (kotAutoPrintFor reads them for the live push and the drain
+  // alike). Auto-print itself gates on the *live* local printer connection
+  // (getPrinterStatus), never on staff identity — the Bluetooth pairing is the
+  // real single-sink guarantee, so any crew member on the paired device drives
+  // printing. A failed fetch keeps the last known values.
   const refreshPrintSinkOwnership = useCallback(async () => {
     try {
       const res = await printerApi.getStatus();
-      if (typeof res?.data?.kotAutoPrint === 'boolean') {
-        setKotAutoPrintSync(res.data.kotAutoPrint);
-      }
+      applyAutoPrintSettings(res?.data);
     } catch { /* keep last known toggle value */ }
-  }, [setKotAutoPrintSync]);
+  }, []);
 
   // ── KOT print backstop (server pull-queue) ──────────────────────────────────
   // The live Ably `new_order` push is the fast path, but it only fires while the
@@ -841,7 +910,7 @@ export default function StaffDashboard() {
   // printSink.ts (also used by the cook screen + FGS) is the guarantee: it
   // flushes the ack outbox, pulls the server queue (first prints + durable
   // reprints) with this device's sink identity, and prints anything that
-  // slipped through. The auto-print toggle reaches it via setSinkContext.
+  // slipped through. The auto-print toggles reach it via applyAutoPrintSettings.
 
   // `nextQty` is the ABSOLUTE served count the line should stand at — one tap
   // sends servedQty + 1, a hold sends the full qty. The card only celebrates
@@ -854,34 +923,39 @@ export default function StaffDashboard() {
     // its calm in-place celebration. completedAt stays unset during the
     // celebration; handleCompletionFinished sets it (as ISO) when the
     // animation finishes, which is what moves the card to the Completed list.
-    let triggersCompletion = false;
-    let previousQty = 0;
-    setPickupOrders((prev) =>
-      prev.map((order) => {
-        if (order.id !== orderId) return order;
-        const items = order.items.map((it) => {
-          if (it.id !== itemId) return it;
-          previousQty = it.servedQty;
-          const servedQty = Math.max(0, Math.min(it.qty, nextQty));
-          return { ...it, servedQty, isServed: servedQty >= it.qty };
-        });
-        if (!order.completedAt && items.every((it) => it.isServed)) {
-          triggersCompletion = true;
-        }
-        return { ...order, items };
-      }),
+    // Worked out from the current list, not inside the setState updater: React
+    // may run an updater later, leaving these at their initial values — so a
+    // failed tick reverted to 0 and the celebration could be skipped.
+    const current = pickupOrdersRef.current.find((o) => o.id === orderId);
+    const line = current?.items.find((it) => it.id === itemId);
+    if (!current || !line) return;
+    const previousQty = line.servedQty;
+    const servedQty = Math.max(0, Math.min(line.qty, nextQty));
+    const items = current.items.map((it) =>
+      it.id === itemId ? { ...it, servedQty, isServed: servedQty >= it.qty } : it,
     );
+    const triggersCompletion = !current.completedAt && items.every((it) => it.isServed);
 
+    setPickupOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, items } : o)));
     if (triggersCompletion) {
       setCompletingIds((prev) => (prev.includes(orderId) ? prev : [...prev, orderId]));
     }
 
-    // Fire-and-forget — realtime `order_served` event drives the refresh.
+    const seq = ++serveSeqRef.current;
+    pendingServesRef.current.set(itemId, { qty: servedQty, seq });
+    const settle = () => {
+      if (pendingServesRef.current.get(itemId)?.seq === seq) pendingServesRef.current.delete(itemId);
+    };
+
+    // Not awaited — the realtime `item_served` event drives the refresh.
     // Awaiting loadPickupOrders here used to snap the list mid-animation.
     void crewOrders
-      .serveItem(orderId, itemId, nextQty)
+      .serveItem(orderId, itemId, servedQty)
+      .then(settle)
       .catch(() => {
-        // Revert on failure
+        settle();
+        // Only undo if no later tap on this line has replaced this one.
+        if (pendingServesRef.current.has(itemId)) return;
         setPickupOrders((prev) =>
           prev.map((o) =>
             o.id !== orderId ? o : {
@@ -895,6 +969,9 @@ export default function StaffDashboard() {
           ),
         );
         setCompletingIds((prev) => prev.filter((id) => id !== orderId));
+        // The line may have been cancelled or served elsewhere — show what the
+        // server has rather than leaving a line that can never be ticked.
+        void loadPickupOrders();
       });
   };
 
@@ -1030,6 +1107,10 @@ export default function StaffDashboard() {
           itemsServed: typeof t.items_served === 'number' ? t.items_served : undefined,
           itemsTotal: typeof t.items_total === 'number' ? t.items_total : undefined,
           paymentSettled: t.payment_settled === true,
+          billPrintedUnpaid: (groups ?? [{ bill_printed: t.bill_printed, payment_settled: t.payment_settled }])
+            .some((g) => g.bill_printed === true && g.payment_settled !== true),
+          billOutOfDate: (groups ?? [{ bill_out_of_date: t.bill_out_of_date, payment_settled: t.payment_settled }])
+            .some((g) => g.bill_out_of_date === true && g.payment_settled !== true),
           billAmount,
         };
       });
@@ -1103,8 +1184,10 @@ export default function StaffDashboard() {
   }, [staffInfo?.restaurantId]);
 
   const loadPickupOrders = useCallback(async () => {
+    const loadSeq = ++pickupLoadSeqRef.current;
     try {
       const res = await crewOrders.getActive();
+      if (loadSeq !== pickupLoadSeqRef.current) return; // a newer load started
       const allOrders = res.orders ?? [];
 
       // Simplified flow: show any order that has unserved items, regardless of
@@ -1121,12 +1204,17 @@ export default function StaffDashboard() {
       const prevOrderIds = pickupOrderIdsRef.current;
       const newOrders = serveableOrders.filter(o => !prevOrderIds.has(o.order_id));
       if (newOrders.length > 0) {
-        void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
+        const spoken = announceNewOrders(
+          newOrders.map(o => ({ id: o.order_id, channel: o.channel })),
+          { quiet: !pickupLoadedRef.current },
+        );
+        if (!spoken) void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
         Notifications.scheduleNotificationAsync({
           content: {
             title: '🔔 New Order',
             body: newOrders.map(o => channelLocationLabel(o.channel, { token: o.pickup_token ?? 'TK', tableNumber: o.table_number })).join(', ') + ' — ready to serve',
             sound: true,
+            data: { type: 'new_order' },
           },
           trigger: null,
         }).catch(() => { });
@@ -1176,29 +1264,40 @@ export default function StaffDashboard() {
         pickupSeededRef.current = true;
       }
 
+      const pendingServes = pendingServesRef.current;
       const refreshedActive = serveableOrders.map(order => ({
         id: order.order_id,
         tableNo: channelLocationLabel(order.channel, { token: order.pickup_token ?? 'TK', tableNumber: order.table_number }),
-        items: order.items.map(item => ({
-          id: item.item_id,
-          // Bare name — PickupItemRow renders the quantity in its own column, so
-          // prefixing it here printed every line twice ("4× 4× Coffee").
-          name: item.name,
-          qty: item.qty,
-          // Fall back for a backend that predates partial ticking.
-          servedQty: item.served_qty ?? (item.served ? item.qty : 0),
-          orderedAt: (() => {
-            const d = new Date(order.placed_at);
-            return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-          })(),
-          isServed: item.served,
-          // In the simplified flow kitchen does not mark items — all unserved
-          // items are immediately available for staff to serve.
-          isReady: !item.served,
-        })),
+        items: order.items.map(item => {
+          // A tick still on its way to the server wins over the count we just
+          // read, which may predate it. Fall back for a backend that predates
+          // partial ticking.
+          const servedQty = pendingServes.get(item.item_id)?.qty
+            ?? item.served_qty ?? (item.served ? item.qty : 0);
+          const isServed = servedQty >= item.qty;
+          return {
+            id: item.item_id,
+            // Bare name — PickupItemRow renders the quantity in its own column, so
+            // prefixing it here printed every line twice ("4× 4× Coffee").
+            name: item.name,
+            qty: item.qty,
+            servedQty,
+            orderedAt: (() => {
+              const d = new Date(order.placed_at);
+              return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+            })(),
+            isServed,
+            // In the simplified flow kitchen does not mark items — all unserved
+            // items are immediately available for staff to serve.
+            isReady: !isServed,
+            // Combo dishes carry "Combo: <title>" — same line the table screen shows.
+            note: item.note ?? null,
+          };
+        }),
       }));
 
       pickupOrderIdsRef.current = new Set(refreshedActive.map(order => order.id));
+      pickupLoadedRef.current = true;
       setPickupOrders(refreshedActive);
     } catch (e) { console.error('[pickup] loadPickupOrders error:', e); }
   }, []);
@@ -1272,6 +1371,10 @@ export default function StaffDashboard() {
       .then((res) => {
         if (cancelled || !res?.success) return;
         dualChannelRef.current = (res.data.dinerStatusMode ?? 'SIMPLE') === 'DUAL_CHANNEL';
+        const reviewUrl = (res.data.googleReviewUrl ?? '').trim();
+        setReviewTarget(/^https?:\/\//i.test(reviewUrl)
+          ? { url: reviewUrl, name: res.data.name, logoUrl: res.data.logoUrl }
+          : null);
       })
       .catch(() => { /* non-fatal — stays SIMPLE, no toasts */ });
     return () => { cancelled = true; };
@@ -1315,6 +1418,16 @@ export default function StaffDashboard() {
       unwatchConn();
     };
   }, [staffInfo?.restaurantId, refreshPrintSinkOwnership]);
+
+  // The same gaps lose the grid's pushes too — reload every list the waiter
+  // events keep fresh once the phone is back.
+  useResyncOnReturn(staffInfo?.restaurantId ? `waiter:${staffInfo.restaurantId}` : null, () => {
+    void loadTables();
+    void loadPickupOrders();
+    void loadTakeawayOrders();
+    void loadServedToday(1);
+    void loadPendingCashCount();
+  });
 
   // Keep the screen awake while this device holds the printer, so Android can't
   // suspend the JS runtime and miss prints when the screen would sleep.
@@ -1418,6 +1531,10 @@ export default function StaffDashboard() {
     });
 
     const off3 = subscribeChannel(`waiter:${restaurantId}`, 'new_order', (data: any) => {
+      // Dine-in is announced by loadPickupOrders' diff. Takeaway and delivery
+      // never reach that list, so voice phones hear about them here. No chime
+      // fallback: off-premise orders have never chimed on the floor.
+      if (isOffPremise(data?.channel)) announceNewOrders([{ id: data?.orderId, channel: data?.channel }]);
       refetchPickup();
       if (data?.channel === 'TAKEAWAY') refetchTakeaway();
       refetchTables();
@@ -1427,7 +1544,7 @@ export default function StaffDashboard() {
       // foreground drain is the backstop; printKot de-dupes so push + drain
       // never double-print.
       if (
-        kotAutoPrintRef.current &&
+        kotAutoPrintFor(data?.channel) &&
         getPrinterStatus() === 'connected' &&
         data?.orderId
       ) {
@@ -1454,9 +1571,15 @@ export default function StaffDashboard() {
       }
     });
 
-    // Sync auto-print toggle from any device (crew app or partner dashboard)
+    // Sync auto-print toggles from any device (crew app or partner dashboard)
     const offAutoPrint = subscribeChannel(`partner:${restaurantId}`, 'kot_autoprint_changed', (data: any) => {
-      if (typeof data?.enabled === 'boolean') setKotAutoPrintSync(data.enabled);
+      if (typeof data?.enabled === 'boolean') applyAutoPrintSettings({ kotAutoPrint: data.enabled });
+    });
+    const offTakeawayAutoPrint = subscribeChannel(`partner:${restaurantId}`, 'takeaway_autoprint_changed', (data: any) => {
+      applyAutoPrintSettings(data);
+    });
+    const offPrintSettings = subscribeChannel(`partner:${restaurantId}`, 'print_settings_changed', (data: any) => {
+      applyAutoPrintSettings(data);
     });
 
     const off4 = subscribeChannel(`waiter:${restaurantId}`, 'session_ended', () => {
@@ -1487,6 +1610,14 @@ export default function StaffDashboard() {
     // Two tables merged into one bill from another device — the absorbed table
     // is now free and the survivor's bill grew, so re-render the grid.
     const off6d = subscribeChannel(`waiter:${restaurantId}`, 'session_merged', () => {
+      refetchTables();
+    });
+    // A bill was printed on some phone (or the dashboard) — the card marks it.
+    const off6e = subscribeChannel(`waiter:${restaurantId}`, 'bill_printed', () => {
+      refetchTables();
+    });
+    // Someone ordered on a table whose bill is already printed — flag it red.
+    const off6f = subscribeChannel(`waiter:${restaurantId}`, 'bill_out_of_date', () => {
       refetchTables();
     });
 
@@ -1577,20 +1708,35 @@ export default function StaffDashboard() {
     // Sink handover — another device paired (or the pairing was cleared).
     // Clear the stale local pairing so this device can never dual-print
     // against the new sink (critical for LAN/tcp printers).
+    //
+    // Registry-managed printers are exempt: these two events come from the
+    // legacy /print/pair route, where "someone else paired" genuinely meant
+    // "you are no longer the sink". Under the registry a device can hold the
+    // counter printer while another holds the kitchen one, and standing down on
+    // a legacy pairing would silently wipe a correct setup.
     const offPrinterPaired = subscribeChannel(`partner:${restaurantId}`, 'printer_paired', (data: any) => {
       void (async () => {
         if (getPrinterStatus() !== 'connected') return; // we don't hold a pairing
+        if (getPrinters().some((p) => p.id)) return;    // registry-managed
         const myDeviceId = await getPrintDeviceId();
         if (data?.deviceId !== myDeviceId) await handleSinkSuperseded();
       })();
     });
     const offPrinterUnpaired = subscribeChannel(`partner:${restaurantId}`, 'printer_unpaired', () => {
-      if (getPrinterStatus() === 'connected') void handleSinkSuperseded();
+      if (getPrinterStatus() !== 'connected') return;
+      if (getPrinters().some((p) => p.id)) return;
+      void handleSinkSuperseded();
     });
+
+    // Registry changes + bills dispatched to a printer we drive. One shared
+    // implementation (see printSink.watchPrintDispatch) so the two dashboards
+    // cannot drift apart.
+    const offDispatch = watchPrintDispatch(restaurantId);
 
     return () => {
       Object.values(timers).forEach(clearTimeout);
-      off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off6d(); off7(); off7b(); off7c(); off8(); off9(); offReprint(); offAutoPrint(); offPrinterPaired(); offPrinterUnpaired();
+      off1(); off2(); off3(); off4(); off5(); off6(); off6a(); off6b(); off6c(); off6d(); off6e(); off6f(); off7(); off7b(); off7c(); off8(); off9(); offReprint(); offAutoPrint(); offTakeawayAutoPrint(); offPrintSettings(); offPrinterPaired(); offPrinterUnpaired();
+      offDispatch();
     };
   }, [
     staffInfo?.restaurantId,
@@ -1599,7 +1745,6 @@ export default function StaffDashboard() {
     loadPickupOrders,
     loadTakeawayOrders,
     loadServedToday,
-    setKotAutoPrintSync,
   ]);
 
   // C1: Track Ably connection health — show a warning when the waiter channel drops.
@@ -1826,6 +1971,8 @@ export default function StaffDashboard() {
           sessionId: res.session_id,
           tableDbId: table.id,
           zoneName: table.zoneName ?? '',
+          // Empty table → the menu, with the table screen underneath.
+          startOrder: '1',
         },
       };
       setStartSessionJob({ phase: 'done', tableLabel });
@@ -2058,6 +2205,7 @@ export default function StaffDashboard() {
         customerPhone: '',
         groupLabel: res.party_slot ? `G${res.party_slot}` : '',
         zoneName: table.zoneName ?? '',
+        startOrder: '1',
       } });
     } catch (e: any) {
       setGroupPicker(null);
@@ -2208,31 +2356,48 @@ export default function StaffDashboard() {
     <View style={[styles.container, { paddingTop: insets.top + Spacing.sm }]}>
       <View style={styles.topBar}>
         <View style={styles.topBarLeft}>
-          <TouchableOpacity
-            style={styles.burgerBtn}
-            onPress={() => router.push('/(staff)/more')}
-            activeOpacity={0.7}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <Ionicons name="menu" size={26} color={QuinckleColors.textPrimary} />
-          </TouchableOpacity>
+          <Image
+            source={require('../../assets/images/logo/quinckle crew logo header.webp')}
+            style={styles.headerLogo}
+            resizeMode="contain"
+            accessibilityLabel="Quinckle Crew"
+          />
 
-          {/* Tablet: search/refresh/filter live inline beside the burger icon
+          {/* Tablet: search/refresh/filter live inline beside the logo
               instead of their own row below — more width to spare here. */}
           {activeTab === 'tables' && isTablet && (
             <View style={styles.topBarControls}>{tableControls}</View>
           )}
         </View>
 
-        <View style={styles.headerActions}>
-          {/* Cash-collection icon: tap to see pending requests + today's history.
-                Red dot appears when there's at least one unresolved request. */}
+        {/* One toolbar on the right: review, cash, menu. A single container
+            gives every icon the same height and centre line; the menu sits
+            at the edge where people reach for it. */}
+        <View style={styles.headerGroup}>
+          {/* Google review card — only when the owner has set a review link. */}
+          {reviewTarget && (
+            <>
+              <TouchableOpacity
+                style={styles.headerGroupBtn}
+                onPress={() => setShowReview(true)}
+                activeOpacity={0.6}
+                accessibilityLabel="Ask for a Google review"
+              >
+                <Ionicons name="star-outline" size={21} color={QuinckleColors.textPrimary} />
+              </TouchableOpacity>
+              <View style={styles.headerGroupDivider} />
+            </>
+          )}
+
+          {/* Cash-collection: pending requests + today's history. The badge
+              counts unresolved requests. */}
           <TouchableOpacity
-            style={styles.cashIconBtn}
+            style={styles.headerGroupBtn}
             onPress={() => router.push('/(staff)/cash-collection')}
-            activeOpacity={0.7}
+            activeOpacity={0.6}
+            accessibilityLabel="Cash collection"
           >
-            <Ionicons name="cash-outline" size={26} color={QuinckleColors.textPrimary} />
+            <Ionicons name="cash-outline" size={22} color={QuinckleColors.textPrimary} />
             {pendingCashCount > 0 && (
               <View style={styles.cashBadge}>
                 <Text style={styles.cashBadgeText}>
@@ -2241,9 +2406,18 @@ export default function StaffDashboard() {
               </View>
             )}
           </TouchableOpacity>
+          <View style={styles.headerGroupDivider} />
 
-          {/* Profile now lives behind the burger → Menu → Profile, so the
-              header carries one nav affordance instead of two. */}
+          {/* Profile lives behind Menu → Profile, so the header carries one
+              nav affordance instead of two. */}
+          <TouchableOpacity
+            style={styles.headerGroupBtn}
+            onPress={() => router.push('/(staff)/more')}
+            activeOpacity={0.6}
+            accessibilityLabel="Menu"
+          >
+            <Ionicons name="menu" size={23} color={QuinckleColors.textPrimary} />
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -2296,6 +2470,11 @@ export default function StaffDashboard() {
                     const showStatusIcons = item.status === 'occupied';
                     const allServed = showStatusIcons && total > 0 && (item.itemsServed ?? 0) >= total;
                     const paid = showStatusIcons && item.paymentSettled === true;
+                    // Amber, not green: green means done. A printed, unpaid bill
+                    // is the window where cutting it needs a manager.
+                    const billPrinted = showStatusIcons && !paid && item.billPrintedUnpaid === true;
+                    // Red: the printed bill is short — it must be reprinted before collecting.
+                    const billStale = billPrinted && item.billOutOfDate === true;
                     const timeLeft = item.status === 'occupied' ? formatTimeLeft(item.expiresAt, now, item.occupiedSince) : null;
                     const isOccupied = item.status === 'occupied';
                     const selected = selectedIds.has(item.id);
@@ -2355,6 +2534,12 @@ export default function StaffDashboard() {
                                     name={allServed ? 'restaurant' : 'restaurant-outline'}
                                     size={14}
                                     color={allServed ? QuinckleColors.success : QuinckleColors.textTertiary}
+                                  />
+                                  <Ionicons
+                                    name={billPrinted ? 'receipt' : 'receipt-outline'}
+                                    size={14}
+                                    color={billStale ? QuinckleColors.danger : billPrinted ? QuinckleColors.warning : QuinckleColors.textTertiary}
+                                    accessibilityLabel={billStale ? 'Bill out of date, reprint' : billPrinted ? 'Bill printed, not paid' : undefined}
                                   />
                                   <Ionicons
                                     name={paid ? 'card' : 'card-outline'}
@@ -2829,7 +3014,7 @@ export default function StaffDashboard() {
                 <View style={styles.takeawayDivider} />
                 {item.items.map((it, j) => (
                   <Text key={j} style={styles.takeawayItemText}>
-                    {it.qty}× {it.name}{it.modifiers ? ` (${it.modifiers})` : ''}
+                    {it.qty}× {it.name}{it.modifiers ? ` (${it.modifiers})` : ''}{it.notes ? ` — “${it.notes}”` : ''}
                   </Text>
                 ))}
                 {item.status !== 'SERVED' && (
@@ -2993,6 +3178,15 @@ export default function StaffDashboard() {
           handleTablePress) — this overlay is the only feedback while it's
           in flight, no confirm step. */}
       <StartSessionOverlay job={startSessionJob} onDismiss={onDismissStartSession} />
+      {reviewTarget && (
+        <GoogleReviewCard
+          visible={showReview}
+          onClose={() => setShowReview(false)}
+          url={reviewTarget.url}
+          venueName={reviewTarget.name}
+          logoUrl={reviewTarget.logoUrl}
+        />
+      )}
 
       {/* Manage occupied table — bottom sheet (Swap / Free) */}
       <BottomSheet
@@ -3103,6 +3297,7 @@ export default function StaffDashboard() {
       />
 
       {/* Tap-to-paper print progress */}
+      {invoicePrinterSheet}
       <PrintProgressOverlay job={printJob} onDismiss={() => setPrintJob(null)} />
 
       {discountOrder?.sessionId && (
@@ -3242,11 +3437,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.sm,
   },
-  burgerBtn: {
-    width: 42,
-    height: 42,
-    alignItems: 'center',
-    justifyContent: 'center',
+  headerLogo: {
+    // The wordmark is 612×180; 102×30 keeps it crisp at that ratio.
+    width: 102,
+    height: 30,
+    flexShrink: 1,
   },
   brandGroup: {
     gap: 4,
@@ -3306,10 +3501,26 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 10,
   },
-  headerActions: {
+  headerGroup: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.sm,
+    height: 42,
+    paddingHorizontal: 2,
+    borderRadius: 14,
+    backgroundColor: QuinckleColors.surface,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+  },
+  headerGroupBtn: {
+    width: 44,
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerGroupDivider: {
+    width: StyleSheet.hairlineWidth,
+    height: 18,
+    backgroundColor: QuinckleColors.borderStrong,
   },
   refreshBtn: {
     width: 36,
@@ -3321,21 +3532,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  cashIconBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    alignItems: 'center',
-    justifyContent: 'center',
-    position: 'relative',
-    overflow: 'visible',
-    top: 5
-  },
-
   cashBadge: {
     position: 'absolute',
-    top: -2,
-    right: -2,
+    top: 2,
+    right: 4,
     minWidth: 18,
     height: 18,
     paddingHorizontal: 4,

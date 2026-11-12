@@ -91,3 +91,14 @@ export function profileFromWidth(widthMM: number = DEFAULT_PAPER_WIDTH, dpi: num
     qrSize,
   };
 }
+
+/**
+ * mmFeedPaper for a given pre-disconnect wait. DantSu sends the end feed as
+ * ESC J (byte)dots but sleeps `dots` ms, so any dots ≡ 64 (mod 256) feeds the
+ * same 64 dots (8mm at 203dpi) the 40mm KOT feed already does (320 dots) while
+ * the wait grows. A plain larger mm would wrap the feed byte instead.
+ */
+export function endFeedMmForWait(waitMs: number, dpi: number): number {
+  const dots = 64 + 256 * Math.max(1, Math.ceil((waitMs - 64) / 256));
+  return Number(((dots * 25.4) / dpi).toFixed(3));
+}

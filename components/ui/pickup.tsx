@@ -54,6 +54,9 @@ export type PickupItemData = {
   orderedAt: string;
   isServed: boolean;
   isReady: boolean;
+  /** "no onion", or "Combo: Lunch Combo" on a combo's dishes — shown under
+   *  the name the way the table screen shows it. */
+  note?: string | null;
 };
 
 export type PickupOrderData = {
@@ -247,16 +250,23 @@ function PickupItemRow({ item, onToggle, disabled, isCompleted }: ItemRowProps) 
         {isPartial ? `${servedQty}/${item.qty}×` : `${item.qty}×`}
       </Text>
 
-      <Text
-        numberOfLines={1}
-        style={[
-          rowStyles.name,
-          item.isServed && rowStyles.nameServed,
-          !item.isReady && !item.isServed && rowStyles.textMuted,
-        ]}
-      >
-        {item.name}
-      </Text>
+      <View style={rowStyles.nameCol}>
+        <Text
+          numberOfLines={1}
+          style={[
+            rowStyles.name,
+            item.isServed && rowStyles.nameServed,
+            !item.isReady && !item.isServed && rowStyles.textMuted,
+          ]}
+        >
+          {item.name}
+        </Text>
+        {item.note ? (
+          <Text numberOfLines={2} style={[rowStyles.note, item.isServed && rowStyles.textMuted]}>
+            “{item.note}”
+          </Text>
+        ) : null}
+      </View>
 
       {!item.isServed && (
         <View style={rowStyles.statusDotWrap}>
@@ -316,8 +326,17 @@ const rowStyles = StyleSheet.create({
   qtyPartial: {
     color: QuinckleColors.success,
   },
-  name: {
+  nameCol: {
     flex: 1,
+  },
+  // Amber like the table screen's note: an instruction to act on.
+  note: {
+    color: QuinckleColors.warning,
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  name: {
     color: QuinckleColors.textPrimary,
     fontSize: 14,
     fontWeight: '600',
