@@ -14,6 +14,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   TextInput,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -22,32 +23,72 @@ import { router } from 'expo-router';
 import { QuinckleColors, Radius, Spacing } from '../constants/Colors';
 import { ThemedDialog } from '../components/ui/themed-dialog';
 import { WidthPickerSheet } from '../components/ui/WidthPickerSheet';
+import { RolePickerSheet } from '../components/ui/RolePickerSheet';
+import { NamePrinterSheet } from '../components/ui/NamePrinterSheet';
+import { PrinterActionsSheet } from '../components/ui/PrinterActionsSheet';
+import { PrinterResultSheet, type PrinterResult } from '../components/ui/PrinterResultSheet';
 import {
   scan,
-  pair,
-  pairNetwork,
-  pairUsb,
   unpair,
   printTest,
   getStatus,
   getConfig,
   isUpiQrEnabled,
   setUpiQrEnabled,
+  isBillLogoEnabled,
+  setBillLogoEnabled,
   isUsbSupported,
   listUsbPrinters,
   type BluetoothDevice,
   type PrinterStatus,
   type UsbPrinterDevice,
 } from '../services/printer';
-import { printerApi } from '../services/api';
+import {
+  printerApi, printersApi,
+  type RegisteredPrinter, type PrinterRole, type PrinterInputBody,
+} from '../services/api';
+import { refreshLocalPrinters } from '../services/printSink';
+import { invalidateInvoicePrinters } from '../services/billPrint';
 import { getPrintDeviceId } from '../services/printDevice';
 import { useAuth } from '../context/AuthContext';
 
 /** Suffix shown after the paper width on the status card. Bluetooth is the
  *  historical default and stays unlabelled. */
+/** The reason lives in the error's `code`; its text is only a fallback. */
+function hasCode(err: any, code: string): boolean {
+  return [err?.code, err?.message].some((v) => typeof v === 'string' && v.includes(code));
+}
+
+/**
+ * The hardware's own name, numbered if another printer already has it. Five of
+ * the venues' printers report exactly "BlueTooth Printer"; a second one added
+ * with "Keep this name" would otherwise be refused as a duplicate.
+ */
+function uniqueName(base: string, taken: string[]): string {
+  const used = new Set(taken.map((n) => n.trim().toLowerCase()));
+  if (!used.has(base.trim().toLowerCase())) return base;
+  for (let i = 2; ; i++) {
+    const candidate = `${base} ${i}`;
+    if (!used.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
+const ROLE_LABEL: Record<string, string> = {
+  KOT: 'Kitchen tickets',
+  BILL: 'Bills',
+  BOTH: 'Kitchen tickets + bills',
+};
+
 const TRANSPORT_LABEL: Record<string, string> = {
   network: ' · Network',
   usb: ' · USB',
+};
+
+/** What the result sheet says a printer will now do. */
+const ROLE_RESULT: Record<string, { added: string; removed: string }> = {
+  KOT: { added: 'New kitchen tickets will print here.', removed: 'Kitchen tickets will stop printing on it.' },
+  BILL: { added: 'Bills will print here.', removed: 'Bills will stop printing on it.' },
+  BOTH: { added: 'Kitchen tickets and bills will print here.', removed: 'Kitchen tickets and bills will stop printing on it.' },
 };
 
 export default function PrinterScreen() {
@@ -64,8 +105,6 @@ export default function PrinterScreen() {
     kitchenMode: string;
     kotAutoPrint?: boolean;
   } | null>(null);
-  const [kotAutoPrint, setKotAutoPrint] = useState(true);
-  const [autoPrintSaving, setAutoPrintSaving] = useState(false);
 
   const [isScanning, setIsScanning] = useState(false);
   const [devices, setDevices] = useState<BluetoothDevice[]>([]);
@@ -76,6 +115,7 @@ export default function PrinterScreen() {
   const [showScanView, setShowScanView] = useState(false);
   const [toast, setToast] = useState<{ message: string; ok: boolean } | null>(null);
   const [upiQr, setUpiQr] = useState(isUpiQrEnabled());
+  const [billLogo, setBillLogo] = useState(isBillLogoEnabled());
 
   // Network (LAN/WiFi) printer entry
   const [showNetworkForm, setShowNetworkForm] = useState(false);
@@ -96,6 +136,12 @@ export default function PrinterScreen() {
     void setUpiQrEnabled(next);
   }, []);
 
+  const handleBillLogoToggle = useCallback((next: boolean) => {
+    setBillLogo(next);
+    Haptics.selectionAsync();
+    void setBillLogoEnabled(next);
+  }, []);
+
   const [dialog, setDialog] = useState<{
     visible: boolean; title: string; message: string;
     actions: { label: string; variant?: 'default' | 'danger' | 'primary'; onPress: () => void }[];
@@ -107,27 +153,8 @@ export default function PrinterScreen() {
     try {
       const res = await printerApi.getStatus();
       setServerStatus(res.data);
-      if (typeof res.data?.kotAutoPrint === 'boolean') {
-        setKotAutoPrint(res.data.kotAutoPrint);
-      }
     } catch { /* non-fatal */ }
   }, []);
-
-  const handleAutoPrintToggle = async () => {
-    if (autoPrintSaving) return;
-    const next = !kotAutoPrint;
-    setKotAutoPrint(next);
-    setAutoPrintSaving(true);
-    try {
-      await printerApi.setAutoPrint(next);
-      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    } catch {
-      setKotAutoPrint(!next); // revert on failure
-      showToast('Could not update auto-print setting', false);
-    } finally {
-      setAutoPrintSaving(false);
-    }
-  };
 
   useEffect(() => {
     loadServerStatus();
@@ -186,37 +213,304 @@ export default function PrinterScreen() {
     cb?.(widthMM);
   }
 
+  // ── The venue's printer registry ────────────────────────────────────────────
+
+  const [registered, setRegistered] = useState<RegisteredPrinter[]>([]);
+  const [myDeviceId, setMyDeviceId] = useState<string>('');
+  const [busyPrinterId, setBusyPrinterId] = useState<string | null>(null);
+
+  const [rolePickerVisible, setRolePickerVisible] = useState(false);
+  const [rolePickerCurrent, setRolePickerCurrent] = useState<PrinterRole | undefined>();
+  const rolePickerCallback = useRef<((role: PrinterRole) => void) | null>(null);
+
+  function chooseRole(onPick: (role: PrinterRole) => void, current?: PrinterRole) {
+    rolePickerCallback.current = onPick;
+    setRolePickerCurrent(current);
+    setRolePickerVisible(true);
+  }
+
+  function handleRolePick(role: PrinterRole) {
+    setRolePickerVisible(false);
+    const cb = rolePickerCallback.current;
+    rolePickerCallback.current = null;
+    cb?.(role);
+  }
+
+  // Name sheet. `nameOpen` is separate from its content so the text doesn't
+  // blank out while the sheet slides away.
+  const [nameOpen, setNameOpen] = useState(false);
+  const [nameSheet, setNameSheet] = useState<{
+    title: string;
+    initialName: string;
+    systemName?: string | null;
+    takenNames: string[];
+    skipLabel?: string;
+  }>({ title: '', initialName: '', takenNames: [] });
+  const nameCallback = useRef<((name: string | null) => void) | null>(null);
+
+  function chooseName(opts: typeof nameSheet, onDone: (name: string | null) => void) {
+    nameCallback.current = onDone;
+    setNameSheet(opts);
+    setNameOpen(true);
+  }
+
+  function finishName(name: string | null) {
+    setNameOpen(false);
+    const cb = nameCallback.current;
+    nameCallback.current = null;
+    cb?.(name);
+  }
+
+  /**
+   * Last step of adding a printer: what staff will call it. Skipping keeps the
+   * hardware's own name — numbered if another printer already has it.
+   */
+  function askNameThen(systemName: string, go: (name: string) => void) {
+    const taken = registered.map((p) => p.name);
+    const fallback = uniqueName(systemName, taken);
+    chooseName(
+      {
+        title: 'Name this printer',
+        initialName: fallback,
+        systemName,
+        takenNames: taken,
+        skipLabel: `Keep “${fallback}”`,
+      },
+      (name) => go(name ?? fallback),
+    );
+  }
+
+  const loadPrinters = useCallback(async () => {
+    try {
+      const [res, deviceId] = await Promise.all([printersApi.list(), getPrintDeviceId()]);
+      setRegistered(res?.data ?? []);
+      setMyDeviceId(deviceId);
+      // Keep what this device actually drives in step with what the server says.
+      await refreshLocalPrinters();
+      // The Print Invoice picker caches this list — a change made here must
+      // show up on the very next bill, not five minutes later.
+      invalidateInvoicePrinters();
+      setLocalStatus(getStatus());
+      setConfig(getConfig());
+    } catch {
+      /* offline — the cached local list still prints */
+    }
+  }, []);
+
+  useEffect(() => { void loadPrinters(); }, [loadPrinters]);
+
+  // Green / red sheet after a printer is added or removed. `resultOpen` is
+  // separate from its content so the text doesn't blank out mid-slide.
+  const [resultOpen, setResultOpen] = useState(false);
+  const [result, setResult] = useState<PrinterResult | null>(null);
+  const [resultPrinter, setResultPrinter] = useState<RegisteredPrinter | null>(null);
+
+  function showResult(next: PrinterResult, printer: RegisteredPrinter | null = null) {
+    setResult(next);
+    setResultPrinter(printer);
+    setResultOpen(true);
+  }
+
+  // The ⋯ menu on a printer's row.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPrinter, setMenuPrinter] = useState<RegisteredPrinter | null>(null);
+
+  /** Close the ⋯ menu, then run the action once it has slid away. */
+  function fromMenu(action: (printer: RegisteredPrinter) => void) {
+    const printer = menuPrinter;
+    setMenuOpen(false);
+    if (printer) setTimeout(() => action(printer), 280);
+  }
+
+  /** Register a printer this device can physically reach, and take its host slot. */
+  const registerPrinter = useCallback(async (body: PrinterInputBody) => {
+    const deviceId = await getPrintDeviceId();
+    const res = await printersApi.create({ ...body, hostDeviceId: deviceId });
+    await loadPrinters();
+    const transport = TRANSPORT_LABEL[String(body.transport).toLowerCase()] ?? ' · Bluetooth';
+    showResult({
+      kind: 'connected',
+      title: 'Printer connected',
+      detail: `${body.name} · ${body.paperWidth}mm${transport}`,
+      message: ROLE_RESULT[body.role]?.added ?? ROLE_RESULT.KOT.added,
+    }, res?.data ?? null);
+  }, [loadPrinters]);
+
+  const handleRename = useCallback((printer: RegisteredPrinter) => {
+    const others = registered.filter((p) => p.id !== printer.id).map((p) => p.name);
+    chooseName(
+      {
+        title: 'Rename printer',
+        initialName: printer.name,
+        systemName: printer.systemName ?? null,
+        takenNames: others,
+      },
+      (name) => {
+        if (!name || name === printer.name) return;
+        void (async () => {
+          setBusyPrinterId(printer.id);
+          try {
+            await printersApi.update(printer.id, { name });
+            await loadPrinters();
+            showToast(`Renamed to ${name}`, true);
+          } catch (err: any) {
+            showToast(
+              hasCode(err, 'PRINTER_NAME_TAKEN')
+                ? `Another printer is already called “${name}”.`
+                : 'Could not rename this printer',
+              false,
+            );
+          } finally {
+            setBusyPrinterId(null);
+          }
+        })();
+      },
+    );
+  // chooseName only touches setters and a ref, so it is stable in practice.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [registered, loadPrinters]);
+
+  const handleChangeRole = useCallback((printer: RegisteredPrinter) => {
+    chooseRole((role) => {
+      void (async () => {
+        setBusyPrinterId(printer.id);
+        try {
+          await printersApi.update(printer.id, { role });
+          await loadPrinters();
+        } catch {
+          showToast('Could not change what this printer prints', false);
+        } finally {
+          setBusyPrinterId(null);
+        }
+      })();
+    }, printer.role);
+  }, [loadPrinters]);
+
+  /**
+   * Where a bill goes when nobody picks: the live app's Print Invoice, and any
+   * phone at a venue with only one invoice printer. The server keeps exactly one
+   * default per venue, so setting it here clears the old one.
+   */
+  const handleMakeDefault = useCallback(async (printer: RegisteredPrinter) => {
+    setBusyPrinterId(printer.id);
+    try {
+      await printersApi.update(printer.id, { isDefaultBill: true });
+      await loadPrinters();
+      showToast(`Bills print on ${printer.name} unless someone picks another`, true);
+    } catch {
+      showToast(`Could not make ${printer.name} the default`, false);
+    } finally {
+      setBusyPrinterId(null);
+    }
+  }, [loadPrinters]);
+
+  const handleTakeOverHost = useCallback(async (printer: RegisteredPrinter) => {
+    setBusyPrinterId(printer.id);
+    try {
+      await printersApi.claimHost(printer.id, await getPrintDeviceId());
+      await loadPrinters();
+      showToast(`This device now drives ${printer.name}`, true);
+    } catch (err: any) {
+      showToast(
+        hasCode(err, 'PRINTER_BLUETOOTH_HOST_TAKEN')
+          ? 'This device already has a Bluetooth printer. A phone can only drive one.'
+          : `Could not take over ${printer.name}`,
+        false,
+      );
+    } finally {
+      setBusyPrinterId(null);
+    }
+  }, [loadPrinters]);
+
+  const handleTestPrinter = useCallback(async (printer: RegisteredPrinter) => {
+    setBusyPrinterId(printer.id);
+    try {
+      const result = await printTest({ printerId: printer.id });
+      showToast(result === 'printed' ? `Test sent to ${printer.name}` : `${printer.name} did not respond`, result === 'printed');
+    } finally {
+      setBusyPrinterId(null);
+    }
+  }, []);
+
+  const handleRemovePrinter = useCallback((printer: RegisteredPrinter) => {
+    setDialog({
+      visible: true,
+      title: `Remove ${printer.name}?`,
+      message: printer.role === 'BILL'
+        ? 'Bills will stop printing here.'
+        : 'Kitchen tickets will stop printing here.',
+      actions: [
+        // ThemedDialog never closes itself — each button must, or its overlay
+        // stays up and swallows every tap until the back button.
+        { label: 'Cancel', onPress: () => setDialog((d) => ({ ...d, visible: false })) },
+        {
+          label: 'Remove',
+          variant: 'danger' as const,
+          onPress: () => {
+            setDialog((d) => ({ ...d, visible: false }));
+            void (async () => {
+              setBusyPrinterId(printer.id);
+              try {
+                await printersApi.remove(printer.id);
+                await loadPrinters();
+                showResult({
+                  kind: 'removed',
+                  title: 'Printer removed',
+                  detail: printer.name,
+                  message: ROLE_RESULT[printer.role]?.removed ?? ROLE_RESULT.KOT.removed,
+                });
+              } catch {
+                showToast(`Could not remove ${printer.name}`, false);
+              } finally {
+                setBusyPrinterId(null);
+              }
+            })();
+          },
+        },
+      ],
+    });
+  }, [loadPrinters]);
+
+  // A default only means something once there's a choice to make.
+  const invoicePrinterCount = registered.filter(
+    (p) => p.enabled && (p.role === 'BILL' || p.role === 'BOTH'),
+  ).length;
+
   // ── Pair (Bluetooth) ─────────────────────────────────────────────────────────
 
   function handlePair(device: BluetoothDevice) {
-    // Ask for the paper width first, then pair — fixes the old always-58mm bug.
-    chooseWidth((width) => void doPairBluetooth(device, width));
+    // Width first (fixes the old always-58mm bug), then what it prints.
+    chooseWidth((width) => chooseRole((role) =>
+      askNameThen(device.name || 'Bluetooth printer', (name) => void doPairBluetooth(device, width, role, name))));
   }
 
-  async function doPairBluetooth(device: BluetoothDevice, width: number) {
-    if (!staffInfo?.id) return;
+  // Registered on the SERVER first, then mirrored locally by loadPrinters. The
+  // registry is the source of truth now, so a local-only pairing would just be
+  // wiped by the next sync — and a venue with two printers needs both devices
+  // to agree on which one drives what.
+  async function doPairBluetooth(device: BluetoothDevice, width: number, role: PrinterRole, name: string) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setSelectedDevice(device);
     setIsPairing(true);
     try {
-      await pair(device, width);
-      // Also register on backend — deviceId marks THIS device as the sink so
-      // any previously-paired device stands down (see printSink self-heal).
-      await printerApi.setPairing({
-        pairedTo: staffInfo.id,
-        name: device.name,
+      await registerPrinter({
+        name,
+        systemName: device.name || 'Bluetooth printer',
+        role,
+        transport: 'BLUETOOTH',
         address: device.address,
         paperWidth: width,
-        deviceId: await getPrintDeviceId(),
       });
-      setLocalStatus(getStatus());
-      setConfig(getConfig());
-      await loadServerStatus();
       setShowScanView(false);
-      showToast(`Paired with ${device.name} · ${width}mm`, true);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch {
-      showToast(`Failed to pair with ${device.name}`, false);
+    } catch (err: any) {
+      showToast(
+        hasCode(err, 'PRINTER_BLUETOOTH_HOST_TAKEN')
+          ? 'This device already drives a Bluetooth printer. Bluetooth printers pair one-to-one — use a second device, or a network/USB printer.'
+          : hasCode(err, 'PRINTER_NAME_TAKEN')
+            ? `Another printer is already called “${name}”.`
+            : `Failed to pair with ${device.name}`,
+        false,
+      );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setIsPairing(false);
@@ -232,33 +526,31 @@ export default function PrinterScreen() {
       showToast('Enter the printer IP address', false);
       return;
     }
-    chooseWidth((width) => void doPairNetwork(ip, width));
+    chooseWidth((width) => chooseRole((role) =>
+      askNameThen(`Network printer (${ip})`, (name) => void doPairNetwork(ip, width, role, name))));
   }
 
-  async function doPairNetwork(ip: string, width: number) {
-    if (!staffInfo?.id) return;
+  async function doPairNetwork(ip: string, width: number, role: PrinterRole, name: string) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     const port = parseInt(networkPort, 10) || 9100;
-    const name = `Network printer (${ip})`;
     setIsPairing(true);
     try {
-      await pairNetwork({ ip, port, name }, width);
-      await printerApi.setPairing({
-        pairedTo: staffInfo.id,
+      await registerPrinter({
         name,
-        address: `tcp://${ip}:${port}`,
-        paperWidth: width,
-        deviceId: await getPrintDeviceId(),
+        systemName: `Network printer (${ip})`,
+        role, transport: 'NETWORK', ip, port, paperWidth: width,
       });
-      setLocalStatus(getStatus());
-      setConfig(getConfig());
-      await loadServerStatus();
       setShowScanView(false);
       setShowNetworkForm(false);
-      showToast(`Paired with ${name} · ${width}mm`, true);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch {
-      showToast('Failed to reach the network printer. Check the IP and that it is on the same WiFi.', false);
+    } catch (err: any) {
+      showToast(
+        hasCode(err, 'PRINTER_DUPLICATE')
+          ? 'That printer is already in the list.'
+          : hasCode(err, 'PRINTER_NAME_TAKEN')
+            ? `Another printer is already called “${name}”.`
+            : 'Failed to reach the network printer. Check the IP and that it is on the same WiFi.',
+        false,
+      );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setIsPairing(false);
@@ -278,33 +570,37 @@ export default function PrinterScreen() {
   }, [usbAvailable]);
 
   function handlePairUsb(device: UsbPrinterDevice) {
-    chooseWidth((width) => void doPairUsb(device, width));
+    chooseWidth((width) => chooseRole((role) =>
+      askNameThen(device.deviceName || 'USB printer', (name) => void doPairUsb(device, width, role, name))));
   }
 
-  async function doPairUsb(device: UsbPrinterDevice, width: number) {
-    if (!staffInfo?.id) return;
+  async function doPairUsb(device: UsbPrinterDevice, width: number, role: PrinterRole, name: string) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setSelectedUsb(device);
     setIsPairing(true);
     try {
-      await pairUsb(device, width);
-      await printerApi.setPairing({
-        pairedTo: staffInfo.id,
-        name: device.deviceName,
-        // Mirrors the tcp:// convention so the server keeps one address column
-        // that encodes the transport.
-        address: `usb://${device.vendorId}:${device.productId}`,
+      await registerPrinter({
+        name,
+        systemName: device.deviceName || 'USB printer',
+        role,
+        transport: 'USB',
+        usbVendorId: device.vendorId,
+        usbProductId: device.productId,
         paperWidth: width,
-        deviceId: await getPrintDeviceId(),
       });
-      setLocalStatus(getStatus());
-      setConfig(getConfig());
-      await loadServerStatus();
       setShowScanView(false);
-      showToast(`Paired with ${device.deviceName} · ${width}mm`, true);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch {
-      showToast(`Failed to pair with ${device.deviceName}`, false);
+    } catch (err: any) {
+      showToast(
+        hasCode(err, 'PRINTER_DUPLICATE')
+          // Two printers of the SAME MODEL report identical vendor/product ids,
+          // and neither platform can currently tell them apart. Say so rather
+          // than adding a second row that silently drives the first printer.
+          ? 'A printer with these USB ids is already in the list. Two identical USB printers cannot be told apart yet — use different models, or connect one over the network.'
+          : hasCode(err, 'PRINTER_NAME_TAKEN')
+            ? `Another printer is already called “${name}”.`
+            : `Failed to pair with ${device.deviceName}`,
+        false,
+      );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setIsPairing(false);
@@ -325,13 +621,19 @@ export default function PrinterScreen() {
           label: 'Unpair', variant: 'danger', onPress: async () => {
             setDialog((d) => ({ ...d, visible: false }));
             setIsUnpairing(true);
+            const name = config?.name ?? 'Printer';
             try {
               await unpair();
               await printerApi.setPairing({ pairedTo: null });
               setLocalStatus('unpaired');
               setConfig(null);
               await loadServerStatus();
-              showToast('Printer has been unpaired', false);
+              showResult({
+                kind: 'removed',
+                title: 'Printer unpaired',
+                detail: name,
+                message: 'This phone no longer prints. You can pair again any time.',
+              });
             } catch {
               showToast('Failed to unpair', false);
             } finally {
@@ -383,9 +685,100 @@ export default function PrinterScreen() {
         contentContainerStyle={{ paddingBottom: insets.bottom + Spacing.xl }}
         showsVerticalScrollIndicator={false}
       >
+        {/* The venue's printers. Every device sees the same list; the ones this
+            device physically drives are marked, and only those can be tested
+            from here. */}
+        <View style={styles.card}>
+          <Text style={styles.sectionLabel}>PRINTERS</Text>
+
+          {registered.length === 0 && (
+            <Text style={styles.emptyText}>
+              No printers yet. Add one below and choose what it prints.
+            </Text>
+          )}
+
+          {registered.map((printer) => {
+            const mine = printer.hostDeviceId === myDeviceId;
+            const busy = busyPrinterId === printer.id;
+            return (
+              <View key={printer.id} style={styles.printerRow}>
+                <View style={styles.printerHead}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.printerName} numberOfLines={1}>{printer.name}</Text>
+                    {!!printer.systemName && printer.systemName !== printer.name && (
+                      <Text style={styles.printerSystem} numberOfLines={1}>{printer.systemName}</Text>
+                    )}
+                    <Text style={styles.printerMeta}>
+                      {ROLE_LABEL[printer.role]} · {printer.paperWidth}mm
+                      {TRANSPORT_LABEL[printer.transport.toLowerCase()] ?? ''}
+                    </Text>
+                    <Text style={[styles.printerHost, mine && styles.printerHostMine]}>
+                      {mine
+                        ? 'Connected to this device'
+                        : printer.hostDeviceId
+                          ? 'Connected to another device'
+                          : 'Not connected to any device'}
+                      {printer.lastError ? ' · last print failed' : ''}
+                    </Text>
+                    {invoicePrinterCount >= 2 && printer.isDefaultBill && (
+                      <Text style={styles.printerDefault}>Default for bills</Text>
+                    )}
+                  </View>
+                  {busy && <ActivityIndicator size="small" color={QuinckleColors.primary} />}
+                </View>
+
+                <View style={styles.printerActions}>
+                  {mine ? (
+                    <TouchableOpacity
+                      style={styles.printerAction}
+                      onPress={() => void handleTestPrinter(printer)}
+                      disabled={busy}
+                      activeOpacity={0.75}
+                    >
+                      <Ionicons name="print-outline" size={16} color={QuinckleColors.primary} />
+                      <Text style={[styles.printerActionText, { color: QuinckleColors.primary }]}>Test</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.printerAction}
+                      onPress={() => void handleTakeOverHost(printer)}
+                      disabled={busy}
+                      activeOpacity={0.75}
+                    >
+                      <Ionicons name="phone-portrait-outline" size={16} color={QuinckleColors.primary} />
+                      <Text style={[styles.printerActionText, { color: QuinckleColors.primary }]}>Use this device</Text>
+                    </TouchableOpacity>
+                  )}
+
+                  <TouchableOpacity
+                    style={styles.printerAction}
+                    onPress={() => { setMenuPrinter(printer); setMenuOpen(true); }}
+                    disabled={busy}
+                    activeOpacity={0.75}
+                    accessibilityLabel={`More actions for ${printer.name}`}
+                  >
+                    <Ionicons name="ellipsis-horizontal" size={16} color={QuinckleColors.textPrimary} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            );
+          })}
+        </View>
+
+        {/* Venue-wide print settings (auto-print, bill QR, logo position) are
+            edited in the partner app and dashboard; crew devices only follow
+            them. Editing them here let any crew phone switch off auto-print
+            for the whole venue. */}
+        <View style={styles.noteRow}>
+          <Ionicons name="information-circle-outline" size={16} color={QuinckleColors.textTertiary} />
+          <Text style={styles.noteText}>
+            Auto-print and bill QR settings are managed in the Partner app.
+          </Text>
+        </View>
+
         {/* Status card */}
         <View style={styles.card}>
-          <Text style={styles.sectionLabel}>PRINTER STATUS</Text>
+          <Text style={styles.sectionLabel}>THIS DEVICE</Text>
 
           <View style={styles.statusRow}>
             <View style={[
@@ -417,22 +810,6 @@ export default function PrinterScreen() {
             </View>
           </View>
 
-          {/* Auto-print toggle */}
-          <View style={styles.autoPrintRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.autoPrintLabel}>Auto-print KOT</Text>
-              <Text style={styles.autoPrintSub}>Print automatically on every new order</Text>
-            </View>
-            <TouchableOpacity
-              onPress={handleAutoPrintToggle}
-              disabled={autoPrintSaving}
-              activeOpacity={0.8}
-              style={[styles.toggleTrack, kotAutoPrint && styles.toggleTrackOn]}
-            >
-              <View style={[styles.toggleThumb, kotAutoPrint && styles.toggleThumbOn]} />
-            </TouchableOpacity>
-          </View>
-
           {/* UPI scan-to-pay QR on bills */}
           <View style={styles.autoPrintRow}>
             <View style={{ flex: 1 }}>
@@ -447,6 +824,24 @@ export default function PrinterScreen() {
               <View style={[styles.toggleThumb, upiQr && styles.toggleThumbOn]} />
             </TouchableOpacity>
           </View>
+
+          {/* Venue logo at the top of bills — Android only, the iOS printer
+              bridge can't print images. */}
+          {Platform.OS === 'android' && (
+            <View style={styles.autoPrintRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.autoPrintLabel}>Print logo on bills</Text>
+                <Text style={styles.autoPrintSub}>Your restaurant logo at the top of every bill from this device</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => handleBillLogoToggle(!billLogo)}
+                activeOpacity={0.8}
+                style={[styles.toggleTrack, billLogo && styles.toggleTrackOn]}
+              >
+                <View style={[styles.toggleThumb, billLogo && styles.toggleThumbOn]} />
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
 
         {/* Actions */}
@@ -652,6 +1047,33 @@ export default function PrinterScreen() {
         </View>
       )}
 
+      <PrinterActionsSheet
+        visible={menuOpen}
+        printerName={menuPrinter?.name ?? 'Printer'}
+        canMakeDefault={
+          !!menuPrinter
+          && invoicePrinterCount >= 2
+          && (menuPrinter.role === 'BILL' || menuPrinter.role === 'BOTH')
+          && !menuPrinter.isDefaultBill
+        }
+        onRename={() => fromMenu(handleRename)}
+        onChangeRole={() => fromMenu(handleChangeRole)}
+        onMakeDefault={() => fromMenu((p) => void handleMakeDefault(p))}
+        onRemove={() => fromMenu(handleRemovePrinter)}
+        onClose={() => setMenuOpen(false)}
+      />
+
+      <PrinterResultSheet
+        visible={resultOpen}
+        result={result}
+        onClose={() => setResultOpen(false)}
+        onTestPrint={resultPrinter ? () => {
+          const printer = resultPrinter;
+          setResultOpen(false);
+          void handleTestPrinter(printer);
+        } : undefined}
+      />
+
       <ThemedDialog
         visible={dialog.visible}
         title={dialog.title}
@@ -665,6 +1087,24 @@ export default function PrinterScreen() {
         onPick={handleWidthPick}
         onClose={() => setWidthPickerVisible(false)}
       />
+
+      <NamePrinterSheet
+        visible={nameOpen}
+        title={nameSheet.title}
+        initialName={nameSheet.initialName}
+        systemName={nameSheet.systemName}
+        takenNames={nameSheet.takenNames}
+        skipLabel={nameSheet.skipLabel}
+        onSave={(name) => finishName(name)}
+        onClose={() => finishName(null)}
+      />
+
+      <RolePickerSheet
+        visible={rolePickerVisible}
+        current={rolePickerCurrent}
+        onPick={handleRolePick}
+        onClose={() => setRolePickerVisible(false)}
+      />
     </View>
   );
 }
@@ -672,6 +1112,50 @@ export default function PrinterScreen() {
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
+  noteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginHorizontal: Spacing.lg,
+    marginTop: Spacing.md,
+    paddingHorizontal: Spacing.xs,
+  },
+  noteText: { flex: 1, fontSize: 12, color: QuinckleColors.textTertiary },
+  printerRow: {
+    paddingVertical: Spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: QuinckleColors.border,
+  },
+  printerHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  printerName: { fontSize: 15, fontWeight: '600', color: QuinckleColors.textPrimary },
+  printerSystem: { fontSize: 12, color: QuinckleColors.textMuted, marginTop: 1 },
+  printerMeta: { fontSize: 12, color: QuinckleColors.textSecondary, marginTop: 2 },
+  printerHost: { fontSize: 12, color: QuinckleColors.textMuted, marginTop: 2 },
+  printerHostMine: {
+    color: QuinckleColors.success,
+  },
+  printerDefault: { fontSize: 12, fontWeight: '600', color: QuinckleColors.primary, marginTop: 2 },
+  printerActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  printerAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: QuinckleColors.border,
+  },
+  printerActionText: { fontSize: 12, fontWeight: '600', color: QuinckleColors.textPrimary },
   root: { flex: 1, backgroundColor: QuinckleColors.background },
   header: {
     flexDirection: 'row',
@@ -760,7 +1244,6 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   toggleThumbOn: { alignSelf: 'flex-end' },
-
   actionsCard: {
     backgroundColor: QuinckleColors.surface,
     borderRadius: Radius.lg,

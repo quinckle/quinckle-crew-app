@@ -30,6 +30,7 @@ const ACTION_COPY: Record<PrivilegedAction, string> = {
   EXEMPT_SESSION: 'clear this whole bill',
   REFUND: 'refund this payment',
   VOID_POST_KOT: 'cancel food the kitchen has already made',
+  VOID_AFTER_BILL: 'take items off a bill that has already been printed',
 };
 
 /**

@@ -28,9 +28,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { kitchen, printerApi, restaurantApi } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
-import { printKot, getStatus as getPrinterStatus } from '../../services/printer';
-import { setSinkContext, drainPendingPrintJobs, handleSinkSuperseded } from '../../services/printSink';
+import { useResyncOnReturn } from '../../hooks/useResyncOnReturn';
+import { printKot, getStatus as getPrinterStatus, getPrinters } from '../../services/printer';
+import { applyAutoPrintSettings, kotAutoPrintFor, drainPendingPrintJobs, handleSinkSuperseded, watchPrintDispatch } from '../../services/printSink';
 import { getPrintDeviceId } from '../../services/printDevice';
+import { announceNewOrders } from '../../services/voiceAlerts';
 import { useAuth } from '../../context/AuthContext';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { BottomNavbar, type BottomNavTab } from '../../components/ui/BottomNavbar';
@@ -85,8 +87,8 @@ export default function CookDashboard() {
   // connection (getPrinterStatus), never on staff identity — the BT pairing is
   // the real single-sink guarantee, so any crew member on the paired device
   // can drive printing. (The old pairedById === staffInfo.id check silently
-  // killed auto-print whenever a different cook logged in.)
-  const kotAutoPrintRef = useRef(true);
+  // killed auto-print whenever a different cook logged in.) The toggles
+  // themselves live in the print sink — see kotAutoPrintFor.
 
   const [orders,        setOrders]        = useState<KitchenTicket[]>([]);
   const [completedOrders, setCompletedOrders] = useState<KitchenTicket[]>([]);
@@ -104,7 +106,7 @@ export default function CookDashboard() {
   // KOT drain: the SHARED implementation in printSink.ts (also used by the
   // staff screen + FGS) — flushes the ack outbox, pulls the server queue with
   // this device's sink identity, prints first prints + durable reprints. The
-  // auto-print toggle reaches it via setSinkContext.
+  // auto-print toggles reach it via applyAutoPrintSettings.
 
   // ── Data mapping ─────────────────────────────────────────────────────────
   const mapTicket = (t: any, isCompleted = false): KitchenTicket => ({
@@ -137,9 +139,10 @@ export default function CookDashboard() {
       const tickets: any[] = activeRes?.tickets ?? [];
 
       const incomingIds = new Set(tickets.map((t: any) => t.order_id as string));
-      const hasNew = tickets.some((t: any) => !knownOrderIdsRef.current.has(t.order_id));
-      if (hasNew && knownOrderIdsRef.current.size > 0) {
-        void playSound(require('../../assets/audio/notifications/kitchen notification.wav'));
+      const newTickets = tickets.filter((t: any) => !knownOrderIdsRef.current.has(t.order_id));
+      if (newTickets.length > 0 && knownOrderIdsRef.current.size > 0) {
+        const spoken = announceNewOrders(newTickets.map((t: any) => ({ id: t.order_id, channel: t.channel })));
+        if (!spoken) void playSound(require('../../assets/audio/notifications/kitchen notification.wav'));
       }
       knownOrderIdsRef.current = incomingIds;
 
@@ -230,10 +233,7 @@ export default function CookDashboard() {
     // transient status-fetch failure never silently disables printing.
     void printerApi.getStatus()
       .then((res) => {
-        if (typeof res?.data?.kotAutoPrint === 'boolean') {
-          kotAutoPrintRef.current = res.data.kotAutoPrint;
-          setSinkContext({ autoPrint: res.data.kotAutoPrint });
-        }
+        applyAutoPrintSettings(res?.data);
       })
       .catch(() => { /* keep last known toggle value */ });
 
@@ -258,6 +258,13 @@ export default function CookDashboard() {
       unwatchConn?.();
     };
   }, [staffInfo?.restaurantId]);
+
+  // The same gaps lose the ticket pushes — reload the board once the tablet is
+  // back. loadOrders chimes if tickets arrived meanwhile.
+  useResyncOnReturn(
+    staffInfo?.restaurantId ? `kitchen:${staffInfo.restaurantId}` : null,
+    () => void loadOrders(),
+  );
 
   // Keep the screen awake while this device is the print sink, so Android can't
   // suspend the JS runtime (and miss the live Ably push) when the kitchen
@@ -292,7 +299,8 @@ export default function CookDashboard() {
       const orderId = data?.orderId as string | undefined;
       if (orderId && !knownOrderIdsRef.current.has(orderId)) {
         knownOrderIdsRef.current.add(orderId);
-        void playSound(require('../../assets/audio/notifications/kitchen notification.wav'));
+        const spoken = announceNewOrders([{ id: orderId, channel: data?.channel }]);
+        if (!spoken) void playSound(require('../../assets/audio/notifications/kitchen notification.wav'));
       }
       void loadOrders();
 
@@ -301,7 +309,7 @@ export default function CookDashboard() {
       // by the auto-print toggle. The event-driven reconciliation drain (mount /
       // foreground / socket reconnect) is the backstop if this push is ever
       // missed; printKot de-dupes so the push and the drain can't double-print.
-      if (kotAutoPrintRef.current && getPrinterStatus() === 'connected') {
+      if (kotAutoPrintFor(data?.channel) && getPrinterStatus() === 'connected') {
         // items come directly from the NewOrderEvent shape
         const items = (data?.items ?? []).map((i: any) => ({
           name: i.menuItemName ?? i.name ?? '',
@@ -369,24 +377,38 @@ export default function CookDashboard() {
     // Sink handover — another device paired (or the pairing was cleared).
     // Clear the stale local pairing so this device can never dual-print
     // against the new sink (critical for LAN/tcp printers).
+    // Registry-managed printers are exempt from both: these events come from
+    // the legacy /print/pair route, where "another device paired" meant "you are
+    // no longer the sink". Under the registry two devices legitimately hold a
+    // printer each, and standing down here would wipe a correct setup.
     const unsubPrinterPaired = subscribeChannel(`partner:${restaurantId}`, 'printer_paired', (data: any) => {
       void (async () => {
         if (getPrinterStatus() !== 'connected') return;
+        if (getPrinters().some((p) => p.id)) return;
         const myDeviceId = await getPrintDeviceId();
         if (data?.deviceId !== myDeviceId) await handleSinkSuperseded();
       })();
     });
     const unsubPrinterUnpaired = subscribeChannel(`partner:${restaurantId}`, 'printer_unpaired', () => {
-      if (getPrinterStatus() === 'connected') void handleSinkSuperseded();
+      if (getPrinterStatus() !== 'connected') return;
+      if (getPrinters().some((p) => p.id)) return;
+      void handleSinkSuperseded();
     });
 
     // Keep the auto-print toggle in sync when changed from any device/dashboard.
     const unsubAutoPrint = subscribeChannel(`partner:${restaurantId}`, 'kot_autoprint_changed', (data: any) => {
-      if (typeof data?.enabled === 'boolean') {
-        kotAutoPrintRef.current = data.enabled;
-        setSinkContext({ autoPrint: data.enabled });
-      }
+      if (typeof data?.enabled === 'boolean') applyAutoPrintSettings({ kotAutoPrint: data.enabled });
     });
+    const unsubTakeawayAutoPrint = subscribeChannel(`partner:${restaurantId}`, 'takeaway_autoprint_changed', (data: any) => {
+      applyAutoPrintSettings(data);
+    });
+    const unsubPrintSettings = subscribeChannel(`partner:${restaurantId}`, 'print_settings_changed', (data: any) => {
+      applyAutoPrintSettings(data);
+    });
+
+    // Registry changes + bills dispatched to a printer this device drives —
+    // the SAME shared implementation the staff dashboard uses.
+    const unsubDispatch = watchPrintDispatch(restaurantId);
 
     return () => {
       unsubNew();
@@ -395,8 +417,11 @@ export default function CookDashboard() {
       unsubServed();
       unsubReprint();
       unsubAutoPrint();
+      unsubTakeawayAutoPrint();
+      unsubPrintSettings();
       unsubPrinterPaired();
       unsubPrinterUnpaired();
+      unsubDispatch();
     };
   }, [staffInfo?.restaurantId, staffInfo?.restaurantName, staffInfo?.id, loadOrders]);
 
