@@ -444,6 +444,19 @@ export default function StaffDashboard() {
   const [pendingCashCount, setPendingCashCount] = useState(0);
   const [pickupOrders, setPickupOrders] = useState<PickupOrder[]>([]);
   const pickupOrderIdsRef = useRef<Set<string>>(new Set());
+  // Mirror of pickupOrders for event handlers that need the current list
+  // without reading it inside a setState updater (which may run later).
+  const pickupOrdersRef = useRef<PickupOrder[]>([]);
+  useEffect(() => { pickupOrdersRef.current = pickupOrders; }, [pickupOrders]);
+  // Serve ticks sent but not yet confirmed, itemId → { qty, seq }. A refetch
+  // that lands meanwhile still has the old count and used to untick the line
+  // the crew just ticked; loadPickupOrders lays these over the server's count.
+  const pendingServesRef = useRef<Map<string, { qty: number; seq: number }>>(new Map());
+  const serveSeqRef = useRef(0);
+  // Bumped per loadPickupOrders call. A slow response that lands after a newer
+  // one is dropped — otherwise an old, empty list could replace a full one and
+  // the tab showed "All caught up" with food still owed.
+  const pickupLoadSeqRef = useRef(0);
 
   // DUAL_CHANNEL "item ready" toast cards. In DUAL_CHANNEL the kitchen marks
   // items done; loadPickupOrders diffs item_status transitions (pending → done)
@@ -910,34 +923,39 @@ export default function StaffDashboard() {
     // its calm in-place celebration. completedAt stays unset during the
     // celebration; handleCompletionFinished sets it (as ISO) when the
     // animation finishes, which is what moves the card to the Completed list.
-    let triggersCompletion = false;
-    let previousQty = 0;
-    setPickupOrders((prev) =>
-      prev.map((order) => {
-        if (order.id !== orderId) return order;
-        const items = order.items.map((it) => {
-          if (it.id !== itemId) return it;
-          previousQty = it.servedQty;
-          const servedQty = Math.max(0, Math.min(it.qty, nextQty));
-          return { ...it, servedQty, isServed: servedQty >= it.qty };
-        });
-        if (!order.completedAt && items.every((it) => it.isServed)) {
-          triggersCompletion = true;
-        }
-        return { ...order, items };
-      }),
+    // Worked out from the current list, not inside the setState updater: React
+    // may run an updater later, leaving these at their initial values — so a
+    // failed tick reverted to 0 and the celebration could be skipped.
+    const current = pickupOrdersRef.current.find((o) => o.id === orderId);
+    const line = current?.items.find((it) => it.id === itemId);
+    if (!current || !line) return;
+    const previousQty = line.servedQty;
+    const servedQty = Math.max(0, Math.min(line.qty, nextQty));
+    const items = current.items.map((it) =>
+      it.id === itemId ? { ...it, servedQty, isServed: servedQty >= it.qty } : it,
     );
+    const triggersCompletion = !current.completedAt && items.every((it) => it.isServed);
 
+    setPickupOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, items } : o)));
     if (triggersCompletion) {
       setCompletingIds((prev) => (prev.includes(orderId) ? prev : [...prev, orderId]));
     }
 
-    // Fire-and-forget — realtime `order_served` event drives the refresh.
+    const seq = ++serveSeqRef.current;
+    pendingServesRef.current.set(itemId, { qty: servedQty, seq });
+    const settle = () => {
+      if (pendingServesRef.current.get(itemId)?.seq === seq) pendingServesRef.current.delete(itemId);
+    };
+
+    // Not awaited — the realtime `item_served` event drives the refresh.
     // Awaiting loadPickupOrders here used to snap the list mid-animation.
     void crewOrders
-      .serveItem(orderId, itemId, nextQty)
+      .serveItem(orderId, itemId, servedQty)
+      .then(settle)
       .catch(() => {
-        // Revert on failure
+        settle();
+        // Only undo if no later tap on this line has replaced this one.
+        if (pendingServesRef.current.has(itemId)) return;
         setPickupOrders((prev) =>
           prev.map((o) =>
             o.id !== orderId ? o : {
@@ -951,6 +969,9 @@ export default function StaffDashboard() {
           ),
         );
         setCompletingIds((prev) => prev.filter((id) => id !== orderId));
+        // The line may have been cancelled or served elsewhere — show what the
+        // server has rather than leaving a line that can never be ticked.
+        void loadPickupOrders();
       });
   };
 
@@ -1163,8 +1184,10 @@ export default function StaffDashboard() {
   }, [staffInfo?.restaurantId]);
 
   const loadPickupOrders = useCallback(async () => {
+    const loadSeq = ++pickupLoadSeqRef.current;
     try {
       const res = await crewOrders.getActive();
+      if (loadSeq !== pickupLoadSeqRef.current) return; // a newer load started
       const allOrders = res.orders ?? [];
 
       // Simplified flow: show any order that has unserved items, regardless of
@@ -1241,28 +1264,36 @@ export default function StaffDashboard() {
         pickupSeededRef.current = true;
       }
 
+      const pendingServes = pendingServesRef.current;
       const refreshedActive = serveableOrders.map(order => ({
         id: order.order_id,
         tableNo: channelLocationLabel(order.channel, { token: order.pickup_token ?? 'TK', tableNumber: order.table_number }),
-        items: order.items.map(item => ({
-          id: item.item_id,
-          // Bare name — PickupItemRow renders the quantity in its own column, so
-          // prefixing it here printed every line twice ("4× 4× Coffee").
-          name: item.name,
-          qty: item.qty,
-          // Fall back for a backend that predates partial ticking.
-          servedQty: item.served_qty ?? (item.served ? item.qty : 0),
-          orderedAt: (() => {
-            const d = new Date(order.placed_at);
-            return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-          })(),
-          isServed: item.served,
-          // In the simplified flow kitchen does not mark items — all unserved
-          // items are immediately available for staff to serve.
-          isReady: !item.served,
-          // Combo dishes carry "Combo: <title>" — same line the table screen shows.
-          note: item.note ?? null,
-        })),
+        items: order.items.map(item => {
+          // A tick still on its way to the server wins over the count we just
+          // read, which may predate it. Fall back for a backend that predates
+          // partial ticking.
+          const servedQty = pendingServes.get(item.item_id)?.qty
+            ?? item.served_qty ?? (item.served ? item.qty : 0);
+          const isServed = servedQty >= item.qty;
+          return {
+            id: item.item_id,
+            // Bare name — PickupItemRow renders the quantity in its own column, so
+            // prefixing it here printed every line twice ("4× 4× Coffee").
+            name: item.name,
+            qty: item.qty,
+            servedQty,
+            orderedAt: (() => {
+              const d = new Date(order.placed_at);
+              return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+            })(),
+            isServed,
+            // In the simplified flow kitchen does not mark items — all unserved
+            // items are immediately available for staff to serve.
+            isReady: !isServed,
+            // Combo dishes carry "Combo: <title>" — same line the table screen shows.
+            note: item.note ?? null,
+          };
+        }),
       }));
 
       pickupOrderIdsRef.current = new Set(refreshedActive.map(order => order.id));
