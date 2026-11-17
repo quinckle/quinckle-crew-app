@@ -3,6 +3,7 @@ import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 
 import { crewNotifications } from './api';
+import { getPrintDeviceId } from './printDevice';
 
 let lastRegisteredToken: string | null = null;
 let lastHeartbeatAt = 0;
@@ -51,6 +52,9 @@ export async function registerCrewPushNotifications(): Promise<void> {
 
   await crewNotifications.registerToken(token, {
     platform: Platform.OS,
+    // The same install id a printer records as its host, so the backend can
+    // send a print wake to just the phone that prints instead of every phone.
+    deviceId: await getPrintDeviceId(),
     deviceName: (Constants as any).deviceName ?? undefined,
     appVersion: Constants.expoConfig?.version ?? undefined,
   });

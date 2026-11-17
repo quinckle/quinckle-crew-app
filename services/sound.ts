@@ -3,11 +3,19 @@
  * swallowed — a sound must never break a business flow.
  */
 
+import { Platform } from 'react-native';
 import { Audio } from 'expo-av';
 
-async function play(file: number): Promise<void> {
+export async function play(file: number): Promise<void> {
   try {
-    await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
+    // Without staysActiveInBackground, expo-av on Android refuses audio focus
+    // once the app is minimised, so a new-order voice line pushed over Ably to
+    // a backgrounded phone was silently dropped. iOS suspends JS in the
+    // background anyway, so leave its audio session as it was.
+    await Audio.setAudioModeAsync({
+      playsInSilentModeIOS: true,
+      staysActiveInBackground: Platform.OS === 'android',
+    });
     const { sound } = await Audio.Sound.createAsync(file);
     await sound.playAsync();
     sound.setOnPlaybackStatusUpdate((s) => {

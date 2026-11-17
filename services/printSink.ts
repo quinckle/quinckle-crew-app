@@ -31,8 +31,13 @@
 
 import { Platform } from 'react-native';
 import notifee, { AndroidImportance, AndroidForegroundServiceType } from '@notifee/react-native';
-import { printerApi } from './api';
-import { printKot, getStatus as getPrinterStatus, flushAckOutbox, unpair } from './printer';
+import {
+  printKot, getStatus as getPrinterStatus, flushAckOutbox, unpair,
+  printDispatchedBill, syncLocalPrinters, getPrinters, applyBillPrintSettings, type LocalPrinter,
+} from './printer';
+import { printerApi, printersApi, type RegisteredPrinter } from './api';
+import { subscribeChannel } from './realtime';
+import { invalidateInvoicePrinters, primeInvoicePrinters } from './billPrint';
 import { getPrintDeviceId } from './printDevice';
 
 const CHANNEL_ID = 'kot-print-sink';
@@ -43,6 +48,10 @@ const NOTIFICATION_ID = 'kot-print-sink';
 let _restaurantName = '';
 let _authed = false;
 let _autoPrintEnabled = true;
+// Takeaway-only overrides from the Printer screen. Defaults match a backend
+// that predates them: takeaway KOTs print, takeaway bills wait for a tap.
+let _takeawayKotAutoPrint = true;
+let _takeawayInvoiceAutoPrint = false;
 let _runnerRegistered = false;
 let _serviceRunning = false;
 
@@ -53,10 +62,42 @@ export function setSinkContext(opts: {
   restaurantName?: string;
   authed?: boolean;
   autoPrint?: boolean;
+  takeawayKot?: boolean;
+  takeawayInvoice?: boolean;
 }): void {
   if (opts.restaurantName !== undefined) _restaurantName = opts.restaurantName;
   if (opts.authed !== undefined) _authed = opts.authed;
   if (opts.autoPrint !== undefined) _autoPrintEnabled = opts.autoPrint;
+  if (opts.takeawayKot !== undefined) _takeawayKotAutoPrint = opts.takeawayKot;
+  if (opts.takeawayInvoice !== undefined) _takeawayInvoiceAutoPrint = opts.takeawayInvoice;
+}
+
+/**
+ * Apply the venue's printer settings from /print/status, or from the
+ * print_settings_changed / kot_autoprint_changed / takeaway_autoprint_changed
+ * pushes (their fields are named the same). Fields that are absent keep their last known value, so a
+ * transient failure never silently disables printing.
+ */
+export function applyAutoPrintSettings(data: {
+  kotAutoPrint?: unknown;
+  takeawayKotAutoPrint?: unknown;
+  takeawayInvoiceAutoPrint?: unknown;
+} | null | undefined): void {
+  if (!data) return;
+  if (typeof data.kotAutoPrint === 'boolean') _autoPrintEnabled = data.kotAutoPrint;
+  if (typeof data.takeawayKotAutoPrint === 'boolean') _takeawayKotAutoPrint = data.takeawayKotAutoPrint;
+  if (typeof data.takeawayInvoiceAutoPrint === 'boolean') _takeawayInvoiceAutoPrint = data.takeawayInvoiceAutoPrint;
+  // Same payloads carry the bill settings (per-channel QR, logo position).
+  applyBillPrintSettings(data as Record<string, unknown>);
+}
+
+/**
+ * Should a first-print KOT for this channel print without anyone asking?
+ * Takeaway follows its own toggle; everything else follows Auto-print KOT.
+ * The ONE gate for the live push (both dashboards) and the queue drain.
+ */
+export function kotAutoPrintFor(channel: string | null | undefined): boolean {
+  return channel === 'TAKEAWAY' ? _takeawayKotAutoPrint : _autoPrintEnabled;
 }
 
 /**
@@ -87,6 +128,10 @@ export async function handleSinkSuperseded(): Promise<void> {
  * never on a timer. printKot de-dupes so overlapping triggers are harmless.
  */
 export async function drainPendingPrintJobs(): Promise<void> {
+  // Reconcile which printers are ours BEFORE draining: a device that has just
+  // been handed the counter printer should print its queue on this pass, not
+  // the next one.
+  await refreshLocalPrinters();
   if (getPrinterStatus() !== 'connected') return;
 
   // Retrying lost acks is always safe and keeps the server queue truthful for
@@ -94,10 +139,12 @@ export async function drainPendingPrintJobs(): Promise<void> {
   await flushAckOutbox();
 
   let jobs: Awaited<ReturnType<typeof printerApi.getPending>>['data'] = [];
+  let bills: NonNullable<Awaited<ReturnType<typeof printerApi.getPending>>['bills']> = [];
   try {
     const deviceId = await getPrintDeviceId();
     const res = await printerApi.getPending(25, deviceId);
     jobs = res?.data ?? [];
+    bills = res?.bills ?? [];
   } catch (err: any) {
     if (typeof err?.message === 'string' && err.message.includes('PRINTER_SINK_MISMATCH')) {
       await handleSinkSuperseded();
@@ -105,9 +152,16 @@ export async function drainPendingPrintJobs(): Promise<void> {
     return; // non-fatal — the next event-driven drain retries
   }
 
+  // Bills first: someone is standing at a table waiting for paper, whereas a
+  // kitchen ticket is already late by the time a drain is reconciling it.
+  // The auto-print toggle does NOT gate these — a bill is a human asking.
+  for (const bill of bills) {
+    await printDispatchedBill(bill);
+  }
+
   for (const job of jobs) {
     const isReprint = Boolean(job.isReprint);
-    if (!isReprint && !_autoPrintEnabled) continue;
+    if (!isReprint && !kotAutoPrintFor(job.channel)) continue;
     await printKot(
       {
         id: job.id,
@@ -130,8 +184,122 @@ export async function drainPendingPrintJobs(): Promise<void> {
       Boolean(job.isAddOn),
       // Reprints share one de-dupe key across the Ably push and this fallback,
       // keyed by requestedAt so a NEW reprint request still prints.
-      isReprint ? { dedupeKey: `reprint:${job.id}:${job.reprintRequestedAt ?? ''}` } : {},
+      {
+        // The queue addresses ONE printer per job now, so print exactly there
+        // rather than fanning out again across everything this device drives.
+        printerId: job.printerId,
+        ...(isReprint ? { dedupeKey: `reprint:${job.id}:${job.reprintRequestedAt ?? ''}` } : {}),
+      },
     );
+  }
+}
+
+/**
+ * Subscribe this device to the two registry events, in ONE place.
+ *
+ * Deliberately not written inline on each dashboard: the drains were forked per
+ * screen once before and drifted, which is why they were consolidated into
+ * drainPendingPrintJobs. Both dashboards call this; the work lives here.
+ *
+ * Returns an unsubscribe function for useEffect cleanup.
+ */
+export function watchPrintDispatch(restaurantId: string): () => void {
+  if (!restaurantId) return () => {};
+
+  const offPrintersChanged = subscribeChannel(
+    `partner:${restaurantId}`,
+    'printers_changed',
+    () => {
+      // The invoice-printer picker caches the venue's list; a printer added,
+      // re-roled or moved must show up on the very next Print Invoice.
+      invalidateInvoicePrinters();
+      void refreshLocalPrinters();
+    },
+  );
+
+  // Another staffer asked for a bill on a printer this device drives. The
+  // payload carries the finished bill — nothing is recomputed here.
+  const offBillPrint = subscribeChannel(
+    `partner:${restaurantId}`,
+    'bill_print_request',
+    (data: any) => {
+      if (!data?.jobId || !data?.bill) return;
+      void printDispatchedBill({
+        jobId: data.jobId,
+        printerId: data.printerId,
+        sessionId: data.sessionId,
+        bill: data.bill,
+      });
+    },
+  );
+
+  return () => { offPrintersChanged(); offBillPrint(); };
+}
+
+/**
+ * Re-read the registry and keep only the printers this device drives.
+ *
+ * Runs on the same events as a drain (mount, foreground, socket reconnect) and
+ * whenever the server broadcasts printers_changed. This is what makes moving a
+ * printer to another device take effect without anyone reinstalling anything:
+ * the old host simply stops finding it here.
+ */
+export async function refreshLocalPrinters(): Promise<void> {
+  let rows: RegisteredPrinter[];
+  let deviceId: string;
+  try {
+    deviceId = await getPrintDeviceId();
+    rows = (await printersApi.list())?.data ?? [];
+  } catch {
+    return; // offline — the cached list keeps printing until the next refresh
+  }
+  // Same list the invoice picker needs — warm its cache for free, so Print
+  // Invoice doesn't have to fetch it at the moment someone is waiting.
+  primeInvoicePrinters(rows, deviceId);
+
+  const hostedByUs = rows.filter((r) => r.enabled !== false && r.hostDeviceId === deviceId);
+
+  // Adoption. The migration backfills one Printer row per already-paired venue
+  // with NO host, because the paired device's UUID lives in Redis, not
+  // Postgres. Whoever holds the legacy pairing claims that row here, on its
+  // first drain after the update.
+  //
+  // Without this a device that paired the old way would sync to an empty list
+  // and stop printing the moment it was updated — the rollout hazard this whole
+  // path exists to avoid.
+  if (hostedByUs.length === 0) {
+    const legacy = getPrinters().find((p) => !p.id);
+    if (legacy) {
+      const unclaimed = rows.filter((r) => r.enabled !== false && !r.hostDeviceId);
+      const candidate = unclaimed.find((r) => addressesSamePrinter(r, legacy)) ?? unclaimed[0];
+      if (!candidate) {
+        // Nothing to adopt. Keep the legacy pairing rather than going silent —
+        // a duplicate ticket is recoverable, a kitchen that prints nothing is not.
+        return;
+      }
+      try {
+        await printersApi.claimHost(candidate.id, deviceId);
+        rows = (await printersApi.list())?.data ?? rows;
+      } catch {
+        return; // keep the legacy pairing and retry on the next drain
+      }
+    }
+  }
+
+  primeInvoicePrinters(rows, deviceId); // rows may have been re-read after a host claim
+  await syncLocalPrinters(rows, deviceId);
+}
+
+/** Do a server row and a local pre-registry pairing point at the same hardware? */
+function addressesSamePrinter(row: RegisteredPrinter, local: LocalPrinter): boolean {
+  const transport = String(row.transport ?? '').toLowerCase();
+  if (transport !== local.transport) return false;
+  switch (transport) {
+    case 'bluetooth': return !!local.address && row.address === local.address;
+    case 'network':   return !!local.ip && row.ip === local.ip;
+    case 'usb':       return row.usbVendorId === local.usbVendorId
+                          && row.usbProductId === local.usbProductId;
+    default: return false;
   }
 }
 
@@ -227,8 +395,10 @@ export function watchPrintSinkLifecycle(): () => void {
 
   const reconcile = () => {
     // Run the service only when it can actually do something: signed in, this
-    // device holds the printer, and auto-print is enabled.
-    const shouldRun = _authed && _autoPrintEnabled && getPrinterStatus() === 'connected';
+    // device holds the printer, and something prints without a tap — a KOT
+    // either way, or a takeaway bill the server dispatches on placement.
+    const anyAutoPrint = _autoPrintEnabled || _takeawayKotAutoPrint || _takeawayInvoiceAutoPrint;
+    const shouldRun = _authed && anyAutoPrint && getPrinterStatus() === 'connected';
     if (shouldRun && !_serviceRunning) {
       void startPrintSink();
     } else if (!shouldRun && _serviceRunning) {
