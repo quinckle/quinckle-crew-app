@@ -299,6 +299,7 @@ export interface MenuChange {
   changes: unknown;
   /** SYSTEM = nobody did it by hand: stock ran out, a temporary off ended, a combo sold out. */
   actorType: 'OWNER' | 'STAFF' | 'SYSTEM';
+  actorId?: string | null;
   actorName: string;
   actorRole: string | null;
   source: 'PARTNER' | 'CREW' | 'SYSTEM';
@@ -310,29 +311,60 @@ export interface MenuChange {
 export interface MenuActivityPage {
   success: boolean;
   data: MenuChange[];
+  /** Pass back as `cursor` for the next page; null on the last page. */
+  nextCursor?: string | null;
+  /** Older servers page by timestamp only. */
   nextBefore: string | null;
+  /** Rows matching the filters — first page only. */
+  total?: number;
   /** For an item/combo query: when the record was made, even before tracking began. */
   createdAt?: string;
 }
 
+/** Someone who has changed the menu — for the "Done by" filter. */
+export interface MenuActivityActor {
+  actorType: 'OWNER' | 'STAFF' | 'SYSTEM';
+  actorId: string | null;
+  actorName: string;
+  actorRole: string | null;
+  count: number;
+  lastAt: string;
+}
+
+export interface MenuActivityQuery {
+  itemId?: string;
+  comboId?: string;
+  kind?: MenuActivityKind | null;
+  entity?: MenuActivityEntity | null;
+  actorType?: MenuActivityActor['actorType'] | null;
+  actorId?: string | null;
+  /** ISO, inclusive. */
+  from?: string | null;
+  /** ISO, exclusive. */
+  to?: string | null;
+  cursor?: string | null;
+  limit?: number;
+}
+
 export const adminHistory = {
-  /** Newest first. Pass `before` = the previous page's nextBefore to load more. */
-  list: (filter: {
-    itemId?: string;
-    comboId?: string;
-    kind?: MenuActivityKind | null;
-    entity?: MenuActivityEntity | null;
-    before?: string | null;
-  }) => {
+  /** Newest first. Pass `cursor` = the previous page's nextCursor to load more. */
+  list: (f: MenuActivityQuery) => {
     const q = new URLSearchParams();
-    if (filter.itemId) q.set('itemId', filter.itemId);
-    if (filter.comboId) q.set('comboId', filter.comboId);
-    if (filter.kind) q.set('kind', filter.kind);
-    if (filter.entity) q.set('entity', filter.entity);
-    if (filter.before) q.set('before', filter.before);
+    if (f.itemId) q.set('itemId', f.itemId);
+    if (f.comboId) q.set('comboId', f.comboId);
+    if (f.kind) q.set('kind', f.kind);
+    if (f.entity) q.set('entity', f.entity);
+    if (f.actorType) q.set('actorType', f.actorType);
+    if (f.actorType && f.actorId) q.set('actorId', f.actorId);
+    if (f.from) q.set('from', f.from);
+    if (f.to) q.set('to', f.to);
+    if (f.cursor) q.set('cursor', f.cursor);
+    if (f.limit) q.set('limit', String(f.limit));
     const qs = q.toString();
     return call<MenuActivityPage>(`/history${qs ? `?${qs}` : ''}`);
   },
+  /** Everyone who has changed the menu, busiest first. */
+  actors: () => call<{ success: boolean; data: MenuActivityActor[] }>('/history/actors'),
 };
 
 // ── Photos ────────────────────────────────────────────────────────────────────

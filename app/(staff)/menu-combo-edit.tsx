@@ -22,7 +22,7 @@ import { QuinckleColors, Spacing, Radius, Typography } from '@/constants/Colors'
 import { AlertProvider, useAlert } from '@/components/menu-admin/AppAlert';
 import { useAuth } from '@/context/AuthContext';
 import { CAP } from '@/constants/capabilities';
-import { MenuActivity } from '@/components/menu-admin/MenuActivity';
+import { MenuActivityPreview } from '@/components/menu-admin/MenuActivityPreview';
 import { TimeField, formatSpan } from '@/components/menu-admin/TimeClockPicker';
 
 // ── Schedule helpers ──────────────────────────────────────────────────────────
@@ -808,7 +808,7 @@ function ComboEditScreen() {
             </View>
           </View>
 
-          {isEdit && <MenuActivity filter={{ comboId: params.id! }} />}
+          {isEdit && <MenuActivityPreview filter={{ comboId: params.id! }} title={title} />}
 
           {/* Delete button */}
           {isEdit && canDelete && (
