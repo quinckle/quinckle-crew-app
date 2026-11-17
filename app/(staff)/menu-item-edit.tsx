@@ -28,7 +28,7 @@ import { QuinckleColors, Spacing, Radius, Typography } from '@/constants/Colors'
 import { AlertProvider, useAlert } from '@/components/menu-admin/AppAlert';
 import { useAuth } from '@/context/AuthContext';
 import { CAP } from '@/constants/capabilities';
-import { MenuActivity } from '@/components/menu-admin/MenuActivity';
+import { MenuActivityPreview } from '@/components/menu-admin/MenuActivityPreview';
 import AvailabilityScheduleEditor, {
   emptySchedule,
   scheduleFromItem,
@@ -584,7 +584,7 @@ function ItemEditScreen() {
             </TouchableOpacity>
           )}
 
-          {isEdit && <MenuActivity filter={{ itemId: params.id! }} />}
+          {isEdit && <MenuActivityPreview filter={{ itemId: params.id! }} title={name} />}
 
           {/* Delete button (edit mode only) */}
           {isEdit && canDelete && (

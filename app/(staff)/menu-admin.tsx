@@ -22,7 +22,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QuinckleColors, Radius, Spacing, Typography } from '@/constants/Colors';
-import { MenuActivity } from '@/components/menu-admin/MenuActivity';
+import { MenuActivityPreview } from '@/components/menu-admin/MenuActivityPreview';
 import {
   adminCombos,
   adminMenu,
@@ -275,7 +275,7 @@ export default function MenuAdminScreen() {
             <Text style={styles.empty}>{q ? 'No combos match.' : 'No combos yet.'}</Text>
           )}
 
-          {tab === 'history' && <MenuActivity key={historyKey} filter={{}} showEntity framed={false} />}
+          {tab === 'history' && <MenuActivityPreview key={historyKey} filter={{}} count={10} framed={false} />}
         </ScrollView>
       )}
     </View>
