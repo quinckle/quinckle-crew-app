@@ -12,6 +12,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Animated,
   Dimensions,
   Easing,
@@ -28,6 +29,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
 import { BottomSheet } from './BottomSheet';
+import type { CrewOrderPreview } from '../../services/api';
 
 export interface CartLine {
   id: string;
@@ -102,6 +104,72 @@ const CartRow = React.memo(function CartRow({
   );
 });
 
+// ── Projected bill ───────────────────────────────────────────────────────────
+
+const money = (n: number) =>
+  `₹${n.toLocaleString('en-IN', { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 })}`;
+
+function BillLine({ label, value, strong, muted }: { label: string; value: string; strong?: boolean; muted?: boolean }) {
+  return (
+    <View style={styles.billLine}>
+      <Text style={[styles.billLabel, strong && styles.billStrong, muted && styles.billMuted]} numberOfLines={1}>{label}</Text>
+      <Text style={[styles.billValue, strong && styles.billStrong, muted && styles.billMuted]}>{value}</Text>
+    </View>
+  );
+}
+
+/**
+ * The bill once this order lands — every figure straight from the server's
+ * preview (same pricing as placing the order). Nothing is added up here.
+ */
+function ProjectedBill({ bill }: { bill: NonNullable<CartReviewSheetProps['bill']> }) {
+  const { data, state } = bill;
+  if (!data) {
+    return (
+      <View style={styles.billCard}>
+        <Text style={styles.billHeading}>Bill</Text>
+        {state === 'error'
+          ? <Text style={styles.billNote}>Couldn&apos;t price the bill — the order can still be placed.</Text>
+          : <View style={styles.billLoading}><ActivityIndicator size="small" color={QuinckleColors.textTertiary} /><Text style={styles.billNote}>Working out taxes…</Text></View>}
+      </View>
+    );
+  }
+  const p = data.projected;
+  const rates = p.tax_lines.filter((l) => l.amount > 0);
+  // One rate reads "CGST 2.5%"; several are listed rate by rate so the split
+  // on screen matches the tax invoice.
+  return (
+    <View style={[styles.billCard, state === 'loading' && { opacity: 0.55 }]}>
+      <View style={styles.billHeadRow}>
+        <Text style={styles.billHeading}>Bill after this order</Text>
+        {state === 'loading' && <ActivityIndicator size="small" color={QuinckleColors.textTertiary} />}
+      </View>
+      {data.current_total > 0 && (
+        <>
+          <BillLine label="Already on the bill" value={money(data.current_total)} muted />
+          <BillLine label="This order" value={money(data.order.total)} muted />
+          <View style={styles.billRule} />
+        </>
+      )}
+      <BillLine label="Item total" value={money(p.subtotal)} />
+      {p.discount > 0 && <BillLine label={data.order.discount_note && data.current_total === 0 ? data.order.discount_note : 'Discount'} value={`−${money(p.discount)}`} />}
+      {p.charge_lines.filter((c) => c.amount !== 0).map((c) => (
+        <BillLine key={c.id} label={c.name} value={money(c.amount)} />
+      ))}
+      {rates.map((l) => (
+        <React.Fragment key={l.rate}>
+          <BillLine label={`CGST ${l.rate / 2}%`} value={money(l.cgst)} />
+          <BillLine label={`SGST ${l.rate / 2}%`} value={money(l.sgst)} />
+        </React.Fragment>
+      ))}
+      {p.tip > 0 && <BillLine label="Tip" value={money(p.tip)} />}
+      {p.round_off !== 0 && <BillLine label="Round off" value={`${p.round_off < 0 ? '−' : ''}${money(Math.abs(p.round_off))}`} muted />}
+      <View style={styles.billRule} />
+      <BillLine label="Total bill" value={money(p.total)} strong />
+    </View>
+  );
+}
+
 // ── Public component ─────────────────────────────────────────────────────────
 
 export interface CartReviewSheetProps {
@@ -115,10 +183,12 @@ export interface CartReviewSheetProps {
   onDec: (id: string) => void;
   onCheckout: () => void;
   ctaLabel?: string;
+  /** Dine-in only: the server-priced bill once this order lands. */
+  bill?: { data: CrewOrderPreview | null; state: 'idle' | 'loading' | 'error' };
 }
 
 export function CartReviewSheet({
-  visible, onClose, isWide, lines, total, onInc, onDec, onCheckout, ctaLabel = 'Place Order',
+  visible, onClose, isWide, lines, total, onInc, onDec, onCheckout, ctaLabel = 'Place Order', bill,
 }: CartReviewSheetProps) {
   const insets = useSafeAreaInsets();
   const count = useMemo(() => lines.reduce((a, l) => a + l.qty, 0), [lines]);
@@ -137,6 +207,7 @@ export function CartReviewSheet({
       showsVerticalScrollIndicator={false}
       keyboardShouldPersistTaps="handled"
       contentContainerStyle={styles.listContent}
+      ListFooterComponent={bill && lines.length > 0 ? <ProjectedBill bill={bill} /> : null}
       ListEmptyComponent={
         <View style={styles.empty}>
           <Ionicons name="cart-outline" size={30} color={QuinckleColors.textMuted} />
@@ -149,8 +220,12 @@ export function CartReviewSheet({
   const footer = (
     <View style={[styles.footer, { paddingBottom: Spacing.lg }]}>
       <View style={styles.footerTotals}>
-        <Text style={styles.footerCount}>{count} item{count !== 1 ? 's' : ''}</Text>
-        <Text style={styles.footerTotal}>₹{total.toFixed(0)}</Text>
+        <Text style={styles.footerCount}>
+          {count} item{count !== 1 ? 's' : ''}{bill?.data ? ' · bill total' : ''}
+        </Text>
+        <Text style={styles.footerTotal}>
+          {bill?.data ? money(bill.data.projected.total) : `₹${total.toFixed(0)}`}
+        </Text>
       </View>
       <TouchableOpacity
         style={[styles.cta, lines.length === 0 && { opacity: 0.4 }]}
@@ -159,7 +234,6 @@ export function CartReviewSheet({
         activeOpacity={0.85}
       >
         <Text style={styles.ctaText}>{ctaLabel}</Text>
-        <Ionicons name="arrow-forward" size={16} color="#fff" />
       </TouchableOpacity>
     </View>
   );
@@ -273,6 +347,23 @@ const styles = StyleSheet.create({
   // Empty
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.md, paddingVertical: Spacing.huge },
   emptyText: { ...Typography.caption, color: QuinckleColors.textMuted },
+
+  // Projected bill
+  billCard: {
+    marginTop: Spacing.lg, padding: Spacing.lg, gap: 7,
+    borderRadius: Radius.lg, borderWidth: 1, borderColor: QuinckleColors.border,
+    backgroundColor: QuinckleColors.surfaceElevated,
+  },
+  billHeadRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  billHeading: { ...Typography.label, color: QuinckleColors.textTertiary, marginBottom: 2 },
+  billLine: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.md },
+  billLabel: { ...Typography.caption, color: QuinckleColors.textSecondary, flexShrink: 1 },
+  billValue: { ...Typography.caption, color: QuinckleColors.textPrimary, fontVariant: ['tabular-nums'] },
+  billMuted: { color: QuinckleColors.textTertiary },
+  billStrong: { ...Typography.body, fontWeight: '700', color: QuinckleColors.textPrimary },
+  billRule: { height: StyleSheet.hairlineWidth, backgroundColor: QuinckleColors.border, marginVertical: 2 },
+  billLoading: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  billNote: { ...Typography.caption, color: QuinckleColors.textTertiary },
 
   // Footer
   footer: {

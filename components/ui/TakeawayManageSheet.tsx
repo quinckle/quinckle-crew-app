@@ -135,6 +135,7 @@ function DeletableRow({
           <Animated.View style={[styles.strike, { width: strikeW }]} pointerEvents="none" />
         </View>
         {item.modifiers ? <Text style={styles.rowSub} numberOfLines={1}>{item.modifiers}</Text> : null}
+        {item.notes ? <Text style={styles.rowNote} numberOfLines={2}>“{item.notes}”</Text> : null}
       </Animated.View>
       <TouchableOpacity
         onPress={() => onRequestDelete(item)}
@@ -302,6 +303,7 @@ const styles = StyleSheet.create({
   rowTitle: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '600' },
   qty: { color: QuinckleColors.textSecondary, fontWeight: '700' },
   rowSub: { color: QuinckleColors.textTertiary, fontSize: 12, marginTop: 2 },
+  rowNote: { color: QuinckleColors.warning, fontSize: 12, marginTop: 2, fontWeight: '500' },
   divider: { height: 1, backgroundColor: QuinckleColors.surfaceMuted, marginVertical: 2 },
   strike: {
     position: 'absolute',

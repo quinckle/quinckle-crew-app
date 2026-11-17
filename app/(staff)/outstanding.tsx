@@ -57,6 +57,8 @@ export default function OutstandingScreen() {
         orderId: g.orderIds[0] ?? '',
         sessionId: g.sessionId,
         orderIds: JSON.stringify(g.orderIds),
+        // Outstanding bills sit on closed sessions — nothing left to free.
+        closed: '1',
         tableNumber: String(g.tableNumber ?? ''),
         ...(g.channel === 'TAKEAWAY' ? { channel: 'TAKEAWAY', pickupToken: g.pickupToken ?? '' } : {}),
         amount: String(g.amount ?? 0),

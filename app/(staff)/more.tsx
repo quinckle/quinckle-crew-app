@@ -22,6 +22,7 @@ import { useAuth } from '../../context/AuthContext';
 import UpdateStatus from '../../components/ui/UpdateStatus';
 import { CAP, ROLE_COLOR_FALLBACK, type Capability } from '../../constants/capabilities';
 import { QuinckleColors, Spacing, Radius } from '../../constants/Colors';
+import { VoiceAlertsCard } from '../../components/ui/VoiceAlertsCard';
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -51,9 +52,12 @@ const GROUPS: Group[] = [
   {
     title: 'Menu & catalog',
     rows: [
-      { label: 'Menu & combos', sub: 'Items, prices & combos', icon: 'restaurant-outline', route: '/(staff)/menu', cap: CAP.MENU_EDIT },
+      // No "Menu & combos" row: app/(staff)/menu.tsx is an early placeholder
+      // with a hard-coded sample menu, not the venue's real one. Crew menu
+      // editing (price, image, new item) isn't built yet — the partner app
+      // and dashboard do that. Combos stay reachable from the home screen.
       { label: 'Highlighted', sub: 'Featured on the diner menu', icon: 'sparkles-outline', route: '/(staff)/featured', cap: CAP.MENU_EDIT },
-      { label: 'Stock', sub: 'Counts, 86 & wastage', icon: 'cube-outline', route: '/(staff)/stock', cap: CAP.STOCK },
+      { label: 'Stock', sub: 'Restock, count & wastage', icon: 'cube-outline', route: '/(staff)/stock', cap: CAP.STOCK },
     ],
   },
   {
@@ -159,6 +163,11 @@ export default function MoreScreen() {
             </View>
           </View>
         ))}
+
+        <View style={styles.group}>
+          <Text style={styles.groupTitle}>NEW ORDER ALERTS</Text>
+          <VoiceAlertsCard />
+        </View>
 
         {/* Utilities — not modules, so never capability-gated. */}
         <View style={styles.group}>

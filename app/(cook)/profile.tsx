@@ -16,6 +16,7 @@ import { useAuth } from '../../context/AuthContext';
 import { crewAuth } from '../../services/api';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import ProfileHeader from '../../components/ui/ProfileHeader';
+import { VoiceAlertsCard } from '../../components/ui/VoiceAlertsCard';
 
 const COOK_BADGE_COLORS = {
   bg: 'rgba(139, 92, 246, 0.25)',
@@ -162,6 +163,8 @@ export default function CookProfile() {
             <Text style={styles.printerBtnText}>KOT Printer</Text>
             <Ionicons name="chevron-forward" size={16} color={QuinckleColors.textTertiary} style={{ marginLeft: 'auto' }} />
           </TouchableOpacity>
+
+          <VoiceAlertsCard />
 
           <TouchableOpacity style={styles.logoutBtn} onPress={logout} activeOpacity={0.7}>
             <Ionicons name="log-out-outline" size={18} color={QuinckleColors.danger} />

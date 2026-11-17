@@ -10,6 +10,8 @@
 
 import { profileFromWidth, type PaperProfile } from './paperProfile';
 import { isOffPremise, channelLabel } from '../constants/channel';
+import type { CrewLadder } from './api';
+import { splitBillTax } from './billTax';
 
 export interface InvoiceItem {
   name: string;
@@ -31,8 +33,16 @@ export interface InvoiceBill {
   buyerGstin?: string | null;
   /** Recipient business/legal name printed alongside the buyer GSTIN. */
   buyerName?: string | null;
-  /** Khata: the customer the pay-later amount is recorded under. */
+  /** The diner on this bill. Printed under the header on every bill, and again
+   *  on a khata bill as the name the pay-later amount is recorded under. */
   customerName?: string | null;
+  /** Printed masked (98xxxxx210) — a bill gets left on tables and binned. */
+  customerPhone?: string | null;
+  /** Venue logo as a data: URI, already black-on-white at print size (from
+   *  /crew/print/bill-logo). Printed above the restaurant name. */
+  logoDataUri?: string | null;
+  /** Staff member producing the bill (the logged-in crew user). */
+  billerName?: string | null;
   tableNumber: number | string;
   /** DINE_IN (default) prints "Table TNN"; off-premise channels print their own
    *  banner + order token. */
@@ -64,8 +74,9 @@ export interface InvoiceBill {
   /** Rate-wise GST grouping (Phase 2). When present, one GST block is printed per
    *  rate; falls back to the single `tax`/`taxRate` line when absent (legacy). */
   taxLines?: Array<{ rate: number; taxableValue: number; cgst: number; sgst: number; amount: number }>;
-  /** When true, menu prices already include GST — a note clarifies the tax is
-   *  shown for information and not added on top (Phase 4). */
+  /** The venue's inclusive-pricing setting. false → all GST prints in the
+   *  column as it always has; true → the GST inside the prices prints as a
+   *  breakup under TOTAL (see billTax.ts). */
   pricesIncludeTax?: boolean;
   /** Signed rupee rounding that reconciles the paise-precision GST lines to the
    *  whole-rupee `grandTotal` (e.g. -0.30). Printed as its own line when non-zero
@@ -86,6 +97,12 @@ export interface InvoiceBill {
   /** Print the static restaurant QR (payee only, no amount) instead of the
    *  exact-amount QR. Diner types the amount in their UPI app. */
   upiOmitAmount?: boolean;
+  /** Printer settings: whether a PAID bill still carries a QR, and which —
+   *  'STATIC' (payee only) or 'AMOUNT'. Absent/'OFF' → no QR once paid. */
+  paidUpiQr?: 'OFF' | 'STATIC' | 'AMOUNT';
+  /** Printer settings: logo above the restaurant name (default) or at the
+   *  foot of the bill, under the venue's own footer text. */
+  logoPosition?: 'TOP' | 'BOTTOM';
   generatedAt?: string; // ISO string — defaults to now
   orderDateTime?: string; // ISO string of order/session time
   /** Owner's custom "thank you" line (Bill Settings). Replaces the default
@@ -100,6 +117,9 @@ export interface InvoiceBill {
    *  restaurant without an active loyalty program, in which case the block
    *  simply does not print. */
   loyalty?: LoyaltyNudge | null;
+  /** The table's live loyalty ladder (loyaltyApi.balance), loaded at print
+   *  time. Preferred over `loyalty`'s snapshot, which only exists after payment. */
+  liveLadder?: CrewLadder | null;
 }
 
 /** Mirror of the backend's LoyaltyBillSnapshot (services/loyalty/bill-nudge.service.ts).
@@ -152,6 +172,66 @@ function buildUpiPayString(opts: { pa: string; pn: string; am?: number | null })
   if (opts.am != null) parts.push(`am=${enc(opts.am.toFixed(2))}`);
   parts.push(`cu=INR`);
   return `upi://pay?${parts.join('&')}`;
+}
+
+/** Data codewords per QR version at error-correction level L (ISO 18004 table 7). */
+const QR_L_DATA_CODEWORDS = [0, 19, 34, 55, 80, 108, 136, 156, 194, 232, 274];
+
+/**
+ * The QR symbol's side in modules, as DantSu (zxing Encoder, ECC L, UTF-8 hint)
+ * will build it: byte mode + a 12-bit ECI header + an 8/16-bit length.
+ * Returns null past version 10 — far beyond any UPI intent. `data` is a
+ * percent-encoded URI, so its length is its UTF-8 byte count.
+ */
+export function qrModuleCount(data: string): number | null {
+  const bytes = data.length;
+  for (let v = 1; v < QR_L_DATA_CODEWORDS.length; v++) {
+    const bits = 12 + 4 + (v < 10 ? 8 : 16) + bytes * 8;
+    if (bits <= QR_L_DATA_CODEWORDS[v] * 8) return 17 + 4 * v;
+  }
+  return null;
+}
+
+/**
+ * The <qrcode size='…'> value (mm) for a payload.
+ *
+ * DantSu draws each QR module as round(sizePx / modules) printer dots, so a
+ * fixed size shrinks the modules whenever the payload tips into the next QR
+ * version. Baking `am=` into a UPI intent does exactly that: on 58mm paper a
+ * 20mm code dropped from 5 to 4 dots per module (0.5mm, ECC L, no quiet zone)
+ * and UPI apps stopped reading it, while the shorter static intent still
+ * printed at 5. Sizing from the module count pins every module at the
+ * static QR's proven ~0.63mm (5 dots at 203dpi) and only shrinks it to stay
+ * within ~70% of the printable width. Not bigger: 6 dots made a ~6KB raster
+ * the printer could not buffer, and the bill was cut off mid-QR.
+ */
+function qrSizeMm(data: string, profile: PaperProfile): number {
+  const modules = qrModuleCount(data);
+  if (!modules) return profile.qrSize;
+  const dotsPerMm = profile.dpi / 25.4;
+  const maxDots = Math.floor(profile.printableWidthMM * 0.7 * dotsPerMm);
+  const dotsPerModule = Math.max(1, Math.min(Math.round(0.625 * dotsPerMm), Math.floor(maxDots / modules)));
+  return Number(((modules * dotsPerModule) / dotsPerMm).toFixed(2));
+}
+
+/** Pre-disconnect wait that printed a 58mm bill in full on 2026-10-03, with a
+ *  QR raster of up to VERIFIED_QR_RASTER_BYTES. KOTs keep their own 320ms. */
+export const BILL_END_WAIT_MS = 2500;
+/** 185px × 24 bytes/row — the largest 5-dot raster of a v4/v5 code. */
+export const VERIFIED_QR_RASTER_BYTES = 4440;
+
+/**
+ * How long the socket must stay open after a bill is sent. DantSu closes it
+ * after the end-feed wait whether or not the printer has drained, and the QR
+ * raster is the one part the printer cannot buffer — a 320ms wait cut a bill
+ * off mid-QR. A larger QR (a long VPA/payee name) scales the proven wait.
+ */
+export function billEndWaitMs(text: string, profile: PaperProfile): number {
+  const size = text.match(/<qrcode size='([\d.]+)'>/)?.[1];
+  if (!size) return BILL_END_WAIT_MS;
+  const px = Math.round((parseFloat(size) * profile.dpi) / 25.4);
+  const rasterBytes = Math.ceil(px / 8) * px;
+  return Math.max(BILL_END_WAIT_MS, Math.ceil((BILL_END_WAIT_MS * rasterBytes) / VERIFIED_QR_RASTER_BYTES));
 }
 
 // ── Layout helpers ─────────────────────────────────────────────────────────────
@@ -208,62 +288,95 @@ function wrapText(text: string, width: number): string[] {
 }
 
 /**
- * The ladder block (§22).
+ * The ladder block (§22), kept simple:
  *
- *     Chaarpai Club
- *     Step 3 of 5
- *     [######----] 60%
- *     Free cappuccino - on us today
- *     Next visit: 8% off
+ *            LOYALTY REWARDS
+ *     Next reward: 10% off your bill
+ *       in 2 more visits
+ *     Rewards up to: Free Thali
+ *       on visit 8
+ *     Visit more, earn more rewards!
  *
- * Uses the SAME [#####-----] bar the points nudge below already prints, rather
- * than the filled circles the screens use. That bar is proven on this hardware
- * and is pure ASCII; ● and ○ depend on the printer's active codepage and would
- * become mojibake on anything that does not carry them. A diner's bill is the
- * wrong place to discover which printers those are.
+ * The next reward after this visit and how many visits away it is, then the
+ * top reward the card builds to. Nothing about today's reward — the bill's own
+ * lines already show it.
  *
- * Width-aware like everything else here: this prints at 32, 42, 48 and 69
- * characters depending on the roll the partner loaded.
+ * Prefers the live ladder (loyaltyApi.balance), which the crew app loads at
+ * print time. Its `step` is always THIS visit's step, paid or not — the
+ * server leaves the current session out when counting — so "N more visits"
+ * is right on every bill. Session.loyaltySnapshot (written at payment, no step
+ * list) is the fallback when the live read failed.
  */
+const LADDER_TITLE = '[C]<b>LOYALTY REWARDS</b>';
+const VISIT_MORE = '[C]Visit more, earn more rewards!';
+
+function wrapped(text: string, W: number): string[] {
+  return wrapText(text, W).map((ln) => `[L]${ln}`);
+}
+
+function visitsAway(n: number): string {
+  return n === 1 ? '  on your next visit' : `  in ${n} more visits`;
+}
+
+function unlockLines(visitsToUnlock: number, minBill: number | null | undefined, W: number): string[] {
+  const out = [LADDER_TITLE];
+  out.push(...wrapped(`${visitsToUnlock} more visit${visitsToUnlock === 1 ? '' : 's'} to unlock rewards`, W));
+  if (minBill) out.push(...wrapped(`Visits count on bills of Rs.${Math.round(minBill)}+`, W));
+  out.push(VISIT_MORE);
+  return out;
+}
+
+/** Fallback: the payment-time snapshot, which only knows the next visit's reward. */
 function ladderLines(ladder: NonNullable<LoyaltyNudge['ladder']>, W: number): string[] {
-  const total = Math.max(1, Math.trunc(ladder.totalSteps ?? 1));
-  const step = Math.max(1, Math.min(total, Math.trunc(ladder.step ?? 1)));
-
-  const out: string[] = [];
-  out.push(`[C]<b>Rewards</b>`);
-
-  // Still qualifying: no step, no bar — just how far to go.
   const toUnlock = Math.max(0, Math.trunc(ladder.visitsToUnlock ?? 0));
-  if (toUnlock > 0) {
-    const msg = `${toUnlock} more visit${toUnlock === 1 ? '' : 's'} to unlock your rewards`;
-    for (const ln of wrapText(msg, W)) out.push(`[L]${ln}`);
-    if (ladder.minBill) {
-      for (const ln of wrapText(`Visits count on bills of Rs.${Math.round(ladder.minBill)}+`, W)) out.push(`[L]${ln}`);
-    }
-    return out;
+  if (toUnlock > 0) return unlockLines(toUnlock, ladder.minBill, W);
+
+  const out = [LADDER_TITLE];
+  if (ladder.nextRewardName && !ladder.completesLadder) {
+    out.push(...wrapped(`Next reward: ${ladder.nextRewardName}`, W));
+    out.push(`[L]${visitsAway(1)}`);
+  }
+  out.push(VISIT_MORE);
+  return out;
+}
+
+/** The live ladder. Nothing when not joined or this visit doesn't count. */
+function liveLadderLines(ladder: CrewLadder, W: number): string[] {
+  if (!ladder.optedIn) return [];
+  const toUnlock = Math.max(0, Math.trunc(ladder.visitsToUnlock ?? 0));
+  if (toUnlock > 0) return unlockLines(toUnlock, ladder.minBill, W);
+  if (ladder.eligible === false) return [];
+
+  const step = Math.max(1, Math.trunc(ladder.step ?? 1));
+  const total = Math.max(step, Math.trunc(ladder.totalSteps ?? step));
+  const rewarded = ladder.steps.filter((s) => s.rewardName);
+  const top = rewarded[rewarded.length - 1];
+
+  // The next reward after this visit. Later on this lap first; failing that,
+  // the server's own next-visit reward (covers HOLD_LAST and CUSTOM); failing
+  // that, under RESET only, the first reward of the next lap — counted across
+  // the end of the card. Maniqueen (5 steps, 5 empty, RESET) needs the last.
+  let next: { name: string; visits: number } | null = null;
+  const ahead = rewarded.find((s) => s.position > step);
+  if (ahead) next = { name: ahead.rewardName!, visits: ahead.position - step };
+  else if (ladder.nextVisit?.rewardName) next = { name: ladder.nextVisit.rewardName, visits: 1 };
+  else if (ladder.policy === 'RESET' && rewarded[0]) {
+    next = { name: rewarded[0].rewardName!, visits: total - step + rewarded[0].position };
   }
 
-  out.push(`[L]${leftRight('Your progress', `Step ${step} of ${total}`, W)}`);
-
-  const barW = Math.min(20, Math.max(8, W - 8));
-  const pct = Math.max(0, Math.min(100, Math.round((step / total) * 100)));
-  const filled = Math.round((pct / 100) * barW);
-  out.push(`[L][${'#'.repeat(filled)}${'-'.repeat(barW - filled)}] ${pct}%`);
-
-  // What they got today. An empty step prints nothing here rather than a line
-  // saying nothing happened — they still advanced, which the bar already shows.
-  if (ladder.rewardName) {
-    for (const ln of wrapText(`${ladder.rewardName} - on us today`, W)) out.push(`[L]${ln}`);
+  const out = [LADDER_TITLE];
+  if (ladder.completesLadder) out.push(...wrapped(`You've completed the card!`, W));
+  if (next) {
+    out.push(...wrapped(`Next reward: ${next.name}`, W));
+    out.push(`[L]${visitsAway(next.visits)}`);
   }
-
-  // Finishing wins over "next visit": under RESET the next step is 1 again, and
-  // "Next visit: 2% off" would bury the fact that they just completed a lap.
-  if (ladder.completesLadder) {
-    for (const ln of wrapText(`You've finished the ladder!`, W)) out.push(`[L]${ln}`);
-  } else if (ladder.nextRewardName) {
-    for (const ln of wrapText(`Next visit: ${ladder.nextRewardName}`, W)) out.push(`[L]${ln}`);
+  // The reward the card builds to, while it's still ahead on this lap —
+  // unless it's the one just named.
+  if (top && top.position > step && top.position !== ahead?.position) {
+    out.push(...wrapped(`Rewards up to: ${top.rewardName}`, W));
+    out.push(`[L]  on visit ${top.position}`);
   }
-
+  out.push(VISIT_MORE);
   return out;
 }
 
@@ -340,6 +453,17 @@ function formatDateTime(iso: string): string {
   }
 }
 
+/**
+ * 9876543210 → 98xxxxx210. Only a longer-than-10-digit number is treated as
+ * carrying a country code: a real 10-digit number can itself start with 91.
+ */
+export function maskPhone(raw: string): string {
+  let digits = raw.replace(/\D/g, '');
+  if (digits.length > 10) digits = digits.slice(-10);
+  if (digits.length < 6) return digits;
+  return `${digits.slice(0, 2)}${'x'.repeat(digits.length - 5)}${digits.slice(-3)}`;
+}
+
 // ── buildInvoiceText ───────────────────────────────────────────────────────────
 
 /**
@@ -360,6 +484,14 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   const tableStr = String(bill.tableNumber).padStart(2, '0');
 
   // ── Header ────────────────────────────────────────────────────────────────
+  // DantSu wants an image alone on its line, with a single alignment tag.
+  // The blank line after it keeps the big restaurant name off the logo's
+  // bottom edge — printed flush, they touched.
+  const logoAtBottom = bill.logoPosition === 'BOTTOM';
+  if (bill.logoDataUri && !logoAtBottom) {
+    lines.push(`[C]<img>${bill.logoDataUri}</img>`);
+    lines.push('[L]');
+  }
   lines.push(`[C]<b><font size="big">${bill.restaurantName}</font></b>`);
   lines.push(`[C]${D}`);
   lines.push(bill.gstRegistered ? '[C]<b>TAX INVOICE</b>' : '[C]<b>BILL</b>');
@@ -378,7 +510,6 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   } else if (bill.sessionRef) {
     lines.push(`[C]Session ${bill.sessionRef}`);
   }
-  lines.push(`[C]Order: ${formatDateTime(orderTime)}`);
   if (bill.restaurantAddress) {
     for (const ln of wrapText(bill.restaurantAddress, W)) lines.push(`[C]${ln}`);
   }
@@ -386,8 +517,30 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   if (bill.restaurantEmail) lines.push(`[C]Email: ${bill.restaurantEmail}`);
   if (bill.fssaiLicenseNumber) lines.push(`[C]FSSAI: ${bill.fssaiLicenseNumber}`);
   if (bill.gstRegistered && bill.gstin) lines.push(`[C]GSTIN: ${bill.gstin}`);
-  lines.push(`[C]Printed: ${formatDateTime(now)}`);
   lines.push(`[L]${d}`);
+
+  // ── When + who ────────────────────────────────────────────────────────────
+  // Its own ruled section, laid out like the customer block below it.
+  lines.push(`[L]Order:   ${formatDateTime(orderTime)}`);
+  lines.push(`[L]Printed: ${formatDateTime(now)}`);
+  if (bill.billerName?.trim()) {
+    // Wrap only the name so it stays aligned under the Order/Printed values.
+    wrapText(bill.billerName.trim(), W - 9).forEach((ln, i) => {
+      lines.push(`[L]${i === 0 ? 'Biller:  ' : '         '}${ln}`);
+    });
+  }
+  lines.push(`[L]${d}`);
+
+  // ── Customer ──────────────────────────────────────────────────────────────
+  const customerName = bill.customerName?.trim();
+  const customerPhone = bill.customerPhone?.trim() ? maskPhone(bill.customerPhone) : '';
+  if (customerName || customerPhone) {
+    if (customerName) {
+      for (const ln of wrapText(`Customer: ${customerName}`, W)) lines.push(`[L]${ln}`);
+    }
+    if (customerPhone) lines.push(`[L]Phone: ${customerPhone}`);
+    lines.push(`[L]${d}`);
+  }
 
   // ── Bill To (recipient GSTIN, B2B only) ───────────────────────────────────
   if (bill.buyerGstin) {
@@ -461,28 +614,52 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   // line when no per-rate data is present (legacy bills).
   const rateLines = (bill.taxLines ?? []).filter((l) => l.amount > 0);
   const half = (rate: number) => (rate / 2).toFixed(1).replace(/\.0$/, '');
-  if (rateLines.length > 0) {
-    for (const l of rateLines) {
-      if (bill.taxDisplayMode === 'split') {
-        lines.push(`[L]${leftRight(`CGST (${half(l.rate)}%)`, fmt2(l.cgst), W)}`);
-        lines.push(`[L]${leftRight(`SGST (${half(l.rate)}%)`, fmt2(l.sgst), W)}`);
+  const gstRows = (): string[] => {
+    const out: string[] = [];
+    if (rateLines.length > 0) {
+      for (const l of rateLines) {
+        if (bill.taxDisplayMode === 'split') {
+          out.push(`[L]${leftRight(`CGST (${half(l.rate)}%)`, fmt2(l.cgst), W)}`);
+          out.push(`[L]${leftRight(`SGST (${half(l.rate)}%)`, fmt2(l.sgst), W)}`);
+        } else {
+          out.push(`[L]${leftRight(`GST (${l.rate}%)`, fmt2(l.amount), W)}`);
+        }
+      }
+    } else if (bill.tax > 0) {
+      if (bill.gstRegistered && bill.taxDisplayMode === 'split' && bill.taxRate) {
+        // Legacy bills (whole-rupee stored tax, no rate lines) keep the old
+        // round-then-halve split so a reprint matches the paper the diner got.
+        const cgst = Math.round(bill.tax / 2);
+        out.push(`[L]${leftRight(`CGST (${half(bill.taxRate)}%)`, fmt(cgst), W)}`);
+        out.push(`[L]${leftRight(`SGST (${half(bill.taxRate)}%)`, fmt(bill.tax - cgst), W)}`);
       } else {
-        lines.push(`[L]${leftRight(`GST (${l.rate}%)`, fmt2(l.amount), W)}`);
+        const taxLabel = bill.gstRegistered
+          ? (bill.taxRate ? `GST (${bill.taxRate}%)` : 'GST')
+          : 'Tax';
+        out.push(`[L]${leftRight(taxLabel, fmt(bill.tax), W)}`);
       }
     }
-  } else if (bill.tax > 0) {
-    if (bill.gstRegistered && bill.taxDisplayMode === 'split' && bill.taxRate) {
-      // Legacy bills (whole-rupee stored tax, no rate lines) keep the old
-      // round-then-halve split so a reprint matches the paper the diner got.
-      const cgst = Math.round(bill.tax / 2);
-      lines.push(`[L]${leftRight(`CGST (${half(bill.taxRate)}%)`, fmt(cgst), W)}`);
-      lines.push(`[L]${leftRight(`SGST (${half(bill.taxRate)}%)`, fmt(bill.tax - cgst), W)}`);
-    } else {
-      const taxLabel = bill.gstRegistered
-        ? (bill.taxRate ? `GST (${bill.taxRate}%)` : 'GST')
-        : 'Tax';
-      lines.push(`[L]${leftRight(taxLabel, fmt(bill.tax), W)}`);
-    }
+    return out;
+  };
+  // Inclusive prices: that GST is already inside the lines above, so it must
+  // not sit in the column that sums to TOTAL. Only the part actually added
+  // (e.g. an exclusive charge at an inclusive venue) goes in the column; the
+  // full breakup prints under TOTAL. All-exclusive bills print exactly as before.
+  const taxSplit = splitBillTax({
+    subtotal: bill.subtotal,
+    discount: bill.discount,
+    charges: bill.charges,
+    tip: bill.tip,
+    roundOff: bill.roundOff,
+    tax: bill.tax,
+    total: bill.grandTotal,
+    pricesIncludeTax: bill.pricesIncludeTax,
+  });
+  const taxIncluded = taxSplit.included > 0;
+  if (!taxIncluded) {
+    lines.push(...gstRows());
+  } else if (taxSplit.added > 0) {
+    lines.push(`[L]${leftRight('GST added', fmt2(taxSplit.added), W)}`);
   }
   // Tip sits after tax: it is never taxed and never charged on.
   if ((bill.tip ?? 0) > 0) {
@@ -495,14 +672,21 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
     const shown = roundOff < 0 ? `-${fmt2(Math.abs(roundOff))}` : `+${fmt2(roundOff)}`;
     lines.push(`[L]${leftRight('Round off', shown, W)}`);
   }
-  // Inclusive pricing: the GST above is embedded in the prices, not added — say
-  // so, otherwise the unchanged TOTAL reads like a mistake (Phase 4).
-  if (bill.pricesIncludeTax && bill.tax > 0) {
-    lines.push('[L](GST included in the prices above)');
-  }
   lines.push(`[L]${D}`);
   lines.push(`[L]<b>${leftRight('TOTAL', fmt(bill.grandTotal), W)}</b>`);
   lines.push(`[L]${D}`);
+
+  // ── GST breakup (inclusive prices) ────────────────────────────────────────
+  // Informational: none of this is added — it is the tax inside TOTAL.
+  if (taxIncluded) {
+    lines.push(`[L]${taxSplit.added > 0 ? 'GST breakup' : 'GST included in total'}`);
+    const taxable = rateLines.reduce((n, l) => n + l.taxableValue, 0);
+    if (taxable > 0) lines.push(`[L]${leftRight('Taxable value', fmt2(taxable), W)}`);
+    lines.push(...gstRows());
+    if (taxSplit.added > 0) {
+      lines.push(`[L]${leftRight('Incl. in prices', fmt2(taxSplit.included), W)}`);
+    }
+  }
 
   // ── Khata (pay later) ─────────────────────────────────────────────────────
   // The bill is settled at the table but the money is owed on the customer's
@@ -517,11 +701,14 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
     lines.push(`[L]${D}`);
   }
 
-  // ── Scan-to-pay UPI QR (unpaid bills with a configured VPA only) ──────────
-  // `upiOmitAmount` prints the restaurant's static QR (payee only, diner enters
-  // the amount); otherwise the exact bill amount is baked into the intent.
-  if (!bill.isPaid && bill.upiVpa) {
-    const staticQr = bill.upiOmitAmount === true;
+  // ── Scan-to-pay UPI QR (configured VPA only) ──────────────────────────────
+  // Unpaid bills: `upiOmitAmount` prints the restaurant's static QR (payee
+  // only, diner enters the amount); otherwise the exact bill amount is baked
+  // into the intent. Paid bills carry one only when the venue chose to
+  // (Printer settings → QR on paid bills), and then the kind it chose.
+  const paidQr = bill.paidUpiQr ?? 'OFF';
+  if (bill.upiVpa && (!bill.isPaid || paidQr !== 'OFF')) {
+    const staticQr = bill.isPaid ? paidQr === 'STATIC' : bill.upiOmitAmount === true;
     const upiString = buildUpiPayString({
       pa: bill.upiVpa,
       pn: bill.upiName || bill.restaurantName,
@@ -532,16 +719,22 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
       ? `[C]<b>Scan to pay</b>`
       : `[C]<b>Scan to pay ${fmt(bill.grandTotal)}</b>`);
     lines.push('[C] '); // breathing room between the heading and the QR
-    lines.push(`[C]<qrcode size='${profile.qrSize}'>${upiString}</qrcode>`);
+    lines.push(`[C]<qrcode size='${qrSizeMm(upiString, profile)}'>${upiString}</qrcode>`);
+    lines.push('[C] '); // quiet zone — DantSu prints the QR with no white border
   }
 
   // ── Loyalty nudge (§2.1) ──────────────────────────────────────────────────
   // Prints only for restaurants running an active program, and only when the
   // diner actually has something to be told.
-  if (bill.loyalty) {
-    const nudge = loyaltyLines(bill.loyalty, W);
+  // The live ladder when the crew app loaded one; else the payment-time
+  // snapshot (points programmes, or a ladder read that failed).
+  {
+    const nudge = bill.liveLadder
+      ? liveLadderLines(bill.liveLadder, W)
+      : bill.loyalty ? loyaltyLines(bill.loyalty, W) : [];
     if (nudge.length > 0) {
-      lines.push(`[L]${d}`);
+      // No dashed rule straight under the TOTAL's closing rule.
+      if (!lines[lines.length - 1]?.startsWith(`[L]${D}`)) lines.push(`[L]${d}`);
       for (const ln of nudge) lines.push(ln);
     }
   }
@@ -556,6 +749,12 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   // "WiFi: guest123"), printed below the thank-you line when set.
   if (bill.footerNote?.trim()) {
     for (const ln of wrapText(bill.footerNote.trim(), W)) lines.push(`[C]${ln}`);
+  }
+  // Logo at the foot: under the venue's own words, above Quinckle's lines.
+  if (bill.logoDataUri && logoAtBottom) {
+    lines.push('[L]');
+    lines.push(`[C]<img>${bill.logoDataUri}</img>`);
+    lines.push('[L]');
   }
   lines.push('[C]Support & feedback:');
   lines.push('[C]quinckle.com/support');
