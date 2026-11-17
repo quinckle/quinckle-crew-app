@@ -266,7 +266,7 @@ export function ActivityRow({
         >
           {headline(row, activeKind)}
         </Text>
-        <Text style={styles.time}>{when(row.createdAt)}</Text>
+        <Text style={styles.time} numberOfLines={1}>{when(row.createdAt)}</Text>
       </View>
       {nameEntity && (
         <Text style={styles.entity} numberOfLines={1}>
@@ -334,7 +334,7 @@ const styles = StyleSheet.create({
   rowFirst: { borderTopWidth: 0 },
   rowTop: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   headline: { ...Typography.bodyStrong, color: QuinckleColors.textPrimary, flexShrink: 1 },
-  time: { ...Typography.caption, color: QuinckleColors.textMuted, marginLeft: 'auto' },
+  time: { ...Typography.caption, color: QuinckleColors.textMuted, marginLeft: 'auto', flexShrink: 0 },
   entity: { ...Typography.body, color: QuinckleColors.textPrimary, marginTop: 2 },
   entityNoun: { ...Typography.micro, color: QuinckleColors.textMuted },
   line: { ...Typography.caption, color: QuinckleColors.textPrimary, marginTop: 2 },

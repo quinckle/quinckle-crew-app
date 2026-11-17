@@ -7,7 +7,7 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { QuinckleColors, Radius, Spacing, Typography } from '@/constants/Colors';
 import { BottomSheet } from '@/components/menu-admin/BottomSheet';
@@ -59,7 +59,7 @@ export function ActorSheet({
 
   return (
     <BottomSheet visible={visible} onClose={onClose} title="Done by" maxHeightRatio={0.75}>
-      <ScrollView>
+      <View style={styles.sheetBody}>
         <Option label="Anyone" on={!value} onPress={() => pick(null)} />
         {!actors && !error && <ActivityIndicator style={{ marginVertical: Spacing.lg }} color={QuinckleColors.primary} />}
         {error && <Text style={styles.error}>{error}</Text>}
@@ -73,7 +73,7 @@ export function ActorSheet({
             onPress={() => pick({ actorType: a.actorType, actorId: a.actorId, name: a.actorName })}
           />
         ))}
-      </ScrollView>
+      </View>
     </BottomSheet>
   );
 }
@@ -140,6 +140,10 @@ export function dateFilterLabel(f: DateFilter): string {
   if (f.preset !== 'CUSTOM') return PRESETS.find((p) => p.key === f.preset)!.label;
   if (!f.start) return 'All time';
   if (!f.end || sameDay(f.start, f.end)) return short(f.start);
+  // "10–14 Nov" when both ends share a month, so the filter button stays readable.
+  if (f.start.getFullYear() === f.end.getFullYear() && f.start.getMonth() === f.end.getMonth()) {
+    return `${f.start.getDate()}–${short(f.end)}`;
+  }
   return `${short(f.start)} – ${short(f.end)}`;
 }
 
@@ -189,7 +193,7 @@ export function DateSheet({
 
   return (
     <BottomSheet visible={visible} onClose={onClose} title="Date" maxHeightRatio={0.9}>
-      <ScrollView>
+      <View style={styles.sheetBody}>
         <View style={styles.presets}>
           {PRESETS.map((p) => {
             const on = value.preset === p.key;
@@ -209,7 +213,7 @@ export function DateSheet({
         <TouchableOpacity style={[styles.apply, !start && { opacity: 0.4 }]} disabled={!start} onPress={apply} activeOpacity={0.85}>
           <Text style={styles.applyText}>Apply dates</Text>
         </TouchableOpacity>
-      </ScrollView>
+      </View>
     </BottomSheet>
   );
 }
@@ -342,6 +346,8 @@ function FilterButton({ icon, label, on, onPress }: { icon: React.ComponentProps
 const CELL = `${100 / 7}%` as const;
 
 const styles = StyleSheet.create({
+  // The sheet scrolls its own content; this only lines rows up with its title.
+  sheetBody: { paddingHorizontal: Spacing.xl },
   error: { ...Typography.caption, color: QuinckleColors.danger, padding: Spacing.md },
   option: {
     flexDirection: 'row',
@@ -387,7 +393,7 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     borderWidth: 1,
     borderColor: QuinckleColors.border,
-    maxWidth: '42%',
+    maxWidth: '44%',
   },
   fbtnOn: { borderColor: QuinckleColors.primarySoftBorder, backgroundColor: QuinckleColors.primarySoft },
   fbtnText: { ...Typography.caption, flexShrink: 1 },
