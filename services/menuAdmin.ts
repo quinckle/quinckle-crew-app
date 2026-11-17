@@ -277,9 +277,16 @@ export const adminCombos = {
     call<{ success: boolean }>('/combos/reorder', { method: 'PATCH', body: { orderedIds } }),
 };
 
-// ── Change history ────────────────────────────────────────────────────────────
+// ── Menu Activity ─────────────────────────────────────────────────────────────
 
 export type MenuChangeAction = 'CREATED' | 'UPDATED' | 'DELETED' | 'AVAILABILITY' | 'REORDERED' | 'RENAMED';
+
+/** Menu Activity tabs. A row can belong to several (price + photo in one save). */
+export type MenuActivityKind =
+  | 'ADDED' | 'PRICE' | 'IMAGE' | 'CATEGORY' | 'GST' | 'CHANNELS' | 'AVAILABILITY' | 'DETAILS' | 'REMOVED' | 'AUTOMATIC';
+
+/** Items / combos / add-ons chip on the whole-menu feed. */
+export type MenuActivityEntity = 'ITEM' | 'COMBO' | 'ADDON';
 
 export interface MenuChange {
   id: string;
@@ -288,24 +295,43 @@ export interface MenuChange {
   entityName: string;
   menuItemId: string | null;
   action: MenuChangeAction;
-  /** [{ field, from, to }] for UPDATED; a snapshot object for CREATED / DELETED. */
+  /** [{ field, from, to, reason? }] for UPDATED / AVAILABILITY; a snapshot object for CREATED / DELETED. */
   changes: unknown;
-  actorType: 'OWNER' | 'STAFF';
+  /** SYSTEM = nobody did it by hand: stock ran out, a temporary off ended, a combo sold out. */
+  actorType: 'OWNER' | 'STAFF' | 'SYSTEM';
   actorName: string;
   actorRole: string | null;
-  source: 'PARTNER' | 'CREW';
+  source: 'PARTNER' | 'CREW' | 'SYSTEM';
   createdAt: string;
+  /** Tabs this row is filed under (older servers omit it). */
+  kinds?: MenuActivityKind[];
+}
+
+export interface MenuActivityPage {
+  success: boolean;
+  data: MenuChange[];
+  nextBefore: string | null;
+  /** For an item/combo query: when the record was made, even before tracking began. */
+  createdAt?: string;
 }
 
 export const adminHistory = {
   /** Newest first. Pass `before` = the previous page's nextBefore to load more. */
-  list: (filter: { itemId?: string; comboId?: string; before?: string | null }) => {
+  list: (filter: {
+    itemId?: string;
+    comboId?: string;
+    kind?: MenuActivityKind | null;
+    entity?: MenuActivityEntity | null;
+    before?: string | null;
+  }) => {
     const q = new URLSearchParams();
     if (filter.itemId) q.set('itemId', filter.itemId);
     if (filter.comboId) q.set('comboId', filter.comboId);
+    if (filter.kind) q.set('kind', filter.kind);
+    if (filter.entity) q.set('entity', filter.entity);
     if (filter.before) q.set('before', filter.before);
     const qs = q.toString();
-    return call<{ success: boolean; data: MenuChange[]; nextBefore: string | null }>(`/history${qs ? `?${qs}` : ''}`);
+    return call<MenuActivityPage>(`/history${qs ? `?${qs}` : ''}`);
   },
 };
 

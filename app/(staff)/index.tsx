@@ -2694,7 +2694,7 @@ export default function StaffDashboard() {
                 <Text style={{ flex: 1, color: QuinckleColors.textPrimary, fontWeight: '600', fontSize: 14 }}>
                   Manage menu
                 </Text>
-                <Text style={{ color: QuinckleColors.textSecondary, fontSize: 12 }}>Add · edit · history</Text>
+                <Text style={{ color: QuinckleColors.textSecondary, fontSize: 12 }}>Add · edit · activity</Text>
                 <Ionicons name="chevron-forward" size={16} color={QuinckleColors.textMuted} />
               </TouchableOpacity>
 

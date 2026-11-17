@@ -3,7 +3,7 @@
 // the partner ones (menu-item-edit / menu-combo-edit / menu-modifiers) and hit
 // the same backend routes, so an owner and a staffer can never disagree about
 // what a field means. Every change is recorded under the person's name and
-// shows up in the History tab (and in the owner's apps).
+// shows up in the Activity tab (and in the owner's apps).
 
 import React, { useCallback, useMemo, useState } from 'react';
 import {
@@ -22,7 +22,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QuinckleColors, Radius, Spacing, Typography } from '@/constants/Colors';
-import { ChangeHistory } from '@/components/menu-admin/ChangeHistory';
+import { MenuActivity } from '@/components/menu-admin/MenuActivity';
 import {
   adminCombos,
   adminMenu,
@@ -46,7 +46,7 @@ export default function MenuAdminScreen() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [toggling, setToggling] = useState<string | null>(null);
-  // Bumped on every focus so the History tab refetches after an edit.
+  // Bumped on every focus so the Activity tab refetches after an edit.
   const [historyKey, setHistoryKey] = useState(0);
 
   const load = useCallback(async () => {
@@ -189,7 +189,7 @@ export default function MenuAdminScreen() {
             activeOpacity={0.8}
           >
             <Text style={[styles.tabText, tab === t && styles.tabTextActive]}>
-              {t === 'items' ? 'Items' : t === 'combos' ? 'Combos' : 'History'}
+              {t === 'items' ? 'Items' : t === 'combos' ? 'Combos' : 'Activity'}
             </Text>
           </TouchableOpacity>
         ))}
@@ -275,7 +275,7 @@ export default function MenuAdminScreen() {
             <Text style={styles.empty}>{q ? 'No combos match.' : 'No combos yet.'}</Text>
           )}
 
-          {tab === 'history' && <ChangeHistory key={historyKey} filter={{}} showEntity />}
+          {tab === 'history' && <MenuActivity key={historyKey} filter={{}} showEntity framed={false} />}
         </ScrollView>
       )}
     </View>
