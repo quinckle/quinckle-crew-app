@@ -8,6 +8,7 @@ import { QuinckleColors } from '@/constants/Colors';
 import { initPrinter } from '@/services/printer';
 import { registerPrintSinkRunner, watchPrintSinkLifecycle } from '@/services/printSink';
 import { watchForOtaUpdates } from '@/services/otaUpdate';
+import { OtaUpdateOverlay } from '@/components/ui/OtaUpdateOverlay';
 import { isSpokenNewOrderNotification } from '@/services/voiceAlerts';
 import { installCrashReporting, setCrashRoute } from '@/services/crashReport';
 import CrashScreen from '@/components/ui/CrashScreen';
@@ -84,6 +85,8 @@ export default function RootLayout() {
             },
           }}
         />
+        {/* "Updating Quinckle Crew" while a pushed update installs, instead of a blank reload. */}
+        <OtaUpdateOverlay />
       </AuthProvider>
     </GestureHandlerRootView>
   );
