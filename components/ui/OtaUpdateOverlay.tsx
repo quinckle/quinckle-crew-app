@@ -88,7 +88,9 @@ function UpdatedToast() {
         }, 3500);
       })
       .catch(() => {});
-    return () => timer && clearTimeout(timer);
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
   }, [anim]);
 
   if (!show) return null;
