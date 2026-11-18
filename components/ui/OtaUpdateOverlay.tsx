@@ -3,7 +3,7 @@
  *
  * Before this, the app downloaded silently and then reloaded — the screen went
  * blank for a moment and the app reopened, which looked like a crash. Now:
- *   • downloading → full-screen "Updating Quinckle Crew" with a progress bar
+ *   • downloading → full-screen "Updating Quinckle Crew" with progress (bar, or a spinner until the size is known)
  *   • restarting  → "Almost done…", then the native reload screen takes over
  *   • after boot  → a short "Quinckle Crew updated" toast
  * Phases come from services/otaUpdate.ts. Mounted once, above everything, in
@@ -11,7 +11,7 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Animated, Easing, Image, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Animated, Image, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Updates from 'expo-updates';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -57,36 +57,13 @@ export function OtaUpdateOverlay() {
   );
 }
 
-/** Real progress when the native side reports it; a sweeping bar until then. */
+/** Real progress when the native side reports it; a spinner until then. */
 function ProgressBar({ progress }: { progress?: number }) {
-  const [w, setW] = useState(0);
-  const sweep = useRef(new Animated.Value(0)).current;
   const known = typeof progress === 'number' && progress > 0;
-
-  useEffect(() => {
-    if (known) return;
-    const loop = Animated.loop(
-      Animated.timing(sweep, { toValue: 1, duration: 1100, easing: Easing.inOut(Easing.ease), useNativeDriver: true })
-    );
-    loop.start();
-    return () => {
-      loop.stop();
-      sweep.setValue(0);
-    };
-  }, [known, sweep]);
-
+  if (!known) return <ActivityIndicator size="large" color={QuinckleColors.primary} style={styles.spinner} />;
   return (
-    <View style={styles.track} onLayout={(e) => setW(e.nativeEvent.layout.width)}>
-      {known ? (
-        <View style={[styles.fill, { width: `${Math.round(Math.min(1, progress!) * 100)}%` }]} />
-      ) : (
-        <Animated.View
-          style={[
-            styles.fill,
-            { width: '35%', transform: [{ translateX: sweep.interpolate({ inputRange: [0, 1], outputRange: [-w * 0.35, w] }) }] },
-          ]}
-        />
-      )}
+    <View style={styles.track}>
+      <View style={[styles.fill, { width: `${Math.round(Math.min(1, progress!) * 100)}%` }]} />
     </View>
   );
 }
@@ -95,7 +72,7 @@ function ProgressBar({ progress }: { progress?: number }) {
 function UpdatedToast() {
   const insets = useSafeAreaInsets();
   const [show, setShow] = useState(false);
-  const y = useRef(new Animated.Value(-80)).current;
+  const anim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -105,20 +82,23 @@ function UpdatedToast() {
         void AsyncStorage.removeItem(JUST_UPDATED_KEY);
         if (Date.now() - Number(v) > TOAST_FRESH_MS) return;
         setShow(true);
-        Animated.spring(y, { toValue: 0, useNativeDriver: true, damping: 18 }).start();
+        Animated.timing(anim, { toValue: 1, duration: 220, useNativeDriver: true }).start();
         timer = setTimeout(() => {
-          Animated.timing(y, { toValue: -80, duration: 250, useNativeDriver: true }).start(() => setShow(false));
+          Animated.timing(anim, { toValue: 0, duration: 220, useNativeDriver: true }).start(() => setShow(false));
         }, 3500);
       })
       .catch(() => {});
     return () => timer && clearTimeout(timer);
-  }, [y]);
+  }, [anim]);
 
   if (!show) return null;
   return (
-    <Animated.View pointerEvents="none" style={[styles.toast, { top: insets.top + Spacing.sm, transform: [{ translateY: y }] }]}>
+    <Animated.View pointerEvents="none" style={[
+        styles.toast,
+        { top: insets.top + Spacing.sm, opacity: anim, transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [-12, 0] }) }] },
+      ]}>
       <Ionicons name="checkmark-circle" size={18} color={QuinckleColors.success} />
-      <Text style={styles.toastText}>Quinckle Crew updated — you are on the latest version</Text>
+      <Text style={styles.toastText}>Updated to the latest version</Text>
     </Animated.View>
   );
 }
@@ -145,6 +125,7 @@ const styles = StyleSheet.create({
     marginHorizontal: Spacing.xl,
   },
   fill: { height: '100%', borderRadius: Radius.pill, backgroundColor: QuinckleColors.primary },
+  spinner: { marginTop: Spacing.xl },
   note: { ...Typography.micro, color: QuinckleColors.textMuted, textAlign: 'center', marginTop: Spacing.lg },
   toast: {
     position: 'absolute',
