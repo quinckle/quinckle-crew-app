@@ -43,7 +43,8 @@ import { useAuth } from '../../context/AuthContext';
 import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
 import { normalizeChannel, isOffPremise, channelLabel } from '../../constants/channel';
 import {
-  crewSessions, crewOrders, crewDiners, crewMemberships, restaurantApi, crewOffers,
+  crewSessions, crewOrders, crewDiners, crewMemberships, restaurantApi, crewOffers, crewPayments,
+  type CollectSplitMethod,
 } from '../../services/api';
 import type { MenuItem, ModifierGroup, CrewOffer, CrewOrderPreview } from '../../services/api';
 import { BottomSheet } from '../../components/ui/BottomSheet';
@@ -51,7 +52,23 @@ import { CartReviewSheet, type CartLine } from '../../components/ui/CartReviewSh
 import { Skeleton } from '../../components/ui/Skeleton';
 import { readCache, writeCache, cacheKeys } from '../../services/dataCache';
 import { useTableSessionStart, waitForTableSession, retryTableSession, startTableSession } from '../../services/tableSessionStart';
+import { useTakeawaySessionStart, waitForTakeawaySession, retryTakeawaySession, startTakeawaySession } from '../../services/takeawaySessionStart';
 import { GuestSheet } from '../../components/ui/GuestSheet';
+import { UpiPaymentSheet } from '../../components/ui/UpiPaymentSheet';
+import { SplitPaymentSheet } from '../../components/ui/SplitPaymentSheet';
+import { DuePaymentSheet, type DuePaymentDetails } from '../../components/ui/DuePaymentSheet';
+import { AdjustBillForm } from './adjust-bill';
+
+// Takeaway is paid at the counter, usually right as it is punched — so the
+// method is picked on the bottom bar BEFORE placing and collected in the same
+// tap. Pending = pay later (the old flow: the payment screen opens after).
+const PAYMENT_METHODS: { key: 'PENDING' | 'CASH' | 'UPI' | 'SPLIT' | 'DUE'; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { key: 'PENDING', label: 'Pay later', icon: 'ellipsis-horizontal-circle-outline' },
+  { key: 'CASH', label: 'Cash', icon: 'cash-outline' },
+  { key: 'UPI', label: 'UPI', icon: 'qr-code-outline' },
+  { key: 'SPLIT', label: 'Split', icon: 'git-compare-outline' },
+  { key: 'DUE', label: 'Due', icon: 'time-outline' },
+];
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -390,22 +407,52 @@ export default function OrderMenuScreen() {
   const channel = normalizeChannel(paramChannel);
   const isTakeaway = isOffPremise(channel);
   const orderLabel = channelLabel(channel);
-  const pickupToken = paramPickupToken || null;
   const tableNum = paramTableNum ?? String(tableId ?? '').padStart(2, '0');
 
   // A free table opened from the grid arrives with no session yet: it is being
   // created in the background (services/tableSessionStart.ts). Browsing the
   // menu and building a cart never needed it — only the bill preview and
   // placing do — so the menu opens at once and picks the id up here.
-  const waitsOnStart = pendingStart === '1' && !isTakeaway && !!tableDbId && !paramSessionId;
-  const bgStart = useTableSessionStart(waitsOnStart ? tableDbId : undefined);
-  const sessionId = paramSessionId || (bgStart?.phase === 'ready' ? bgStart.sessionId : '');
+  // A takeaway opened from '+' arrives the same way (services/takeawaySessionStart.ts).
+  const waitsOnStart = pendingStart === '1' && !paramSessionId && (isTakeaway || !!tableDbId);
+  const bgStart = useTableSessionStart(waitsOnStart && !isTakeaway ? tableDbId : undefined);
+  const bgTakeawayStart = useTakeawaySessionStart(waitsOnStart && isTakeaway);
+  const sessionId = paramSessionId
+    || (bgStart?.phase === 'ready' ? bgStart.sessionId : '')
+    || (bgTakeawayStart?.phase === 'ready' ? bgTakeawayStart.sessionId : '');
 
   // The route survives an app reload; the in-memory start does not. Begin (or
   // adopt) the session again so the cart is never stranded.
   useEffect(() => {
-    if (waitsOnStart && !bgStart) void startTableSession(tableDbId!).catch(() => {});
-  }, [waitsOnStart, bgStart, tableDbId]);
+    if (!waitsOnStart) return;
+    if (isTakeaway) { if (!bgTakeawayStart) void startTakeawaySession().catch(() => {}); }
+    else if (!bgStart) void startTableSession(tableDbId!).catch(() => {});
+  }, [waitsOnStart, isTakeaway, bgStart, bgTakeawayStart, tableDbId]);
+
+  /** Resolve the session id, waiting on (or retrying) the background start. */
+  const resolveSessionId = async (): Promise<string> => {
+    if (sessionId) return sessionId;
+    if (isTakeaway) {
+      return (bgTakeawayStart?.phase === 'failed' ? await retryTakeawaySession() : await waitForTakeawaySession()).sessionId;
+    }
+    return bgStart?.phase === 'failed' ? await retryTableSession(tableDbId!) : await waitForTableSession(tableDbId!);
+  };
+
+  // A new counter takeaway has no TK number until its first order lands (the
+  // backend mints it then and placeOrder returns it). A pushed order, or an
+  // older backend, already has one.
+  const [pickupToken, setPickupToken] = useState<string | null>(paramPickupToken || null);
+  useEffect(() => {
+    if (bgTakeawayStart?.phase === 'ready' && bgTakeawayStart.pickupToken) setPickupToken(bgTakeawayStart.pickupToken);
+  }, [bgTakeawayStart]);
+
+  // Takeaway payment picked on the bottom bar (see PAYMENT_METHODS).
+  const [paymentMethod, setPaymentMethod] = useState<'PENDING' | 'CASH' | 'UPI' | 'SPLIT' | 'DUE'>('PENDING');
+  const [upiSheetOpen, setUpiSheetOpen] = useState(false);
+  const [splitSheetOpen, setSplitSheetOpen] = useState(false);
+  const [splitDetails, setSplitDetails] = useState<{ cash: number; upi: number } | null>(null);
+  const [dueSheetOpen, setDueSheetOpen] = useState(false);
+  const [dueDetails, setDueDetails] = useState<DuePaymentDetails | null>(null);
 
   // ── Menu data ──────────────────────────────────────────────────────────────
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
@@ -823,7 +870,9 @@ export default function OrderMenuScreen() {
   const [billPreview, setBillPreview] = useState<CrewOrderPreview | null>(null);
   const [billPreviewState, setBillPreviewState] = useState<'idle' | 'loading' | 'error'>('idle');
   const previewSeq = useRef(0);
-  const showBillPreview = !isTakeaway && !!sessionId;
+  const showBillPreview = !!sessionId;
+  // Bumped after Adjust bill saves, so the projection re-prices with it.
+  const [previewRefreshKey, setPreviewRefreshKey] = useState(0);
   useEffect(() => {
     if (!reviewOpen || !showBillPreview) return;
     const items = buildOrderItems();
@@ -840,7 +889,7 @@ export default function OrderMenuScreen() {
         .catch(() => { if (seq === previewSeq.current) setBillPreviewState('error'); });
     }, 300);
     return () => clearTimeout(t);
-  }, [reviewOpen, showBillPreview, sessionId, buildOrderItems]);
+  }, [reviewOpen, showBillPreview, sessionId, buildOrderItems, previewRefreshKey]);
 
   const confirmAndPlace = async () => {
     const phone = coPhone.replace(/\D/g, '');
@@ -853,8 +902,11 @@ export default function OrderMenuScreen() {
     const items = buildOrderItems();
     if (items.length === 0) { setCoError('Cart is empty.'); return; }
     if (!sessionId && !waitsOnStart) { setCoError('No active session. Go back and try again.'); return; }
+    if (isTakeaway && paymentMethod === 'SPLIT' && !splitDetails) { setSplitSheetOpen(true); return; }
+    if (isTakeaway && paymentMethod === 'DUE' && !dueDetails) { setDueSheetOpen(true); return; }
 
     const snapshotTotal = cartTotal;
+    const snapshotCount = cartCount;
     const guestPhone = phone.length === 10 ? phone : '';
     const guestName = coName.trim() || null;
 
@@ -863,9 +915,7 @@ export default function OrderMenuScreen() {
     try {
       // Normally ready long before Place is pressed. If not, wait for it here —
       // the button is already showing its spinner — rather than failing.
-      const sid = sessionId || (bgStart?.phase === 'failed'
-        ? await retryTableSession(tableDbId!)
-        : await waitForTableSession(tableDbId!));
+      const sid = await resolveSessionId();
       if (guestPhone) {
         crewSessions.saveCustomer(sid, guestPhone, guestName).catch(() => {});
         setSessionCustomerPhone(guestPhone);
@@ -874,6 +924,8 @@ export default function OrderMenuScreen() {
 
       const orderRes = await crewOrders.placeOrder(sid, items);
       const orderId = orderRes?.order_id ?? '';
+      const token = orderRes?.pickup_token || pickupToken || null;
+      if (token) setPickupToken(token);
 
       setCart({});
       setCartNotes({});
@@ -891,64 +943,114 @@ export default function OrderMenuScreen() {
         return;
       }
 
-      // Show a short-lived "Order placed" confirmation, then leave order-menu.
-      // Dine-in returns to [tableId] with the bill breakdown forced open — so
-      // the crew reviews exactly what was ordered before doing anything else —
-      // instead of jumping straight to payment collection. Takeaway has no
-      // table screen to return to, so it still goes to payment-collect directly.
-      //
-      // dismissTo (not replace) pops back to the [tableId] instance already in
-      // the stack — the one we were pushed from — updating its params. Using
-      // replace here mounted a *second* [tableId] on top of the original, which
-      // is why the crew had to hit Back twice to reach the table floor.
+      // Leave at once — the confirmation is a toast on the screen we land on
+      // (SuccessToast), not a card this screen holds first. Only a FAILED
+      // takeaway auto-invoice still holds the card, long enough to read why.
       const invoice = autoInvoiceLine(orderRes?.auto_invoice);
-      setPlaced({ amount: orderTotal, invoice });
-      // A failed auto-invoice holds the card long enough to read why.
-      navTimerRef.current = setTimeout(() => {
-        if (isTakeaway) {
+      const placedAmount = String(Math.round(orderTotal));
+      const placedCount = String(snapshotCount);
+
+      // Takeaway paid on the bar: record it here with the same call the
+      // payment screen makes, and skip that screen. If recording fails the
+      // order is still placed, so it falls back to the payment screen for this
+      // order — the crew collects there instead of trusting a toast.
+      let collectedLabel = '';
+      let collectFailed = false;
+      if (isTakeaway && paymentMethod !== 'PENDING') {
+        const splits: { method: CollectSplitMethod; amount: number }[] = [];
+        let dueOptions: { customerPhone: string; customerName?: string | null } | null = null;
+        if (paymentMethod === 'CASH') splits.push({ method: 'CASH', amount: orderTotal });
+        else if (paymentMethod === 'UPI') splits.push({ method: 'UPI_DIRECT', amount: orderTotal });
+        else if (paymentMethod === 'SPLIT' && splitDetails) {
+          splits.push({ method: 'CASH', amount: splitDetails.cash });
+          splits.push({ method: 'UPI_DIRECT', amount: splitDetails.upi });
+        } else if (paymentMethod === 'DUE' && dueDetails) {
+          if (dueDetails.paidNow > 0) splits.push({ method: dueDetails.paidMethod, amount: dueDetails.paidNow });
+          splits.push({ method: 'DUE', amount: Math.max(0, orderTotal - dueDetails.paidNow) });
+          dueOptions = { customerPhone: dueDetails.phone, customerName: dueDetails.name || null };
+        }
+        collectedLabel = paymentMethod === 'DUE' ? 'on khata'
+          : paymentMethod === 'SPLIT' ? 'split collected'
+          : paymentMethod === 'UPI' ? 'UPI collected'
+          : 'cash collected';
+        try {
+          if (!splits.length || !orderId || !staffInfo?.id) throw new Error('missing');
+          const sig = splits.map((x) => `${x.method}:${x.amount.toFixed(2)}`).join('|');
+          await crewPayments.collectPayment(orderId, staffInfo.id, splits, `crew-collect:${orderId}:${sig}`, null, dueOptions);
+        } catch {
+          collectFailed = true;
+        }
+      }
+
+      const go = () => {
+        if (isTakeaway && paymentMethod !== 'PENDING' && !collectFailed) {
+          // Back to the floor (the Takeaway tab it was opened from).
+          router.dismissTo({
+            pathname: '/(staff)',
+            params: { placedAmount, placedCount, placedLabel: `${token ?? orderLabel} · ${collectedLabel}` },
+          });
+        } else if (isTakeaway) {
           router.replace({
             pathname: '/(staff)/payment-collect',
             params: {
               orderId,
               tableNumber: String(tableId ?? 0),
               channel,
-              pickupToken: pickupToken ?? '',
+              pickupToken: token ?? '',
               amount: String(orderTotal),
               customerName: guestName ?? '',
               customerPhone: guestPhone,
             },
           });
-        } else if (waitsOnStart) {
-          // Opened straight from the grid — there is no table screen
-          // underneath to pop back to, so this one takes the menu's place
-          // and Back from it lands on the grid.
-          router.replace({
-            pathname: '/(staff)/[tableId]',
-            params: {
-              tableId: String(tableId ?? 0),
-              sessionId: sid,
-              tableDbId: tableDbId ?? '',
-              zoneName: paramZoneName ?? '',
-              openBill: '1',
-            },
-          });
         } else {
-          router.dismissTo({
-            pathname: '/(staff)/[tableId]',
-            params: {
-              tableId: String(tableId ?? 0),
-              sessionId: sid,
-              tableDbId: tableDbId ?? '',
-              zoneName: paramZoneName ?? '',
-              openBill: '1',
-            },
-          });
+          // Dine-in lands on the table with the bill open, so the crew sees
+          // exactly what was ordered. Opened straight from the grid there is
+          // no table screen underneath, so this one takes the menu's place;
+          // otherwise dismissTo pops back to the table screen we came from
+          // (replace there would stack a second one — Back twice to leave).
+          const params = {
+            tableId: String(tableId ?? 0),
+            sessionId: sid,
+            tableDbId: tableDbId ?? '',
+            zoneName: paramZoneName ?? '',
+            openBill: '1',
+            placedAmount,
+            placedCount,
+          };
+          if (waitsOnStart) router.replace({ pathname: '/(staff)/[tableId]', params });
+          else router.dismissTo({ pathname: '/(staff)/[tableId]', params });
         }
-      }, invoice && !invoice.ok ? 2500 : 500);
+      };
+      if (invoice && !invoice.ok) {
+        setPlaced({ amount: orderTotal, invoice });
+        navTimerRef.current = setTimeout(go, 2500);
+      } else {
+        go();
+      }
     } catch (e: any) {
       setCoError(e?.message ?? 'Failed to place order. Try again.');
     } finally {
       setCoSubmitting(false);
+    }
+  };
+
+  // ── Adjust bill from the order summary ─────────────────────────────────────
+  // Same form as the table screen's Adjust bill, in a sheet. Before the first
+  // order only party size and charges can be saved (AdjustBillForm's preOrder);
+  // its changes land on the session, so the projected bill re-prices.
+  const [adjustBusy, setAdjustBusy] = useState(false);
+  const [adjustSheetOpen, setAdjustSheetOpen] = useState(false);
+  const [adjustSessionId, setAdjustSessionId] = useState('');
+  const openAdjustBill = async () => {
+    if (adjustBusy) return;
+    setAdjustBusy(true);
+    try {
+      setAdjustSessionId(await resolveSessionId());
+      setAdjustSheetOpen(true);
+    } catch (e: any) {
+      setCoError(e?.message ?? 'Could not open Adjust bill. Try again.');
+    } finally {
+      setAdjustBusy(false);
     }
   };
 
@@ -1131,6 +1233,44 @@ export default function OrderMenuScreen() {
           <Text style={styles.footerErrorText} numberOfLines={2}>{coError}</Text>
         </TouchableOpacity>
       ) : null}
+      {isTakeaway && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.paymentChipRow}
+          style={styles.paymentChipScroll}
+          keyboardShouldPersistTaps="handled"
+        >
+          {PAYMENT_METHODS.map((m) => {
+            const on = paymentMethod === m.key;
+            // Split and Due need numbers first — the chip opens the sheet that
+            // takes them (and re-opens it, filled in, to edit).
+            const label =
+              m.key === 'SPLIT' && splitDetails && on ? `Split · ₹${splitDetails.cash}+₹${splitDetails.upi}`
+              : m.key === 'DUE' && dueDetails && on ? `Due · ₹${Math.max(0, Math.round(cartTotal - dueDetails.paidNow))}`
+              : m.label;
+            return (
+              <TouchableOpacity
+                key={m.key}
+                style={[styles.paymentChip, on && styles.paymentChipOn]}
+                onPress={() => {
+                  void Haptics.selectionAsync().catch(() => {});
+                  if (m.key === 'UPI') setUpiSheetOpen(true);
+                  else if (m.key === 'SPLIT') setSplitSheetOpen(true);
+                  else if (m.key === 'DUE') setDueSheetOpen(true);
+                  else setPaymentMethod(m.key);
+                }}
+                activeOpacity={0.75}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: on }}
+              >
+                <Ionicons name={m.icon} size={13} color={on ? '#fff' : QuinckleColors.primary} />
+                <Text style={[styles.paymentChipText, on && styles.paymentChipTextOn]}>{label}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      )}
       <View style={styles.footerMainRow}>
         <View style={styles.footerLeft}>
           {/* Order summary and customer, side by side — both optional. */}
@@ -1166,10 +1306,36 @@ export default function OrderMenuScreen() {
         >
           {coSubmitting
             ? <ActivityIndicator size="small" color="#fff" />
-            : <Text style={styles.placeBtnText}>Place Order</Text>}
+            : <Text style={styles.placeBtnText}>
+                {isTakeaway && paymentMethod !== 'PENDING' ? 'Place & Collect' : 'Place Order'}
+              </Text>}
         </TouchableOpacity>
       </View>
     </Animated.View>
+  );
+
+  // Rendered inside CartReviewSheet's own container so it stays within the
+  // drawer on tablet-landscape instead of covering the whole screen.
+  const adjustBillSheetJsx = (
+    <BottomSheet
+      visible={adjustSheetOpen}
+      onClose={() => setAdjustSheetOpen(false)}
+      dismissible={false}
+      disableInternalScroll
+      maxHeightRatio={0.88}
+    >
+      {adjustSheetOpen && adjustSessionId ? (
+        <AdjustBillForm
+          embedded
+          preOrder={pendingStart === '1'}
+          sessionId={adjustSessionId}
+          subtitle={isTakeaway ? `New ${orderLabel} order` : `Table T${tableNum}`}
+          billTotal={billPreview?.projected.total ?? cartTotal}
+          onClose={() => setAdjustSheetOpen(false)}
+          onSaved={() => setPreviewRefreshKey((k) => k + 1)}
+        />
+      ) : null}
+    </BottomSheet>
   );
 
   const cartReviewJsx = (
@@ -1182,7 +1348,10 @@ export default function OrderMenuScreen() {
       onInc={addToCart}
       onDec={removeFromCart}
       onCheckout={() => { setReviewOpen(false); void confirmAndPlace(); }}
+      onAdjust={() => { void openAdjustBill(); }}
+      ctaLabel={isTakeaway && paymentMethod !== 'PENDING' ? 'Place & Collect' : 'Place Order'}
       bill={showBillPreview ? { data: billPreview, state: billPreviewState } : undefined}
+      adjustBillContent={adjustBillSheetJsx}
     />
   );
 
@@ -1203,6 +1372,37 @@ export default function OrderMenuScreen() {
       error={coError}
     />
   );
+
+  const paymentSheetsJsx = isTakeaway ? (
+    <>
+      <UpiPaymentSheet
+        visible={upiSheetOpen}
+        onClose={() => setUpiSheetOpen(false)}
+        isWide={isWide}
+        total={cartTotal}
+        restaurantId={staffInfo?.restaurantId}
+        onConfirm={() => setPaymentMethod('UPI')}
+      />
+      <SplitPaymentSheet
+        visible={splitSheetOpen}
+        onClose={() => setSplitSheetOpen(false)}
+        isWide={isWide}
+        total={cartTotal}
+        initialCash={splitDetails?.cash ?? null}
+        onConfirm={(cash, upi) => { setSplitDetails({ cash, upi }); setPaymentMethod('SPLIT'); }}
+      />
+      <DuePaymentSheet
+        visible={dueSheetOpen}
+        onClose={() => setDueSheetOpen(false)}
+        isWide={isWide}
+        total={cartTotal}
+        initial={dueDetails}
+        fallbackPhone={coPhone}
+        fallbackName={coName}
+        onConfirm={(details) => { setDueDetails(details); setPaymentMethod('DUE'); }}
+      />
+    </>
+  ) : null;
 
   const headerJsx = (
     <View style={styles.header}>
@@ -1314,6 +1514,7 @@ export default function OrderMenuScreen() {
         {/* ── Cart review (right-side drawer on tablet-landscape) ── */}
         {cartReviewJsx}
         {guestSheetJsx}
+        {paymentSheetsJsx}
         {noteSheetJsx}
       </View>
     );
@@ -1445,6 +1646,7 @@ export default function OrderMenuScreen() {
       {/* ── Cart review (bottom sheet on phone) ── */}
       {cartReviewJsx}
       {guestSheetJsx}
+      {paymentSheetsJsx}
       {noteSheetJsx}
 
     </View>
@@ -1565,6 +1767,16 @@ const styles = StyleSheet.create({
   // Footer
   footer: { backgroundColor: QuinckleColors.surface, borderTopWidth: 1, borderTopColor: QuinckleColors.border, paddingHorizontal: Spacing.xl, paddingTop: Spacing.md },
   footerMainRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  paymentChipScroll: { marginBottom: Spacing.sm, flexGrow: 0 },
+  paymentChipRow: { flexDirection: 'row', gap: 6 },
+  paymentChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: 11, paddingVertical: 7, borderRadius: Radius.pill,
+    borderWidth: 1, borderColor: QuinckleColors.primarySoftBorder, backgroundColor: QuinckleColors.primarySoft,
+  },
+  paymentChipOn: { backgroundColor: QuinckleColors.primary, borderColor: QuinckleColors.primary },
+  paymentChipText: { fontSize: 11, fontWeight: '700', color: QuinckleColors.primary },
+  paymentChipTextOn: { color: '#fff' },
   footerLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
   footerIconPair: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
   footerIconBtn: {

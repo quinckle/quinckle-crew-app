@@ -1026,6 +1026,8 @@ export const crewOrders = {
   placeOrder: (sessionId: string, items: { item_id: string; qty: number; note?: string; selectedModifiers?: { groupId: string; optionId: string }[]; modifiers_summary?: string }[]) =>
     request<{
       success: boolean; order_id: string; status: string; total: number;
+      /** The session's TK number — a counter takeaway gets it on its first order. */
+      pickup_token?: string | null;
       /** Only when the venue auto-prints takeaway invoices (Printer screen). */
       auto_invoice?: { status: 'sent'; printer_name: string } | { status: 'failed'; reason: string };
     }>(
@@ -1059,13 +1061,14 @@ export const crewTakeaway = {
    * Create a tableless TAKEAWAY session for a counter/phone order.
    * Guest name/phone are optional; when given, the order feeds CRM.
    */
-  createSession: (customerName?: string, customerPhone?: string) =>
+  createSession: (customerName?: string, customerPhone?: string, opts?: { deferToken?: boolean }) =>
     request<{ success: true; data: { session_id: string; session_ref: string; pickup_token: string | null; expires_at: string } }>(
       'POST',
       '/api/crew/takeaway/session',
       {
         ...(customerName ? { customerName } : {}),
         ...(customerPhone ? { customerPhone } : {}),
+        ...(opts?.deferToken ? { deferToken: true } : {}),
       },
       true,
     ),
