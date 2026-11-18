@@ -50,6 +50,8 @@ import { BottomSheet } from '../../components/ui/BottomSheet';
 import { CartReviewSheet, type CartLine } from '../../components/ui/CartReviewSheet';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { readCache, writeCache, cacheKeys } from '../../services/dataCache';
+import { useTableSessionStart, waitForTableSession, retryTableSession, startTableSession } from '../../services/tableSessionStart';
+import { GuestSheet } from '../../components/ui/GuestSheet';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -345,7 +347,7 @@ export default function OrderMenuScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { staffInfo } = useAuth();
-  const { isWide, width, height, contentMaxWidth } = useResponsive();
+  const { isWide, width, height } = useResponsive();
 
   // Grid columns for the wide POS layout — target ~200dp per card in the space
   // left of the category rail, clamped so cards never get comically wide/thin.
@@ -361,12 +363,13 @@ export default function OrderMenuScreen() {
     tableId,
     tableNum: paramTableNum,
     tableDbId,
-    sessionId,
+    sessionId: paramSessionId,
     customerPhone: paramPhone,
     customerName: paramName,
     channel: paramChannel,
     pickupToken: paramPickupToken,
     zoneName: paramZoneName,
+    pendingStart,
   } = useLocalSearchParams<{
     tableId: string;
     tableNum: string;
@@ -377,6 +380,8 @@ export default function OrderMenuScreen() {
     channel: string;
     pickupToken: string;
     zoneName?: string;
+    /** '1' = a free table opened straight from the grid; its session is still being created. */
+    pendingStart?: string;
   }>();
 
   // Off-premise covers TAKEAWAY *and* DELIVERY — both are tableless and both
@@ -387,6 +392,20 @@ export default function OrderMenuScreen() {
   const orderLabel = channelLabel(channel);
   const pickupToken = paramPickupToken || null;
   const tableNum = paramTableNum ?? String(tableId ?? '').padStart(2, '0');
+
+  // A free table opened from the grid arrives with no session yet: it is being
+  // created in the background (services/tableSessionStart.ts). Browsing the
+  // menu and building a cart never needed it — only the bill preview and
+  // placing do — so the menu opens at once and picks the id up here.
+  const waitsOnStart = pendingStart === '1' && !isTakeaway && !!tableDbId && !paramSessionId;
+  const bgStart = useTableSessionStart(waitsOnStart ? tableDbId : undefined);
+  const sessionId = paramSessionId || (bgStart?.phase === 'ready' ? bgStart.sessionId : '');
+
+  // The route survives an app reload; the in-memory start does not. Begin (or
+  // adopt) the session again so the cart is never stranded.
+  useEffect(() => {
+    if (waitsOnStart && !bgStart) void startTableSession(tableDbId!).catch(() => {});
+  }, [waitsOnStart, bgStart, tableDbId]);
 
   // ── Menu data ──────────────────────────────────────────────────────────────
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
@@ -415,7 +434,9 @@ export default function OrderMenuScreen() {
   const [footerMounted, setFooterMounted] = useState(false);
 
   // ── Checkout / Identity ────────────────────────────────────────────────────
-  const [checkoutOpen, setCheckoutOpen] = useState(false);
+  // Customer name + phone live in an optional sheet off the footer. Place Order
+  // places at once; nobody is made to step through a guest screen first.
+  const [contactOpen, setContactOpen] = useState(false);
   const [coPhone, setCoPhone] = useState('');
   const [coName, setCoName] = useState('');
   const [coLooking, setCoLooking] = useState(false);
@@ -494,12 +515,22 @@ export default function OrderMenuScreen() {
       })
       .catch(() => { if (!cancelled) setIsMenuLoading(false); });
 
+    return () => { cancelled = true; };
+  }, [staffInfo?.restaurantId, isTakeaway, channel]);
+
+  // Offers are keyed on the session too (what the table already owes counts
+  // towards a threshold). Separate from the menu so a session that lands in the
+  // background re-reads offers without re-painting the menu.
+  useEffect(() => {
+    const rid = staffInfo?.restaurantId;
+    if (!rid) return;
+    let cancelled = false;
     // Offers list is cacheable per restaurant; sessionSubtotalBeforeCart is
     // session-specific so it only ever comes from the fresh response.
     readCache<CrewOffer[]>(cacheKeys.crewOffers(rid)).then(cached => {
       if (!cancelled && cached) setOffers(prev => (prev.length ? prev : cached));
     });
-    crewOffers.list(sessionId)
+    crewOffers.list(sessionId || undefined)
       .then(res => {
         const d = (res as any)?.data;
         if (d?.offers) writeCache(cacheKeys.crewOffers(rid), d.offers);
@@ -508,9 +539,8 @@ export default function OrderMenuScreen() {
         setPriorSubtotal(Number(d?.sessionSubtotalBeforeCart ?? 0));
       })
       .catch(() => {});
-
     return () => { cancelled = true; };
-  }, [staffInfo?.restaurantId, sessionId, isTakeaway, channel]);
+  }, [staffInfo?.restaurantId, sessionId]);
 
   // ── Cart helpers — identity-stable so MenuItemCard's React.memo holds ──────
   const addToCart = useCallback((itemId: string, mods?: { groupId: string; optionId: string }[]) => {
@@ -710,21 +740,21 @@ export default function OrderMenuScreen() {
     return matchSearch && matchCat;
   }), [menuItems, search, activeCategory]);
 
-  // ── Checkout (identity) ────────────────────────────────────────────────────
-  const openCheckout = () => {
-    setCoError(null);
-    setCoVisits(null); setCoMember(null);
-    if (sessionCustomerPhone) {
-      const digits = sessionCustomerPhone.replace(/\D/g, '').slice(-10);
-      setCoPhone(digits.length === 10 ? digits : '');
-      setCoName(sessionCustomerName ?? '');
-      setCoFound(digits.length === 10 ? true : null);
-      if (digits.length === 10) void lookupGuest(digits, { keepName: true });
-    } else {
-      setCoPhone(''); setCoName(''); setCoFound(null);
-    }
-    setCheckoutOpen(true);
-  };
+  // ── Customer (optional) ────────────────────────────────────────────────────
+  // A table that already has a saved customer starts with them filled in, so
+  // the sheet only needs opening to change who it is.
+  const prefilled = useRef(false);
+  useEffect(() => {
+    if (prefilled.current) return;
+    prefilled.current = true;
+    const digits = (sessionCustomerPhone ?? '').replace(/\D/g, '').slice(-10);
+    if (digits.length !== 10) return;
+    setCoPhone(digits);
+    setCoName(sessionCustomerName ?? '');
+    setCoFound(true);
+    void lookupGuest(digits, { keepName: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Looks up diner history (visit count) and membership status in parallel.
   // `keepName` is used when re-opening for an already-known session customer,
@@ -816,11 +846,13 @@ export default function OrderMenuScreen() {
     const phone = coPhone.replace(/\D/g, '');
     if (phone.length > 0 && phone.length !== 10) {
       setCoError('Enter a valid 10-digit number, or leave blank for a walk-in guest.');
+      setContactOpen(true);
       return;
     }
+    if (coSubmitting) return;
     const items = buildOrderItems();
     if (items.length === 0) { setCoError('Cart is empty.'); return; }
-    if (!sessionId) { setCoError('No active session. Go back and try again.'); return; }
+    if (!sessionId && !waitsOnStart) { setCoError('No active session. Go back and try again.'); return; }
 
     const snapshotTotal = cartTotal;
     const guestPhone = phone.length === 10 ? phone : '';
@@ -829,13 +861,18 @@ export default function OrderMenuScreen() {
     setCoSubmitting(true);
     setCoError(null);
     try {
+      // Normally ready long before Place is pressed. If not, wait for it here —
+      // the button is already showing its spinner — rather than failing.
+      const sid = sessionId || (bgStart?.phase === 'failed'
+        ? await retryTableSession(tableDbId!)
+        : await waitForTableSession(tableDbId!));
       if (guestPhone) {
-        crewSessions.saveCustomer(sessionId, guestPhone, guestName).catch(() => {});
+        crewSessions.saveCustomer(sid, guestPhone, guestName).catch(() => {});
         setSessionCustomerPhone(guestPhone);
         if (guestName) setSessionCustomerName(guestName);
       }
 
-      const orderRes = await crewOrders.placeOrder(sessionId, items);
+      const orderRes = await crewOrders.placeOrder(sid, items);
       const orderId = orderRes?.order_id ?? '';
 
       setCart({});
@@ -849,7 +886,8 @@ export default function OrderMenuScreen() {
       if (!Number.isFinite(orderTotal) || orderTotal <= 0) orderTotal = snapshotTotal;
 
       if (!Number.isFinite(orderTotal) || orderTotal <= 0) {
-        router.back();
+        if (waitsOnStart) router.replace({ pathname: '/(staff)/[tableId]', params: { tableId: String(tableId ?? 0), sessionId: sid, tableDbId: tableDbId ?? '', zoneName: paramZoneName ?? '' } });
+        else router.back();
         return;
       }
 
@@ -880,12 +918,26 @@ export default function OrderMenuScreen() {
               customerPhone: guestPhone,
             },
           });
+        } else if (waitsOnStart) {
+          // Opened straight from the grid — there is no table screen
+          // underneath to pop back to, so this one takes the menu's place
+          // and Back from it lands on the grid.
+          router.replace({
+            pathname: '/(staff)/[tableId]',
+            params: {
+              tableId: String(tableId ?? 0),
+              sessionId: sid,
+              tableDbId: tableDbId ?? '',
+              zoneName: paramZoneName ?? '',
+              openBill: '1',
+            },
+          });
         } else {
           router.dismissTo({
             pathname: '/(staff)/[tableId]',
             params: {
               tableId: String(tableId ?? 0),
-              sessionId: sessionId ?? '',
+              sessionId: sid,
               tableDbId: tableDbId ?? '',
               zoneName: paramZoneName ?? '',
               openBill: '1',
@@ -949,176 +1001,46 @@ export default function OrderMenuScreen() {
     </BottomSheet>
   );
 
-  // ── Guest details — its own screen (not a modal), pushed in place of the ──
-  // menu when "Place Order" is tapped. Same fields/CRM lookup as before.
-  if (checkoutOpen) {
-    // Once the order is placed, this same screen morphs into the success tick
-    // (card + checkmark spring in) instead of bouncing back to the menu to
-    // show a separate confirmation — one continuous transition, not a jump.
-    if (placed) {
-      return (
-        <View style={[styles.screen, { paddingTop: insets.top }]}>
-          <View style={styles.placedScreenWrap}>
+  // ── Order placed — a short success card, then on to the bill / payment ──
+  if (placed) {
+    return (
+      <View style={[styles.screen, { paddingTop: insets.top }]}>
+        <View style={styles.placedScreenWrap}>
+          <Animated.View
+            style={[
+              styles.placedCard,
+              {
+                opacity: placedCardAnim,
+                transform: [{
+                  scale: placedCardAnim.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1] }),
+                }],
+              },
+            ]}
+          >
             <Animated.View
               style={[
-                styles.placedCard,
+                styles.placedIcon,
                 {
-                  opacity: placedCardAnim,
                   transform: [{
-                    scale: placedCardAnim.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1] }),
+                    scale: placedTickAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] }),
                   }],
                 },
               ]}
             >
-              <Animated.View
-                style={[
-                  styles.placedIcon,
-                  {
-                    transform: [{
-                      scale: placedTickAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] }),
-                    }],
-                  },
-                ]}
-              >
-                <Ionicons name="checkmark" size={34} color="#fff" />
-              </Animated.View>
-              <Text style={styles.placedTitle}>Order placed</Text>
-              <Text style={styles.placedSub}>
-                {isTakeaway ? (pickupToken ?? orderLabel) : `Table T${tableNum}`} · ₹{placed.amount.toFixed(0)}
-              </Text>
-              {placed.invoice && (
-                <Text style={[styles.placedInvoice, !placed.invoice.ok && styles.placedInvoiceFailed]}>
-                  {placed.invoice.text}
-                </Text>
-              )}
-              <Text style={styles.placedHint}>Opening payment collection…</Text>
+              <Ionicons name="checkmark" size={34} color="#fff" />
             </Animated.View>
-          </View>
+            <Text style={styles.placedTitle}>Order placed</Text>
+            <Text style={styles.placedSub}>
+              {isTakeaway ? (pickupToken ?? orderLabel) : `Table T${tableNum}`} · ₹{placed.amount.toFixed(0)}
+            </Text>
+            {placed.invoice && (
+              <Text style={[styles.placedInvoice, !placed.invoice.ok && styles.placedInvoiceFailed]}>
+                {placed.invoice.text}
+              </Text>
+            )}
+            <Text style={styles.placedHint}>{isTakeaway ? 'Opening payment collection…' : 'Opening the bill…'}</Text>
+          </Animated.View>
         </View>
-      );
-    }
-
-    return (
-      <View style={[styles.screen, { paddingTop: insets.top }]}>
-        <View style={styles.header}>
-          <TouchableOpacity
-            onPress={() => !coSubmitting && setCheckoutOpen(false)}
-            style={styles.backBtn}
-            activeOpacity={0.7}
-            disabled={coSubmitting}
-          >
-            <Ionicons name="chevron-back" size={20} color={QuinckleColors.textPrimary} />
-          </TouchableOpacity>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.headerTitle}>Guest details</Text>
-            <Text style={styles.headerSub}>Optional — skip to place a walk-in order</Text>
-          </View>
-        </View>
-
-        <KeyboardAvoidingView
-          style={{ flex: 1 }}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        >
-          <ScrollView
-            contentContainerStyle={[
-              styles.coScreenBody,
-              contentMaxWidth != null && { maxWidth: contentMaxWidth, width: '100%', alignSelf: 'center' },
-            ]}
-            keyboardShouldPersistTaps="handled"
-          >
-            {/* Phone */}
-            <View style={styles.coInputWrap}>
-              <View style={styles.coCode}><Text style={styles.coCodeText}>+91</Text></View>
-              <View style={styles.coDivider} />
-              <TextInput
-                style={styles.coInput}
-                value={coPhone}
-                onChangeText={onCoPhoneChange}
-                placeholder="10-digit mobile"
-                placeholderTextColor={QuinckleColors.textMuted}
-                keyboardType="phone-pad"
-                maxLength={10}
-                autoFocus
-              />
-              {coLooking && <ActivityIndicator size="small" color={QuinckleColors.primary} style={{ marginRight: 12 }} />}
-            </View>
-
-            {coFound === false && !coLookupFailed && coPhone.length === 10 && (
-              <Text style={styles.notFoundText}>New guest — enter name below</Text>
-            )}
-            {coLookupFailed && coPhone.length === 10 && (
-              <Text style={styles.notFoundText}>Couldn’t check — enter the name to continue</Text>
-            )}
-            {coError ? <Text style={styles.coErrorText}>{coError}</Text> : null}
-
-            {/* Name */}
-            <View style={[styles.coInputWrap, { marginTop: 10 }]}>
-              <TextInput
-                style={[styles.coInput, { flex: 1, paddingHorizontal: 14 }]}
-                value={coName}
-                onChangeText={setCoName}
-                placeholder="Guest name (optional)"
-                placeholderTextColor={QuinckleColors.textMuted}
-                returnKeyType="done"
-                onSubmitEditing={confirmAndPlace}
-              />
-              {coFound === true && (
-                <Ionicons name="checkmark-circle" size={18} color={QuinckleColors.success} style={{ marginRight: 12 }} />
-              )}
-            </View>
-
-            {/* CRM — visit history + membership status */}
-            {coPhone.length === 10 && !coLooking && (coFound !== null || coMember !== null) && (
-              <View style={styles.crmCard}>
-                <View style={styles.crmRow}>
-                  <View style={styles.crmCol}>
-                    <Text style={styles.crmLabel}>VISITS HERE</Text>
-                    <View style={styles.crmValueRow}>
-                      <Text style={styles.crmValueNum}>{coVisits ?? 0}</Text>
-                      <Text style={styles.crmValueUnit}>{coVisits === 1 ? 'time' : 'times'}</Text>
-                    </View>
-                  </View>
-                  <View style={styles.crmDivider} />
-                  <View style={styles.crmCol}>
-                    <Text style={styles.crmLabel}>MEMBERSHIP</Text>
-                    {coMember ? (
-                      <View style={styles.crmMemberRow}>
-                        <Ionicons name="ribbon" size={14} color={QuinckleColors.warning} />
-                        <Text style={styles.crmMemberText}>Member</Text>
-                      </View>
-                    ) : (
-                      <Text style={styles.crmNotMemberText}>Not a member</Text>
-                    )}
-                  </View>
-                </View>
-                {coMember && (
-                  <View style={styles.crmDiscountStrip}>
-                    <Ionicons name="pricetag" size={13} color={QuinckleColors.warning} />
-                    <Text style={styles.crmDiscountText}>Membership discount applied at billing</Text>
-                  </View>
-                )}
-              </View>
-            )}
-
-            {/* Sits right below the name section normally; when the CRM card
-                above appears/disappears, LayoutAnimation glides it down/up
-                instead of it snapping to its new spot. */}
-            {/* The CRM lookup is informational only — never gate placing the
-                order on it, or a slow lookup adds a full RTT to every order. */}
-            <TouchableOpacity
-              style={[styles.coConfirm,
-                { marginTop: Spacing.lg },
-                (coSubmitting || (coPhone.length > 0 && coPhone.length < 10)) && { opacity: 0.4 }]}
-              onPress={confirmAndPlace}
-              disabled={coSubmitting || (coPhone.length > 0 && coPhone.length < 10)}
-              activeOpacity={0.8}
-            >
-              {coSubmitting
-                ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={styles.coConfirmText}>Place Order</Text>}
-            </TouchableOpacity>
-          </ScrollView>
-        </KeyboardAvoidingView>
       </View>
     );
   }
@@ -1201,23 +1123,52 @@ export default function OrderMenuScreen() {
         transform: [{ translateY: footerAnim.interpolate({ inputRange: [0, 1], outputRange: [56, 0] }) }],
       },
     ]}>
-      <TouchableOpacity
-        style={styles.footerLeft}
-        onPress={() => setReviewOpen(true)}
-        activeOpacity={0.7}
-        accessibilityLabel="Review order summary"
-      >
-        <View style={styles.footerChevron}>
-          <Ionicons name="chevron-up" size={16} color={QuinckleColors.primary} />
+      {/* A failed placement shows here while the customer sheet is closed —
+          the sheet shows its own copy. Tap to dismiss. */}
+      {coError && !contactOpen ? (
+        <TouchableOpacity style={styles.footerError} onPress={() => setCoError(null)} activeOpacity={0.85}>
+          <Ionicons name="alert-circle" size={14} color={QuinckleColors.danger} />
+          <Text style={styles.footerErrorText} numberOfLines={2}>{coError}</Text>
+        </TouchableOpacity>
+      ) : null}
+      <View style={styles.footerMainRow}>
+        <View style={styles.footerLeft}>
+          {/* Order summary and customer, side by side — both optional. */}
+          <View style={styles.footerIconPair}>
+            <TouchableOpacity
+              style={styles.footerIconBtn}
+              onPress={() => setReviewOpen(true)}
+              activeOpacity={0.7}
+              accessibilityLabel="Review order summary"
+            >
+              <Ionicons name="document-text" size={18} color={QuinckleColors.primary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.footerIconBtn}
+              onPress={() => setContactOpen(true)}
+              activeOpacity={0.7}
+              accessibilityLabel="Customer name and phone"
+            >
+              <Ionicons name="person-circle" size={22} color={QuinckleColors.primary} />
+              {(coPhone || coName.trim()) ? <View style={styles.footerIconDot} /> : null}
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity onPress={() => setReviewOpen(true)} activeOpacity={0.7} accessibilityLabel="Review order summary">
+            <Text style={styles.footerCount}>{cartCount} item{cartCount !== 1 ? 's' : ''}</Text>
+            <Text style={styles.footerTotal}>₹{cartTotal.toFixed(0)}</Text>
+          </TouchableOpacity>
         </View>
-        <View>
-          <Text style={styles.footerCount}>{cartCount} item{cartCount !== 1 ? 's' : ''}</Text>
-          <Text style={styles.footerTotal}>₹{cartTotal.toFixed(0)}</Text>
-        </View>
-      </TouchableOpacity>
-      <TouchableOpacity style={styles.placeBtn} onPress={openCheckout} activeOpacity={0.85}>
-        <Text style={styles.placeBtnText}>Place Order</Text>
-      </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.placeBtn, coSubmitting && { opacity: 0.7 }]}
+          onPress={confirmAndPlace}
+          disabled={coSubmitting}
+          activeOpacity={0.85}
+        >
+          {coSubmitting
+            ? <ActivityIndicator size="small" color="#fff" />
+            : <Text style={styles.placeBtnText}>Place Order</Text>}
+        </TouchableOpacity>
+      </View>
     </Animated.View>
   );
 
@@ -1230,8 +1181,26 @@ export default function OrderMenuScreen() {
       total={cartTotal}
       onInc={addToCart}
       onDec={removeFromCart}
-      onCheckout={() => { setReviewOpen(false); openCheckout(); }}
+      onCheckout={() => { setReviewOpen(false); void confirmAndPlace(); }}
       bill={showBillPreview ? { data: billPreview, state: billPreviewState } : undefined}
+    />
+  );
+
+  const guestSheetJsx = (
+    <GuestSheet
+      visible={contactOpen}
+      onClose={() => setContactOpen(false)}
+      isWide={isWide}
+      phone={coPhone}
+      name={coName}
+      onPhoneChange={(v) => { setCoError(null); void onCoPhoneChange(v); }}
+      onNameChange={setCoName}
+      looking={coLooking}
+      found={coFound}
+      lookupFailed={coLookupFailed}
+      visits={coVisits}
+      member={coMember}
+      error={coError}
     />
   );
 
@@ -1344,6 +1313,7 @@ export default function OrderMenuScreen() {
 
         {/* ── Cart review (right-side drawer on tablet-landscape) ── */}
         {cartReviewJsx}
+        {guestSheetJsx}
         {noteSheetJsx}
       </View>
     );
@@ -1474,6 +1444,7 @@ export default function OrderMenuScreen() {
 
       {/* ── Cart review (bottom sheet on phone) ── */}
       {cartReviewJsx}
+      {guestSheetJsx}
       {noteSheetJsx}
 
     </View>
@@ -1592,13 +1563,26 @@ const styles = StyleSheet.create({
   emptyText: { ...Typography.caption, color: QuinckleColors.textMuted },
 
   // Footer
-  footer: { backgroundColor: QuinckleColors.surface, borderTopWidth: 1, borderTopColor: QuinckleColors.border, paddingHorizontal: Spacing.xl, paddingTop: Spacing.md, flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
-  footerLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
-  footerChevron: {
-    width: 32, height: 32, borderRadius: Radius.md,
+  footer: { backgroundColor: QuinckleColors.surface, borderTopWidth: 1, borderTopColor: QuinckleColors.border, paddingHorizontal: Spacing.xl, paddingTop: Spacing.md },
+  footerMainRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  footerLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  footerIconPair: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  footerIconBtn: {
+    width: 36, height: 36, borderRadius: 18,
     backgroundColor: QuinckleColors.primarySoft, borderWidth: 1, borderColor: QuinckleColors.primarySoftBorder,
     alignItems: 'center', justifyContent: 'center',
   },
+  // Says "a customer is attached" without opening the sheet.
+  footerIconDot: {
+    position: 'absolute', top: -1, right: -1, width: 9, height: 9, borderRadius: 5,
+    backgroundColor: QuinckleColors.success, borderWidth: 1.5, borderColor: QuinckleColors.surface,
+  },
+  footerError: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    marginBottom: Spacing.sm, paddingVertical: 8, paddingHorizontal: 12, borderRadius: Radius.pill,
+    backgroundColor: QuinckleColors.surfaceElevated, borderWidth: 1, borderColor: QuinckleColors.danger,
+  },
+  footerErrorText: { ...Typography.caption, color: QuinckleColors.danger, flexShrink: 1 },
   footerCount: { ...Typography.micro, color: QuinckleColors.textSecondary },
   footerTotal: { ...Typography.subtitle, color: QuinckleColors.textPrimary, marginTop: 1 },
   placeBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: QuinckleColors.primary, paddingHorizontal: Spacing.xl, paddingVertical: 13, borderRadius: Radius.md },

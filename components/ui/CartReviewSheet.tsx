@@ -266,7 +266,7 @@ export function CartReviewSheet({
 
 // ── Right-side drawer shell (translateX slide, mirrors SideDrawer) ───────────
 
-function RightDrawer({
+export function RightDrawer({
   visible, onClose, insetsTop, insetsBottom, children,
 }: {
   visible: boolean;
