@@ -41,6 +41,16 @@ export interface BottomSheetProps {
    * Use when the child contains its own FlatList/ScrollView.
    */
   disableInternalScroll?: boolean;
+  /**
+   * False switches off backdrop-tap and drag-to-dismiss, leaving the sheet's
+   * own controls as the only way out.
+   *
+   * For a sheet that holds a half-typed form: losing a bill someone is part
+   * way through entering to a stray downward swipe is not a recoverable
+   * mistake, and the sheet cannot ask "discard?" once the gesture has already
+   * animated it away.
+   */
+  dismissible?: boolean;
   children: React.ReactNode;
 }
 
@@ -50,6 +60,7 @@ export function BottomSheet({
   title,
   maxHeightRatio = 0.92,
   disableInternalScroll = false,
+  dismissible = true,
   children,
 }: BottomSheetProps) {
   const insets = useSafeAreaInsets();
@@ -64,6 +75,10 @@ export function BottomSheet({
   // Stable refs so PanResponder (created once) always sees the latest version
   const onCloseRef = useRef(onClose);
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+  // Same reason: the PanResponder is created once, so it reads this rather
+  // than closing over the prop.
+  const dismissibleRef = useRef(dismissible);
+  useEffect(() => { dismissibleRef.current = dismissible; }, [dismissible]);
 
   // ── Animations ──────────────────────────────────────────────────────────────
 
@@ -140,7 +155,7 @@ export function BottomSheet({
       PanResponder.create({
         onStartShouldSetPanResponder: () => false,
         onMoveShouldSetPanResponder: (_, gs) =>
-          gs.dy > 8 && Math.abs(gs.dy) > Math.abs(gs.dx),
+          dismissibleRef.current && gs.dy > 8 && Math.abs(gs.dy) > Math.abs(gs.dx),
         onPanResponderGrant: () => {
           translateY.stopAnimation();
         },
@@ -183,7 +198,10 @@ export function BottomSheet({
         style={[StyleSheet.absoluteFill, styles.backdrop, { opacity: backdropOpacity }]}
         pointerEvents="auto"
       >
-        <Pressable style={StyleSheet.absoluteFill} onPress={() => animateClose(onClose)} />
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={dismissible ? () => animateClose(onClose) : undefined}
+        />
       </Animated.View>
 
       {/* Sheet */}

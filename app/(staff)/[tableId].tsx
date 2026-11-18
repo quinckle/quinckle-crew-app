@@ -25,6 +25,7 @@ import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintPr
 import { BillExplainContent, BillExplainSheet, type ExplainedBill } from '../../components/ui/BillExplainSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { HintToast } from '../../components/ui/HintToast';
+import { SuccessToast } from '../../components/ui/SuccessToast';
 import { ReasonSheet, ReasonChips } from '../../components/ui/ReasonSheet';
 import { useManagerApproval, type MintGrant } from '../../components/ui/ManagerPinSheet';
 import { WAIVE_REASONS, isReasonComplete, toReasonPayload, type CancelReason } from '../../constants/adjustmentReasons';
@@ -153,6 +154,16 @@ function toSessionRef(sessionId: string | null | undefined): string {
   return `S-${tail || 'UNKNOWN'}`;
 }
 
+// Bills seen this app run, so re-opening a table paints at once (see the
+// cached-bill effect in the screen). Memory only and capped: a bill is only
+// worth showing while its session is live, and the fresh fetch always follows.
+const recentBills = new Map<string, SessionBill>();
+function rememberBill(sessionId: string, bill: SessionBill) {
+  recentBills.delete(sessionId);
+  recentBills.set(sessionId, bill);
+  if (recentBills.size > 40) recentBills.delete(recentBills.keys().next().value as string);
+}
+
 export default function TableDetail() {
   const insets = useSafeAreaInsets();
   /**
@@ -179,7 +190,7 @@ export default function TableDetail() {
   // sit in a left pane, ordered items alone fill the right pane. Phone and
   // tablet-portrait keep the original single-column stack.
   const { isWide } = useResponsive();
-  const { tableId, sessionId: paramSessionId, tableDbId, occupiedSince, expiresAt: paramExpiresAt, customerName: paramCustomerName, customerPhone: paramCustomerPhone, groupLabel: paramGroupLabel, zoneName: paramZoneName, openBill, startOrder } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string; occupiedSince: string; expiresAt: string; customerName: string; customerPhone: string; groupLabel?: string; zoneName?: string; openBill?: string; startOrder?: string }>();
+  const { tableId, sessionId: paramSessionId, tableDbId, occupiedSince, expiresAt: paramExpiresAt, customerName: paramCustomerName, customerPhone: paramCustomerPhone, groupLabel: paramGroupLabel, zoneName: paramZoneName, openBill, startOrder, placedAmount, placedCount } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string; occupiedSince: string; expiresAt: string; customerName: string; customerPhone: string; groupLabel?: string; zoneName?: string; openBill?: string; startOrder?: string; placedAmount?: string; placedCount?: string }>();
   const router = useRouter();
   const { staffInfo } = useAuth();
 
@@ -294,6 +305,17 @@ export default function TableDetail() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openBill]);
+
+  // Just placed from the order menu: confirm with a toast on this screen
+  // instead of the menu holding a success card first.
+  const [placedMessage, setPlacedMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (!placedAmount) return;
+    const n = Number(placedCount ?? 0);
+    setPlacedMessage(`Order placed · ${n} item${n !== 1 ? 's' : ''} · ₹${placedAmount}`);
+    router.setParams({ placedAmount: undefined, placedCount: undefined });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [placedAmount]);
 
   const openOrderMenu = () => router.push({
     pathname: '/(staff)/order-menu',
@@ -447,84 +469,106 @@ export default function TableDetail() {
   const servesInFlight = useRef(new Set<string>());
   const billSeq = useRef(0);
 
+  // Turns a bill response into screen state. Shared by the live fetch and the
+  // cached copy painted while that fetch is in flight.
+  const applyBill = useCallback((bill: SessionBill) => {
+    // Prefer the canonical breakdown when present; fall back to legacy flat
+    // fields for older backend responses.
+    const bd = bill.breakdown;
+    const rate    = bd?.taxRate ?? bill.tax_rate ?? 0;
+    const subt    = bd?.subtotal ?? bill.session_total;
+    const tax     = bd?.taxAmount ?? bill.tax_total ?? (subt * (rate / 100));
+    const charges = bd?.chargesTotal ?? bill.service_charge_total ?? 0;
+    const tipV    = bd?.tip ?? bill.tip_total ?? 0;
+    const explicitDisc = bd?.discount ?? bill.discount_total;
+    const explicitGrand = bd?.total ?? bill.total_payable;
+    // Rupee round-off. 0 on older backends and on legacy bills, where the tax
+    // was already whole rupees and nothing needed rounding.
+    const roundV  = bd?.roundOff ?? bill.round_off ?? 0;
+    // Inferred ONLY when the backend reports no discount at all. A reported 0
+    // is a real 0: at a tax-inclusive venue the GST is inside the prices, so
+    // "subtotal + tax − total" is the embedded GST, not a discount — this
+    // used to print a phantom "Discount −48" on every inclusive bill.
+    const inferredDisc = explicitDisc != null || explicitGrand == null
+      ? (explicitDisc ?? 0)
+      : Math.max(0, Math.round((subt + tax + charges + tipV + roundV - explicitGrand) * 100) / 100);
+    const disc    = inferredDisc;
+    const grand   = explicitGrand ?? (subt + tax + charges + tipV - disc + roundV);
+    // Drop pending serves the server now shows (or can no longer apply);
+    // keep the rest laid over this response.
+    for (const [itemId, p] of pendingServes.current) {
+      const item = bill.orders.flatMap((o) => o.items).find((i) => i.item_id === itemId);
+      const server = item ? (item.served_qty ?? (item.served ? item.qty : 0)) : 0;
+      const stale = Date.now() - p.at > 20_000 && !servesInFlight.current.has(itemId);
+      if (!item || item.item_status === 'cancelled' || server >= p.target || stale) {
+        pendingServes.current.delete(itemId);
+      }
+    }
+    setOrders(withPendingServes(bill.orders, pendingServes.current));
+    setSessionTotal(subt);
+    setBillTaxRate(rate);
+    setTaxTotal(tax);
+    setServiceChargeTotal(charges);
+    setChargeLines(bill.charge_lines ?? []);
+    setDiscountTotal(disc);
+    setDiscountLines(bill.discount_lines ?? []);
+    setTipTotal(tipV);
+    setRoundOffTotal(roundV);
+    setPayableTotal(grand);
+    setSessionStatus(bill.status);
+    setSessionRef(bill.session_ref ?? '');
+    // Shared seating: bill is the authority for the group label — shows it
+    // on every entry path, clears it when this is again the only party.
+    if (bill.party_count !== undefined) {
+      setGroupLabel(Number(bill.party_count) > 1 ? `G${Number(bill.party_slot ?? 1)}` : '');
+    }
+    setMergedFrom(bill.merged_from ?? []);
+    setIsPaid(bill.status === 'paid');
+    setBillPaymentMethod(bill.payment_method);
+    setBillDueAmount(bill.due_amount);
+    setBillSplits(bill.splits);
+    if (bill.expires_at !== undefined) setExpiresAt(bill.expires_at ?? null);
+    if (bill.customer_name !== undefined) setSessionCustomerName(bill.customer_name ?? null);
+    if (bill.customer_phone !== undefined) setSessionCustomerPhone(bill.customer_phone ?? null);
+    if (bill.buyer_gstin !== undefined) setSessionBuyerGstin(bill.buyer_gstin ?? null);
+    if (bill.buyer_name !== undefined) setSessionBuyerName(bill.buyer_name ?? null);
+    if (bill.invoice_number !== undefined) setSessionInvoiceNumber(bill.invoice_number ?? null);
+    if (bill.tax_lines !== undefined) setSessionTaxLines(bill.tax_lines);
+    if (bill.started_at) {
+      const d = new Date(bill.started_at);
+      setSince(`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`);
+    }
+  }, []);
+
+  // The last bill seen for this session paints at once on re-entry; the fresh
+  // one replaces it a moment later. Skipped right after placing an order —
+  // the cached copy would not have it, and the screen opens on the bill.
+  const freshBillLanded = useRef(false);
+  useEffect(() => {
+    if (!sessionId || placedAmount) return;
+    const cached = recentBills.get(sessionId);
+    if (cached && !freshBillLanded.current) {
+      applyBill(cached);
+      setIsLoading(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
+
   const loadBill = useCallback(async () => {
     if (!sessionId) { setIsLoading(false); return; }
     const seq = ++billSeq.current;
     try {
       const bill = await crewSessions.getBill(sessionId);
       if (seq !== billSeq.current) return; // a newer reload is on its way
-      // Prefer the canonical breakdown when present; fall back to legacy flat
-      // fields for older backend responses.
-      const bd = bill.breakdown;
-      const rate    = bd?.taxRate ?? bill.tax_rate ?? 0;
-      const subt    = bd?.subtotal ?? bill.session_total;
-      const tax     = bd?.taxAmount ?? bill.tax_total ?? (subt * (rate / 100));
-      const charges = bd?.chargesTotal ?? bill.service_charge_total ?? 0;
-      const tipV    = bd?.tip ?? bill.tip_total ?? 0;
-      const explicitDisc = bd?.discount ?? bill.discount_total;
-      const explicitGrand = bd?.total ?? bill.total_payable;
-      // Rupee round-off. 0 on older backends and on legacy bills, where the tax
-      // was already whole rupees and nothing needed rounding.
-      const roundV  = bd?.roundOff ?? bill.round_off ?? 0;
-      // Inferred ONLY when the backend reports no discount at all. A reported 0
-      // is a real 0: at a tax-inclusive venue the GST is inside the prices, so
-      // "subtotal + tax − total" is the embedded GST, not a discount — this
-      // used to print a phantom "Discount −48" on every inclusive bill.
-      const inferredDisc = explicitDisc != null || explicitGrand == null
-        ? (explicitDisc ?? 0)
-        : Math.max(0, Math.round((subt + tax + charges + tipV + roundV - explicitGrand) * 100) / 100);
-      const disc    = inferredDisc;
-      const grand   = explicitGrand ?? (subt + tax + charges + tipV - disc + roundV);
-      // Drop pending serves the server now shows (or can no longer apply);
-      // keep the rest laid over this response.
-      for (const [itemId, p] of pendingServes.current) {
-        const item = bill.orders.flatMap((o) => o.items).find((i) => i.item_id === itemId);
-        const server = item ? (item.served_qty ?? (item.served ? item.qty : 0)) : 0;
-        const stale = Date.now() - p.at > 20_000 && !servesInFlight.current.has(itemId);
-        if (!item || item.item_status === 'cancelled' || server >= p.target || stale) {
-          pendingServes.current.delete(itemId);
-        }
-      }
-      setOrders(withPendingServes(bill.orders, pendingServes.current));
-      setSessionTotal(subt);
-      setBillTaxRate(rate);
-      setTaxTotal(tax);
-      setServiceChargeTotal(charges);
-      setChargeLines(bill.charge_lines ?? []);
-      setDiscountTotal(disc);
-      setDiscountLines(bill.discount_lines ?? []);
-      setTipTotal(tipV);
-      setRoundOffTotal(roundV);
-      setPayableTotal(grand);
-      setSessionStatus(bill.status);
-      setSessionRef(bill.session_ref ?? '');
-      // Shared seating: bill is the authority for the group label — shows it
-      // on every entry path, clears it when this is again the only party.
-      if (bill.party_count !== undefined) {
-        setGroupLabel(Number(bill.party_count) > 1 ? `G${Number(bill.party_slot ?? 1)}` : '');
-      }
-      setMergedFrom(bill.merged_from ?? []);
-      setIsPaid(bill.status === 'paid');
-      setBillPaymentMethod(bill.payment_method);
-      setBillDueAmount(bill.due_amount);
-      setBillSplits(bill.splits);
-      if (bill.expires_at !== undefined) setExpiresAt(bill.expires_at ?? null);
-      if (bill.customer_name !== undefined) setSessionCustomerName(bill.customer_name ?? null);
-      if (bill.customer_phone !== undefined) setSessionCustomerPhone(bill.customer_phone ?? null);
-      if (bill.buyer_gstin !== undefined) setSessionBuyerGstin(bill.buyer_gstin ?? null);
-      if (bill.buyer_name !== undefined) setSessionBuyerName(bill.buyer_name ?? null);
-      if (bill.invoice_number !== undefined) setSessionInvoiceNumber(bill.invoice_number ?? null);
-      if (bill.tax_lines !== undefined) setSessionTaxLines(bill.tax_lines);
-      if (bill.started_at) {
-        const d = new Date(bill.started_at);
-        setSince(`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`);
-      }
+      freshBillLanded.current = true;
+      rememberBill(sessionId, bill);
+      applyBill(bill);
     } catch {
       // keep current
     } finally {
       setIsLoading(false);
     }
-  }, [sessionId]);
+  }, [sessionId, applyBill]);
 
   // Load once on mount; Ably drives all subsequent updates
   useEffect(() => { void loadBill(); }, [loadBill]);
@@ -2329,6 +2373,7 @@ export default function TableDetail() {
       {actionSheetJsx}
 
       <HintToast message={hint} onDismiss={() => setHint(null)} bottomOffset={isWide ? 24 : 96} />
+      <SuccessToast message={placedMessage} onDismiss={() => setPlacedMessage(null)} />
 
       {/* The full bill, explained — the same sheet Collect Payment opens. */}
       <BillExplainSheet

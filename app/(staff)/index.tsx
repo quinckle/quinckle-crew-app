@@ -21,9 +21,12 @@ import QRCode from 'react-native-qrcode-svg';
 
 import { useAuth } from '../../context/AuthContext';
 import { Audio } from 'expo-av';
-import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewTakeaway, crewDelivery, restaurantApi, printerApi, loyaltyApi, type ClosedSessionInfo } from '../../services/api';
+import { crewTables, crewSessions, crewOrders, crewPayments, crewMenu, crewDelivery, restaurantApi, printerApi, loyaltyApi, type ClosedSessionInfo } from '../../services/api';
 import { subscribeChannel, watchConnection } from '../../services/realtime';
-import { invalidateCache } from '../../services/dataCache';
+import { invalidateCache, writeCache, cacheKeys } from '../../services/dataCache';
+import { startTableSession, isTableSessionStarting } from '../../services/tableSessionStart';
+import { startTakeawaySession } from '../../services/takeawaySessionStart';
+import { SuccessToast } from '../../components/ui/SuccessToast';
 import {
   printKot, getStatus as getPrinterStatus, isUpiQrEnabled, setUpiQrMode, qrAmountModeFor,
   getPrinters,
@@ -34,7 +37,7 @@ import type { InvoiceBill } from '../../services/invoiceTemplate';
 import { applyAutoPrintSettings, kotAutoPrintFor, drainPendingPrintJobs, handleSinkSuperseded, watchPrintDispatch } from '../../services/printSink';
 import { getPrintDeviceId } from '../../services/printDevice';
 import type { TakeawayOrder } from '../../services/api';
-import { router, useFocusEffect } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
@@ -43,7 +46,6 @@ import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Col
 import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { CenteredModal } from '../../components/ui/CenteredModal';
-import { StartSessionOverlay, type StartSessionJob } from '../../components/ui/StartSessionOverlay';
 import { GoogleReviewCard } from '../../components/ui/GoogleReviewCard';
 import { SwapTableSheet } from '../../components/ui/SwapTableSheet';
 import { MergeTableSheet } from '../../components/ui/MergeTableSheet';
@@ -296,6 +298,16 @@ export default function StaffDashboard() {
   const insets = useSafeAreaInsets();
   const { staffInfo, capabilities } = useAuth();
   const { width: winWidth, isTablet, isWide } = useResponsive();
+  // A takeaway placed and paid on the order screen comes back here with what
+  // happened — shown as a toast, then cleared so a refocus doesn't repeat it.
+  const { placedAmount, placedCount, placedLabel } = useLocalSearchParams<{ placedAmount?: string; placedCount?: string; placedLabel?: string }>();
+  const [placedToast, setPlacedToast] = useState<string | null>(null);
+  useEffect(() => {
+    if (!placedAmount) return;
+    const n = Number(placedCount ?? 0);
+    setPlacedToast(`${placedLabel ? `${placedLabel} · ` : ''}${n} item${n !== 1 ? 's' : ''} · ₹${placedAmount}`);
+    router.setParams({ placedAmount: undefined, placedCount: undefined, placedLabel: undefined });
+  }, [placedAmount, placedCount, placedLabel]);
   // Table grid columns: phones stay 2-up; tablets scale with width (target
   // ~240dp per card) so landscape fills the screen instead of leaving 2 wide
   // columns. space-between + a ~2% gutter keeps the existing look.
@@ -374,15 +386,9 @@ export default function StaffDashboard() {
     setActiveTab((t) => (navTabs.some((tab) => tab.key === t) ? t : navTabs[0].key));
   }, [navTabs]);
   const [filterVisible, setFilterVisible] = useState(false);
-  // Tapping a free table starts the session immediately — no confirm modal.
-  // Long-press is already "mark offline" (see handleLongPress), so a single
-  // tap unambiguously means "open this table". StartSessionOverlay is the
-  // only feedback while the create-session call is in flight.
-  const [startSessionJob, setStartSessionJob] = useState<StartSessionJob | null>(null);
   // Header star → full-screen Google review QR. Null hides the star.
   const [reviewTarget, setReviewTarget] = useState<{ url: string; name: string; logoUrl: string | null } | null>(null);
   const [showReview, setShowReview] = useState(false);
-  const pendingSessionNav = useRef<Parameters<typeof router.push>[0] | null>(null);
   // Shared seating: which occupied table's group picker sheet is open.
   const [groupPicker, setGroupPicker] = useState<{ table: Table; groups: TableGroup[]; canAddParty: boolean } | null>(null);
   const [seatingParty, setSeatingParty] = useState(false);
@@ -390,7 +396,6 @@ export default function StaffDashboard() {
   // ── Manual takeaway entry (counter / phone orders) ─────────────────────────
   // Guest name/phone are collected later on order-menu's guest CRM row (before
   // placing), not here — asking twice was redundant.
-  const [startingTakeaway, setStartingTakeaway] = useState(false);
   // Manage-table action sheet (occupied long-press) + reused swap sheet.
   const [manageTable, setManageTable] = useState<Table | null>(null);
   const [swapTable, setSwapTable] = useState<{ id: string; number: number } | null>(null);
@@ -1953,72 +1958,69 @@ export default function StaffDashboard() {
     }
   };
 
-  // Tapping a free table calls this directly (see handleTablePress) — no
-  // confirm step. StartSessionOverlay shows the "timer sweep" progress while
-  // the create-session call is in flight; navigation is deferred until the
-  // overlay's success animation has actually played (see onDismissStartSession),
-  // so the checkmark is never cut short by the screen changing under it.
-  const startSessionForTable = async (table: Table) => {
-    const tableLabel = `T${String(table.number).padStart(2, '0')}`;
-    setStartSessionJob({ phase: 'starting', tableLabel });
-    try {
-      const res = await crewSessions.start(table.id);
-      void loadTables();
-      pendingSessionNav.current = {
-        pathname: '/(staff)/[tableId]',
-        params: {
-          tableId: String(table.number),
-          sessionId: res.session_id,
-          tableDbId: table.id,
-          zoneName: table.zoneName ?? '',
-          // Empty table → the menu, with the table screen underneath.
-          startOrder: '1',
-        },
-      };
-      setStartSessionJob({ phase: 'done', tableLabel });
-    } catch (e: any) {
-      setStartSessionJob({
-        phase: 'failed',
-        tableLabel,
-        message: e?.message ?? 'Could not start session. Try again.',
-        onRetry: () => { void startSessionForTable(table); },
-      });
+  // Tapping a free table opens the order menu at once — the same as the desktop
+  // build. The session is created in the background (services/tableSessionStart.ts)
+  // and the menu picks its id up when it lands: no overlay, no waiting on the
+  // POST, no table screen in between. Placing the order swaps the menu for the
+  // table screen; backing out returns to the grid, which refreshes itself.
+  // Long-press is still "mark offline" (see handleLongPress), so a single tap
+  // unambiguously means "take an order here".
+  const lastOpenAt = useRef(0);
+  const openTableToOrder = (table: Table) => {
+    // A double tap must not push two menus. (A second start for the same table
+    // is already refused by the store; this stops the second navigation.)
+    const now = Date.now();
+    if (now - lastOpenAt.current < 800) return;
+    lastOpenAt.current = now;
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+
+    if (!isTableSessionStarting(table.id)) {
+      void startTableSession(table.id, { onSettled: () => { void loadTables(); } }).catch(() => {});
     }
+    router.push({
+      pathname: '/(staff)/order-menu',
+      params: {
+        tableId: String(table.number),
+        tableDbId: table.id,
+        pendingStart: '1',
+        zoneName: table.zoneName ?? '',
+      },
+    });
   };
 
-  const onDismissStartSession = () => {
-    const nav = pendingSessionNav.current;
-    pendingSessionNav.current = null;
-    setStartSessionJob(null);
-    if (nav) router.push(nav);
-  };
+  // The menu paints from this cache and refreshes behind it. Warm it when the
+  // floor opens so even the first table of the day shows the menu instantly
+  // instead of a skeleton.
+  useEffect(() => {
+    const rid = staffInfo?.restaurantId;
+    if (!rid) return;
+    // Dine-in, takeaway and delivery each have their own catalogue. A channel
+    // the venue doesn't run just fails quietly.
+    (['CREW', 'TAKEAWAY', 'DELIVERY'] as const).forEach((ch) => {
+      restaurantApi.getMenu(rid, ch)
+        .then((res) => {
+          const cats = (res as any)?.data;
+          if (Array.isArray(cats)) writeCache(cacheKeys.crewOrderMenu(rid, ch), cats);
+        })
+        .catch(() => {});
+    });
+  }, [staffInfo?.restaurantId]);
 
-  // Create a crew takeaway session (tableless) straight from the '+' button —
-  // no name/phone prompt here; the order-menu guest CRM row collects that
-  // right before placing, so asking twice was redundant.
-  const startTakeawayOrder = async () => {
-    if (startingTakeaway) return;
-    setStartingTakeaway(true);
-    try {
-      const res = await crewTakeaway.createSession();
-      const d = res.data;
-      router.push({
-        pathname: '/(staff)/order-menu',
-        params: {
-          sessionId: d.session_id,
-          channel: 'TAKEAWAY',
-          pickupToken: d.pickup_token ?? '',
-        },
-      });
-    } catch (e: any) {
-      showDialog(
-        'Could Not Start Order',
-        e?.message ?? 'Could not start a new takeaway order. Please try again.',
-        [{ label: 'OK', onPress: () => {} }],
-      );
-    } finally {
-      setStartingTakeaway(false);
-    }
+  // '+' opens the order menu at once, like a free table: the session is created
+  // in the background (services/takeawaySessionStart.ts) and the menu picks it
+  // up when it lands. No name/phone prompt — the menu's Customer button has it.
+  // The TK number waits for the first order, so backing out burns nothing.
+  const lastTakeawayOpenAt = useRef(0);
+  const startTakeawayOrder = () => {
+    const now = Date.now();
+    if (now - lastTakeawayOpenAt.current < 800) return;
+    lastTakeawayOpenAt.current = now;
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    startTakeawaySession().catch(() => {});
+    router.push({
+      pathname: '/(staff)/order-menu',
+      params: { channel: 'TAKEAWAY', pendingStart: '1' },
+    });
   };
 
   // Manage-sheet → Swap: close the action sheet, then open the shared swap sheet.
@@ -2129,7 +2131,7 @@ export default function StaffDashboard() {
     if (currentStatus === 'available') {
       const table = tables.find(t => t.number === tableNum);
       if (!table) return;
-      void startSessionForTable(table);
+      openTableToOrder(table);
     } else {
       const table = tables.find(t => t.number === tableNum);
       if (!table) return;
@@ -2925,13 +2927,10 @@ export default function StaffDashboard() {
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.takeawayNewIconBtn}
-              onPress={() => { void startTakeawayOrder(); }}
-              disabled={startingTakeaway}
+              onPress={startTakeawayOrder}
               activeOpacity={0.85}
             >
-              {startingTakeaway
-                ? <ActivityIndicator size="small" color="#fff" />
-                : <Ionicons name="add" size={22} color="#fff" />}
+              <Ionicons name="add" size={22} color="#fff" />
             </TouchableOpacity>
           </View>
 
@@ -3128,6 +3127,8 @@ export default function StaffDashboard() {
       {/* DUAL_CHANNEL "item ready" cards render in the staff _layout, above the
           whole Stack, so they stay visible on every staff screen. */}
 
+      <SuccessToast message={placedToast} onDismiss={() => setPlacedToast(null)} />
+
       {/* Undo snackbar — reverses every free (single, group, or batch). */}
       <UndoSnackbar
         visible={!!undo}
@@ -3174,10 +3175,6 @@ export default function StaffDashboard() {
         </BottomSheet>
       )}
 
-      {/* Tapping a free table starts the session immediately (see
-          handleTablePress) — this overlay is the only feedback while it's
-          in flight, no confirm step. */}
-      <StartSessionOverlay job={startSessionJob} onDismiss={onDismissStartSession} />
       {reviewTarget && (
         <GoogleReviewCard
           visible={showReview}
