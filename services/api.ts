@@ -2384,6 +2384,49 @@ export const crewDues = {
     ),
 };
 
+// ── My Attendance (every crew role, own days only) ──────────────────────────
+// Days with no row are left out by the server: they are NOT absences.
+
+export interface MyAttendancePunch {
+  kind: 'IN' | 'OUT';
+  at: string;
+  /** STATION_PIN | STATION_FACE | STATION_QR | GEOFENCE | OWNER_MARKED | SYSTEM */
+  method: string;
+  /** STATION | OWNER_EDIT | AUTO_CLOSE */
+  source: string;
+}
+
+export interface MyAttendanceDay {
+  date: string;
+  status: 'PRESENT' | 'ABSENT' | 'HALF_DAY' | 'LEAVE';
+  method: string;
+  checkInAt: string | null;
+  checkOutAt: string | null;
+  workedMinutes: number | null;
+  segmentCount: number | null;
+  autoClosed: boolean;
+  flaggedForReview: boolean;
+  note: string | null;
+  punches: MyAttendancePunch[];
+}
+
+export interface MyAttendanceData {
+  enabled: boolean;
+  from: string;
+  to: string;
+  today: string;
+  dayStartHour: number;
+  days: MyAttendanceDay[];
+  summary: { present: number; halfDay: number; absent: number; leave: number; workedMinutes: number };
+}
+
+export const crewMyAttendance = {
+  get: (from: string, to: string) =>
+    request<{ success: boolean; data: MyAttendanceData }>(
+      'GET', `/api/crew/me/attendance?from=${from}&to=${to}`, undefined, true,
+    ),
+};
+
 // ── Attendance station (ATTENDANCE_STATION) ───────────────────────────────────
 //
 // The station is a DEVICE mode, not a person. This device is signed in as the
