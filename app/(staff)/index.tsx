@@ -115,9 +115,12 @@ function formatTimeLeft(
 
 Notifications.setNotificationHandler({
   handleNotification: async (n) => {
+    // Call Staff rings through its own full-screen alert while the app is open
+    // (components/ui/StaffCallAlert) — a second banner + sound would double up.
+    const isStaffCall = (n.request.content.data as any)?.type === 'staff_call';
     return {
-      shouldShowAlert: true,
-      shouldPlaySound: !isSpokenNewOrderNotification(n.request.content),
+      shouldShowAlert: !isStaffCall,
+      shouldPlaySound: !isStaffCall && !isSpokenNewOrderNotification(n.request.content),
       shouldSetBadge: false,
     } as any;
   },

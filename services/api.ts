@@ -2226,6 +2226,34 @@ export const printersApi = {
     ),
 };
 
+// ── Call Staff ────────────────────────────────────────────────────────────────
+// A diner tapped the bell on the menu page; every floor phone rings until one
+// waiter taps "On my way". Backend: routes/v1/crew/staff-calls.routes.ts.
+
+export interface StaffCall {
+  id: string;
+  restaurantId: string;
+  sessionId: string;
+  tableId: string | null;
+  tableNumber: number | null;
+  createdAt: string;
+  /** 1 on the first ring, up to 3 when nobody answers. */
+  ring: number;
+}
+
+export const crewStaffCalls = {
+  /** Open (unanswered) calls for my restaurant, oldest first. */
+  listOpen: () =>
+    request<{ success: true; data: StaffCall[] }>('GET', '/api/crew/staff-calls', undefined, true)
+      .then(r => r.data ?? []),
+
+  /** "On my way". Throws with the taker's name in the message when someone beat you to it. */
+  acknowledge: (callId: string) =>
+    request<{ success: true; data: { callId: string; staffName: string } }>(
+      'POST', `/api/crew/staff-calls/${encodeURIComponent(callId)}/ack`, {}, true,
+    ),
+};
+
 export const crewNotifications = {
   registerToken: (
     token: string,
