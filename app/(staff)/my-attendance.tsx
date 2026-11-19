@@ -581,7 +581,7 @@ function DayDetail({ dateKey, day, todayKey, now }: { dateKey: string; day?: MyA
             const isIn = p.kind === 'IN';
             return (
               <React.Fragment key={`${p.at}-${i}`}>
-                <PunchRow kindLabel={p.kind} color={isIn ? C.in : C.out} soft={isIn ? QuinckleColors.successSoft : QuinckleColors.infoSoft} time={fmtTime(p.at)}>
+                <PunchRow kindLabel={p.kind} color={isIn ? C.in : C.out} soft={isIn ? QuinckleColors.successSoft : QuinckleColors.infoSoft} time={fmtTime(p.at)} last={!next && !isIn}>
                   <SourceBadge p={p} />
                 </PunchRow>
                 {!isIn && next?.kind === 'IN' && (
