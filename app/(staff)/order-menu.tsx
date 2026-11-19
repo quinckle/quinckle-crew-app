@@ -64,6 +64,7 @@ import { GuestSheet } from '../../components/ui/GuestSheet';
 import { UpiPaymentSheet } from '../../components/ui/UpiPaymentSheet';
 import { SplitPaymentSheet } from '../../components/ui/SplitPaymentSheet';
 import { DuePaymentSheet, type DuePaymentDetails } from '../../components/ui/DuePaymentSheet';
+import { getHandoverOnCollect, setHandoverOnCollect } from '../../services/takeawayHandover';
 import { AdjustBillForm } from './adjust-bill';
 import { PlacingOrderOverlay, type PlacingOrderJob } from '../../components/ui/PlacingOrderOverlay';
 
@@ -461,6 +462,24 @@ export default function OrderMenuScreen() {
   const [splitDetails, setSplitDetails] = useState<{ cash: number; upi: number } | null>(null);
   const [dueSheetOpen, setDueSheetOpen] = useState(false);
   const [dueDetails, setDueDetails] = useState<DuePaymentDetails | null>(null);
+
+  // "Hand over after payment" — the same per-phone switch the payment screen
+  // shows (services/takeawayHandover), so flipping it here flips it there.
+  // Paid on the bar, the hand-over happens right after the collect below;
+  // on Pay later the payment screen reads the same setting and does it there.
+  // Takeaway only: the backend refuses to hand over a delivery order.
+  const canAutoHandover = channel === 'TAKEAWAY';
+  const [autoHandover, setAutoHandover] = useState(false);
+  useEffect(() => {
+    if (!canAutoHandover) return;
+    void getHandoverOnCollect().then(setAutoHandover);
+  }, [canAutoHandover]);
+  const toggleAutoHandover = () => {
+    const next = !autoHandover;
+    void Haptics.selectionAsync().catch(() => {});
+    setAutoHandover(next);
+    void setHandoverOnCollect(next);
+  };
 
   // ── Menu data ──────────────────────────────────────────────────────────────
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
@@ -1076,12 +1095,25 @@ export default function OrderMenuScreen() {
         }
       }
 
+      // Same contract as the payment screen: the money is already banked, so
+      // a failed hand-over only means staff tap Hand Over on the Takeaway tab.
+      let handoverNote = '';
+      if (isTakeaway && paymentMethod !== 'PENDING' && !collectFailed && autoHandover && canAutoHandover && orderId) {
+        setPlacingJob({ phase: 'collecting', disc, title: placedTitle, subtitle: 'Handing over…' });
+        try {
+          await crewOrders.handoverTakeaway(orderId);
+          handoverNote = ' · handed over';
+        } catch {
+          handoverNote = ' · not handed over, use Hand Over';
+        }
+      }
+
       const go = () => {
         if (isTakeaway && paymentMethod !== 'PENDING' && !collectFailed) {
           // Back to the floor (the Takeaway tab it was opened from).
           router.dismissTo({
             pathname: '/(staff)',
-            params: { placedAmount, placedCount, placedLabel: `${token ?? orderLabel} · ${collectedLabel}` },
+            params: { placedAmount, placedCount, placedLabel: `${token ?? orderLabel} · ${collectedLabel}${handoverNote}` },
           });
         } else if (isTakeaway) {
           router.replace({
@@ -1097,17 +1129,17 @@ export default function OrderMenuScreen() {
             },
           });
         } else {
-          // Dine-in lands on the table with the bill open, so the crew sees
-          // exactly what was ordered. Opened straight from the grid there is
-          // no table screen underneath, so this one takes the menu's place;
-          // otherwise dismissTo pops back to the table screen we came from
-          // (replace there would stack a second one — Back twice to leave).
+          // Dine-in lands back on the table screen with the bill closed — the
+          // toast confirms the order, and the bill is one tap away if wanted.
+          // Opened straight from the grid there is no table screen underneath,
+          // so this one takes the menu's place; otherwise dismissTo pops back
+          // to the table screen we came from (replace there would stack a
+          // second one — Back twice to leave).
           const params = {
             tableId: String(tableId ?? 0),
             sessionId: sid,
             tableDbId: tableDbId ?? '',
             zoneName: paramZoneName ?? '',
-            openBill: '1',
             placedAmount,
             placedCount,
           };
@@ -1357,6 +1389,7 @@ export default function OrderMenuScreen() {
         </TouchableOpacity>
       ) : null}
       {isTakeaway && (
+        <View style={styles.paymentBar}>
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -1393,18 +1426,43 @@ export default function OrderMenuScreen() {
             );
           })}
         </ScrollView>
+        {/* Pinned outside the scroll so it never slides off-screen behind the
+            payment chips. A toggle, not one of the radio chips above. */}
+        {canAutoHandover && (
+          <TouchableOpacity
+            style={[styles.handoverPill, autoHandover && styles.handoverPillOn]}
+            onPress={toggleAutoHandover}
+            disabled={coSubmitting}
+            activeOpacity={0.75}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: autoHandover }}
+            accessibilityLabel="Hand over after payment"
+          >
+            <Ionicons
+              name={autoHandover ? 'checkmark-circle' : 'bag-check-outline'}
+              size={13}
+              color={autoHandover ? '#fff' : QuinckleColors.textSecondary}
+            />
+            <Text style={[styles.handoverPillText, autoHandover && styles.handoverPillTextOn]}>Hand over</Text>
+          </TouchableOpacity>
+        )}
+        </View>
       )}
       <View style={styles.footerMainRow}>
         <View style={styles.footerLeft}>
-          {/* Order summary and customer, side by side — both optional. */}
+          {/* Adjust bill and customer, side by side — both optional. The bill
+              breakdown is the chevron on the total. */}
           <View style={styles.footerIconPair}>
             <TouchableOpacity
               style={styles.footerIconBtn}
-              onPress={() => setReviewOpen(true)}
+              onPress={() => { void openAdjustBill(); }}
+              disabled={adjustBusy}
               activeOpacity={0.7}
-              accessibilityLabel="Review order summary"
+              accessibilityLabel="Adjust bill"
             >
-              <Ionicons name="document-text" size={18} color={QuinckleColors.primary} />
+              {adjustBusy
+                ? <ActivityIndicator size="small" color={QuinckleColors.primary} />
+                : <Ionicons name="options" size={18} color={QuinckleColors.primary} />}
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.footerIconBtn}
@@ -1416,9 +1474,17 @@ export default function OrderMenuScreen() {
               {(coPhone || coName.trim()) ? <View style={styles.footerIconDot} /> : null}
             </TouchableOpacity>
           </View>
-          <TouchableOpacity onPress={() => setReviewOpen(true)} activeOpacity={0.7} accessibilityLabel="Review order summary">
-            <Text style={styles.footerCount}>{cartCount} item{cartCount !== 1 ? 's' : ''}</Text>
-            <Text style={styles.footerTotal}>₹{cartTotal.toFixed(0)}</Text>
+          <TouchableOpacity
+            style={styles.footerTotalBtn}
+            onPress={() => setReviewOpen(true)}
+            activeOpacity={0.7}
+            accessibilityLabel="Show bill details"
+          >
+            <View>
+              <Text style={styles.footerCount}>{cartCount} item{cartCount !== 1 ? 's' : ''}</Text>
+              <Text style={styles.footerTotal}>₹{cartTotal.toFixed(0)}</Text>
+            </View>
+            <Ionicons name="chevron-up" size={16} color={QuinckleColors.textSecondary} style={styles.footerChevron} />
           </TouchableOpacity>
         </View>
         <TouchableOpacity
@@ -1437,8 +1503,7 @@ export default function OrderMenuScreen() {
     </Animated.View>
   );
 
-  // Rendered inside CartReviewSheet's own container so it stays within the
-  // drawer on tablet-landscape instead of covering the whole screen.
+  // Opened from the bottom bar's Adjust bill button; mounted on the screen.
   const adjustBillSheetJsx = (
     <BottomSheet
       visible={adjustSheetOpen}
@@ -1471,10 +1536,8 @@ export default function OrderMenuScreen() {
       onInc={addToCart}
       onDec={removeFromCart}
       onCheckout={() => { setReviewOpen(false); void confirmAndPlace(); }}
-      onAdjust={() => { void openAdjustBill(); }}
       ctaLabel={isTakeaway && paymentMethod !== 'PENDING' ? 'Place & Collect' : 'Place Order'}
       bill={showBillPreview ? { data: billPreview, state: billPreviewState } : undefined}
-      adjustBillContent={adjustBillSheetJsx}
     />
   );
 
@@ -1636,6 +1699,7 @@ export default function OrderMenuScreen() {
 
         {/* ── Cart review (right-side drawer on tablet-landscape) ── */}
         {cartReviewJsx}
+        {adjustBillSheetJsx}
         {guestSheetJsx}
         {paymentSheetsJsx}
         {noteSheetJsx}
@@ -1769,6 +1833,7 @@ export default function OrderMenuScreen() {
 
       {/* ── Cart review (bottom sheet on phone) ── */}
       {cartReviewJsx}
+      {adjustBillSheetJsx}
       {guestSheetJsx}
       {paymentSheetsJsx}
       {noteSheetJsx}
@@ -1897,7 +1962,17 @@ const styles = StyleSheet.create({
   // Footer
   footer: { backgroundColor: QuinckleColors.surface, borderTopWidth: 1, borderTopColor: QuinckleColors.border, paddingHorizontal: Spacing.xl, paddingTop: Spacing.md },
   footerMainRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
-  paymentChipScroll: { marginBottom: Spacing.sm, flexGrow: 0 },
+  // Payment chips scroll; the Hand over pill stays pinned at the right end.
+  paymentBar: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: Spacing.sm },
+  paymentChipScroll: { flex: 1 },
+  handoverPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: 11, paddingVertical: 7, borderRadius: Radius.pill,
+    borderWidth: 1, borderColor: QuinckleColors.border, backgroundColor: QuinckleColors.surfaceElevated,
+  },
+  handoverPillOn: { backgroundColor: QuinckleColors.success, borderColor: QuinckleColors.success },
+  handoverPillText: { fontSize: 11, fontWeight: '700', color: QuinckleColors.textSecondary },
+  handoverPillTextOn: { color: '#fff' },
   paymentChipRow: { flexDirection: 'row', gap: 6 },
   paymentChip: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
@@ -1925,6 +2000,8 @@ const styles = StyleSheet.create({
     backgroundColor: QuinckleColors.surfaceElevated, borderWidth: 1, borderColor: QuinckleColors.danger,
   },
   footerErrorText: { ...Typography.caption, color: QuinckleColors.danger, flexShrink: 1 },
+  footerTotalBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  footerChevron: { marginTop: 10 },
   footerCount: { ...Typography.micro, color: QuinckleColors.textSecondary },
   footerTotal: { ...Typography.subtitle, color: QuinckleColors.textPrimary, marginTop: 1 },
   placeBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: QuinckleColors.primary, paddingHorizontal: Spacing.xl, paddingVertical: 13, borderRadius: Radius.md },
