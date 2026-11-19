@@ -381,6 +381,13 @@ export interface BillOrderItem {
   /** What the table screen's "+" re-orders. Absent from backends before the qty stepper. */
   menu_item_id?: string;
   selected_modifiers?: { groupId: string; optionId: string }[];
+  /** The newest serve / unserve on the line and who did it. Absent before the serve log. */
+  last_serve?: { kind: 'serve' | 'unserve'; qty: number; by: string | null; at: string } | null;
+  /**
+   * The serve an undo would reverse. `ms_left` is what was left of the 2-minute
+   * window when the server answered (0 = passed: show the button disabled).
+   */
+  undo?: { action_id: string | null; from_qty: number; to_qty: number; ms_left: number } | null;
 }
 export interface BillOrder { order_id: string; placed_at: string; status: 'received' | 'preparing' | 'ready' | 'served'; items: BillOrderItem[]; order_total: number; }
 /**
@@ -965,11 +972,25 @@ export const crewOrders = {
   // `servedQty` is an ABSOLUTE target ("this line now stands at 2 of 4"), not a
   // delta, so a retry or a second steward's tap converges instead of
   // double-counting. Omit it to serve the whole line.
-  serveItem: (orderId: string, itemId: string, servedQty?: number) =>
+  serveItem: (orderId: string, itemId: string, servedQty?: number, actionId?: string) =>
     request<{ item_id: string; served: boolean; served_qty: number; qty: number }>(
       'PATCH',
       `/api/crew/orders/${orderId}/items/${itemId}/serve`,
-      servedQty == null ? { served: true } : { served: true, served_qty: servedQty },
+      {
+        served: true,
+        ...(servedQty == null ? {} : { served_qty: servedQty }),
+        ...(actionId ? { action_id: actionId } : {}),
+      },
+      true,
+    ),
+
+  // Take back the newest serve on a line. The server refuses after 2 minutes
+  // (code UNDO_EXPIRED) or when another phone moved the line (UNDO_STALE).
+  undoServe: (orderId: string, itemId: string, actionId?: string | null) =>
+    request<{ item_id: string; served: boolean; served_qty: number; qty: number }>(
+      'POST',
+      `/api/crew/orders/${orderId}/items/${itemId}/serve/undo`,
+      actionId ? { action_id: actionId } : {},
       true,
     ),
 
