@@ -1129,17 +1129,17 @@ export default function OrderMenuScreen() {
             },
           });
         } else {
-          // Dine-in lands on the table with the bill open, so the crew sees
-          // exactly what was ordered. Opened straight from the grid there is
-          // no table screen underneath, so this one takes the menu's place;
-          // otherwise dismissTo pops back to the table screen we came from
-          // (replace there would stack a second one — Back twice to leave).
+          // Dine-in lands back on the table screen with the bill closed — the
+          // toast confirms the order, and the bill is one tap away if wanted.
+          // Opened straight from the grid there is no table screen underneath,
+          // so this one takes the menu's place; otherwise dismissTo pops back
+          // to the table screen we came from (replace there would stack a
+          // second one — Back twice to leave).
           const params = {
             tableId: String(tableId ?? 0),
             sessionId: sid,
             tableDbId: tableDbId ?? '',
             zoneName: paramZoneName ?? '',
-            openBill: '1',
             placedAmount,
             placedCount,
           };

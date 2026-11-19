@@ -190,7 +190,7 @@ export default function TableDetail() {
   // sit in a left pane, ordered items alone fill the right pane. Phone and
   // tablet-portrait keep the original single-column stack.
   const { isWide } = useResponsive();
-  const { tableId, sessionId: paramSessionId, tableDbId, occupiedSince, expiresAt: paramExpiresAt, customerName: paramCustomerName, customerPhone: paramCustomerPhone, groupLabel: paramGroupLabel, zoneName: paramZoneName, openBill, startOrder, placedAmount, placedCount } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string; occupiedSince: string; expiresAt: string; customerName: string; customerPhone: string; groupLabel?: string; zoneName?: string; openBill?: string; startOrder?: string; placedAmount?: string; placedCount?: string }>();
+  const { tableId, sessionId: paramSessionId, tableDbId, occupiedSince, expiresAt: paramExpiresAt, customerName: paramCustomerName, customerPhone: paramCustomerPhone, groupLabel: paramGroupLabel, zoneName: paramZoneName, startOrder, placedAmount, placedCount } = useLocalSearchParams<{ tableId: string; sessionId: string; tableDbId: string; occupiedSince: string; expiresAt: string; customerName: string; customerPhone: string; groupLabel?: string; zoneName?: string; startOrder?: string; placedAmount?: string; placedCount?: string }>();
   const router = useRouter();
   const { staffInfo } = useAuth();
 
@@ -292,19 +292,6 @@ export default function TableDetail() {
   const [billDueAmount, setBillDueAmount] = useState<number | undefined>(undefined);
   const [billSplits, setBillSplits] = useState<SessionBill['splits']>(undefined);
   const [isExpanded, setIsExpanded] = useState(false);
-
-  // Landing here right after placing an order (see order-menu.tsx's
-  // confirmAndPlace) forces the bill breakdown open, so the crew reviews
-  // exactly what was ordered before doing anything else. Tablet-landscape
-  // already shows the breakdown permanently in the left pane, so this only
-  // matters on the single-column layout.
-  useEffect(() => {
-    if (openBill === '1') {
-      if (!isWide) setIsExpanded(true);
-      router.setParams({ openBill: undefined });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openBill]);
 
   // Just placed from the order menu: confirm with a toast on this screen
   // instead of the menu holding a success card first.
