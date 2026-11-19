@@ -1450,15 +1450,19 @@ export default function OrderMenuScreen() {
       )}
       <View style={styles.footerMainRow}>
         <View style={styles.footerLeft}>
-          {/* Order summary and customer, side by side — both optional. */}
+          {/* Adjust bill and customer, side by side — both optional. The bill
+              breakdown is the chevron on the total. */}
           <View style={styles.footerIconPair}>
             <TouchableOpacity
               style={styles.footerIconBtn}
-              onPress={() => setReviewOpen(true)}
+              onPress={() => { void openAdjustBill(); }}
+              disabled={adjustBusy}
               activeOpacity={0.7}
-              accessibilityLabel="Review order summary"
+              accessibilityLabel="Adjust bill"
             >
-              <Ionicons name="document-text" size={18} color={QuinckleColors.primary} />
+              {adjustBusy
+                ? <ActivityIndicator size="small" color={QuinckleColors.primary} />
+                : <Ionicons name="options" size={18} color={QuinckleColors.primary} />}
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.footerIconBtn}
@@ -1470,9 +1474,17 @@ export default function OrderMenuScreen() {
               {(coPhone || coName.trim()) ? <View style={styles.footerIconDot} /> : null}
             </TouchableOpacity>
           </View>
-          <TouchableOpacity onPress={() => setReviewOpen(true)} activeOpacity={0.7} accessibilityLabel="Review order summary">
-            <Text style={styles.footerCount}>{cartCount} item{cartCount !== 1 ? 's' : ''}</Text>
-            <Text style={styles.footerTotal}>₹{cartTotal.toFixed(0)}</Text>
+          <TouchableOpacity
+            style={styles.footerTotalBtn}
+            onPress={() => setReviewOpen(true)}
+            activeOpacity={0.7}
+            accessibilityLabel="Show bill details"
+          >
+            <View>
+              <Text style={styles.footerCount}>{cartCount} item{cartCount !== 1 ? 's' : ''}</Text>
+              <Text style={styles.footerTotal}>₹{cartTotal.toFixed(0)}</Text>
+            </View>
+            <Ionicons name="chevron-up" size={16} color={QuinckleColors.textSecondary} style={styles.footerChevron} />
           </TouchableOpacity>
         </View>
         <TouchableOpacity
@@ -1515,9 +1527,10 @@ export default function OrderMenuScreen() {
     </BottomSheet>
   );
 
+  const reviewShown = reviewOpen && cartLines.length > 0;
   const cartReviewJsx = (
     <CartReviewSheet
-      visible={reviewOpen && cartLines.length > 0}
+      visible={reviewShown}
       onClose={() => setReviewOpen(false)}
       isWide={isWide}
       lines={cartLines}
@@ -1528,9 +1541,12 @@ export default function OrderMenuScreen() {
       onAdjust={() => { void openAdjustBill(); }}
       ctaLabel={isTakeaway && paymentMethod !== 'PENDING' ? 'Place & Collect' : 'Place Order'}
       bill={showBillPreview ? { data: billPreview, state: billPreviewState } : undefined}
-      adjustBillContent={adjustBillSheetJsx}
+      adjustBillContent={reviewShown ? adjustBillSheetJsx : null}
     />
   );
+  // Adjust bill opens from the bottom bar too, with no summary sheet open to
+  // host it — then it mounts on the screen itself. Only ever one copy.
+  const barAdjustBillJsx = reviewShown ? null : adjustBillSheetJsx;
 
   const guestSheetJsx = (
     <GuestSheet
@@ -1690,6 +1706,7 @@ export default function OrderMenuScreen() {
 
         {/* ── Cart review (right-side drawer on tablet-landscape) ── */}
         {cartReviewJsx}
+        {barAdjustBillJsx}
         {guestSheetJsx}
         {paymentSheetsJsx}
         {noteSheetJsx}
@@ -1823,6 +1840,7 @@ export default function OrderMenuScreen() {
 
       {/* ── Cart review (bottom sheet on phone) ── */}
       {cartReviewJsx}
+      {barAdjustBillJsx}
       {guestSheetJsx}
       {paymentSheetsJsx}
       {noteSheetJsx}
@@ -1989,6 +2007,8 @@ const styles = StyleSheet.create({
     backgroundColor: QuinckleColors.surfaceElevated, borderWidth: 1, borderColor: QuinckleColors.danger,
   },
   footerErrorText: { ...Typography.caption, color: QuinckleColors.danger, flexShrink: 1 },
+  footerTotalBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  footerChevron: { marginTop: 10 },
   footerCount: { ...Typography.micro, color: QuinckleColors.textSecondary },
   footerTotal: { ...Typography.subtitle, color: QuinckleColors.textPrimary, marginTop: 1 },
   placeBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: QuinckleColors.primary, paddingHorizontal: Spacing.xl, paddingVertical: 13, borderRadius: Radius.md },
