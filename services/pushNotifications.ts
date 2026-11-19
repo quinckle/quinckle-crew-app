@@ -4,6 +4,7 @@ import * as Notifications from 'expo-notifications';
 
 import { crewNotifications } from './api';
 import { getPrintDeviceId } from './printDevice';
+import { getVoiceAlertSetting } from './voiceAlerts';
 
 let lastRegisteredToken: string | null = null;
 let lastHeartbeatAt = 0;
@@ -19,6 +20,41 @@ export async function registerCrewPushNotifications(): Promise<void> {
       vibrationPattern: [0, 250, 250, 250],
       lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
     });
+    // Call Staff gets its own channel: a channel's sound is fixed on the phone
+    // the first time it's created, so the alarm can't share `crew-alerts`.
+    // ALARM usage plays on the alarm stream — loud even with the ringer on
+    // silent — and the server only targets this channel from app 1.1.0 up
+    // (STAFF_CALL_CHANNEL_MIN_APP in the backend), so the id must not change.
+    await Notifications.setNotificationChannelAsync('staff-call', {
+      name: 'Diner calls',
+      description: 'Rings loudly when a diner taps Call Staff',
+      importance: Notifications.AndroidImportance.MAX,
+      sound: 'staff_call_alarm.wav',
+      enableVibrate: true,
+      vibrationPattern: [0, 700, 300, 700, 300, 700, 900, 700, 300, 700, 300, 700],
+      bypassDnd: true,
+      audioAttributes: {
+        usage: Notifications.AndroidAudioUsage.ALARM,
+        contentType: Notifications.AndroidAudioContentType.SONIFICATION,
+      },
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+    });
+    // Spoken new-order alerts with the app closed: one channel per voice and
+    // order type, each with its clip bundled as the channel sound. The server
+    // picks `order-<type>-<voice>` from the voice this phone reports (see
+    // heartbeat), so these ids must match the backend and never change.
+    for (const voice of ['female', 'male'] as const) {
+      for (const [slug, label] of [['dine_in', 'Dine-in'], ['takeaway', 'Takeaway'], ['delivery', 'Delivery']] as const) {
+        await Notifications.setNotificationChannelAsync(`order-${slug}-${voice}`, {
+          name: `${label} orders (${voice} voice)`,
+          description: `Says "New ${label.toLowerCase()} order received" when voice alerts are on`,
+          importance: Notifications.AndroidImportance.MAX,
+          sound: `en_${voice}_${slug}.mp3`,
+          vibrationPattern: [0, 250, 250, 250],
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        });
+      }
+    }
   }
 
   const existing = await Notifications.getPermissionsAsync();
@@ -57,6 +93,7 @@ export async function registerCrewPushNotifications(): Promise<void> {
     deviceId: await getPrintDeviceId(),
     deviceName: (Constants as any).deviceName ?? undefined,
     appVersion: Constants.expoConfig?.version ?? undefined,
+    voice: await getVoiceAlertSetting(),
   });
   lastRegisteredToken = token;
   lastHeartbeatAt = Date.now();
@@ -67,7 +104,7 @@ export async function heartbeatCrewPushToken(force = false): Promise<void> {
   const now = Date.now();
   if (!force && now - lastHeartbeatAt < 5 * 60_000) return;
   try {
-    await crewNotifications.heartbeat(lastRegisteredToken);
+    await crewNotifications.heartbeat(lastRegisteredToken, await getVoiceAlertSetting());
     lastHeartbeatAt = now;
   } catch (err) {
     console.warn('[push] heartbeat failed', err);
