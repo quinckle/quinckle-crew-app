@@ -903,13 +903,24 @@ export interface CrewOffer {
   excludedCountToThreshold?: boolean;
   /** The table's earlier rounds that count toward THIS offer (its excluded lines dropped). */
   priorTowardThreshold?: number;
+  // Buy N get M — absent from servers older than these fields (see services/offer-engine.ts).
+  triggerItemIds?: string[];
+  triggerCategories?: string[];
+  triggerQty?: number;
+  rewardMode?: 'ONCE' | 'REPEAT' | 'MILESTONES';
+  maxRewardQty?: number | null;
+  milestones?: { buyQty: number; rewardQty: number }[];
+  freeItemIds?: string[];
 }
+
+/** One line of the table's earlier rounds, for counting "buy 2" across rounds. */
+export interface CrewPriorLine { menuItemId: string; quantity: number; unitPrice: number; category: string | null }
 
 export const crewOffers = {
   // sessionId lets the server return the table's prior-order subtotal so the
   // progress nudge matches the exact threshold the discount engine applies.
   list: (sessionId?: string) =>
-    request<{ success: boolean; data: { offers: CrewOffer[]; sessionSubtotalBeforeCart: number } }>(
+    request<{ success: boolean; data: { offers: CrewOffer[]; sessionSubtotalBeforeCart: number; priorLines?: CrewPriorLine[] } }>(
       'GET',
       `/api/crew/offers${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`,
       undefined,
