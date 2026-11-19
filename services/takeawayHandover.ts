@@ -1,23 +1,27 @@
 /**
  * "Hand over after payment" for takeaway collects.
  *
- * Per DEVICE, like voice alerts: a counter phone that serves ready food (tea,
- * snacks) turns it on once and keeps it, while a phone whose takeaways wait on
- * the kitchen never hands anything over by surprise. Off by default — a
- * handed-over order leaves the kitchen queue at once, so a phone behaves
- * exactly as before until someone opts in.
+ * Per DEVICE, like voice alerts. ON by default (2026-11-20, owner's call:
+ * most counter takeaways are paid and handed over in one go). A phone whose
+ * takeaways wait on the kitchen switches it off once and keeps that — note a
+ * handed-over order is marked served and leaves the kitchen queue at once.
+ * Only an explicit choice is stored, so a never-touched phone follows this
+ * default.
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const KEY_HANDOVER_ON_COLLECT = 'takeawayHandoverOnCollect';
 
-let _enabled = false;
+const DEFAULT_ON = true;
+
+let _enabled = DEFAULT_ON;
 
 const _loaded = (async () => {
   try {
-    _enabled = (await AsyncStorage.getItem(KEY_HANDOVER_ON_COLLECT)) === '1';
-  } catch { /* stays off */ }
+    const stored = await AsyncStorage.getItem(KEY_HANDOVER_ON_COLLECT);
+    _enabled = stored === null ? DEFAULT_ON : stored === '1';
+  } catch { /* keeps the default */ }
 })();
 
 export async function getHandoverOnCollect(): Promise<boolean> {

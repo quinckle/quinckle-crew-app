@@ -423,10 +423,9 @@ export default function PaymentCollectScreen() {
   // visit. Not remembered per device: a switch that silently stays off after
   // one odd table is how "why didn't it free?" happens.
   const [autoFree, setAutoFree]         = useState(true);
-  // Unlike auto-free, remembered per phone and off by default: handing over
-  // drops the order off the kitchen screen, so only counters that serve
-  // ready food should have it on (see services/takeawayHandover).
-  const [autoHandover, setAutoHandover] = useState(false);
+  // Unlike auto-free, remembered per phone. On by default; a phone whose
+  // takeaways wait on the kitchen turns it off once (services/takeawayHandover).
+  const [autoHandover, setAutoHandover] = useState(true);
   useEffect(() => { void getHandoverOnCollect().then(setAutoHandover); }, []);
   const toggleAutoHandover = (value: boolean) => {
     setAutoHandover(value);
