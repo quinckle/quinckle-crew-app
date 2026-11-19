@@ -19,8 +19,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Animated, AppState, Easing, Modal, Pressable, StyleSheet, Text, Vibration, View,
+  ActivityIndicator, Animated, AppState, Easing, Modal, Pressable, StyleSheet, Text, Vibration, View,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
@@ -33,10 +34,16 @@ import { subscribeChannel } from '../../services/realtime';
 
 /** One ring on the phone lasts this long; the server re-rings every 30s. */
 const LOCAL_RING_MS = 25_000;
-const VIBRATE_PATTERN = [0, 500, 400, 500, 1200];
+const VIBRATE_PATTERN = [0, 700, 300, 700, 300, 700, 900];
 
 function tableLabel(call: Pick<StaffCall, 'tableNumber'>) {
   return call.tableNumber != null ? `Table ${call.tableNumber}` : 'A table';
+}
+
+/** Time since the diner tapped, as m:ss — counts up on the ringing screen. */
+function elapsedLabel(createdAt: string, now: number) {
+  const s = Math.max(0, Math.floor((now - Date.parse(createdAt)) / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
 function agoLabel(createdAt: string, now: number) {
@@ -68,9 +75,12 @@ function useRinger() {
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
     stopTimer.current = setTimeout(stop, LOCAL_RING_MS);
     try {
-      await Audio.setAudioModeAsync({ playsInSilentModeIOS: true, staysActiveInBackground: false });
+      await Audio.setAudioModeAsync({
+        playsInSilentModeIOS: true, staysActiveInBackground: false,
+        shouldDuckAndroid: false, playThroughEarpieceAndroid: false,
+      });
       const { sound } = await Audio.Sound.createAsync(
-        require('../../assets/audio/notifications/waiter notification.mp3'),
+        require('../../assets/audio/notifications/staff_call_alarm.wav'),
         { isLooping: true, volume: 1 },
       );
       if (!ringing.current) { void sound.unloadAsync(); return; }
@@ -89,7 +99,7 @@ function Ripple({ delay }: { delay: number }) {
     const loop = Animated.loop(
       Animated.sequence([
         Animated.delay(delay),
-        Animated.timing(v, { toValue: 1, duration: 1800, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+        Animated.timing(v, { toValue: 1, duration: 2100, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
       ]),
     );
     loop.start();
@@ -99,29 +109,59 @@ function Ripple({ delay }: { delay: number }) {
     <Animated.View
       pointerEvents="none"
       style={[styles.ripple, {
-        opacity: v.interpolate({ inputRange: [0, 1], outputRange: [0.85, 0] }),
-        transform: [{ scale: v.interpolate({ inputRange: [0, 1], outputRange: [0.55, 1.3] }) }],
+        opacity: v.interpolate({ inputRange: [0, 1], outputRange: [0.7, 0] }),
+        transform: [{ scale: v.interpolate({ inputRange: [0, 1], outputRange: [0.62, 1.45] }) }],
       }]}
     />
   );
 }
 
-function SwingingBell() {
+/** Whole-screen orange wash that breathes in and out — readable from across the floor. */
+function AlarmWash() {
   const v = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     const loop = Animated.loop(Animated.sequence([
-      Animated.timing(v, { toValue: 1, duration: 120, useNativeDriver: true }),
-      Animated.timing(v, { toValue: -1, duration: 200, useNativeDriver: true }),
-      Animated.timing(v, { toValue: 0.6, duration: 160, useNativeDriver: true }),
-      Animated.timing(v, { toValue: 0, duration: 140, useNativeDriver: true }),
-      Animated.delay(500),
+      Animated.timing(v, { toValue: 1, duration: 650, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      Animated.timing(v, { toValue: 0, duration: 650, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
     ]));
     loop.start();
     return () => { loop.stop(); };
   }, [v]);
   return (
-    <Animated.View style={{ transform: [{ rotate: v.interpolate({ inputRange: [-1, 1], outputRange: ['-16deg', '16deg'] }) }] }}>
-      <Ionicons name="notifications" size={36} color="#FFF" />
+    <Animated.View pointerEvents="none"
+      style={[StyleSheet.absoluteFill, { backgroundColor: C.primary, opacity: v.interpolate({ inputRange: [0, 1], outputRange: [0.05, 0.22] }) }]} />
+  );
+}
+
+function BlinkDot() {
+  const v = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    const loop = Animated.loop(Animated.sequence([
+      Animated.timing(v, { toValue: 0.25, duration: 500, useNativeDriver: true }),
+      Animated.timing(v, { toValue: 1, duration: 500, useNativeDriver: true }),
+    ]));
+    loop.start();
+    return () => { loop.stop(); };
+  }, [v]);
+  return <Animated.View style={[styles.liveDot, { opacity: v }]} />;
+}
+
+function SwingingBell({ size = 30 }: { size?: number }) {
+  const v = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(Animated.sequence([
+      Animated.timing(v, { toValue: 1, duration: 110, useNativeDriver: true }),
+      Animated.timing(v, { toValue: -1, duration: 180, useNativeDriver: true }),
+      Animated.timing(v, { toValue: 0.6, duration: 150, useNativeDriver: true }),
+      Animated.timing(v, { toValue: 0, duration: 130, useNativeDriver: true }),
+      Animated.delay(450),
+    ]));
+    loop.start();
+    return () => { loop.stop(); };
+  }, [v]);
+  return (
+    <Animated.View style={{ transform: [{ rotate: v.interpolate({ inputRange: [-1, 1], outputRange: ['-18deg', '18deg'] }) }] }}>
+      <Ionicons name="notifications" size={size} color="#FFF" />
     </Animated.View>
   );
 }
@@ -290,38 +330,90 @@ export function StaffCallAlert() {
 
       <Modal visible={!!active} transparent animationType="fade" statusBarTranslucent onRequestClose={() => { if (active) snooze(active); }}>
         {active && (
-          <View style={[styles.sheet, { paddingTop: insets.top + 48, paddingBottom: insets.bottom + 24 }]}>
-            <View style={styles.glow} pointerEvents="none" />
-            <View style={styles.rings}>
-              <Ripple delay={0} />
-              <Ripple delay={600} />
-              <Ripple delay={1200} />
-              <View style={styles.core}><SwingingBell /></View>
+          <View style={styles.sheet}>
+            <AlarmWash />
+            <LinearGradient pointerEvents="none" colors={['rgba(243,93,59,0.55)', 'rgba(243,93,59,0)']} style={styles.topGlow} />
+
+            <View style={[styles.body, { paddingTop: insets.top + 14, paddingBottom: insets.bottom + 18 }]}>
+              {/* Status row */}
+              <View style={styles.statusRow}>
+                <View style={styles.liveChip}>
+                  <BlinkDot />
+                  <Text style={styles.liveText}>{active.ring > 1 ? 'Still waiting' : 'Diner calling'}</Text>
+                </View>
+                <View style={styles.timerChip}>
+                  <Ionicons name="time-outline" size={14} color={C.textPrimary} />
+                  <Text style={styles.timerText}>{elapsedLabel(active.createdAt, now)}</Text>
+                </View>
+              </View>
+
+              {/* Table */}
+              <View style={styles.center}>
+                <View style={styles.rings}>
+                  <Ripple delay={0} />
+                  <Ripple delay={700} />
+                  <Ripple delay={1400} />
+                  <View style={styles.disc}>
+                    {active.tableNumber != null ? (
+                      <>
+                        <Text style={styles.discLabel}>Table</Text>
+                        <Text style={styles.discNumber} numberOfLines={1} adjustsFontSizeToFit>{active.tableNumber}</Text>
+                      </>
+                    ) : (
+                      <SwingingBell size={56} />
+                    )}
+                  </View>
+                  <View style={styles.bellBadge}><SwingingBell size={20} /></View>
+                </View>
+
+                <Text style={styles.headline}>
+                  {active.tableNumber != null ? 'needs you at the table' : 'A table needs help'}
+                </Text>
+
+                <View style={styles.ringTrack} accessibilityLabel={`Ring ${active.ring} of 3`}>
+                  {[1, 2, 3].map(n => (
+                    <View key={n} style={[styles.ringSeg, n <= active.ring && styles.ringSegOn]} />
+                  ))}
+                  <Text style={styles.ringText}>Ring {Math.min(active.ring, 3)} of 3</Text>
+                </View>
+
+                {othersWaiting > 0 && (
+                  <View style={styles.queue}>
+                    <Text style={styles.queueLabel}>Also calling</Text>
+                    <View style={styles.queueRow}>
+                      {calls.filter(c => c.id !== active.id).slice(0, 4).map(c => (
+                        <View key={c.id} style={styles.queueChip}>
+                          <Text style={styles.queueChipText}>
+                            {c.tableNumber != null ? `T${c.tableNumber}` : 'Table'} · {agoLabel(c.createdAt, now)}
+                          </Text>
+                        </View>
+                      ))}
+                      {othersWaiting > 4 && <Text style={styles.queueMore}>+{othersWaiting - 4}</Text>}
+                    </View>
+                  </View>
+                )}
+              </View>
+
+              {/* Actions */}
+              <Pressable
+                onPress={() => { void accept(active); }}
+                disabled={busyId === active.id}
+                style={({ pressed }) => [styles.go, pressed && { transform: [{ scale: 0.98 }] }, busyId === active.id && { opacity: 0.85 }]}
+                accessibilityRole="button"
+                accessibilityLabel={`On my way to ${tableLabel(active)}`}>
+                {busyId === active.id ? (
+                  <ActivityIndicator color={C.background} />
+                ) : (
+                  <>
+                    <Text style={styles.goText}>On my way</Text>
+                    <View style={styles.goIcon}><Ionicons name="arrow-forward" size={20} color="#FFF" /></View>
+                  </>
+                )}
+              </Pressable>
+              <Pressable onPress={() => snooze(active)} style={({ pressed }) => [styles.later, pressed && { opacity: 0.7 }]} accessibilityRole="button">
+                <Text style={styles.laterText}>Not me · let someone else take it</Text>
+              </Pressable>
             </View>
-
-            <Text style={styles.kicker}>{active.ring > 1 ? 'Still waiting' : 'Diner is calling'}</Text>
-            <Text style={styles.table}>{tableLabel(active)}</Text>
-            <Text style={styles.sub}>Someone at the table needs help.</Text>
-
-            <View style={styles.metaRow}>
-              <Text style={styles.meta}>{agoLabel(active.createdAt, now)}</Text>
-              {active.ring > 1 && <Text style={styles.meta}>Ring {active.ring} of 3</Text>}
-              {othersWaiting > 0 && <Text style={[styles.meta, styles.metaHot]}>+{othersWaiting} more calling</Text>}
-            </View>
-
-            <View style={{ flex: 1 }} />
-
-            <Pressable
-              onPress={() => { void accept(active); }}
-              disabled={busyId === active.id}
-              style={({ pressed }) => [styles.go, (pressed || busyId === active.id) && { opacity: 0.85 }]}
-              accessibilityRole="button"
-              accessibilityLabel={`On my way to ${tableLabel(active)}`}>
-              <Text style={styles.goText}>{busyId === active.id ? 'Sending…' : 'On my way'}</Text>
-            </Pressable>
-            <Pressable onPress={() => snooze(active)} style={styles.later} accessibilityRole="button">
-              <Text style={styles.laterText}>Not me, keep it ringing for others</Text>
-            </Pressable>
           </View>
         )}
       </Modal>
@@ -330,35 +422,65 @@ export function StaffCallAlert() {
 }
 
 const styles = StyleSheet.create({
-  sheet: { flex: 1, backgroundColor: C.background, alignItems: 'center', paddingHorizontal: 24 },
-  glow: {
-    position: 'absolute', top: -120, width: 520, height: 520, borderRadius: 260,
-    backgroundColor: 'rgba(243,93,59,0.14)',
+  sheet: { flex: 1, backgroundColor: C.background },
+  topGlow: { position: 'absolute', top: 0, left: 0, right: 0, height: 360 },
+  body: { flex: 1, paddingHorizontal: 20 },
+  statusRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  liveChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: 'rgba(0,0,0,0.35)', borderColor: 'rgba(255,255,255,0.16)', borderWidth: 1,
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999,
   },
-  rings: { width: 150, height: 150, alignItems: 'center', justifyContent: 'center', marginBottom: 26 },
-  ripple: { position: 'absolute', width: 150, height: 150, borderRadius: 75, borderWidth: 2, borderColor: C.primary },
-  core: {
-    width: 92, height: 92, borderRadius: 46, backgroundColor: C.primary,
+  liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#FFF' },
+  liveText: { color: '#FFF', fontSize: 12, fontWeight: '800', letterSpacing: 1.6, textTransform: 'uppercase' },
+  timerChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: 'rgba(0,0,0,0.35)', borderColor: 'rgba(255,255,255,0.16)', borderWidth: 1,
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999,
+  },
+  timerText: { color: C.textPrimary, fontSize: 14, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  rings: { width: 250, height: 250, alignItems: 'center', justifyContent: 'center' },
+  ripple: { position: 'absolute', width: 250, height: 250, borderRadius: 125, borderWidth: 3, borderColor: C.primary },
+  disc: {
+    width: 184, height: 184, borderRadius: 92, backgroundColor: C.primary,
+    alignItems: 'center', justifyContent: 'center', paddingHorizontal: 18,
+    borderWidth: 4, borderColor: 'rgba(255,255,255,0.22)',
+    shadowColor: C.primary, shadowOpacity: 0.7, shadowRadius: 36, shadowOffset: { width: 0, height: 10 }, elevation: 18,
+  },
+  discLabel: { color: 'rgba(255,255,255,0.85)', fontSize: 14, fontWeight: '800', letterSpacing: 3, textTransform: 'uppercase', marginBottom: -6 },
+  discNumber: { color: '#FFF', fontSize: 96, fontWeight: '900', letterSpacing: -3, fontVariant: ['tabular-nums'] },
+  bellBadge: {
+    position: 'absolute', top: 30, right: 30, width: 44, height: 44, borderRadius: 22,
+    backgroundColor: C.background, borderWidth: 2, borderColor: C.primary,
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: C.primary, shadowOpacity: 0.5, shadowRadius: 24, shadowOffset: { width: 0, height: 8 }, elevation: 12,
   },
-  kicker: { color: C.primary, fontSize: 12, fontWeight: '800', letterSpacing: 2, textTransform: 'uppercase' },
-  table: { color: C.textPrimary, fontSize: 52, fontWeight: '800', letterSpacing: -1, marginTop: 6 },
-  sub: { color: C.textSecondary, fontSize: 15, marginTop: 6 },
-  metaRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 8, marginTop: 16 },
-  meta: {
-    color: C.textPrimary, fontSize: 12, fontWeight: '600', overflow: 'hidden',
-    backgroundColor: C.surfaceElevated, borderColor: C.border, borderWidth: 1,
+  headline: { color: C.textPrimary, fontSize: 22, fontWeight: '800', letterSpacing: -0.4, marginTop: 22, textAlign: 'center' },
+  ringTrack: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 14 },
+  ringSeg: { width: 26, height: 5, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.16)' },
+  ringSegOn: { backgroundColor: C.primary },
+  ringText: { color: C.textSecondary, fontSize: 12, fontWeight: '700', marginLeft: 6 },
+  queue: { marginTop: 22, alignItems: 'center', gap: 8 },
+  queueLabel: { color: C.textTertiary, fontSize: 11, fontWeight: '800', letterSpacing: 1.4, textTransform: 'uppercase' },
+  queueRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center', gap: 6 },
+  queueChip: {
+    backgroundColor: C.primarySoft, borderColor: C.primarySoftBorder, borderWidth: 1,
     paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999,
   },
-  metaHot: { color: C.primary, borderColor: C.primarySoftBorder },
+  queueChipText: { color: C.primaryLight, fontSize: 12, fontWeight: '700' },
+  queueMore: { color: C.textSecondary, fontSize: 12, fontWeight: '700' },
   go: {
-    alignSelf: 'stretch', backgroundColor: C.primary, borderRadius: 18, paddingVertical: 18, alignItems: 'center',
-    shadowColor: C.primary, shadowOpacity: 0.4, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 8,
+    alignSelf: 'stretch', height: 68, borderRadius: 22, backgroundColor: '#FFF',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12,
+    shadowColor: '#000', shadowOpacity: 0.35, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 10,
   },
-  goText: { color: '#FFF', fontSize: 18, fontWeight: '800' },
-  later: { paddingVertical: 14, paddingHorizontal: 8 },
-  laterText: { color: C.textSecondary, fontSize: 14, fontWeight: '600' },
+  goText: { color: C.background, fontSize: 20, fontWeight: '900', letterSpacing: -0.3 },
+  goIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: C.primary, alignItems: 'center', justifyContent: 'center' },
+  later: {
+    alignSelf: 'stretch', marginTop: 10, paddingVertical: 14, borderRadius: 18, alignItems: 'center',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', backgroundColor: 'rgba(0,0,0,0.25)',
+  },
+  laterText: { color: C.textSecondary, fontSize: 14, fontWeight: '700' },
   pill: {
     position: 'absolute', left: 12, right: 12, zIndex: 50,
     flexDirection: 'row', alignItems: 'center', gap: 8,

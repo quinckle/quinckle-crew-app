@@ -19,6 +19,25 @@ export async function registerCrewPushNotifications(): Promise<void> {
       vibrationPattern: [0, 250, 250, 250],
       lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
     });
+    // Call Staff gets its own channel: a channel's sound is fixed on the phone
+    // the first time it's created, so the alarm can't share `crew-alerts`.
+    // ALARM usage plays on the alarm stream — loud even with the ringer on
+    // silent — and the server only targets this channel from app 1.1.0 up
+    // (STAFF_CALL_CHANNEL_MIN_APP in the backend), so the id must not change.
+    await Notifications.setNotificationChannelAsync('staff-call', {
+      name: 'Diner calls',
+      description: 'Rings loudly when a diner taps Call Staff',
+      importance: Notifications.AndroidImportance.MAX,
+      sound: 'staff_call_alarm.wav',
+      enableVibrate: true,
+      vibrationPattern: [0, 700, 300, 700, 300, 700, 900, 700, 300, 700, 300, 700],
+      bypassDnd: true,
+      audioAttributes: {
+        usage: Notifications.AndroidAudioUsage.ALARM,
+        contentType: Notifications.AndroidAudioContentType.SONIFICATION,
+      },
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+    });
   }
 
   const existing = await Notifications.getPermissionsAsync();

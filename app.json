@@ -3,7 +3,7 @@
     "name": "QuinckleCrew",
     "slug": "QuinckleCrew",
     "owner": "quinckle",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "default",
     "icon": "./assets/images/quinckle crew icon converted.png",
     "scheme": "quincklecrew",
@@ -15,7 +15,7 @@
     },
     "android": {
       "package": "com.quinckle.crew",
-      "versionCode": 1,
+      "versionCode": 2,
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#0A0A0B",
@@ -50,7 +50,8 @@
           "icon": "./assets/images/notification icon small.png",
           "color": "#F35D3B",
           "sounds": [
-            "./assets/audio/notifications/waiter_notification.mp3"
+            "./assets/audio/notifications/waiter_notification.mp3",
+            "./assets/audio/notifications/staff_call_alarm.wav"
           ]
         }
       ],
