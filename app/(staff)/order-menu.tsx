@@ -65,6 +65,7 @@ import { UpiPaymentSheet } from '../../components/ui/UpiPaymentSheet';
 import { SplitPaymentSheet } from '../../components/ui/SplitPaymentSheet';
 import { DuePaymentSheet, type DuePaymentDetails } from '../../components/ui/DuePaymentSheet';
 import { AdjustBillForm } from './adjust-bill';
+import { PlacingOrderOverlay, type PlacingOrderJob } from '../../components/ui/PlacingOrderOverlay';
 
 // Takeaway is paid at the counter, usually right as it is punched — so the
 // method is picked on the bottom bar BEFORE placing and collected in the same
@@ -524,6 +525,9 @@ export default function OrderMenuScreen() {
     }).start();
   }, [placed, placedCardAnim, placedTickAnim]);
   const [coSubmitting, setCoSubmitting] = useState(false);
+  // Orbit overlay while the order (and, for Place & Collect, the payment) is
+  // in flight. Phases move only on real responses; a failure clears it.
+  const [placingJob, setPlacingJob] = useState<PlacingOrderJob | null>(null);
   const [coError, setCoError] = useState<string | null>(null);
 
   // Keep session customer for pre-fill
@@ -976,6 +980,18 @@ export default function OrderMenuScreen() {
 
     setCoSubmitting(true);
     setCoError(null);
+    const placeStartedAt = Date.now();
+    // Keep the overlay up long enough to read once the backend is fast — a
+    // 300 ms flash looks like a glitch.
+    const holdOverlay = async (minMs: number) => {
+      const left = minMs - (Date.now() - placeStartedAt);
+      if (left > 0) await new Promise((r) => setTimeout(r, left));
+    };
+    setPlacingJob({
+      phase: 'placing',
+      title: 'Placing order…',
+      subtitle: `${isTakeaway ? `New ${orderLabel} order` : `Table T${tableNum}`} · ₹${Math.round(snapshotTotal)}`,
+    });
     try {
       // Normally ready long before Place is pressed. If not, wait for it here —
       // the button is already showing its spinner — rather than failing.
@@ -990,6 +1006,10 @@ export default function OrderMenuScreen() {
       const orderId = orderRes?.order_id ?? '';
       const token = orderRes?.pickup_token || pickupToken || null;
       if (token) setPickupToken(token);
+      const disc = isTakeaway
+        ? { caption: token ? 'TOKEN' : orderLabel.toUpperCase(), value: token ?? '✓' }
+        : { caption: 'TABLE', value: `T${tableNum}` };
+      const placedTitle = isTakeaway ? `${token ?? orderLabel} placed` : 'Order placed';
 
       setCart({});
       setCartNotes({});
@@ -1002,6 +1022,7 @@ export default function OrderMenuScreen() {
       if (!Number.isFinite(orderTotal) || orderTotal <= 0) orderTotal = snapshotTotal;
 
       if (!Number.isFinite(orderTotal) || orderTotal <= 0) {
+        setPlacingJob(null);
         if (waitsOnStart) router.replace({ pathname: '/(staff)/[tableId]', params: { tableId: String(tableId ?? 0), sessionId: sid, tableDbId: tableDbId ?? '', zoneName: paramZoneName ?? '' } });
         else router.back();
         return;
@@ -1037,6 +1058,15 @@ export default function OrderMenuScreen() {
           : paymentMethod === 'SPLIT' ? 'split collected'
           : paymentMethod === 'UPI' ? 'UPI collected'
           : 'cash collected';
+        setPlacingJob({
+          phase: 'collecting',
+          disc,
+          title: placedTitle,
+          subtitle: paymentMethod === 'DUE' ? 'Adding to khata…'
+            : paymentMethod === 'SPLIT' ? 'Recording split payment…'
+            : paymentMethod === 'UPI' ? 'Recording UPI payment…'
+            : 'Recording cash payment…',
+        });
         try {
           if (!splits.length || !orderId || !staffInfo?.id) throw new Error('missing');
           const sig = splits.map((x) => `${x.method}:${x.amount.toFixed(2)}`).join('|');
@@ -1085,13 +1115,28 @@ export default function OrderMenuScreen() {
           else router.dismissTo({ pathname: '/(staff)/[tableId]', params });
         }
       };
+      await holdOverlay(1200);
+      setPlacingJob({
+        phase: 'done',
+        disc,
+        title: placedTitle,
+        subtitle: !isTakeaway ? 'Sent to the kitchen'
+          : paymentMethod === 'PENDING' ? 'Collect payment on the next screen'
+          : collectFailed ? 'Payment not recorded. Collect it on the next screen.'
+          : collectedLabel.charAt(0).toUpperCase() + collectedLabel.slice(1),
+      });
+      // Let the check land before the screen changes.
+      await new Promise((r) => setTimeout(r, 650));
+
       if (invoice && !invoice.ok) {
+        setPlacingJob(null);
         setPlaced({ amount: orderTotal, invoice });
         navTimerRef.current = setTimeout(go, 2500);
       } else {
         go();
       }
     } catch (e: any) {
+      setPlacingJob(null);
       setCoError(e?.message ?? 'Failed to place order. Try again.');
     } finally {
       setCoSubmitting(false);
@@ -1594,6 +1639,7 @@ export default function OrderMenuScreen() {
         {guestSheetJsx}
         {paymentSheetsJsx}
         {noteSheetJsx}
+        <PlacingOrderOverlay job={placingJob} />
       </View>
     );
   }
@@ -1726,7 +1772,7 @@ export default function OrderMenuScreen() {
       {guestSheetJsx}
       {paymentSheetsJsx}
       {noteSheetJsx}
-
+      <PlacingOrderOverlay job={placingJob} />
     </View>
   );
 }
