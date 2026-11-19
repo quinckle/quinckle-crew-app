@@ -79,6 +79,13 @@ const PAYMENT_METHODS: { key: 'PENDING' | 'CASH' | 'UPI' | 'SPLIT' | 'DUE'; labe
   { key: 'DUE', label: 'Due', icon: 'time-outline' },
 ];
 
+// Hand over bump geometry (see styles.bump*). The socket's centre sits on the
+// bar's top edge, so BUMP_STRIP is half its height.
+const BUMP_SOCKET = 52;
+const BUMP_BTN = 40;
+const BUMP_STRIP = BUMP_SOCKET / 2;
+const BUMP_RIGHT = Spacing.xl - 4;
+
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
@@ -1406,18 +1413,36 @@ export default function OrderMenuScreen() {
   );
 
   const footerJsx = footerMounted && (
-    <Animated.View style={[
-      styles.footer,
-      { paddingBottom: insets.bottom + Spacing.sm },
-      {
+    // The outer layer animates and holds the Hand over bump; the visible bar
+    // is the panel inside it. The bump needs a strip ABOVE the bar that still
+    // belongs to this view: Android never delivers a touch to the part of a
+    // child that pokes outside its parent, so a bump drawn over the bar's top
+    // edge would be half dead. box-none lets taps on the empty strip fall
+    // through to the menu behind it.
+    <Animated.View
+      pointerEvents="box-none"
+      style={{
         opacity: footerAnim,
         transform: [{ translateY: footerAnim.interpolate({ inputRange: [0, 1], outputRange: [56, 0] }) }],
-      },
-    ]}>
+      }}
+    >
+      {canAutoHandover && (
+        <>
+          <View pointerEvents="none" style={styles.bumpStrip} />
+          {/* The bar-coloured disc whose top half is the bump's outline; the
+              panel below paints over its bottom half. */}
+          <View pointerEvents="none" style={styles.bumpSocket} />
+        </>
+      )}
+    <View style={[styles.footer, { paddingBottom: insets.bottom + Spacing.sm }]}>
       {/* A failed placement shows here while the customer sheet is closed —
           the sheet shows its own copy. Tap to dismiss. */}
       {coError && !contactOpen ? (
-        <TouchableOpacity style={styles.footerError} onPress={() => setCoError(null)} activeOpacity={0.85}>
+        <TouchableOpacity
+          style={[styles.footerError, canAutoHandover && { marginRight: BUMP_SOCKET }]}
+          onPress={() => setCoError(null)}
+          activeOpacity={0.85}
+        >
           <Ionicons name="alert-circle" size={14} color={QuinckleColors.danger} />
           <Text style={styles.footerErrorText} numberOfLines={2}>{coError}</Text>
         </TouchableOpacity>
@@ -1428,7 +1453,7 @@ export default function OrderMenuScreen() {
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.paymentChipRow}
-          style={styles.paymentChipScroll}
+          style={[styles.paymentChipScroll, canAutoHandover && styles.paymentChipScrollBump]}
           keyboardShouldPersistTaps="handled"
         >
           {PAYMENT_METHODS.map((m) => {
@@ -1460,26 +1485,6 @@ export default function OrderMenuScreen() {
             );
           })}
         </ScrollView>
-        {/* Pinned outside the scroll so it never slides off-screen behind the
-            payment chips. A toggle, not one of the radio chips above. */}
-        {canAutoHandover && (
-          <TouchableOpacity
-            style={[styles.handoverPill, autoHandover && styles.handoverPillOn]}
-            onPress={toggleAutoHandover}
-            disabled={coSubmitting}
-            activeOpacity={0.75}
-            accessibilityRole="switch"
-            accessibilityState={{ checked: autoHandover }}
-            accessibilityLabel="Hand over after payment"
-          >
-            <Ionicons
-              name={autoHandover ? 'checkmark-circle' : 'bag-check-outline'}
-              size={13}
-              color={autoHandover ? '#fff' : QuinckleColors.textSecondary}
-            />
-            <Text style={[styles.handoverPillText, autoHandover && styles.handoverPillTextOn]}>Hand over</Text>
-          </TouchableOpacity>
-        )}
         </View>
       )}
       <View style={styles.footerMainRow}>
@@ -1536,6 +1541,33 @@ export default function OrderMenuScreen() {
               </Text>}
         </TouchableOpacity>
       </View>
+    </View>
+      {canAutoHandover && (
+        <>
+          <TouchableOpacity
+            style={[styles.bumpBtn, autoHandover ? styles.bumpBtnOn : styles.bumpBtnOff]}
+            onPress={toggleAutoHandover}
+            disabled={coSubmitting}
+            activeOpacity={0.8}
+            hitSlop={6}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: autoHandover }}
+            accessibilityLabel="Hand over after payment"
+          >
+            <Ionicons
+              name="bag-check-outline"
+              size={19}
+              color={autoHandover ? '#fff' : QuinckleColors.textSecondary}
+            />
+          </TouchableOpacity>
+          <Text
+            pointerEvents="none"
+            style={[styles.bumpCaption, { color: autoHandover ? QuinckleColors.success : QuinckleColors.textSecondary }]}
+          >
+            Hand over
+          </Text>
+        </>
+      )}
     </Animated.View>
   );
 
@@ -1718,7 +1750,7 @@ export default function OrderMenuScreen() {
                   contentContainerStyle={{
                     padding: Spacing.xl,
                     gap: Spacing.md,
-                    paddingBottom: footerMounted ? 110 : Spacing.xxl,
+                    paddingBottom: footerMounted ? 110 + (canAutoHandover ? BUMP_STRIP : 0) : Spacing.xxl,
                   }}
                 />
               )}
@@ -1852,7 +1884,7 @@ export default function OrderMenuScreen() {
               paddingHorizontal: Spacing.lg,
               paddingTop: Spacing.sm,
               gap: Spacing.sm + 2,
-              paddingBottom: footerMounted ? 100 : Spacing.xxl,
+              paddingBottom: footerMounted ? 100 + (canAutoHandover ? BUMP_STRIP : 0) : Spacing.xxl,
             }}
           />
         )}
@@ -2001,17 +2033,30 @@ const styles = StyleSheet.create({
   // Footer
   footer: { backgroundColor: QuinckleColors.surface, borderTopWidth: 1, borderTopColor: QuinckleColors.border, paddingHorizontal: Spacing.xl, paddingTop: Spacing.md },
   footerMainRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
-  // Payment chips scroll; the Hand over pill stays pinned at the right end.
-  paymentBar: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: Spacing.sm },
+  paymentBar: { flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.sm },
   paymentChipScroll: { flex: 1 },
-  handoverPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    paddingHorizontal: 11, paddingVertical: 7, borderRadius: Radius.pill,
-    borderWidth: 1, borderColor: QuinckleColors.border, backgroundColor: QuinckleColors.surfaceElevated,
+  // Clears the Hand over bump, which sinks into this row at the right.
+  paymentChipScrollBump: { marginRight: BUMP_SOCKET + Spacing.sm },
+
+  // Hand over bump (takeaway): a round button half-sunk into the bar's top
+  // edge. BUMP_STRIP is the transparent band above the bar it rises into.
+  bumpStrip: { height: BUMP_STRIP },
+  bumpSocket: {
+    position: 'absolute', top: 0, right: BUMP_RIGHT,
+    width: BUMP_SOCKET, height: BUMP_SOCKET, borderRadius: BUMP_SOCKET / 2,
+    backgroundColor: QuinckleColors.surface, borderWidth: 1, borderColor: QuinckleColors.border,
   },
-  handoverPillOn: { backgroundColor: QuinckleColors.success, borderColor: QuinckleColors.success },
-  handoverPillText: { fontSize: 11, fontWeight: '700', color: QuinckleColors.textSecondary },
-  handoverPillTextOn: { color: '#fff' },
+  bumpBtn: {
+    position: 'absolute', top: (BUMP_SOCKET - BUMP_BTN) / 2, right: BUMP_RIGHT + (BUMP_SOCKET - BUMP_BTN) / 2,
+    width: BUMP_BTN, height: BUMP_BTN, borderRadius: BUMP_BTN / 2,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  bumpBtnOn: { backgroundColor: QuinckleColors.success },
+  bumpBtnOff: { backgroundColor: QuinckleColors.surfaceElevated, borderWidth: 1, borderColor: QuinckleColors.border },
+  bumpCaption: {
+    position: 'absolute', top: BUMP_SOCKET - 4, right: BUMP_RIGHT - 6, width: BUMP_SOCKET + 12,
+    textAlign: 'center', fontSize: 10, fontWeight: '700',
+  },
   paymentChipRow: { flexDirection: 'row', gap: 6 },
   paymentChip: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
