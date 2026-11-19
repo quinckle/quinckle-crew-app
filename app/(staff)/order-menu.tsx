@@ -46,7 +46,7 @@ import {
   crewSessions, crewOrders, crewDiners, crewMemberships, restaurantApi, crewOffers, crewPayments,
   type CollectSplitMethod,
 } from '../../services/api';
-import type { MenuItem, ModifierGroup, CrewOffer, CrewOrderPreview, CrewPriorLine } from '../../services/api';
+import type { MenuItem, ModifierGroup, CrewOffer, CrewOrderPreview, CrewPriorLine, HeldAdjustments } from '../../services/api';
 import { freeItemSet, hasQtyTrigger, offerProgress, type EngineLine } from '../../services/offer-engine';
 
 /** What the offer bar above the menu shows. `add` = an earned free item to put on the order. */
@@ -462,6 +462,21 @@ export default function OrderMenuScreen() {
   const [splitDetails, setSplitDetails] = useState<{ cash: number; upi: number } | null>(null);
   const [dueSheetOpen, setDueSheetOpen] = useState(false);
   const [dueDetails, setDueDetails] = useState<DuePaymentDetails | null>(null);
+  // Discount/tip entered in Adjust bill before this session's first order.
+  // Nothing to write them onto yet, so they ride along with placeOrder, which
+  // applies them before pricing the response and printing the invoice.
+  const [heldAdjust, setHeldAdjust] = useState<HeldAdjustments | null>(null);
+  const holdsAdjustments = pendingStart === '1';
+  // "10% off · ₹20 tip" — what the crew typed, not a priced amount; the
+  // server prices it on placing.
+  const heldLabel = holdsAdjustments && heldAdjust
+    ? [
+        heldAdjust.discount
+          ? (heldAdjust.discount.type === 'PERCENT' ? `${heldAdjust.discount.value}% off` : `₹${heldAdjust.discount.value} off`)
+          : null,
+        heldAdjust.tip ? `₹${heldAdjust.tip} tip` : null,
+      ].filter(Boolean).join(' · ')
+    : '';
 
   // "Hand over after payment" — the same per-phone switch the payment screen
   // shows (services/takeawayHandover), so flipping it here flips it there.
@@ -469,7 +484,7 @@ export default function OrderMenuScreen() {
   // on Pay later the payment screen reads the same setting and does it there.
   // Takeaway only: the backend refuses to hand over a delivery order.
   const canAutoHandover = channel === 'TAKEAWAY';
-  const [autoHandover, setAutoHandover] = useState(false);
+  const [autoHandover, setAutoHandover] = useState(true);
   useEffect(() => {
     if (!canAutoHandover) return;
     void getHandoverOnCollect().then(setAutoHandover);
@@ -1021,7 +1036,9 @@ export default function OrderMenuScreen() {
         if (guestName) setSessionCustomerName(guestName);
       }
 
-      const orderRes = await crewOrders.placeOrder(sid, items);
+      const sentHeld = holdsAdjustments ? heldAdjust : null;
+      const orderRes = await crewOrders.placeOrder(sid, items, sentHeld);
+      const adjustmentsError = sentHeld ? orderRes?.adjustments_error : undefined;
       const orderId = orderRes?.order_id ?? '';
       const token = orderRes?.pickup_token || pickupToken || null;
       if (token) setPickupToken(token);
@@ -1033,6 +1050,7 @@ export default function OrderMenuScreen() {
       setCart({});
       setCartNotes({});
       setCartModifiers({});
+      setHeldAdjust(null);
 
       // placeOrder already returns the full payable total (tax included) —
       // payment-collect re-fetches its own context anyway, so no extra
@@ -1060,7 +1078,22 @@ export default function OrderMenuScreen() {
       // order — the crew collects there instead of trusting a toast.
       let collectedLabel = '';
       let collectFailed = false;
+      // Don't collect a figure the crew didn't agree to: if the held discount
+      // or tip was refused, or it moved the bill away from a split / part
+      // payment typed against the old total, the payment screen re-reads the
+      // real bill and the crew collects there.
+      let collectSkip: string | null = null;
       if (isTakeaway && paymentMethod !== 'PENDING') {
+        if (adjustmentsError) {
+          collectSkip = 'Discount or tip not added. Add it and collect on the next screen.';
+        } else if (paymentMethod === 'SPLIT' && splitDetails && Math.abs(splitDetails.cash + splitDetails.upi - orderTotal) > 1) {
+          collectSkip = `Bill is ₹${Math.round(orderTotal)} after the discount. Split it on the next screen.`;
+        } else if (paymentMethod === 'DUE' && dueDetails && dueDetails.paidNow >= orderTotal) {
+          collectSkip = `Bill is ₹${Math.round(orderTotal)} after the discount. Collect it on the next screen.`;
+        }
+        if (collectSkip) collectFailed = true;
+      }
+      if (isTakeaway && paymentMethod !== 'PENDING' && !collectSkip) {
         const splits: { method: CollectSplitMethod; amount: number }[] = [];
         let dueOptions: { customerPhone: string; customerName?: string | null } | null = null;
         if (paymentMethod === 'CASH') splits.push({ method: 'CASH', amount: orderTotal });
@@ -1152,8 +1185,9 @@ export default function OrderMenuScreen() {
         phase: 'done',
         disc,
         title: placedTitle,
-        subtitle: !isTakeaway ? 'Sent to the kitchen'
-          : paymentMethod === 'PENDING' ? 'Collect payment on the next screen'
+        subtitle: !isTakeaway ? (adjustmentsError ? 'Sent to the kitchen. Discount or tip not added.' : 'Sent to the kitchen')
+          : paymentMethod === 'PENDING' ? (adjustmentsError ? 'Discount or tip not added. Add it on the next screen.' : 'Collect payment on the next screen')
+          : collectSkip ? collectSkip
           : collectFailed ? 'Payment not recorded. Collect it on the next screen.'
           : collectedLabel.charAt(0).toUpperCase() + collectedLabel.slice(1),
       });
@@ -1481,7 +1515,9 @@ export default function OrderMenuScreen() {
             accessibilityLabel="Show bill details"
           >
             <View>
-              <Text style={styles.footerCount}>{cartCount} item{cartCount !== 1 ? 's' : ''}</Text>
+              <Text style={styles.footerCount} numberOfLines={1}>
+                {cartCount} item{cartCount !== 1 ? 's' : ''}{heldLabel ? ` · ${heldLabel}` : ''}
+              </Text>
               <Text style={styles.footerTotal}>₹{cartTotal.toFixed(0)}</Text>
             </View>
             <Ionicons name="chevron-up" size={16} color={QuinckleColors.textSecondary} style={styles.footerChevron} />
@@ -1516,6 +1552,8 @@ export default function OrderMenuScreen() {
         <AdjustBillForm
           embedded
           preOrder={pendingStart === '1'}
+          held={holdsAdjustments ? heldAdjust : null}
+          onHold={holdsAdjustments ? setHeldAdjust : undefined}
           sessionId={adjustSessionId}
           subtitle={isTakeaway ? `New ${orderLabel} order` : `Table T${tableNum}`}
           billTotal={billPreview?.projected.total ?? cartTotal}
@@ -1538,6 +1576,7 @@ export default function OrderMenuScreen() {
       onCheckout={() => { setReviewOpen(false); void confirmAndPlace(); }}
       ctaLabel={isTakeaway && paymentMethod !== 'PENDING' ? 'Place & Collect' : 'Place Order'}
       bill={showBillPreview ? { data: billPreview, state: billPreviewState } : undefined}
+      heldNote={heldLabel ? `Added when the order is placed: ${heldLabel}` : undefined}
     />
   );
 
