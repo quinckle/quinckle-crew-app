@@ -185,10 +185,12 @@ export interface CartReviewSheetProps {
   ctaLabel?: string;
   /** The server-priced bill once this order lands. */
   bill?: { data: CrewOrderPreview | null; state: 'idle' | 'loading' | 'error' };
+  /** Discount/tip held for placing — not in `bill` yet, so said in words. */
+  heldNote?: string;
 }
 
 export function CartReviewSheet({
-  visible, onClose, isWide, lines, total, onInc, onDec, onCheckout, ctaLabel = 'Place Order', bill,
+  visible, onClose, isWide, lines, total, onInc, onDec, onCheckout, ctaLabel = 'Place Order', bill, heldNote,
 }: CartReviewSheetProps) {
   const insets = useSafeAreaInsets();
   const count = useMemo(() => lines.reduce((a, l) => a + l.qty, 0), [lines]);
@@ -226,6 +228,7 @@ export function CartReviewSheet({
         <Text style={styles.footerTotal}>
           {bill?.data ? money(bill.data.projected.total) : `₹${total.toFixed(0)}`}
         </Text>
+        {heldNote ? <Text style={styles.footerHeld} numberOfLines={2}>{heldNote}</Text> : null}
       </View>
       <TouchableOpacity
         style={[styles.cta, lines.length === 0 && { opacity: 0.4 }]}
@@ -375,6 +378,7 @@ const styles = StyleSheet.create({
   footerTotals: { flex: 1 },
   footerCount: { ...Typography.micro, color: QuinckleColors.textSecondary },
   footerTotal: { ...Typography.subtitle, color: QuinckleColors.textPrimary, marginTop: 1 },
+  footerHeld: { ...Typography.micro, color: QuinckleColors.success, marginTop: 2 },
   cta: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     backgroundColor: QuinckleColors.primary, paddingHorizontal: Spacing.xl, paddingVertical: 13, borderRadius: Radius.md,

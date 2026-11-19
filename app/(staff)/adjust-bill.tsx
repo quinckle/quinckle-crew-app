@@ -31,7 +31,7 @@ import {
 import { Stack, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { crewSessions, type BillBreakdown } from '../../services/api';
+import { crewSessions, type BillBreakdown, type HeldAdjustments } from '../../services/api';
 import { splitBillTax } from '../../services/billTax';
 import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
 import { ThemedDialog } from '../../components/ui/themed-dialog';
@@ -297,6 +297,8 @@ export function AdjustBillForm({
   billTotal = null,
   embedded = false,
   preOrder = false,
+  held = null,
+  onHold,
   onClose,
   onSaved,
 }: {
@@ -317,12 +319,23 @@ export function AdjustBillForm({
    * work and are what this mode is for.
    */
   preOrder?: boolean;
+  /**
+   * Pre-order only. When given, discount and tip are NOT hidden: Save hands
+   * them back through `onHold` instead of writing them, and the host sends
+   * them with placeOrder, which applies them once the order row exists
+   * (services/api.ts HeldAdjustments). `held` is what is already held, so
+   * reopening shows it. Charges and party size still save to the session.
+   */
+  held?: HeldAdjustments | null;
+  onHold?: (held: HeldAdjustments | null) => void;
   /** Leave without saving — pop the route, or close the sheet. */
   onClose: () => void;
   /** Something was written, so the host should re-read the bill. */
   onSaved?: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  // Pre-order with a host that holds discount/tip until the order is placed.
+  const holdMode = preOrder && !!onHold;
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -423,11 +436,25 @@ export function AdjustBillForm({
         setDiscountValue(discStr);
         setDiscountNote(a.manualDiscountNote ?? '');
 
+        // Nothing is on the session yet in hold mode — what the host is
+        // holding is the starting point, and the baseline Save diffs against.
+        let tipBase = tipStr;
+        let discBase = discStr;
+        if (holdMode) {
+          tipBase = held?.tip ? String(held.tip) : '';
+          setTip(tipBase);
+          const d = held?.discount;
+          discBase = d ? String(d.value) : '';
+          setDiscountType(d?.type ?? 'FLAT');
+          setDiscountValue(discBase);
+          setDiscountNote(d?.note ?? '');
+        }
+
         loaded.current = {
           covers: covs,
-          tip: tipStr,
+          tip: tipBase,
           allocations: allocKey(allocs),
-          discount: discStr,
+          discount: discBase,
         };
       })
       .catch(() => {
@@ -435,6 +462,8 @@ export function AdjustBillForm({
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
+    // `held` is read once per open — the sheet remounts each time it opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, allocKey]);
 
   const tipNum = Number(tip) || 0;
@@ -473,7 +502,7 @@ export function AdjustBillForm({
   // way); this only decides whether to ASK, so the preview's answer is used
   // when it has arrived and the local mirror covers the gap while it hasn't.
   const zeroesBill = discountChanged && discountNum > 0
-    ? (preview?.zeroesTheBill ?? wouldZeroBill(discountType, discountNum, preview?.current.subtotal ?? 0))
+    ? (preview?.zeroesTheBill ?? wouldZeroBill(discountType, discountNum, preview?.current.subtotal ?? (holdMode ? (billTotal ?? 0) : 0)))
     : false;
   const exemptionReady = !zeroesBill || isReasonComplete(exemptCode, exemptText);
 
@@ -549,6 +578,15 @@ export function AdjustBillForm({
       setDialog({ title: 'Check the discount', message: 'A percentage cannot go above 100%.' });
       return;
     }
+    if (zeroesBill && holdMode) {
+      // Clearing a bill needs a manager's PIN, which can't be asked in the
+      // middle of Place & Collect. Waive it from the payment screen instead.
+      setDialog({
+        title: 'Can\'t clear the whole bill here',
+        message: 'Choose Pay later, place the order, then clear it from Adjust bill on the payment screen.',
+      });
+      return;
+    }
     if (zeroesBill && !exemptionReady) {
       setDialog({ title: 'Say why', message: 'Clearing the whole bill has to carry a reason.' });
       return;
@@ -571,7 +609,7 @@ export function AdjustBillForm({
       // server's 403. Doing it first means the PIN is asked before anything
       // else has been written, so refusing it leaves the bill exactly as it
       // was rather than half-adjusted.
-      if (discountChanged) {
+      if (discountChanged && !holdMode) {
         const coded = zeroesBill ? toReasonPayload(exemptCode!, exemptText) : undefined;
         await runWithApproval(
           { action: 'EXEMPT_SESSION', amount: preview?.current.subtotal ?? null },
@@ -592,11 +630,21 @@ export function AdjustBillForm({
           ...(typed.length > 0 ? { charges: typed } : {}),
         });
       }
-      if (tipChanged) {
-        await crewSessions.setTip(sessionId, tipNum);
-      }
-      if (tipNum > 0 && (allocChanged || tipChanged)) {
-        await crewSessions.allocateTip(sessionId, allocations.filter((a) => a.amount > 0));
+      if (holdMode) {
+        // Nothing to write discount/tip onto yet — the host sends them with
+        // the order. Only what the biller actually entered is held.
+        const next: HeldAdjustments = {
+          ...(discountNum > 0 ? { discount: { type: discountType, value: discountNum, note: discountNote.trim() || null } } : {}),
+          ...(tipNum > 0 ? { tip: tipNum } : {}),
+        };
+        onHold?.(next.discount || next.tip ? next : null);
+      } else {
+        if (tipChanged) {
+          await crewSessions.setTip(sessionId, tipNum);
+        }
+        if (tipNum > 0 && (allocChanged || tipChanged)) {
+          await crewSessions.allocateTip(sessionId, allocations.filter((a) => a.amount > 0));
+        }
       }
       // The route's callers re-read the bill on focus, so going back IS the
       // refresh there. A sheet never blurs the screen underneath it, so it
@@ -747,7 +795,7 @@ export function AdjustBillForm({
               </Text>
             )}
 
-            {!preOrder && (
+            {(!preOrder || holdMode) && (
             <>
             <Text style={s.section}>Discount</Text>
 
@@ -814,7 +862,7 @@ export function AdjustBillForm({
               Optional. It shows on the bill breakdown and in the adjustments report.
             </Text>
 
-            {zeroesBill && (
+            {zeroesBill && !holdMode && (
               <View style={{ marginTop: Spacing.md }}>
                 <View style={s.warnRow}>
                   <Ionicons name="lock-closed-outline" size={15} color={QuinckleColors.warning} />
@@ -836,7 +884,7 @@ export function AdjustBillForm({
             </>
             )}
 
-            {!preOrder && (
+            {(!preOrder || holdMode) && (
             <>
             <Text style={s.section}>Tip</Text>
 
@@ -852,7 +900,7 @@ export function AdjustBillForm({
               '0', 'decimal-pad',
             )}
 
-            {tipNum > 0 && (
+            {tipNum > 0 && !holdMode && (
               <>
                 <TouchableOpacity
                   style={s.assignRow}
@@ -895,7 +943,12 @@ export function AdjustBillForm({
             </>
             )}
 
-            {preOrder ? (
+            {holdMode ? (
+              <Text style={s.hint}>
+                Discount and tip are added to the bill when the order is placed. Split the tip
+                between staff afterwards, from Adjust bill on the order.
+              </Text>
+            ) : preOrder ? (
               <Text style={s.hint}>
                 Discount and tip become available once the first item is ordered.
               </Text>

@@ -565,6 +565,17 @@ export interface LedgerResponse {
   pages: number;
 }
 
+/**
+ * Discount and tip entered in Adjust bill BEFORE a session's first order —
+ * there is no order row for them to land on yet. Held by the order menu and
+ * sent with placeOrder, which applies them before pricing the response and
+ * printing the takeaway auto-invoice. Only the backend prices them.
+ */
+export interface HeldAdjustments {
+  discount?: { type: 'PERCENT' | 'FLAT'; value: number; note?: string | null };
+  tip?: number;
+}
+
 export interface SessionCollectible {
   sessionId: string;
   orderIds: string[];
@@ -1034,17 +1045,24 @@ export const crewOrders = {
       true,
     ),
 
-  placeOrder: (sessionId: string, items: { item_id: string; qty: number; note?: string; selectedModifiers?: { groupId: string; optionId: string }[]; modifiers_summary?: string }[]) =>
+  placeOrder: (
+    sessionId: string,
+    items: { item_id: string; qty: number; note?: string; selectedModifiers?: { groupId: string; optionId: string }[]; modifiers_summary?: string }[],
+    /** Discount/tip held before the session's first order (see HeldAdjustments). */
+    adjustments?: HeldAdjustments | null,
+  ) =>
     request<{
       success: boolean; order_id: string; status: string; total: number;
       /** The session's TK number — a counter takeaway gets it on its first order. */
       pickup_token?: string | null;
       /** Only when the venue auto-prints takeaway invoices (Printer screen). */
       auto_invoice?: { status: 'sent'; printer_name: string } | { status: 'failed'; reason: string };
+      /** The held discount/tip did not apply. The order is placed; `total` is the real bill. */
+      adjustments_error?: string;
     }>(
       'POST',
       '/api/crew/orders',
-      { session_id: sessionId, items },
+      { session_id: sessionId, items, ...(adjustments ? { adjustments } : {}) },
       true,
     ),
 
