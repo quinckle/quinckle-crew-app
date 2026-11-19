@@ -46,7 +46,14 @@ import {
   crewSessions, crewOrders, crewDiners, crewMemberships, restaurantApi, crewOffers, crewPayments,
   type CollectSplitMethod,
 } from '../../services/api';
-import type { MenuItem, ModifierGroup, CrewOffer, CrewOrderPreview } from '../../services/api';
+import type { MenuItem, ModifierGroup, CrewOffer, CrewOrderPreview, CrewPriorLine } from '../../services/api';
+import { freeItemSet, hasQtyTrigger, offerProgress, type EngineLine } from '../../services/offer-engine';
+
+/** What the offer bar above the menu shows. `add` = an earned free item to put on the order. */
+type OfferNudge = {
+  unlocked: boolean; name: string; reward: string; remaining: number; progress: number;
+  text?: string; add?: { itemId: string; qty: number };
+};
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { CartReviewSheet, type CartLine } from '../../components/ui/CartReviewSheet';
 import { Skeleton } from '../../components/ui/Skeleton';
@@ -458,6 +465,8 @@ export default function OrderMenuScreen() {
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [offers, setOffers] = useState<CrewOffer[]>([]);
   const [priorSubtotal, setPriorSubtotal] = useState(0);
+  // Earlier rounds line by line, so "buy 2 biryani" counts across rounds.
+  const [priorLines, setPriorLines] = useState<CrewPriorLine[]>([]);
   const [menuCategories, setMenuCategories] = useState<string[]>(['All']);
   const [isMenuLoading, setIsMenuLoading] = useState(true);
 
@@ -584,6 +593,7 @@ export default function OrderMenuScreen() {
         if (cancelled) return;
         setOffers(d?.offers ?? []);
         setPriorSubtotal(Number(d?.sessionSubtotalBeforeCart ?? 0));
+        setPriorLines(Array.isArray(d?.priorLines) ? d.priorLines : []);
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -647,13 +657,67 @@ export default function OrderMenuScreen() {
     };
   }), [cart, menuItems, cartModifiers, cartNotes]);
 
-  // Spend-threshold offer nudge: nearest unmet offer (or best already-unlocked).
+  // Offer nudge: buy-N-get-M (free item to add, or "N more for…"), then the
+  // nearest unmet spend threshold (or the best already-unlocked one).
   // Item-triggered offers are skipped here (no "remaining amount" to show).
   const offerNudge = useMemo(() => {
     const reward = (o: CrewOffer) =>
       o.type === 'PERCENTAGE_OFF' ? `${o.discountPct}% off`
       : o.type === 'FLAT_OFF'     ? `₹${o.discountFlat} off`
       : 'a free item';
+    // ── Buy N get M first: an earned free item waiting to be added beats any
+    // progress bar, then "1 more Biryani for a free Kebab". Same engine as the
+    // server, so what this says is what the bill does.
+    const nameOf = (id: string) => menuItems.find(m => m.id === id)?.name ?? 'item';
+    const engineLines: EngineLine[] = [
+      ...priorLines.map(l => ({ ...l, category: l.category ?? null })),
+      ...Object.entries(cart).map(([id, qty]) => {
+        const item = menuItems.find(m => m.id === id);
+        return { menuItemId: id, quantity: qty, unitPrice: parseFloat(item?.price ?? '0'), category: item?.category ?? null };
+      }),
+    ];
+    const qtyOffers = offers.filter(o => hasQtyTrigger(o));
+    for (const o of offers) {
+      if (o.type !== 'FREE_ITEM') continue;
+      // Spend-unlocked free items too: the bill only discounts one that is on the order.
+      const spendBase = o.minOrderValue != null ? (o.priorTowardThreshold ?? priorSubtotal) + cartTotal : undefined;
+      const p = offerProgress(o, engineLines, spendBase);
+      if (p.unclaimed <= 0) continue;
+      const ids = [...freeItemSet(o)];
+      const freeId = ids.find(id => cart[id]) ?? ids[0];
+      if (!freeId) continue;
+      return {
+        unlocked: true, name: o.name, reward: `${p.unclaimed} × ${nameOf(freeId)} free`, remaining: 0, progress: 1,
+        text: `${p.unclaimed > 1 ? `${p.unclaimed} × ` : ''}${nameOf(freeId)} free — tap to add`,
+        add: { itemId: freeId, qty: p.unclaimed },
+      };
+    }
+    let closest: { o: CrewOffer; p: ReturnType<typeof offerProgress> } | null = null;
+    for (const o of qtyOffers) {
+      const p = offerProgress(o, engineLines);
+      if (!p.next || p.triggerUnits === 0) continue;
+      if (!closest || p.next.needMore < (closest.p.next?.needMore ?? Infinity)) closest = { o, p };
+    }
+    const next = closest?.p.next;
+    if (closest && next) {
+      const { o, p } = closest;
+      const tIds = [...new Set([...(o.triggerItemIds ?? []), ...(o.triggerItemId ? [o.triggerItemId] : [])])];
+      const what = tIds.length === 1 ? nameOf(tIds[0]) : (o.triggerCategories ?? [])[0] ?? 'item';
+      const freeId = [...freeItemSet(o)][0];
+      const rew = o.type === 'FREE_ITEM'
+        ? `${next.rewardQty > 1 ? `${next.rewardQty} × ` : ''}free ${freeId ? nameOf(freeId) : 'item'}`
+        : reward(o);
+      const target = p.triggerUnits + next.needMore;
+      return {
+        unlocked: false, name: o.name, reward: rew, remaining: 0, progress: p.triggerUnits / target,
+        text: `${next.needMore} more ${what} for ${rew}`,
+      };
+    }
+    const freeNow = qtyOffers.find(o => o.type === 'FREE_ITEM' && offerProgress(o, engineLines).freeQty > 0);
+    if (freeNow) {
+      return { unlocked: true, name: freeNow.name, reward: 'free item', remaining: 0, progress: 1, text: `Free item applied — ${freeNow.name}` };
+    }
+
     const spendOffers = offers.filter(o => o.minOrderValue != null && o.minOrderValue > 0);
     if (spendOffers.length === 0) return null;
 
@@ -693,7 +757,7 @@ export default function OrderMenuScreen() {
     // All spend offers met → celebrate the highest-threshold one.
     const best = spendOffers.sort((a, b) => (b.minOrderValue as number) - (a.minOrderValue as number))[0];
     return { unlocked: true, name: best.name, reward: reward(best), remaining: 0, progress: 1 };
-  }, [offers, cart, cartTotal, priorSubtotal, menuItems, cartLineValue]);
+  }, [offers, cart, cartTotal, priorSubtotal, priorLines, menuItems, cartLineValue]) as OfferNudge | null;
 
   // ── Offer nudge animations ──────────────────────────────────────────────────
   const offerProgressAnim = useRef(new Animated.Value(0)).current; // 0→1 bar fill
@@ -1177,10 +1241,24 @@ export default function OrderMenuScreen() {
             color={lastNudge.current.unlocked ? QuinckleColors.success : QuinckleColors.primary}
           />
           <Text style={styles.offerBarText} numberOfLines={1}>
-            {lastNudge.current.unlocked
+            {lastNudge.current.text ?? (lastNudge.current.unlocked
               ? `${lastNudge.current.reward} unlocked — ${lastNudge.current.name}`
-              : `Add ₹${lastNudge.current.remaining} more to unlock ${lastNudge.current.reward}`}
+              : `Add ₹${lastNudge.current.remaining} more to unlock ${lastNudge.current.reward}`)}
           </Text>
+          {lastNudge.current.add && (
+            <TouchableOpacity
+              style={styles.offerAddBtn}
+              activeOpacity={0.8}
+              accessibilityLabel="Add the free item"
+              onPress={() => {
+                const add = lastNudge.current?.add;
+                if (add) setCart(prev => ({ ...prev, [add.itemId]: (prev[add.itemId] ?? 0) + add.qty }));
+              }}
+            >
+              <Ionicons name="add" size={13} color="#fff" />
+              <Text style={styles.offerAddText}>Add free</Text>
+            </TouchableOpacity>
+          )}
         </View>
         <View style={styles.offerTrack}>
           <Animated.View
@@ -1680,6 +1758,12 @@ const styles = StyleSheet.create({
   },
   offerBarRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   offerBarText: { ...Typography.caption, color: QuinckleColors.textPrimary, fontWeight: '600', flex: 1 },
+  offerAddBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    paddingHorizontal: Spacing.md, paddingVertical: 6,
+    borderRadius: Radius.pill, backgroundColor: QuinckleColors.success,
+  },
+  offerAddText: { ...Typography.micro, color: '#fff', fontWeight: '700' },
   offerTrack: {
     height: 6,
     borderRadius: 3,
