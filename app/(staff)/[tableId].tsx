@@ -32,6 +32,7 @@ import { WAIVE_REASONS, isReasonComplete, toReasonPayload, type CancelReason } f
 import { Skeleton } from '../../components/ui/Skeleton';
 import { useResponsive } from '../../hooks/useResponsive';
 import { useResyncOnReturn } from '../../hooks/useResyncOnReturn';
+import { ServeRing, UndoButton, DimView } from '../../components/ui/ServeControls';
 
 type ItemStatus = 'prep' | 'ready' | 'served';
 
@@ -56,7 +57,17 @@ type FlatItem = {
   /** What "+" re-orders; absent on a backend that predates the stepper. */
   menuItemId?: string;
   selectedModifiers?: { groupId: string; optionId: string }[];
+  /** Newest serve / unserve on the line — who and when. */
+  lastServe?: BillOrderItem['last_serve'];
+  /** The serve an undo would reverse, with its deadline on this phone's clock. */
+  undo?: LineUndo | null;
 };
+
+/** A line's undo, stamped with when its window closes on THIS phone. */
+type LineUndo = { actionId: string | null; fromQty: number; toQty: number; deadlineAt: number };
+
+/** The server's undo window — the button's ring drains over this. */
+const UNDO_WINDOW_MS = 2 * 60 * 1000;
 
 /**
  * One row on screen. Every round of ordering is its own Order (its own KOT), so
@@ -104,12 +115,16 @@ function groupRows(items: FlatItem[]): ItemRow[] {
       name: `${qty}× ${r.label}`,
       price: r.lines.reduce((n, l) => n + l.price, 0),
       orderedAt: r.lines.map((l) => `${l.qty} at ${l.orderedAt}`).join(' · '),
+      lastServe: r.lines.reduce<FlatItem['lastServe']>(
+        (best, l) => (l.lastServe && (!best || l.lastServe.at > best.at) ? l.lastServe : best),
+        null,
+      ),
     };
   });
 }
 
 /** A serve the screen already shows but the server has not confirmed yet. */
-type PendingServe = { orderId: string; target: number; at: number };
+type PendingServe = { orderId: string; target: number; at: number; actionId?: string };
 
 /**
  * Lay unconfirmed serves over a bill. A reload that raced the serve (the
@@ -130,6 +145,47 @@ function withPendingServes(orders: BillOrder[], pending: Map<string, PendingServ
     }),
   }));
 }
+
+/**
+ * Lay undos the server has not confirmed yet over a bill — the mirror of
+ * withPendingServes: only ever LOWERS a count, to the undo's target.
+ */
+function withPendingUndos(orders: BillOrder[], pending: Map<string, number>): BillOrder[] {
+  if (pending.size === 0) return orders;
+  return orders.map((o) => ({
+    ...o,
+    items: o.items.map((i) => {
+      const target = pending.get(i.item_id);
+      if (target == null || i.item_status === 'cancelled') return i;
+      const server = i.served_qty ?? (i.served ? i.qty : 0);
+      return server <= target ? i : { ...i, served_qty: target, served: target >= i.qty };
+    }),
+  }));
+}
+
+/** Undo deadlines arrive as "ms left"; pin them to this phone's clock once. */
+const undoDeadlines = new WeakMap<object, number>();
+function stampUndoDeadlines(bill: SessionBill, receivedAt: number) {
+  for (const o of bill.orders) for (const i of o.items) {
+    if (i.undo && !undoDeadlines.has(i.undo)) undoDeadlines.set(i.undo, receivedAt + i.undo.ms_left);
+  }
+}
+
+/**
+ * What one row's undo button acts on: the newest serve among its lines, and
+ * every other line that same tap / hold moved (a hold across rounds serves
+ * several lines under one action id).
+ */
+function rowUndo(row: ItemRow): { lines: FlatItem[]; deadlineAt: number } | null {
+  const withUndo = row.lines.filter((l) => l.undo);
+  if (withUndo.length === 0) return null;
+  const newest = withUndo.reduce((a, b) => (b.undo!.deadlineAt > a.undo!.deadlineAt ? b : a));
+  const aid = newest.undo!.actionId;
+  const lines = aid ? withUndo.filter((l) => l.undo!.actionId === aid) : [newest];
+  return { lines, deadlineAt: Math.min(...lines.map((l) => l.undo!.deadlineAt)) };
+}
+
+const newActionId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 // In DUAL_CHANNEL mode the kitchen's per-item "done" marking surfaces to the
 // steward as a distinct "ready to serve" state, so they can see which plates
@@ -454,6 +510,10 @@ export default function TableDetail() {
   // newest /bill request may write, so a slow older response cannot win.
   const pendingServes = useRef(new Map<string, PendingServe>());
   const servesInFlight = useRef(new Set<string>());
+  // pendingUndos: item_id → the served count an undo on its way will leave.
+  // undoBusyRows: rows whose undo request is still running (taps ignored).
+  const pendingUndos = useRef(new Map<string, number>());
+  const [undoBusyRows, setUndoBusyRows] = useState<Set<string>>(() => new Set());
   const billSeq = useRef(0);
 
   // Turns a bill response into screen state. Shared by the live fetch and the
@@ -491,7 +551,13 @@ export default function TableDetail() {
         pendingServes.current.delete(itemId);
       }
     }
-    setOrders(withPendingServes(bill.orders, pendingServes.current));
+    // Undos stay laid over until the server shows the lower count.
+    for (const [itemId, target] of pendingUndos.current) {
+      const item = bill.orders.flatMap((o) => o.items).find((i) => i.item_id === itemId);
+      const server = item ? (item.served_qty ?? (item.served ? item.qty : 0)) : 0;
+      if (!item || server <= target) pendingUndos.current.delete(itemId);
+    }
+    setOrders(withPendingUndos(withPendingServes(bill.orders, pendingServes.current), pendingUndos.current));
     setSessionTotal(subt);
     setBillTaxRate(rate);
     setTaxTotal(tax);
@@ -546,6 +612,7 @@ export default function TableDetail() {
     const seq = ++billSeq.current;
     try {
       const bill = await crewSessions.getBill(sessionId);
+      stampUndoDeadlines(bill, Date.now());
       if (seq !== billSeq.current) return; // a newer reload is on its way
       freshBillLanded.current = true;
       rememberBill(sessionId, bill);
@@ -678,6 +745,10 @@ export default function TableDetail() {
         unitPrice: item.price,
         menuItemId: item.menu_item_id,
         selectedModifiers: item.selected_modifiers,
+        lastServe: item.last_serve ?? null,
+        undo: item.undo && undoDeadlines.has(item.undo)
+          ? { actionId: item.undo.action_id, fromQty: item.undo.from_qty, toQty: item.undo.to_qty, deadlineAt: undoDeadlines.get(item.undo)! }
+          : null,
       }))
     ), [orders, dinerStatusMode]);
 
@@ -717,11 +788,11 @@ export default function TableDetail() {
   // `nextQty` is the ABSOLUTE served count the line should stand at. A tap
   // hands over one more unit; a hold on the button hands over the rest.
   // The tick is instant; the request runs behind it (see syncServe).
-  const handleServe = (item: FlatItem, nextQty: number) => {
+  const handleServe = (item: FlatItem, nextQty: number, actionId?: string) => {
     if (item.status === 'served') return; // already served, no-op
     const target = Math.max(0, Math.min(item.qty, nextQty));
     if (target <= item.servedQty) return;
-    pendingServes.current.set(item.item_id, { orderId: item.order_id, target, at: Date.now() });
+    pendingServes.current.set(item.item_id, { orderId: item.order_id, target, at: Date.now(), actionId });
     setOrders((prev) => withPendingServes(prev, pendingServes.current));
     void syncServe(item.item_id);
   };
@@ -739,7 +810,7 @@ export default function TableDetail() {
         if (!want || want.target === sent) break;
         sent = want.target;
         try {
-          await crewOrders.serveItem(want.orderId, itemId, want.target);
+          await crewOrders.serveItem(want.orderId, itemId, want.target, want.actionId);
           want.at = Date.now();
         } catch {
           // Undo on screen: dropping the overlay lets the reload below show
@@ -760,12 +831,51 @@ export default function TableDetail() {
   // that has waited longest goes out first. `nextQty` is the row's absolute
   // served count, like handleServe's.
   const serveRow = (row: ItemRow, nextQty: number) => {
+    // One id for this whole tap / hold, so one undo takes all of it back.
+    const actionId = newActionId();
     let left = Math.max(0, Math.min(row.qty, nextQty));
     for (const line of row.lines) {
       const target = Math.min(line.qty, left);
       left -= target;
-      if (target > line.servedQty) handleServe(line, target);
+      if (target > line.servedQty) handleServe(line, target, actionId);
     }
+  };
+
+  // ── Undo a serve (2-minute window, checked by the server) ─────────────────
+  // The arcs step back at once; the request runs behind, like serving does.
+  const undoRow = async (row: ItemRow) => {
+    const u = rowUndo(row);
+    if (!u || undoBusyRows.has(row.key)) return;
+    setUndoBusyRows((prev) => new Set(prev).add(row.key));
+    for (const l of u.lines) {
+      pendingServes.current.delete(l.item_id);
+      pendingUndos.current.set(l.item_id, l.undo!.fromQty);
+    }
+    setOrders((prev) => withPendingUndos(prev, pendingUndos.current).map((o) => ({
+      ...o,
+      items: o.items.map((i) => {
+        const line = u.lines.find((l) => l.item_id === i.item_id);
+        return line ? {
+          ...i,
+          last_serve: { kind: 'unserve' as const, qty: line.undo!.toQty - line.undo!.fromQty, by: staffInfo?.name ?? null, at: new Date().toISOString() },
+        } : i;
+      }),
+    })));
+    let error: string | null = null;
+    for (const l of u.lines) {
+      try {
+        await crewOrders.undoServe(l.order_id, l.item_id, l.undo!.actionId);
+      } catch (e: any) {
+        pendingUndos.current.delete(l.item_id);
+        const code = String(e?.code ?? e?.message ?? '');
+        error = code.includes('UNDO_EXPIRED') ? 'Undo time limit passed — it was served more than 2 minutes ago.'
+          : code.includes('UNDO_STALE') || code.includes('NOTHING_TO_UNDO') ? 'This item changed on another phone. Check the list and try again.'
+          : 'Could not undo. Check the connection and try again.';
+      }
+    }
+    if (error) setHint(error);
+    await loadBill();
+    setUndoBusyRows((prev) => { const next = new Set(prev); next.delete(row.key); return next; });
   };
 
   // ── Item cancel (a whole row: every round of that dish) ───────────────────
@@ -1839,7 +1949,8 @@ export default function TableDetail() {
         data={rows}
         // Edit mode and its draft change what a row draws without changing
         // `data` — without this the list keeps showing the old rows.
-        extraData={`${editing}|${savingEdits}|${JSON.stringify(draft)}`}
+        // `undoBusyRows` too: an undo in flight changes a row's button only.
+        extraData={`${editing}|${savingEdits}|${JSON.stringify(draft)}|${[...undoBusyRows].join(',')}`}
         keyExtractor={item => item.key}
         // Tablet's list is not overlaid by the docked bar — it lives in its own
         // pane — so it keeps the base clearance.
@@ -1856,8 +1967,6 @@ export default function TableDetail() {
           const isServed = item.status === 'served';
           const servedQty = Math.max(0, Math.min(item.qty, item.servedQty));
           const isPartial = !isServed && servedQty > 0;
-          // Hold-to-serve-the-rest only earns its place when there IS a rest.
-          const holdable = !isServed && item.qty - servedQty > 1;
           if (item.cancelled) {
             return (
               <View style={[styles.orderItemRow, { opacity: 0.5 }]}>
@@ -1929,69 +2038,79 @@ export default function TableDetail() {
               </View>
             );
           }
+          // One status line that changes text instead of adding lines, so a
+          // row never grows when it is served or undone.
+          const last = item.lastServe;
+          const who = last?.by ?? 'staff';
+          const statusLine = last?.kind === 'unserve'
+            ? `Unserved${last.qty > 1 ? ` ${last.qty}` : ''} by ${who} · ${formatTime(last.at)}`
+            : isServed && last
+            ? `Served by ${who} · ${formatTime(last.at)}`
+            : isPartial
+            ? `${servedQty} of ${item.qty} served${last?.by ? ` · ${last.by}` : ''}`
+            : `₹${item.price.toFixed(0)} · ${item.orderedAt}`;
+          const statusStyle = last?.kind === 'unserve' ? styles.itemStatusUnserved
+            : isPartial ? styles.itemStatusPartial : styles.itemStatus;
+          const undo = rowUndo(item);
+          const rowBusy = undoBusyRows.has(item.key)
+            || item.lines.some((l) => pendingServes.current.has(l.item_id) || servesInFlight.current.has(l.item_id));
+          const dual = dinerStatusMode === 'DUAL_CHANNEL';
           return (
             <TouchableOpacity
               activeOpacity={0.9}
               onLongPress={() => setCancelTarget(item)}
               delayLongPress={350}
-              style={[styles.orderItemRow, isServed && { opacity: 0.55 }]}
+              style={styles.orderItemRow}
             >
-              <View style={styles.orderItemLeft}>
+              <DimView dim={isServed} style={styles.orderItemLeft}>
                 <View style={{ flex: 1 }}>
-                  <Text style={[styles.itemName, isServed && styles.itemNameServed]}>{item.name}</Text>
+                  <Text style={[styles.itemName, isServed && styles.itemNameServed]} numberOfLines={2}>{item.name}</Text>
                   {item.modifiersSummary ? (
                     <Text style={styles.itemModifiers} numberOfLines={1}>{item.modifiersSummary}</Text>
                   ) : null}
                   {item.note ? <Text style={styles.itemNote} numberOfLines={3}>“{item.note}”</Text> : null}
-                  {isPartial ? (
-                    <Text style={styles.itemPartialServed}>{servedQty} of {item.qty} served</Text>
-                  ) : null}
-                  <View style={styles.itemMetaRow}>
-                    <Text style={styles.itemPrice}>₹{item.price.toFixed(0)}</Text>
-                    <Text style={styles.itemDot}>·</Text>
-                    <Text style={styles.itemTime}>{item.orderedAt}</Text>
-                  </View>
+                  <Text style={statusStyle} numberOfLines={1}>{statusLine}</Text>
                 </View>
-              </View>
+              </DimView>
 
-              {isServed ? (
-                <View style={styles.servedBadge}>
-                  <Ionicons name="checkmark" size={11} color="#4ade80" />
-                  <Text style={styles.servedBadgeText}>Served</Text>
-                </View>
-              ) : (
-                <View style={styles.serveActions}>
-                  {dinerStatusMode === 'DUAL_CHANNEL' ? (
-                    item.status === 'ready' ? (
-                      <View style={styles.readyBadge}>
-                        <Ionicons name="checkmark-circle" size={11} color={QuinckleColors.success} />
-                        <Text style={styles.readyBadgeText}>Ready</Text>
-                      </View>
-                    ) : (
-                      <View style={styles.prepBadge}>
-                        <Ionicons name="time-outline" size={11} color={QuinckleColors.warning} />
-                        <Text style={styles.prepBadgeText}>Preparing</Text>
-                      </View>
-                    )
-                  ) : null}
-                  {/* The row's long-press is already cancel-item, so partial
-                      serving lives on the button: tap = one more unit,
-                      hold = hand over the rest. */}
-                  <TouchableOpacity
-                    style={styles.markServedBtn}
-                    onPress={() => void serveRow(item, servedQty + 1)}
-                    onLongPress={holdable ? () => void serveRow(item, item.qty) : undefined}
-                    delayLongPress={350}
-                    activeOpacity={0.75}
-                  >
-                    <Text style={styles.markServedText}>
-                      {item.qty > 1
-                        ? (holdable ? `Serve 1 · hold for ${item.qty - servedQty}` : 'Serve last one')
-                        : 'Mark served'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              )}
+              {/* Kept at a fixed width in DUAL_CHANNEL so the name never
+                  re-wraps (and the row never changes height) when the badge
+                  goes away on serve. */}
+              {dual ? (
+                <DimView dim={isServed} style={styles.badgeSlot}>
+                  {isServed ? null : item.status === 'ready' ? (
+                    <View style={styles.readyBadge}>
+                      <Ionicons name="checkmark-circle" size={11} color={QuinckleColors.success} />
+                      <Text style={styles.readyBadgeText}>Ready</Text>
+                    </View>
+                  ) : (
+                    <View style={styles.prepBadge}>
+                      <Ionicons name="time-outline" size={11} color={QuinckleColors.warning} />
+                      <Text style={styles.prepBadgeText}>Preparing</Text>
+                    </View>
+                  )}
+                </DimView>
+              ) : null}
+
+              <UndoButton
+                visible={!!undo}
+                deadlineAt={undo?.deadlineAt ?? null}
+                windowMs={UNDO_WINDOW_MS}
+                busy={rowBusy}
+                onUndo={() => void undoRow(item)}
+                onExpiredPress={() => setHint('Undo time limit passed — it was served more than 2 minutes ago.')}
+              />
+              {/* The row's long-press is already cancel-item, so partial
+                  serving lives on the ring: tap = one more unit, hold = the rest. */}
+              <DimView dim={isServed}>
+                <ServeRing
+                  qty={item.qty}
+                  servedQty={servedQty}
+                  onServeOne={() => serveRow(item, servedQty + 1)}
+                  onServeRest={() => serveRow(item, item.qty)}
+                  accessibilityLabel={`Serve ${item.label}, ${servedQty} of ${item.qty} served`}
+                />
+              </DimView>
             </TouchableOpacity>
           );
         }}
@@ -3096,6 +3215,12 @@ const styles = StyleSheet.create({
   // Amber, not grey: a note is an instruction to act on, not a detail to skim.
   itemNote: { color: QuinckleColors.warning, fontSize: 12, marginTop: 2, fontWeight: '500' },
   itemPartialServed: { color: QuinckleColors.success, fontSize: 12, fontWeight: '600', marginTop: 2 },
+  // The one status line under each row — price · time, "2 of 3 served · Priya",
+  // "Served by Priya · 20:51", or (amber) "Unserved by Rahul · 20:52".
+  itemStatus: { color: QuinckleColors.textTertiary, fontSize: 12, fontWeight: '500', marginTop: 3 },
+  itemStatusPartial: { color: QuinckleColors.success, fontSize: 12, fontWeight: '600', marginTop: 3 },
+  itemStatusUnserved: { color: QuinckleColors.warning, fontSize: 12, fontWeight: '600', marginTop: 3 },
+  badgeSlot: { width: 78, alignItems: 'flex-end', marginRight: 2 },
   itemMetaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 3, gap: 6 },
   itemPrice: { color: QuinckleColors.textTertiary, fontSize: 12, fontWeight: '500' },
   itemDot: { color: QuinckleColors.textMuted, fontSize: 11 },
