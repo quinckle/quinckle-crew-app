@@ -1503,8 +1503,7 @@ export default function OrderMenuScreen() {
     </Animated.View>
   );
 
-  // Rendered inside CartReviewSheet's own container so it stays within the
-  // drawer on tablet-landscape instead of covering the whole screen.
+  // Opened from the bottom bar's Adjust bill button; mounted on the screen.
   const adjustBillSheetJsx = (
     <BottomSheet
       visible={adjustSheetOpen}
@@ -1527,10 +1526,9 @@ export default function OrderMenuScreen() {
     </BottomSheet>
   );
 
-  const reviewShown = reviewOpen && cartLines.length > 0;
   const cartReviewJsx = (
     <CartReviewSheet
-      visible={reviewShown}
+      visible={reviewOpen && cartLines.length > 0}
       onClose={() => setReviewOpen(false)}
       isWide={isWide}
       lines={cartLines}
@@ -1538,15 +1536,10 @@ export default function OrderMenuScreen() {
       onInc={addToCart}
       onDec={removeFromCart}
       onCheckout={() => { setReviewOpen(false); void confirmAndPlace(); }}
-      onAdjust={() => { void openAdjustBill(); }}
       ctaLabel={isTakeaway && paymentMethod !== 'PENDING' ? 'Place & Collect' : 'Place Order'}
       bill={showBillPreview ? { data: billPreview, state: billPreviewState } : undefined}
-      adjustBillContent={reviewShown ? adjustBillSheetJsx : null}
     />
   );
-  // Adjust bill opens from the bottom bar too, with no summary sheet open to
-  // host it — then it mounts on the screen itself. Only ever one copy.
-  const barAdjustBillJsx = reviewShown ? null : adjustBillSheetJsx;
 
   const guestSheetJsx = (
     <GuestSheet
@@ -1706,7 +1699,7 @@ export default function OrderMenuScreen() {
 
         {/* ── Cart review (right-side drawer on tablet-landscape) ── */}
         {cartReviewJsx}
-        {barAdjustBillJsx}
+        {adjustBillSheetJsx}
         {guestSheetJsx}
         {paymentSheetsJsx}
         {noteSheetJsx}
@@ -1840,7 +1833,7 @@ export default function OrderMenuScreen() {
 
       {/* ── Cart review (bottom sheet on phone) ── */}
       {cartReviewJsx}
-      {barAdjustBillJsx}
+      {adjustBillSheetJsx}
       {guestSheetJsx}
       {paymentSheetsJsx}
       {noteSheetJsx}
