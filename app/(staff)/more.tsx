@@ -34,6 +34,13 @@ type Group = { title: string; rows: Row[] };
 // staff watch, not something they navigate to.
 const GROUPS: Group[] = [
   {
+    title: 'You',
+    // No capability: everyone can see their own attendance.
+    rows: [
+      { label: 'My attendance', sub: 'Present, absent, hours & punches', icon: 'calendar-outline', route: '/(staff)/my-attendance' },
+    ],
+  },
+  {
     title: 'Service',
     rows: [
       { label: 'Order ledger', sub: 'Sessions & order history', icon: 'receipt-outline', route: '/(staff)/order-ledger', cap: CAP.ORDERS_LEDGER },
