@@ -5,6 +5,7 @@ import { QuinckleColors } from '../../constants/Colors';
 import { ItemReadyToast } from '../../components/ui/ItemReadyToast';
 import { PujaGreeting } from '../../components/ui/PujaGreeting';
 import { PlanStaffNotice } from '../../components/ui/PlanStaffNotice';
+import { StaffCallAlert } from '../../components/ui/StaffCallAlert';
 import { useItemReadyToasts, dismissReady, clearReady } from '../../stores/itemReadyToast';
 
 export default function StaffLayout() {
@@ -81,6 +82,9 @@ export default function StaffLayout() {
           "table ready" card always lands on top of it. */}
       <PujaGreeting />
       <PlanStaffNotice />
+
+      {/* Call Staff — full-screen ringing alert over whatever screen is open. */}
+      <StaffCallAlert />
 
       <ItemReadyToast
         toasts={toasts}
