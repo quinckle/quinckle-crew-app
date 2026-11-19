@@ -1,7 +1,7 @@
 /**
  * My Attendance — a staffer's own days (concept A, chosen 2026-11-19).
  *
- * Today card → range chips → summary → month calendar. Tapping a day opens a
+ * Today card → range + summary card (attendance ring) → month calendar. Tapping a day opens a
  * sheet with clock in / clock out / total and every punch with where it came
  * from (self at the station, owner from the Partner app, or auto-closed).
  *
@@ -24,6 +24,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
+import Svg, { Circle } from 'react-native-svg';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { RangeCalendar } from '../../components/ui/RangeCalendar';
@@ -221,7 +222,6 @@ export default function MyAttendanceScreen() {
     setPickerOpen(false);
   };
 
-  const rangeLabel = rangeKind === 'week' ? 'This week' : rangeKind === 'month' ? 'This month' : `${shortDate(range.from)} – ${shortDate(range.to)}`;
   const atCurrentMonth = month.y === t.y && month.m0 === t.m0;
 
   return (
@@ -257,31 +257,18 @@ export default function MyAttendanceScreen() {
 
           <TodayCard day={todayDay} todayKey={todayKey} now={now} onPress={() => todayDay && setSelected(todayKey)} />
 
-          {/* Range chips */}
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
-            <Chip label="This week" on={rangeKind === 'week'} onPress={() => { setRangeKind('week'); setMonth({ y: t.y, m0: t.m0 }); }} />
-            <Chip label="This month" on={rangeKind === 'month'} onPress={() => { setRangeKind('month'); setMonth({ y: t.y, m0: t.m0 }); }} />
-            <Chip
-              label={rangeKind === 'custom' ? rangeLabel : 'Custom'}
-              icon="calendar-outline"
-              on={rangeKind === 'custom'}
-              onPress={openPicker}
-            />
-          </ScrollView>
-
-          {/* Summary */}
-          <View style={styles.card}>
-            <View style={styles.sumHead}>
-              <Text style={styles.label}>{rangeLabel.toUpperCase()}</Text>
-              <Text style={styles.sumWorked}>{summaryQ.data ? `${fmtDur(summaryQ.data.summary.workedMinutes)} worked` : '—'}</Text>
-            </View>
-            <View style={styles.stats}>
-              <Stat n={summaryQ.data?.summary.present} label="Present" color={C.in} />
-              <Stat n={summaryQ.data?.summary.halfDay} label="Half day" color={C.half} />
-              <Stat n={summaryQ.data?.summary.absent} label="Absent" color={C.absent} />
-              <Stat n={summaryQ.data?.summary.leave} label="Leave" color={C.leave} last />
-            </View>
-          </View>
+          {/* Range + summary: one card */}
+          <SummaryCard
+            rangeKind={rangeKind}
+            rangeLabel={`${shortDate(range.from)} – ${shortDate(range.to)}`}
+            customLabel={rangeKind === 'custom' ? `${shortDate(range.from)} – ${shortDate(range.to)}` : null}
+            data={summaryQ.data}
+            loading={summaryQ.loading}
+            todayOpenInRange={isOpen(todayDay) && todayKey >= range.from && todayKey <= range.to}
+            onWeek={() => { setRangeKind('week'); setMonth({ y: t.y, m0: t.m0 }); }}
+            onMonth={() => { setRangeKind('month'); setMonth({ y: t.y, m0: t.m0 }); }}
+            onCustom={openPicker}
+          />
 
           {/* Calendar */}
           <View style={styles.card}>
@@ -402,11 +389,112 @@ function Chip({ label, on, onPress, icon }: { label: string; on: boolean; onPres
   );
 }
 
-function Stat({ n, label, color, last }: { n?: number; label: string; color: string; last?: boolean }) {
+function SummaryCard({ rangeKind, rangeLabel, customLabel, data, loading, todayOpenInRange, onWeek, onMonth, onCustom }: {
+  rangeKind: RangeKind; rangeLabel: string; customLabel: string | null; data: MyAttendanceData | null; loading: boolean;
+  todayOpenInRange: boolean; onWeek: () => void; onMonth: () => void; onCustom: () => void;
+}) {
+  const s = data?.summary;
+  const present = s?.present ?? 0, half = s?.halfDay ?? 0, absent = s?.absent ?? 0, leave = s?.leave ?? 0;
+  // Leave is neither attended nor missed, so it stays out of the %.
+  const days = present + half + absent;
+  const pct = days ? Math.round(((present + half * 0.5) / days) * 100) : null;
+  // An open shift has no closed minutes yet, so it would drag the average down.
+  const workedDays = Math.max(0, present + half - (todayOpenInRange ? 1 : 0));
+  const avg = workedDays ? (s?.workedMinutes ?? 0) / workedDays : 0;
+
+  const seg = (label: string, on: boolean, onPress: () => void, icon?: boolean) => (
+    <TouchableOpacity style={[styles.segBtn, on && styles.segBtnOn]} onPress={onPress} activeOpacity={0.8}>
+      {icon && <Ionicons name="calendar-outline" size={12} color={on ? '#fff' : QuinckleColors.textSecondary} />}
+      <Text style={[styles.segText, on && styles.segTextOn]} numberOfLines={1}>{label}</Text>
+    </TouchableOpacity>
+  );
+
   return (
-    <View style={[styles.stat, !last && styles.statDivider]}>
-      <Text style={[styles.statN, { color }]}>{n ?? '—'}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
+    <View style={[styles.card, styles.sumCard]}>
+      <View style={styles.seg}>
+        {seg('Week', rangeKind === 'week', onWeek)}
+        {seg('Month', rangeKind === 'month', onMonth)}
+        {seg(customLabel ?? 'Custom', rangeKind === 'custom', onCustom, true)}
+      </View>
+      <View style={styles.sumRangeRow}>
+        <Text style={styles.label}>{rangeLabel.toUpperCase()}</Text>
+        {loading && <ActivityIndicator size="small" color={QuinckleColors.textTertiary} />}
+      </View>
+
+      <View style={styles.ringRow}>
+        <Ring present={present} half={half} absent={absent} pct={pct} />
+        <View style={styles.ringList}>
+          <RingLegend color={C.in} label="Present" n={s ? present : undefined} />
+          <RingLegend color={C.half} label="Half day" n={s ? half : undefined} />
+          <RingLegend color={C.absent} label="Absent" n={s ? absent : undefined} />
+          <RingLegend color={C.leave} label="Leave" n={s ? leave : undefined} />
+        </View>
+      </View>
+
+      <View style={styles.sumFoot}>
+        <View>
+          <Text style={styles.sumFootLabel}>Worked</Text>
+          <Text style={styles.sumFootVal}>{s ? fmtDur(s.workedMinutes) : '—'}</Text>
+        </View>
+        <View>
+          <Text style={styles.sumFootLabel}>Avg / day</Text>
+          <Text style={styles.sumFootVal}>{s ? fmtDur(avg) : '—'}</Text>
+        </View>
+        <View style={{ alignItems: 'flex-end' }}>
+          <Text style={styles.sumFootLabel}>Days</Text>
+          <Text style={styles.sumFootVal}>{s ? `${present + half} of ${days}` : '—'}</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+const RING = 92, RING_R = 38, RING_W = 9, RING_C = 2 * Math.PI * RING_R;
+
+function Ring({ present, half, absent, pct }: { present: number; half: number; absent: number; pct: number | null }) {
+  const total = present + half + absent;
+  const arcs: { v: number; color: string }[] = [
+    { v: present, color: C.in }, { v: half, color: C.half }, { v: absent, color: C.absent },
+  ];
+  let offset = 0;
+  return (
+    <View style={styles.ring}>
+      <Svg width={RING} height={RING} style={{ transform: [{ rotate: '-90deg' }] }}>
+        <Circle cx={RING / 2} cy={RING / 2} r={RING_R} stroke={QuinckleColors.surfaceElevated} strokeWidth={RING_W} fill="none" />
+        {total > 0 && arcs.map((a, i) => {
+          if (!a.v) return null;
+          const len = (a.v / total) * RING_C;
+          const el = (
+            <Circle
+              key={i}
+              cx={RING / 2}
+              cy={RING / 2}
+              r={RING_R}
+              stroke={a.color}
+              strokeWidth={RING_W}
+              fill="none"
+              strokeDasharray={`${len} ${RING_C}`}
+              strokeDashoffset={-offset}
+            />
+          );
+          offset += len;
+          return el;
+        })}
+      </Svg>
+      <View style={styles.ringCenter} pointerEvents="none">
+        <Text style={styles.ringPct}>{pct == null ? '—' : `${pct}%`}</Text>
+        <Text style={styles.ringCaption}>PRESENT</Text>
+      </View>
+    </View>
+  );
+}
+
+function RingLegend({ color, label, n }: { color: string; label: string; n?: number }) {
+  return (
+    <View style={styles.ringLegendRow}>
+      <View style={[styles.ringSw, { backgroundColor: color }]} />
+      <Text style={styles.ringLegendLabel}>{label}</Text>
+      <Text style={styles.ringLegendN}>{n ?? '—'}</Text>
     </View>
   );
 }
@@ -725,7 +813,6 @@ const styles = StyleSheet.create({
   src: { flexDirection: 'row', alignItems: 'center', gap: 4, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
   srcText: { fontSize: 11, fontWeight: '600' },
 
-  chips: { gap: 6, paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md },
   chip: {
     flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 7,
     borderRadius: Radius.pill, borderWidth: 1, borderColor: QuinckleColors.border, backgroundColor: QuinckleColors.surface,
@@ -734,13 +821,29 @@ const styles = StyleSheet.create({
   chipText: { color: QuinckleColors.textSecondary, fontSize: 12.5, fontWeight: '600' },
   chipTextOn: { color: '#fff' },
 
-  sumHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 14, paddingTop: 12, paddingBottom: 10 },
-  sumWorked: { color: QuinckleColors.textPrimary, fontSize: 13, fontWeight: '700', ...TNUM },
-  stats: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: QuinckleColors.borderSubtle },
-  stat: { flex: 1, alignItems: 'center', paddingVertical: 12 },
-  statDivider: { borderRightWidth: 1, borderRightColor: QuinckleColors.borderSubtle },
-  statN: { fontSize: 20, fontWeight: '800', letterSpacing: -0.5, ...TNUM },
-  statLabel: { color: QuinckleColors.textTertiary, fontSize: 10.5, fontWeight: '600', marginTop: 2 },
+  sumCard: { padding: 14 },
+  seg: { flexDirection: 'row', backgroundColor: QuinckleColors.surfaceElevated, borderRadius: 11, padding: 3, gap: 2 },
+  segBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: 8, borderRadius: 8 },
+  segBtnOn: { backgroundColor: QuinckleColors.primary },
+  segText: { color: QuinckleColors.textSecondary, fontSize: 12.5, fontWeight: '600' },
+  segTextOn: { color: '#fff' },
+  sumRangeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, minHeight: 18 },
+  ringRow: { flexDirection: 'row', alignItems: 'center', gap: 18, marginTop: 10 },
+  ring: { width: RING, height: RING },
+  ringCenter: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
+  ringPct: { color: QuinckleColors.textPrimary, fontSize: 21, fontWeight: '800', letterSpacing: -0.5, ...TNUM },
+  ringCaption: { color: QuinckleColors.textTertiary, fontSize: 9.5, fontWeight: '700', letterSpacing: 0.5, marginTop: 1 },
+  ringList: { flex: 1, gap: 7 },
+  ringLegendRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  ringSw: { width: 9, height: 9, borderRadius: 3 },
+  ringLegendLabel: { flex: 1, color: QuinckleColors.textSecondary, fontSize: 12.5, fontWeight: '600' },
+  ringLegendN: { color: QuinckleColors.textPrimary, fontSize: 13, fontWeight: '700', ...TNUM },
+  sumFoot: {
+    flexDirection: 'row', justifyContent: 'space-between', marginTop: 14, paddingTop: 12,
+    borderTopWidth: 1, borderTopColor: QuinckleColors.borderSubtle,
+  },
+  sumFootLabel: { color: QuinckleColors.textTertiary, fontSize: 11, fontWeight: '600' },
+  sumFootVal: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '700', marginTop: 2, ...TNUM },
 
   calHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingTop: 14, paddingBottom: 8 },
   calTitle: { color: QuinckleColors.textPrimary, fontSize: 15, fontWeight: '700' },
