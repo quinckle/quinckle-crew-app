@@ -4,6 +4,7 @@ import * as Notifications from 'expo-notifications';
 
 import { crewNotifications } from './api';
 import { getPrintDeviceId } from './printDevice';
+import { getVoiceAlertSetting } from './voiceAlerts';
 
 let lastRegisteredToken: string | null = null;
 let lastHeartbeatAt = 0;
@@ -38,6 +39,22 @@ export async function registerCrewPushNotifications(): Promise<void> {
       },
       lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
     });
+    // Spoken new-order alerts with the app closed: one channel per voice and
+    // order type, each with its clip bundled as the channel sound. The server
+    // picks `order-<type>-<voice>` from the voice this phone reports (see
+    // heartbeat), so these ids must match the backend and never change.
+    for (const voice of ['female', 'male'] as const) {
+      for (const [slug, label] of [['dine_in', 'Dine-in'], ['takeaway', 'Takeaway'], ['delivery', 'Delivery']] as const) {
+        await Notifications.setNotificationChannelAsync(`order-${slug}-${voice}`, {
+          name: `${label} orders (${voice} voice)`,
+          description: `Says "New ${label.toLowerCase()} order received" when voice alerts are on`,
+          importance: Notifications.AndroidImportance.MAX,
+          sound: `en_${voice}_${slug}.mp3`,
+          vibrationPattern: [0, 250, 250, 250],
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        });
+      }
+    }
   }
 
   const existing = await Notifications.getPermissionsAsync();
@@ -76,6 +93,7 @@ export async function registerCrewPushNotifications(): Promise<void> {
     deviceId: await getPrintDeviceId(),
     deviceName: (Constants as any).deviceName ?? undefined,
     appVersion: Constants.expoConfig?.version ?? undefined,
+    voice: await getVoiceAlertSetting(),
   });
   lastRegisteredToken = token;
   lastHeartbeatAt = Date.now();
@@ -86,7 +104,7 @@ export async function heartbeatCrewPushToken(force = false): Promise<void> {
   const now = Date.now();
   if (!force && now - lastHeartbeatAt < 5 * 60_000) return;
   try {
-    await crewNotifications.heartbeat(lastRegisteredToken);
+    await crewNotifications.heartbeat(lastRegisteredToken, await getVoiceAlertSetting());
     lastHeartbeatAt = now;
   } catch (err) {
     console.warn('[push] heartbeat failed', err);

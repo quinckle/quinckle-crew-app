@@ -2257,12 +2257,13 @@ export const crewStaffCalls = {
 export const crewNotifications = {
   registerToken: (
     token: string,
-    metadata?: { platform?: string; deviceId?: string; deviceName?: string; appVersion?: string },
+    metadata?: { platform?: string; deviceId?: string; deviceName?: string; appVersion?: string; voice?: 'off' | 'female' | 'male' },
   ) =>
     request<{ success: true }>('POST', '/api/crew/notifications/token', { token, ...metadata }, true),
 
-  heartbeat: (token: string) =>
-    request<{ success: true }>('POST', '/api/crew/notifications/token/heartbeat', { token }, true),
+  /** `voice` tells the server which spoken order alert to ring with when the app is closed. */
+  heartbeat: (token: string, voice?: 'off' | 'female' | 'male') =>
+    request<{ success: true }>('POST', '/api/crew/notifications/token/heartbeat', { token, ...(voice ? { voice } : {}) }, true),
 
   tokenHealth: () =>
     request<{ success: true; data: {

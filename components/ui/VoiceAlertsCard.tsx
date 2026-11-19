@@ -12,6 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { getVoiceAlertSetting, previewVoice, setVoiceAlertSetting, type VoiceAlertSetting } from '../../services/voiceAlerts';
+import { heartbeatCrewPushToken } from '../../services/pushNotifications';
 
 const OPTIONS: { value: VoiceAlertSetting; label: string }[] = [
   { value: 'off', label: 'Off' },
@@ -28,7 +29,8 @@ export function VoiceAlertsCard() {
 
   const choose = (value: VoiceAlertSetting) => {
     setVoice(value);
-    void setVoiceAlertSetting(value);
+    // Tell the server right away so closed-app order alerts use the new voice.
+    void setVoiceAlertSetting(value).then(() => heartbeatCrewPushToken(true));
     if (value !== 'off') previewVoice(value);
   };
 

@@ -51,7 +51,13 @@
           "color": "#F35D3B",
           "sounds": [
             "./assets/audio/notifications/waiter_notification.mp3",
-            "./assets/audio/notifications/staff_call_alarm.wav"
+            "./assets/audio/notifications/staff_call_alarm.wav",
+            "./assets/audio/voice/en_female_dine_in.mp3",
+            "./assets/audio/voice/en_female_takeaway.mp3",
+            "./assets/audio/voice/en_female_delivery.mp3",
+            "./assets/audio/voice/en_male_dine_in.mp3",
+            "./assets/audio/voice/en_male_takeaway.mp3",
+            "./assets/audio/voice/en_male_delivery.mp3"
           ]
         }
       ],
