@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   AppState,
   FlatList,
   RefreshControl,
@@ -72,7 +73,7 @@ import { RiderRuns } from '../../components/delivery/RiderRuns';
 import { CAP, deliveryViewFor, hasCapability, type Capability } from '../../constants/capabilities';
 import { useResponsive } from '../../hooks/useResponsive';
 import { useResyncOnReturn } from '../../hooks/useResyncOnReturn';
-import { expiryLevel, expiryColor, expiryChipStyle, type ExpiryLevel } from '../../constants/sessionExpiry';
+import { expiryLevel, type ExpiryLevel } from '../../constants/sessionExpiry';
 import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
 import { announceNewOrders, isSpokenNewOrderNotification } from '../../services/voiceAlerts';
 
@@ -111,6 +112,15 @@ function formatTimeLeft(
   const m = Math.floor((msLeft % 3_600_000) / 60_000);
   const text = h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m` : '<1m';
   return { text, level };
+}
+
+/** Card timer notch past the end: "Over 8m" / "Over 1h 5m" reads better than a bare "Expired". */
+function overdueText(expiresAt: string | null | undefined, now: number): string {
+  const msOver = expiresAt ? now - new Date(expiresAt).getTime() : NaN;
+  if (Number.isNaN(msOver) || msOver < 60_000) return 'Over';
+  const h = Math.floor(msOver / 3_600_000);
+  const m = Math.floor((msOver % 3_600_000) / 60_000);
+  return h > 0 ? `Over ${h}h ${m}m` : `Over ${m}m`;
 }
 
 Notifications.setNotificationHandler({
@@ -424,6 +434,19 @@ export default function StaffDashboard() {
   // Single shared clock for every card's session countdown. Minute precision is
   // all the grid needs, so one 30s tick is far cheaper than a per-card 1s timer.
   const [now, setNow] = useState(() => Date.now());
+  // One shared pulse for every card whose timer notch is running out — a
+  // single native-driven loop instead of one per card.
+  const notchPulse = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(notchPulse, { toValue: 0.55, duration: 800, useNativeDriver: true }),
+        Animated.timing(notchPulse, { toValue: 1, duration: 800, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [notchPulse]);
   const [isLoadingMenu, setIsLoadingMenu] = useState(true);
   const [menuData, setMenuData] = useState<MenuRow[]>(MENU_DATA_INITIAL);
   const [expandedMenuItem, setExpandedMenuItem] = useState<string | null>(null);
@@ -2527,59 +2550,35 @@ export default function StaffDashboard() {
                         {/* Dark inner card */}
                         <View style={styles.tableCard}>
                           <View style={styles.cardHeader}>
-                            <Text style={styles.tableTitle}>T{String(item.number).padStart(2, '0')}</Text>
-                            <View style={styles.headerRightCol}>
+                            <View>
+                              <Text style={styles.tableTitle}>T{String(item.number).padStart(2, '0')}</Text>
+                              {/* Occupied: seats sit under the number — the top-right corner is the timer notch. */}
+                              {isOccupied && (
+                                <View style={styles.seatsRowUnder}>
+                                  <Ionicons name="people-outline" size={11} color={QuinckleColors.textTertiary} />
+                                  <Text style={styles.seatsText}>{item.seats} seats</Text>
+                                </View>
+                              )}
+                            </View>
+                            {!isOccupied && (
                               <View style={styles.seatsRow}>
                                 <Ionicons name="people-outline" size={11} color={QuinckleColors.textTertiary} />
                                 <Text style={styles.seatsText}>{item.seats} seats</Text>
                               </View>
-                              {showStatusIcons && (
-                                <View style={styles.cardStatusRow}>
-                                  <Ionicons
-                                    name={allServed ? 'restaurant' : 'restaurant-outline'}
-                                    size={14}
-                                    color={allServed ? QuinckleColors.success : QuinckleColors.textTertiary}
-                                  />
-                                  <Ionicons
-                                    name={billPrinted ? 'receipt' : 'receipt-outline'}
-                                    size={14}
-                                    color={billStale ? QuinckleColors.danger : billPrinted ? QuinckleColors.warning : QuinckleColors.textTertiary}
-                                    accessibilityLabel={billStale ? 'Bill out of date, reprint' : billPrinted ? 'Bill printed, not paid' : undefined}
-                                  />
-                                  <Ionicons
-                                    name={paid ? 'card' : 'card-outline'}
-                                    size={14}
-                                    color={paid ? QuinckleColors.success : QuinckleColors.textTertiary}
-                                  />
-                                </View>
-                              )}
-                            </View>
+                            )}
                           </View>
                           <View style={styles.cardBottom}>
                             {item.status === 'occupied' ? (
-                              <View style={styles.occupiedBottomRow}>
-                                <View style={styles.occupiedBottomLeft}>
-                                  <Text style={styles.billAmount}>₹{(item.billAmount ?? 0).toLocaleString()}</Text>
-                                  <Text style={styles.billSubtitle}>
-                                    {(item.groups?.length ?? 0) > 1
-                                      ? `${item.groups!.length} groups`
-                                      : item.since ? `since ${item.since}` : 'active session'}
-                                  </Text>
-                                </View>
-                                {timeLeft && (
-                                  <View style={[styles.cardTimer, expiryChipStyle(timeLeft.level)]}>
-                                    <Ionicons
-                                      name={timeLeft.level === 'overdue' ? 'alert-circle-outline' : 'time-outline'}
-                                      size={12}
-                                      color={expiryColor(timeLeft.level)}
-                                    />
-                                    <Text
-                                      style={[styles.cardTimerText, { color: expiryColor(timeLeft.level) }]}
-                                    >
-                                      {timeLeft.text}
-                                    </Text>
-                                  </View>
-                                )}
+                              // Right padding keeps the amount clear of the status notch.
+                              <View style={styles.occupiedBottomLeftNotched}>
+                                <Text style={styles.billAmount} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+                                  ₹{(item.billAmount ?? 0).toLocaleString()}
+                                </Text>
+                                <Text style={styles.billSubtitle} numberOfLines={1}>
+                                  {(item.groups?.length ?? 0) > 1
+                                    ? `${item.groups!.length} groups`
+                                    : item.since ? `since ${item.since}` : 'active session'}
+                                </Text>
                               </View>
                             ) : item.status === 'available' ? (
                               <View style={styles.actionPrompt}>
@@ -2591,6 +2590,62 @@ export default function StaffDashboard() {
                             )}
                           </View>
                         </View>
+                        {/* Top-right notch: session countdown, filled with the
+                            card's own border colour. Hidden in select mode,
+                            where that corner holds the select check. */}
+                        {timeLeft && !selectMode && (
+                          <Animated.View
+                            style={[
+                              styles.timerNotch,
+                              { backgroundColor: meta.color },
+                              (timeLeft.level === 'danger' || timeLeft.level === 'overdue') && { opacity: notchPulse },
+                            ]}
+                            pointerEvents="none"
+                          >
+                            <View style={styles.timerNotchFilletLeft}>
+                              <View style={[styles.timerNotchFilletFill, { backgroundColor: meta.color }]} />
+                              <View style={styles.timerNotchFilletCut} />
+                            </View>
+                            <View style={styles.timerNotchFilletBottom}>
+                              <View style={[styles.timerNotchFilletFill, { backgroundColor: meta.color }]} />
+                              <View style={styles.timerNotchFilletCut} />
+                            </View>
+                            <Ionicons
+                              name={timeLeft.level === 'overdue' ? 'alert-circle' : 'time-outline'}
+                              size={12}
+                              color={QuinckleColors.background}
+                            />
+                            <Text style={styles.timerNotchText}>
+                              {timeLeft.level === 'overdue' ? overdueText(item.expiresAt, now) : timeLeft.text}
+                            </Text>
+                          </Animated.View>
+                        )}
+                        {/* Bottom-right notch: served / bill printed / paid, together.
+                            Grey until done; printed is amber (red when the bill is short). */}
+                        {showStatusIcons && (
+                          <View style={styles.statusNotch} pointerEvents="none">
+                            <View style={styles.statusNotchGroup}>
+                              <Ionicons
+                                name={allServed ? 'restaurant' : 'restaurant-outline'}
+                                size={14}
+                                color={allServed ? QuinckleColors.success : QuinckleColors.textTertiary}
+                                accessibilityLabel={allServed ? 'All served' : 'Not all served'}
+                              />
+                              <Ionicons
+                                name={billPrinted ? 'print' : 'print-outline'}
+                                size={14}
+                                color={billStale ? QuinckleColors.danger : billPrinted ? QuinckleColors.warning : QuinckleColors.textTertiary}
+                                accessibilityLabel={billStale ? 'Bill out of date, reprint' : billPrinted ? 'Bill printed, not paid' : 'Bill not printed'}
+                              />
+                              <Ionicons
+                                name={paid ? 'card' : 'card-outline'}
+                                size={14}
+                                color={paid ? QuinckleColors.success : QuinckleColors.textTertiary}
+                                accessibilityLabel={paid ? 'Paid' : 'Not paid'}
+                              />
+                            </View>
+                          </View>
+                        )}
                       </TouchableOpacity>
                     );
                     // Freeing is deliberately NOT a swipe on the grid. A stray
@@ -3807,10 +3862,6 @@ const styles = StyleSheet.create({
     color: QuinckleColors.textPrimary,
     letterSpacing: -0.4,
   },
-  headerRightCol: {
-    alignItems: 'flex-end',
-    gap: 5,
-  },
   seatsRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3822,38 +3873,93 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '500',
   },
-  // Two status icons under the seat count: all-served + payment-settled.
-  // Dim grey = pending, green = done.
-  cardStatusRow: {
+  seatsRowUnder: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 4,
+    marginTop: 6,
   },
-  occupiedBottomRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    justifyContent: 'space-between',
+  // Leaves room on the right for the status notch (3 icons ≈ 86pt wide).
+  occupiedBottomLeftNotched: {
+    paddingRight: 84,
   },
-  occupiedBottomLeft: {
-    flex: 1,
-  },
-  // A real chip, not a bare row: expiryChipStyle supplies fill + border colour,
-  // which need geometry to land on. Kept tight so a grid of cards doesn't bloat.
-  cardTimer: {
+  // ── Top-right timer notch ──
+  // Sits in the card's own top-right corner (tableCardOuter clips it to the
+  // card radius), filled with the border colour so it reads as part of the
+  // border. Two small concave fillets blend it into the top and right edges.
+  timerNotch: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
-    marginLeft: Spacing.sm,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: Radius.pill,
-    borderWidth: 1,
+    gap: 4,
+    paddingLeft: 10,
+    paddingRight: 10,
+    paddingTop: 6,
+    paddingBottom: 6,
+    borderBottomLeftRadius: 12,
+    zIndex: 2,
   },
-  cardTimerText: {
-    color: QuinckleColors.textSecondary,
-    fontSize: 11,
-    fontWeight: '600',
+  timerNotchText: {
+    color: QuinckleColors.background,
+    fontSize: 11.5,
+    fontWeight: '800',
     fontVariant: ['tabular-nums'],
+  },
+  timerNotchFilletLeft: {
+    position: 'absolute',
+    top: 0,
+    left: -10,
+    width: 10,
+    height: 10,
+    overflow: 'hidden',
+  },
+  timerNotchFilletBottom: {
+    position: 'absolute',
+    bottom: -10,
+    right: 0,
+    width: 10,
+    height: 10,
+    overflow: 'hidden',
+  },
+  timerNotchFilletFill: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  // Circle centred on the fillet's bottom-left corner, in the card colour —
+  // what's left of the fill is the concave curve.
+  timerNotchFilletCut: {
+    position: 'absolute',
+    left: -10,
+    top: 0,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: QuinckleColors.background,
+  },
+  // ── Bottom-right status notch ──
+  // Cut into the card in the page colour; the bordered group inside carries
+  // the shape (the gradient border is transparent at this corner).
+  statusNotch: {
+    position: 'absolute',
+    right: 0,
+    bottom: 0,
+    paddingLeft: 6,
+    paddingTop: 6,
+    backgroundColor: QuinckleColors.background,
+    borderTopLeftRadius: 14,
+    zIndex: 2,
+  },
+  statusNotchGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 11,
+    borderWidth: 1,
+    borderColor: QuinckleColors.borderStrong,
+    backgroundColor: QuinckleColors.surfaceMuted,
   },
   statusPill: {
     flexDirection: 'row',
