@@ -2,7 +2,7 @@
  * Payment success — "Liquid" (design H, chosen 2026-11-21).
  *
  * Green rises from the bottom with a moving wave → a big white tick is drawn
- * and settles with a spring (the app's existing payment sound plays on it) →
+ * and settles with a spring (the caller plays the payment sound on confirm) →
  * amount + how it was paid → small chips for what else happened (table freed,
  * handed over, e-bill sending/sent) → Done, whose light fill drains over 4 s
  * and then closes the screen by itself. Tapping Done closes it at once.
@@ -16,7 +16,6 @@ import { Animated, Easing, StyleSheet, Text, TouchableOpacity, View, useWindowDi
 import Svg, { Path } from 'react-native-svg';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { playPaymentSuccess } from '../../services/sound';
 
 const AnimatedPath = Animated.createAnimatedComponent(Path);
 
@@ -141,10 +140,9 @@ export function PaymentSuccessLiquid({ info, onDone }: { info: LiquidSuccessInfo
     const timers: ReturnType<typeof setTimeout>[] = [];
     // 1. Liquid rises (≈1 s)
     Animated.timing(rise, { toValue: 1, duration: 1000, easing: Easing.bezier(0.55, 0, 0.25, 1), useNativeDriver: true }).start();
-    // 2. Tick draws, then settles with a spring; the app's sound lands on it.
+    // 2. Tick draws, then settles with a spring.
     timers.push(setTimeout(() => {
       tickOpacity.setValue(1);
-      playPaymentSuccess();
       Animated.timing(tick, { toValue: 1, duration: 480, easing: Easing.bezier(0.65, 0, 0.35, 1), useNativeDriver: false }).start();
       Animated.sequence([
         Animated.delay(260),

@@ -27,6 +27,7 @@ import { crewEbill, crewOrders, crewPayments, crewSessions, restaurantApi, type 
 import { BillExplainSheet, explainBreakdown, explainSessionBill, type ExplainedBill } from '../../components/ui/BillExplainSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { PaymentSuccessLiquid, type EbillChipState } from '../../components/ui/PaymentSuccessLiquid';
+import { playPaymentSuccess } from '../../services/sound';
 import { getHandoverOnCollect, setHandoverOnCollect } from '../../services/takeawayHandover';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { isOffPremise, channelLabel, normalizeChannel, locationLabel as channelLocationLabel } from '../../constants/channel';
@@ -476,6 +477,8 @@ export default function PaymentCollectScreen() {
           handoverFailed = true;
         }
       }
+      // Sound + buzz the moment the payment is confirmed, before any animation.
+      playPaymentSuccess();
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setSuccessInfo({
         tableNumber, locationLabel, total: resolvedTotal, splits, freed, freeFailed, handedOver, handoverFailed,
