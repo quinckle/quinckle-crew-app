@@ -2579,11 +2579,13 @@ export default function StaffDashboard() {
                                 <Text maxFontSizeMultiplier={CARD_FONT_CAP} style={styles.billAmount} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
                                   ₹{(item.billAmount ?? 0).toLocaleString()}
                                 </Text>
-                                <Text maxFontSizeMultiplier={CARD_FONT_CAP} style={styles.billSubtitle} numberOfLines={1}>
-                                  {(item.groups?.length ?? 0) > 1
-                                    ? `${item.groups!.length} groups`
-                                    : item.since ? `since ${item.since}` : 'active session'}
-                                </Text>
+                                {/* No "since 21:37" — the timer notch already says how the session stands.
+                                    Only a shared table gets a second line. */}
+                                {(item.groups?.length ?? 0) > 1 && (
+                                  <Text maxFontSizeMultiplier={CARD_FONT_CAP} style={styles.billSubtitle} numberOfLines={1}>
+                                    {item.groups!.length} groups
+                                  </Text>
+                                )}
                               </View>
                             ) : item.status === 'available' ? (
                               <View style={styles.actionPrompt}>
