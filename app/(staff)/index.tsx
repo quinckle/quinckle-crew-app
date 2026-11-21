@@ -115,6 +115,11 @@ function formatTimeLeft(
 }
 
 /** Card timer notch past the end: "Over 8m" / "Over 1h 5m" reads better than a bare "Expired". */
+/** Every table card on the floor grid is exactly this tall (occupied, free and offline alike). */
+const TABLE_CARD_HEIGHT = 148;
+/** Card text scales with the phone's font size only up to this, so it can't spill past the fixed height. */
+const CARD_FONT_CAP = 1.15;
+
 function overdueText(expiresAt: string | null | undefined, now: number): string {
   const msOver = expiresAt ? now - new Date(expiresAt).getTime() : NaN;
   if (Number.isNaN(msOver) || msOver < 60_000) return 'Over';
@@ -2551,19 +2556,19 @@ export default function StaffDashboard() {
                         <View style={styles.tableCard}>
                           <View style={styles.cardHeader}>
                             <View>
-                              <Text style={styles.tableTitle}>T{String(item.number).padStart(2, '0')}</Text>
+                              <Text maxFontSizeMultiplier={CARD_FONT_CAP} style={styles.tableTitle}>T{String(item.number).padStart(2, '0')}</Text>
                               {/* Occupied: seats sit under the number — the top-right corner is the timer notch. */}
                               {isOccupied && (
                                 <View style={styles.seatsRowUnder}>
                                   <Ionicons name="people-outline" size={11} color={QuinckleColors.textTertiary} />
-                                  <Text style={styles.seatsText}>{item.seats} seats</Text>
+                                  <Text maxFontSizeMultiplier={CARD_FONT_CAP} style={styles.seatsText}>{item.seats} seats</Text>
                                 </View>
                               )}
                             </View>
                             {!isOccupied && (
                               <View style={styles.seatsRow}>
                                 <Ionicons name="people-outline" size={11} color={QuinckleColors.textTertiary} />
-                                <Text style={styles.seatsText}>{item.seats} seats</Text>
+                                <Text maxFontSizeMultiplier={CARD_FONT_CAP} style={styles.seatsText}>{item.seats} seats</Text>
                               </View>
                             )}
                           </View>
@@ -2571,10 +2576,10 @@ export default function StaffDashboard() {
                             {item.status === 'occupied' ? (
                               // Right padding keeps the amount clear of the status notch.
                               <View style={styles.occupiedBottomLeftNotched}>
-                                <Text style={styles.billAmount} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+                                <Text maxFontSizeMultiplier={CARD_FONT_CAP} style={styles.billAmount} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
                                   ₹{(item.billAmount ?? 0).toLocaleString()}
                                 </Text>
-                                <Text style={styles.billSubtitle} numberOfLines={1}>
+                                <Text maxFontSizeMultiplier={CARD_FONT_CAP} style={styles.billSubtitle} numberOfLines={1}>
                                   {(item.groups?.length ?? 0) > 1
                                     ? `${item.groups!.length} groups`
                                     : item.since ? `since ${item.since}` : 'active session'}
@@ -2583,10 +2588,10 @@ export default function StaffDashboard() {
                             ) : item.status === 'available' ? (
                               <View style={styles.actionPrompt}>
                                 <Ionicons name="add" size={13} color={QuinckleColors.textTertiary} />
-                                <Text style={styles.actionPromptText}>Start session</Text>
+                                <Text maxFontSizeMultiplier={CARD_FONT_CAP} style={styles.actionPromptText}>Start session</Text>
                               </View>
                             ) : (
-                              <Text style={styles.actionPromptText}>Marked offline</Text>
+                              <Text maxFontSizeMultiplier={CARD_FONT_CAP} style={styles.actionPromptText}>Marked offline</Text>
                             )}
                           </View>
                         </View>
@@ -2615,7 +2620,7 @@ export default function StaffDashboard() {
                               size={12}
                               color={QuinckleColors.background}
                             />
-                            <Text style={styles.timerNotchText}>
+                            <Text maxFontSizeMultiplier={CARD_FONT_CAP} style={styles.timerNotchText}>
                               {timeLeft.level === 'overdue' ? overdueText(item.expiresAt, now) : timeLeft.text}
                             </Text>
                           </Animated.View>
@@ -3776,9 +3781,12 @@ const styles = StyleSheet.create({
     width: '48.5%',
     marginBottom: Spacing.md,
   },
+  // Fixed, not min: occupied cards stack more lines (seats, amount, since)
+  // than free ones, and a minHeight let them grow taller. One height keeps
+  // every card in the grid the same size, whatever its status.
   tableCardOuter: {
     width: '100%',
-    minHeight: 130,
+    height: TABLE_CARD_HEIGHT,
     borderRadius: Radius.lg + 1.5,
     padding: 1.5,
     overflow: 'hidden',
@@ -3845,7 +3853,6 @@ const styles = StyleSheet.create({
     backgroundColor: QuinckleColors.background,
     borderRadius: Radius.lg,
     padding: Spacing.lg,
-    minHeight: 130 - 3,
     justifyContent: 'space-between',
   },
   offlineCard: {
