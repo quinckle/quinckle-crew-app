@@ -21,6 +21,7 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
@@ -51,6 +52,12 @@ export interface BottomSheetProps {
    * animated it away.
    */
   dismissible?: boolean;
+  /**
+   * Caps the sheet's width. On screens wider than this (tablets, desktop
+   * crew) the sheet is centred and floats with all corners rounded instead of
+   * stretching edge to edge. Phones narrower than this are unaffected.
+   */
+  maxWidth?: number;
   children: React.ReactNode;
 }
 
@@ -61,9 +68,13 @@ export function BottomSheet({
   maxHeightRatio = 0.92,
   disableInternalScroll = false,
   dismissible = true,
+  maxWidth,
   children,
 }: BottomSheetProps) {
   const insets = useSafeAreaInsets();
+  const { width: windowW } = useWindowDimensions();
+  // Only float the sheet when the screen is actually wider than the cap.
+  const floating = maxWidth != null && windowW > maxWidth + Spacing.xl * 2;
   const [mounted, setMounted] = useState(false);
 
   const translateY = useRef(new Animated.Value(SCREEN_H)).current;
@@ -218,6 +229,13 @@ export function BottomSheet({
               maxHeight: SCREEN_H * maxHeightRatio,
               // Fixed height when child owns scrolling (FlatList inside)
               ...(disableInternalScroll && { height: SCREEN_H * maxHeightRatio }),
+              ...(floating && {
+                width: maxWidth,
+                alignSelf: 'center' as const,
+                borderRadius: Radius.xxl,
+                borderWidth: 1,
+                borderColor: QuinckleColors.border,
+              }),
               // Float clear of the screen edges (safe-area aware).
               marginBottom: insets.bottom + Spacing.sm,
               paddingBottom: Spacing.lg,
