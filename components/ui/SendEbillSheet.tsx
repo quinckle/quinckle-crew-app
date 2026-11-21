@@ -85,6 +85,10 @@ export function SendEbillSheet({ visible, sessionId, onClose }: SendEbillSheetPr
     }
   };
 
+  const latest = state?.messages.length
+    ? [...state.messages].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0]
+    : undefined;
+
   const buttonLabel = !state
     ? 'Send e-bill'
     : noCredits
@@ -96,7 +100,7 @@ export function SendEbillSheet({ visible, sessionId, onClose }: SendEbillSheetPr
           : 'Send e-bill';
 
   return (
-    <BottomSheet visible={visible} onClose={() => { if (!sending) onClose(); }} title="Send e-bill on WhatsApp" maxHeightRatio={0.85}>
+    <BottomSheet visible={visible} onClose={() => { if (!sending) onClose(); }} title="Send e-bill on WhatsApp" maxHeightRatio={0.85} maxWidth={480}>
       {!state && !loadError && <ActivityIndicator style={{ marginVertical: Spacing.xl }} color={QuinckleColors.primary} />}
       {loadError && <Text style={styles.err}>{loadError}</Text>}
 
@@ -156,22 +160,55 @@ export function SendEbillSheet({ visible, sessionId, onClose }: SendEbillSheetPr
           )}
 
           {done && (
-            <View style={styles.doneRow}>
-              <Ionicons name="checkmark-circle" size={16} color={QuinckleColors.success} />
-              <Text style={styles.doneText}>Sent. Status updates above.</Text>
+            <View style={styles.doneCard}>
+              <Ionicons name="checkmark-circle" size={26} color={QuinckleColors.success} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.doneTitle}>E-bill sent on WhatsApp</Text>
+                <Text style={styles.doneSub}>
+                  To +91 {latest?.phone ? localDigits(latest.phone) : phone}
+                  {latest ? ` · ${(STATUS[latest.status] ?? STATUS.SENT).label}` : ''}
+                </Text>
+              </View>
             </View>
           )}
           {error && <Text style={styles.err}>{error}</Text>}
 
-          <TouchableOpacity
-            style={[styles.btn, (blocked || !valid || sending) && styles.btnDisabled]}
-            onPress={() => { void send(); }}
-            disabled={blocked || !valid || sending}
-            activeOpacity={0.85}
-          >
-            {sending ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="logo-whatsapp" size={18} color="#fff" />}
-            <Text style={styles.btnText}>{buttonLabel}</Text>
-          </TouchableOpacity>
+          {done ? (
+            <View style={styles.btnRow}>
+              <TouchableOpacity
+                style={[styles.btn, styles.btnHalf, styles.btnGhost, (blocked || !valid || sending) && styles.btnDisabled]}
+                onPress={() => { void send(); }}
+                disabled={blocked || !valid || sending}
+                activeOpacity={0.85}
+              >
+                {sending ? <ActivityIndicator size="small" color={QuinckleColors.textPrimary} /> : <Ionicons name="refresh" size={17} color={QuinckleColors.textPrimary} />}
+                <View>
+                  <Text style={styles.btnGhostText}>Send again</Text>
+                  <Text style={styles.btnGhostSub}>
+                    {noCredits ? 'No e-bills left' : state.sendsLeft <= 0 ? 'Max sends reached' : 'Uses 1 more e-bill'}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.btn, styles.btnHalf, styles.btnDone]}
+                onPress={onClose}
+                disabled={sending}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.btnDoneText}>Done</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={[styles.btn, (blocked || !valid || sending) && styles.btnDisabled]}
+              onPress={() => { void send(); }}
+              disabled={blocked || !valid || sending}
+              activeOpacity={0.85}
+            >
+              {sending ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="logo-whatsapp" size={18} color="#fff" />}
+              <Text style={styles.btnText}>{buttonLabel}</Text>
+            </TouchableOpacity>
+          )}
         </View>
       )}
     </BottomSheet>
@@ -179,7 +216,7 @@ export function SendEbillSheet({ visible, sessionId, onClose }: SendEbillSheetPr
 }
 
 const styles = StyleSheet.create({
-  body: { paddingBottom: Spacing.lg, gap: Spacing.sm },
+  body: { paddingHorizontal: Spacing.xl, paddingBottom: Spacing.lg, gap: Spacing.sm },
   row: { flexDirection: 'row', gap: Spacing.sm },
   stat: {
     flex: 1, padding: Spacing.md, borderRadius: Radius.md,
@@ -203,8 +240,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: QuinckleColors.borderSubtle,
   },
   listText: { color: QuinckleColors.textSecondary, fontSize: 12 },
-  doneRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  doneText: { color: QuinckleColors.success, fontSize: 13, fontWeight: '600' },
+  doneCard: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.md, marginTop: Spacing.sm,
+    padding: Spacing.md, borderRadius: Radius.md,
+    backgroundColor: QuinckleColors.successSoft, borderWidth: 1, borderColor: QuinckleColors.successBorder,
+  },
+  doneTitle: { color: QuinckleColors.success, fontSize: 15, fontWeight: '800' },
+  doneSub: { color: QuinckleColors.textSecondary, fontSize: 12.5, marginTop: 2 },
+  btnRow: { flexDirection: 'row', gap: Spacing.sm },
+  btnHalf: { flex: 1 },
+  btnGhost: { backgroundColor: 'transparent', borderWidth: 1, borderColor: QuinckleColors.borderStrong },
+  btnGhostText: { color: QuinckleColors.textPrimary, fontSize: 14, fontWeight: '800' },
+  btnGhostSub: { color: QuinckleColors.textSecondary, fontSize: 11, fontWeight: '600' },
+  btnDone: { backgroundColor: QuinckleColors.textPrimary },
+  btnDoneText: { color: QuinckleColors.background, fontSize: 15, fontWeight: '800' },
   err: { color: QuinckleColors.danger, fontSize: 12.5 },
   btn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,
