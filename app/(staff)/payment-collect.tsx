@@ -22,12 +22,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import QRCode from 'react-native-qrcode-svg';
-import Svg, { Path } from 'react-native-svg';
 import { useAuth } from '../../context/AuthContext';
-import { crewOrders, crewPayments, crewSessions, restaurantApi, type BillBreakdown, type CollectDueOptions, type CollectSplitMethod, type CrewOrderPaymentContext, type SessionCollectible } from '../../services/api';
+import { crewEbill, crewOrders, crewPayments, crewSessions, restaurantApi, type EbillCredits, type BillBreakdown, type CollectDueOptions, type CollectSplitMethod, type CrewOrderPaymentContext, type SessionCollectible } from '../../services/api';
 import { BillExplainSheet, explainBreakdown, explainSessionBill, type ExplainedBill } from '../../components/ui/BillExplainSheet';
 import { BottomSheet } from '../../components/ui/BottomSheet';
-import { playPaymentSuccess } from '../../services/sound';
+import { PaymentSuccessLiquid, type EbillChipState } from '../../components/ui/PaymentSuccessLiquid';
 import { getHandoverOnCollect, setHandoverOnCollect } from '../../services/takeawayHandover';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { isOffPremise, channelLabel, normalizeChannel, locationLabel as channelLocationLabel } from '../../constants/channel';
@@ -79,6 +78,9 @@ type SuccessInfo = {
   handedOver?: boolean;
   /** Hand-over was on but did not happen. */
   handoverFailed?: boolean;
+  /** WhatsApp e-bill, when the toggle was on: follows the background send. */
+  ebill?: EbillChipState | null;
+  ebillError?: string | null;
 };
 
 // ── Shimmer (matches TableSkeleton) ─────────────────────────────────────────
@@ -128,157 +130,6 @@ function QrSkeleton({ size }: { size: number }) {
     </View>
   );
 }
-
-// ── Success screen ───────────────────────────────────────────────────────────
-function SuccessScreen({ info, onDone }: { info: SuccessInfo; onDone: () => void }) {
-  const fadeAnim  = useRef(new Animated.Value(0)).current;
-  const riseAnim  = useRef(new Animated.Value(20)).current;
-
-  useEffect(() => {
-    playPaymentSuccess();
-    Animated.parallel([
-      Animated.timing(fadeAnim, { toValue: 1, duration: 260, useNativeDriver: true }),
-      Animated.timing(riseAnim, { toValue: 0, duration: 340, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-    ]).start();
-    const t = setTimeout(onDone, 2400);
-    return () => clearTimeout(t);
-  }, [fadeAnim, riseAnim, onDone]);
-
-  const cashSplit = info.splits.find(s => s.method === 'CASH');
-  const upiSplit  = info.splits.find(s => s.method === 'UPI_DIRECT');
-  const dueSplit  = info.splits.find(s => s.method === 'DUE');
-  const moneyParts = [cashSplit, upiSplit, dueSplit].filter(Boolean).length;
-  const isSplit   = moneyParts > 1;
-  const isUpiOnly = !cashSplit && !!upiSplit && !dueSplit;
-  const isDueOnly = !!dueSplit && !cashSplit && !upiSplit;
-
-  return (
-    <Animated.View style={[sc.screen, { opacity: fadeAnim }]}>
-      <Animated.View style={[sc.body, { transform: [{ translateY: riseAnim }] }]}>
-        {/* Check icon */}
-        <View style={sc.iconWrap}>
-          <Svg width={52} height={52} viewBox="0 0 16 16" fill="none">
-            <Path
-              fill="#fff"
-              d="M10.067.87a2.89 2.89 0 0 0-4.134 0l-.622.638-.89-.011a2.89 2.89 0 0 0-2.924 2.924l.01.89-.636.622a2.89 2.89 0 0 0 0 4.134l.637.622-.011.89a2.89 2.89 0 0 0 2.924 2.924l.89-.01.622.636a2.89 2.89 0 0 0 4.134 0l.622-.637.89.011a2.89 2.89 0 0 0 2.924-2.924l-.01-.89.636-.622a2.89 2.89 0 0 0 0-4.134l-.637-.622.011-.89a2.89 2.89 0 0 0-2.924-2.924l-.89.01zm.287 5.984-3 3a.5.5 0 0 1-.708 0l-1.5-1.5a.5.5 0 1 1 .708-.708L7 8.793l2.646-2.647a.5.5 0 0 1 .708.708"
-            />
-          </Svg>
-        </View>
-
-        <Text style={sc.title}>{dueSplit ? 'Recorded' : 'Collected'}</Text>
-        <Text style={sc.table}>{info.locationLabel}</Text>
-        <Text style={sc.amount}>₹{info.total.toLocaleString('en-IN')}</Text>
-
-        <View style={sc.divider} />
-
-        {/* Method breakdown */}
-        {isSplit ? (
-          <View style={sc.methodRow}>
-            {cashSplit && (
-              <View style={sc.methodItem}>
-                <Text style={sc.methodAmt}>₹{cashSplit.amount.toLocaleString('en-IN')}</Text>
-                <Text style={sc.methodLabel}>Cash</Text>
-              </View>
-            )}
-            {cashSplit && (upiSplit || dueSplit) && <View style={sc.methodSep} />}
-            {upiSplit && (
-              <View style={sc.methodItem}>
-                <Text style={sc.methodAmt}>₹{upiSplit.amount.toLocaleString('en-IN')}</Text>
-                <Text style={sc.methodLabel}>UPI</Text>
-              </View>
-            )}
-            {upiSplit && dueSplit && <View style={sc.methodSep} />}
-            {dueSplit && (
-              <View style={sc.methodItem}>
-                <Text style={sc.methodAmt}>₹{dueSplit.amount.toLocaleString('en-IN')}</Text>
-                <Text style={sc.methodLabel}>Khata</Text>
-              </View>
-            )}
-          </View>
-        ) : (
-          <Text style={sc.methodSingle}>{isDueOnly ? 'on khata (pay later)' : isUpiOnly ? 'via UPI' : 'via Cash'}</Text>
-        )}
-
-        {info.freed && (
-          <View style={sc.freedPill}>
-            <Ionicons name="checkmark-circle" size={16} color="#fff" />
-            <Text style={sc.freedText}>{info.locationLabel.replace(/^Table /, '')} is free</Text>
-          </View>
-        )}
-        {info.freeFailed && (
-          <Text style={sc.freeFailed}>Couldn&apos;t free the table — free it from the floor.</Text>
-        )}
-        {info.handedOver && (
-          <View style={sc.freedPill}>
-            <Ionicons name="checkmark-circle" size={16} color="#fff" />
-            <Text style={sc.freedText}>{info.locationLabel} handed over</Text>
-          </View>
-        )}
-        {info.handoverFailed && (
-          <Text style={sc.freeFailed}>Couldn&apos;t hand it over — use Hand Over on the Takeaway tab.</Text>
-        )}
-      </Animated.View>
-    </Animated.View>
-  );
-}
-
-const sc = StyleSheet.create({
-  screen: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#1a7a3a',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 999,
-  },
-  body: { alignItems: 'center', paddingHorizontal: 40 },
-  iconWrap: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 28,
-  },
-  title: {
-    color: '#fff',
-    fontSize: 34,
-    fontWeight: '700',
-    letterSpacing: -0.8,
-    marginBottom: 6,
-  },
-  table: {
-    color: 'rgba(255,255,255,0.65)',
-    fontSize: 16,
-    fontWeight: '500',
-    marginBottom: 12,
-  },
-  amount: {
-    color: '#fff',
-    fontSize: 52,
-    fontWeight: '800',
-    letterSpacing: -2,
-  },
-  divider: {
-    width: 48,
-    height: 1,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    marginVertical: 24,
-  },
-  methodRow: { flexDirection: 'row', alignItems: 'center', gap: 24 },
-  methodSep: { width: 1, height: 32, backgroundColor: 'rgba(255,255,255,0.2)' },
-  methodItem: { alignItems: 'center', gap: 2 },
-  methodAmt: { color: '#fff', fontSize: 20, fontWeight: '700', letterSpacing: -0.5 },
-  methodLabel: { color: 'rgba(255,255,255,0.6)', fontSize: 12, fontWeight: '500' },
-  methodSingle: { color: 'rgba(255,255,255,0.65)', fontSize: 16, fontWeight: '500' },
-  freedPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 28,
-    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-  },
-  freedText: { color: '#fff', fontSize: 15, fontWeight: '600' },
-  freeFailed: { color: 'rgba(255,255,255,0.8)', fontSize: 14, fontWeight: '500', marginTop: 24, textAlign: 'center' },
-});
 
 // ── Main screen ──────────────────────────────────────────────────────────────
 export default function PaymentCollectScreen() {
@@ -433,6 +284,28 @@ export default function PaymentCollectScreen() {
   };
   const [sessionBill, setSessionBill]   = useState<ExplainedBill | null>(null);
 
+  // ── WhatsApp e-bill after payment ─────────────────────────────────────────
+  // Off every time the sheet opens: the guest has to ask for it. Offered only
+  // when the venue has e-bills switched on (summary.enabled) and the API can
+  // send (summary.configured). Sent in the background once the payment is
+  // banked; a failed send never touches the payment.
+  const [ebillCredits, setEbillCredits] = useState<EbillCredits | null>(null);
+  const [ebillOn, setEbillOn]           = useState(false);
+  const [ebillPhone, setEbillPhone]     = useState(() => {
+    const d = String(customerPhone ?? '').replace(/\D/g, '');
+    return d.length === 12 && d.startsWith('91') ? d.slice(2) : d.length === 11 && d.startsWith('0') ? d.slice(1) : d.slice(-10);
+  });
+  useEffect(() => {
+    if (!sessionId) return;
+    let alive = true;
+    crewEbill.summary()
+      .then(c => { if (alive && c?.enabled && c?.configured) setEbillCredits(c); })
+      .catch(() => { /* not offered */ });
+    return () => { alive = false; };
+  }, [sessionId]);
+  const ebillPhoneValid = /^[6-9]\d{9}$/.test(ebillPhone);
+  const ebillNoCredits  = !!ebillCredits && ebillCredits.totalRemaining <= 0;
+
   // ── Khata (due) mode state ────────────────────────────────────────────────
   // "Received now" is optional — 0 means the whole bill goes on the khata.
   const [khataPaidInput, setKhataPaidInput]   = useState('');
@@ -551,6 +424,13 @@ export default function PaymentCollectScreen() {
   const submit = async (splits: { method: CollectSplitMethod; amount: number }[], dueOptions?: CollectDueOptions | null) => {
     const staffId = staffInfo?.id;
     if (!staffId) { Alert.alert('Not signed in', 'Please reopen the app and sign in again.'); return; }
+    // Khata leaves money owed, and the backend only sends fully paid bills.
+    const leavesDue = splits.some(sp => sp.method === 'DUE');
+    const wantEbill = !!ebillCredits && ebillOn && !ebillNoCredits && !!sessionId && !leavesDue;
+    if (wantEbill && !ebillPhoneValid) {
+      Alert.alert('WhatsApp number', 'Enter the guest\'s 10-digit mobile number, or turn off the e-bill.');
+      return;
+    }
     setLoading(true);
     try {
       if (intentId) {
@@ -597,7 +477,20 @@ export default function PaymentCollectScreen() {
         }
       }
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setSuccessInfo({ tableNumber, locationLabel, total: resolvedTotal, splits, freed, freeFailed, handedOver, handoverFailed });
+      setSuccessInfo({
+        tableNumber, locationLabel, total: resolvedTotal, splits, freed, freeFailed, handedOver, handoverFailed,
+        ebill: wantEbill ? 'sending' : null,
+      });
+      // After the payment (and the auto-free) — the bill is final now. Runs in
+      // the background; the success screen's chip follows it.
+      if (wantEbill) {
+        crewEbill.send(sessionId, ebillPhone, false)
+          .then(() => setSuccessInfo(prev => (prev ? { ...prev, ebill: 'sent' } : prev)))
+          .catch((e: any) => {
+            const already = String(e?.code ?? '').includes('EBILL_ALREADY_SENT') || /already sent/i.test(String(e?.message ?? ''));
+            setSuccessInfo(prev => (prev ? { ...prev, ebill: already ? 'already' : 'failed', ebillError: already ? null : (e?.message ?? null) } : prev));
+          });
+      }
     } catch (err: any) {
       const code = String(err?.code ?? err?.message ?? '');
       if (code.includes('ALREADY_COLLECTED')) {
@@ -926,6 +819,50 @@ export default function PaymentCollectScreen() {
           </View>
         )}
 
+        {!!ebillCredits && mode !== 'khata' && (
+          <View style={{ marginTop: Spacing.xl }}>
+            <View style={s.freeRow}>
+              <Ionicons name="logo-whatsapp" size={17} color={ebillOn ? QuinckleColors.success : QuinckleColors.textSecondary} />
+              <View style={{ flex: 1 }}>
+                <Text style={s.tipRowText}>Send e-bill on WhatsApp</Text>
+                <Text style={s.freeRowSub}>
+                  {ebillNoCredits
+                    ? 'No e-bills left · the owner can top up'
+                    : ebillCredits.freeRemaining > 0
+                      ? `${ebillCredits.freeRemaining} of ${ebillCredits.monthlyFreeQuota} free left this month`
+                      : `${ebillCredits.topupBalance} top-up e-bills left`}
+                </Text>
+              </View>
+              <Switch
+                value={ebillOn && !ebillNoCredits}
+                onValueChange={setEbillOn}
+                disabled={loading || ebillNoCredits}
+                trackColor={{ false: QuinckleColors.border, true: QuinckleColors.success }}
+                thumbColor="#fff"
+                ios_backgroundColor={QuinckleColors.border}
+                accessibilityLabel="Send e-bill on WhatsApp"
+              />
+            </View>
+            {ebillOn && !ebillNoCredits && (
+              <View style={s.ebillPhoneWrap}>
+                <Text style={s.ebillPrefix}>+91</Text>
+                <TextInput
+                  style={s.ebillPhoneInput}
+                  value={ebillPhone}
+                  onChangeText={v => setEbillPhone(v.replace(/\D/g, '').slice(0, 10))}
+                  placeholder="Guest's WhatsApp number"
+                  placeholderTextColor={QuinckleColors.textMuted}
+                  keyboardType="number-pad"
+                  maxLength={10}
+                  editable={!loading}
+                  accessibilityLabel="Guest's WhatsApp number"
+                />
+                {ebillPhone.length > 0 && !ebillPhoneValid && <Text style={s.ebillPhoneErr}>10 digits</Text>}
+              </View>
+            )}
+          </View>
+        )}
+
         {mode === 'normal' && (
           <View style={{ marginTop: Spacing.xl }}>
             <Text style={s.optionsLabel}>How are they paying?</Text>
@@ -1191,7 +1128,7 @@ export default function PaymentCollectScreen() {
 
       <BillExplainSheet visible={billOpen && !successInfo} onClose={() => setBillOpen(false)} bill={explainedBill} />
 
-      {successInfo && <SuccessScreen info={successInfo} onDone={returnToPreviousScreen} />}
+      {successInfo && <PaymentSuccessLiquid info={successInfo} onDone={returnToPreviousScreen} />}
     </KeyboardAvoidingView>
   );
 }
@@ -1242,6 +1179,13 @@ const s = StyleSheet.create({
     borderColor: QuinckleColors.border, backgroundColor: QuinckleColors.surface,
   },
   freeRowSub: { color: QuinckleColors.textTertiary, fontSize: 12, marginTop: 1 },
+  ebillPhoneWrap: {
+    flexDirection: 'row', alignItems: 'center', marginTop: Spacing.sm, height: 46, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: QuinckleColors.borderStrong, backgroundColor: QuinckleColors.surfaceElevated, paddingHorizontal: Spacing.md,
+  },
+  ebillPrefix: { color: QuinckleColors.textSecondary, fontSize: 15, marginRight: 6 },
+  ebillPhoneInput: { flex: 1, color: QuinckleColors.textPrimary, fontSize: 16, paddingVertical: 10 },
+  ebillPhoneErr: { color: QuinckleColors.danger, fontSize: 12, fontWeight: '600' },
   optionRowDivider: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: QuinckleColors.border },
   optionRowSelected: { backgroundColor: QuinckleColors.surfaceElevated },
   optionTitle: { color: QuinckleColors.textPrimary, fontSize: 16, fontWeight: '600' },
