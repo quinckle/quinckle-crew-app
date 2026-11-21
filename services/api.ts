@@ -2690,6 +2690,10 @@ export interface EbillState {
 }
 
 export const crewEbill = {
+  /** Free left this month + top-up balance; `enabled`/`configured` decide whether to offer it at all. */
+  summary: () =>
+    request<{ success: true; data: EbillCredits }>('GET', '/api/crew/whatsapp/summary', undefined, true)
+      .then(r => r.data),
   state: (sessionId: string) =>
     request<{ success: true; data: EbillState }>('GET', `/api/crew/whatsapp/ebill/${encodeURIComponent(sessionId)}`, undefined, true)
       .then(r => r.data),
