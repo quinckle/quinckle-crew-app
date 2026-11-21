@@ -2648,3 +2648,53 @@ export const crewFace = {
       'DELETE', `/api/crew/face/${staffMemberId}`, undefined, true,
     ),
 };
+
+// ── WhatsApp e-bills ──────────────────────────────────────────────────────────
+// Send a settled bill to the guest on WhatsApp. Free e-bills each month
+// (admin-set, default 100), then the venue's top-up credits. Backend:
+// routes/v1/crew/whatsapp.routes.ts (PAYMENTS capability).
+
+export interface EbillCredits {
+  enabled: boolean;
+  configured: boolean;
+  monthKey: string;
+  monthlyFreeQuota: number;
+  freeAllowed: boolean;
+  freeUsed: number;
+  freeRemaining: number;
+  topupBalance: number;
+  totalRemaining: number;
+  resetsAt: string;
+}
+
+export interface EbillMessage {
+  id: string;
+  phone: string; // masked
+  status: 'SENDING' | 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
+  creditSource: 'FREE' | 'TOPUP';
+  errorMessage: string | null;
+  sentByName: string | null;
+  createdAt: string;
+}
+
+export interface EbillState {
+  sessionId: string;
+  settled: boolean;
+  phone: string | null;
+  total: number;
+  invoiceNo: string;
+  alreadySent: boolean;
+  sendsLeft: number;
+  messages: EbillMessage[];
+  credits: EbillCredits;
+}
+
+export const crewEbill = {
+  state: (sessionId: string) =>
+    request<{ success: true; data: EbillState }>('GET', `/api/crew/whatsapp/ebill/${encodeURIComponent(sessionId)}`, undefined, true)
+      .then(r => r.data),
+  send: (sessionId: string, phone: string, resend: boolean) =>
+    request<{ success: true; data: { message: EbillMessage; credits: EbillCredits } }>(
+      'POST', `/api/crew/whatsapp/ebill/${encodeURIComponent(sessionId)}/send`, { phone, resend }, true,
+    ).then(r => r.data),
+};
