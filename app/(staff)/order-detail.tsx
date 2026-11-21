@@ -21,6 +21,7 @@ import { ThemedDialog } from '../../components/ui/themed-dialog';
 import { RefundSheet } from '../../components/ui/RefundSheet';
 import { useManagerApproval } from '../../components/ui/ManagerPinSheet';
 import { PrintProgressOverlay, type PrintJob } from '../../components/ui/PrintProgressOverlay';
+import { SendEbillSheet } from '../../components/ui/SendEbillSheet';
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 function fmtMoney(n: number): string {
@@ -163,6 +164,7 @@ export default function OrderDetail() {
   const { id, ref } = useLocalSearchParams<{ id: string; ref?: string }>();
 
   const [session, setSession] = useState<LedgerSession | null>(null);
+  const [ebillOpen, setEbillOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
 
@@ -476,8 +478,21 @@ export default function OrderDetail() {
               : <Ionicons name="print-outline" size={18} color="#fff" />}
             <Text style={styles.reprintBtnText}>{printing ? 'Printing…' : 'Reprint Invoice'}</Text>
           </TouchableOpacity>
+
+          {/* Send the guest's bill on WhatsApp — settled bills only; the
+              backend re-checks and owns credits. */}
+          {(session.status === 'CLOSED' || session.status === 'PAID') && (
+            <TouchableOpacity style={styles.ebillBtn} onPress={() => setEbillOpen(true)} activeOpacity={0.85}>
+              <Ionicons name="logo-whatsapp" size={18} color="#16A34A" />
+              <Text style={styles.ebillBtnText}>Send e-bill on WhatsApp</Text>
+            </TouchableOpacity>
+          )}
         </ScrollView>
       ) : null}
+
+      {session && (
+        <SendEbillSheet visible={ebillOpen} sessionId={session.id} onClose={() => setEbillOpen(false)} />
+      )}
 
       <ThemedDialog
         visible={dialog.visible}
@@ -603,4 +618,11 @@ const styles = StyleSheet.create({
   },
   reprintBtnDisabled: { opacity: 0.6 },
   reprintBtnText: { color: '#fff', fontSize: 15, fontWeight: '800' },
+
+  ebillBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,
+    height: 52, borderRadius: Radius.md, marginTop: Spacing.sm,
+    borderWidth: 1, borderColor: 'rgba(22,163,74,0.45)', backgroundColor: 'rgba(22,163,74,0.10)',
+  },
+  ebillBtnText: { color: '#22C55E', fontSize: 15, fontWeight: '800' },
 });
