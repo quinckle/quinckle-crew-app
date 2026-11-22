@@ -6,11 +6,17 @@ import { ItemReadyToast } from '../../components/ui/ItemReadyToast';
 import { PujaGreeting } from '../../components/ui/PujaGreeting';
 import { PlanStaffNotice } from '../../components/ui/PlanStaffNotice';
 import { StaffCallAlert } from '../../components/ui/StaffCallAlert';
+import { OffShiftPill } from '../../components/ui/OffShiftPill';
+import { useAuth } from '../../context/AuthContext';
+import { useOffShiftSync } from '../../hooks/useOffShiftSync';
 import { useItemReadyToasts, dismissReady, clearReady } from '../../stores/itemReadyToast';
 
 export default function StaffLayout() {
   const router = useRouter();
   const toasts = useItemReadyToasts();
+  const { staffInfo } = useAuth();
+  // Off shift: mute this phone while its staffer is clocked out (stores/offShift).
+  useOffShiftSync(staffInfo?.restaurantId ? `waiter:${staffInfo.restaurantId}` : null);
 
   // Drop any lingering cards when leaving the staff area (logout / role switch).
   useEffect(() => clearReady, []);
@@ -85,6 +91,7 @@ export default function StaffLayout() {
 
       {/* Call Staff — full-screen ringing alert over whatever screen is open. */}
       <StaffCallAlert />
+      <OffShiftPill />
 
       <ItemReadyToast
         toasts={toasts}

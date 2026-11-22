@@ -33,6 +33,7 @@ import { printKot, getStatus as getPrinterStatus, getPrinters } from '../../serv
 import { applyAutoPrintSettings, kotAutoPrintFor, drainPendingPrintJobs, handleSinkSuperseded, watchPrintDispatch } from '../../services/printSink';
 import { getPrintDeviceId } from '../../services/printDevice';
 import { announceNewOrders } from '../../services/voiceAlerts';
+import { alertsMuted } from '../../stores/offShift';
 import { useAuth } from '../../context/AuthContext';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { BottomNavbar, type BottomNavTab } from '../../components/ui/BottomNavbar';
@@ -48,6 +49,8 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 }
 
 async function playSound(file: any) {
+  // Kitchen alert sounds only — quiet while off shift.
+  if (alertsMuted()) return;
   try {
     await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
     const { sound } = await Audio.Sound.createAsync(file);

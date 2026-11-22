@@ -13,6 +13,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { normalizeChannel, type Channel } from '../constants/channel';
 import { play } from './sound';
+import { alertsMuted } from '../stores/offShift';
 
 export type VoiceAlertSetting = 'off' | 'female' | 'male';
 
@@ -104,7 +105,9 @@ export function announceNewOrders(
       _spokenOrderIds.delete(id);
     }
   }
-  if (fresh.length === 0 || opts.quiet) return true;
+  // Off shift: remember them as announced, say nothing. True so callers don't
+  // fall back to the plain chime either.
+  if (fresh.length === 0 || opts.quiet || alertsMuted()) return true;
 
   const now = Date.now();
   if (now - _lastSpokenAt < MIN_GAP_MS) return true;

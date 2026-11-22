@@ -76,8 +76,11 @@ import { useResyncOnReturn } from '../../hooks/useResyncOnReturn';
 import { expiryLevel, type ExpiryLevel } from '../../constants/sessionExpiry';
 import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
 import { announceNewOrders, isSpokenNewOrderNotification } from '../../services/voiceAlerts';
+import { alertsMuted } from '../../stores/offShift';
 
 async function playSound(file: any) {
+  // Every sound here is an alert (new order, item ready, collect cash).
+  if (alertsMuted()) return;
   try {
     await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
     const { sound } = await Audio.Sound.createAsync(file);
@@ -133,6 +136,8 @@ Notifications.setNotificationHandler({
     // Call Staff rings through its own full-screen alert while the app is open
     // (components/ui/StaffCallAlert) — a second banner + sound would double up.
     const isStaffCall = (n.request.content.data as any)?.type === 'staff_call';
+    // Off shift: nothing pops or sounds while the app is open (stores/offShift).
+    if (alertsMuted()) return { shouldShowAlert: false, shouldPlaySound: false, shouldSetBadge: false } as any;
     return {
       shouldShowAlert: !isStaffCall,
       shouldPlaySound: !isStaffCall && !isSpokenNewOrderNotification(n.request.content),
@@ -1291,7 +1296,7 @@ export default function StaffDashboard() {
 
         if (pickupSeededRef.current && readyByTable.size > 0) {
           void playSound(require('../../assets/audio/notifications/item-ready.wav'));
-          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          if (!alertsMuted()) void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           addReady(readyByTable, navByTable, activeTables);
         } else {
           // No new ready items — drop any card whose table is no longer active.
@@ -1683,7 +1688,7 @@ export default function StaffDashboard() {
       const amount = data?.amount as number | undefined;
       setPendingCashCount(c => c + 1);
       if (data?.channel === 'TAKEAWAY') refetchTakeaway();
-      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      if (!alertsMuted()) void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
       void playSound(require('../../assets/audio/notifications/waiter notification.mp3'));
       Notifications.scheduleNotificationAsync({
         content: {
