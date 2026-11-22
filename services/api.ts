@@ -2066,6 +2066,10 @@ export const printerApi = {
       isAddOn: boolean;
       isReprint?: boolean;
       reprintRequestedAt?: number | null;
+      /** Staff member who asked for the reprint (newer backends). */
+      reprintRequestedByName?: string | null;
+      /** Who placed the order — the KOT "By:" line (newer backends). */
+      orderedBy?: { source: 'qr' | 'staff'; name: string | null } | null;
       /** Which registered printer this ticket is addressed to. */
       printerId?: string;
       printerName?: string;

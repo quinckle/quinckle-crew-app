@@ -1603,6 +1603,7 @@ export default function StaffDashboard() {
           createdAt: data.createdAt ?? new Date().toISOString(),
           items: kotItems,
           isAddOn: false,
+          orderedBy: data.orderedBy ?? undefined,
         });
       }
     });
@@ -1735,6 +1736,8 @@ export default function StaffDashboard() {
           createdAt: data.order.createdAt ?? new Date().toISOString(),
           items,
           isAddOn: false,
+          orderedBy: data.order.orderedBy ?? undefined,
+          reprint: { at: data.requestedAt ?? null, by: data.requestedByName ?? null },
         }, false, data.requestedAt != null
           ? { dedupeKey: `reprint:${data.order.id}:${data.requestedAt}` }
           : { force: true });

@@ -1121,6 +1121,7 @@ export default function TableDetail() {
           modifiersSummary: item.modifiers_summary ?? undefined,
         })),
         isAddOn: false,
+        reprint: { at: Date.now(), by: staffInfo?.name ?? null },
       }, false, { force: true });
       if (result === 'printed') {
         setPrintJob({ phase: 'done', label: 'KOT' });
