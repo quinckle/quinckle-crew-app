@@ -1122,6 +1122,7 @@ export default function TableDetail() {
         })),
         isAddOn: false,
         reprint: { at: Date.now(), by: staffInfo?.name ?? null },
+        orderedBy: latestOrder.ordered_by ?? undefined,
       }, false, { force: true });
       if (result === 'printed') {
         setPrintJob({ phase: 'done', label: 'KOT' });

@@ -37,6 +37,8 @@ export type KitchenTicket = {
   channel?:  Channel;
   pickupToken?: string | null;
   sessionRef?: string | null;
+  /** Who placed it — printed on a KOT reprinted from this card. */
+  orderedBy?: { source: 'qr' | 'staff'; name: string | null } | null;
   items:     KitchenItem[];
 };
 
