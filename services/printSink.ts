@@ -180,6 +180,8 @@ export async function drainPendingPrintJobs(): Promise<void> {
           modifiersSummary: i.modifiersSummary ?? undefined,
         })),
         isAddOn: Boolean(job.isAddOn),
+        orderedBy: job.orderedBy ?? undefined,
+        reprint: isReprint ? { at: job.reprintRequestedAt ?? null, by: job.reprintRequestedByName ?? null } : undefined,
       },
       Boolean(job.isAddOn),
       // Reprints share one de-dupe key across the Ably push and this fallback,
