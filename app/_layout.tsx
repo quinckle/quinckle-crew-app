@@ -9,6 +9,7 @@ import { initPrinter } from '@/services/printer';
 import { registerPrintSinkRunner, watchPrintSinkLifecycle } from '@/services/printSink';
 import { watchForOtaUpdates } from '@/services/otaUpdate';
 import { OtaUpdateOverlay } from '@/components/ui/OtaUpdateOverlay';
+import { NewAppSheet } from '@/components/ui/NewAppSheet';
 import { isSpokenNewOrderNotification } from '@/services/voiceAlerts';
 import { installCrashReporting, setCrashRoute } from '@/services/crashReport';
 import CrashScreen from '@/components/ui/CrashScreen';
@@ -90,6 +91,8 @@ export default function RootLayout() {
             },
           }}
         />
+        {/* 1.0 app only: "the new Crew app is here", on every open. */}
+        <NewAppSheet />
         {/* "Updating Quinckle Crew" while a pushed update installs, instead of a blank reload. */}
         <OtaUpdateOverlay />
       </AuthProvider>
