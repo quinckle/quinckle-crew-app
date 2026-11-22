@@ -496,10 +496,12 @@ export function buildInvoiceText(bill: InvoiceBill, paper: PaperProfile | number
   lines.push(`[C]${D}`);
   lines.push(bill.gstRegistered ? '[C]<b>TAX INVOICE</b>' : '[C]<b>BILL</b>');
   if (isOffPremise(bill.channel)) {
-    lines.push(`[C]<b>*** ${channelLabel(bill.channel).toUpperCase()} ***</b>`);
-    if (bill.pickupToken) {
-      lines.push(`[C]<b><font size="big">${bill.pickupToken}</font></b>`);
-    }
+    // One line: channel flush left, token flush right. "tall" doubles the
+    // height only, so the width math of leftRight() still holds on 58/80mm.
+    const label = channelLabel(bill.channel).toUpperCase();
+    const token = bill.pickupToken?.trim() ?? '';
+    const header = token ? leftRight(label, token, W) : label;
+    lines.push(`[L]<b><font size="tall">${header}</font></b>`);
   } else {
     lines.push(`[C]Table T${tableStr}`);
   }

@@ -94,3 +94,36 @@ test('the end feed keeps its 8mm while the wait grows', () => {
     }
   }
 });
+
+// Takeaway/delivery header: one line, channel flush left, token flush right,
+// no "*** ***" — the full paper width on both 58 and 80mm.
+function offPremiseHeader(paper: number, channel: 'TAKEAWAY' | 'DELIVERY', pickupToken: string | null) {
+  const profile = profileFromWidth(paper);
+  const text = buildInvoiceText({
+    restaurantName: 'Test', tableNumber: '', channel, pickupToken, items: [], subtotal: 0, tax: 0,
+    grandTotal: 100, isPaid: true, createdAt: new Date().toISOString(),
+  } as any, profile);
+  const lines = text.split('\n');
+  const i = lines.findIndex(l => l.includes('<font size="tall">'));
+  return { text, line: lines[i], W: profile.charsPerLine };
+}
+
+for (const paper of [58, 80]) {
+  test(`${paper}mm takeaway header puts TAKEAWAY left and the token right`, () => {
+    const { text, line, W } = offPremiseHeader(paper, 'TAKEAWAY', 'TK-12');
+    assert.ok(!text.includes('***'));
+    const inner = line.match(/<font size="tall">(.*)<\/font>/)![1];
+    assert.equal(inner.length, W);
+    assert.ok(inner.startsWith('TAKEAWAY '));
+    assert.ok(inner.endsWith(' TK-12'));
+  });
+  test(`${paper}mm tokenless takeaway prints just the label`, () => {
+    const { line } = offPremiseHeader(paper, 'TAKEAWAY', null);
+    assert.equal(line, '[L]<b><font size="tall">TAKEAWAY</font></b>');
+  });
+}
+
+test('delivery uses the same one-line header', () => {
+  const { line } = offPremiseHeader(58, 'DELIVERY', 'DL-4');
+  assert.match(line, /^\[L\]<b><font size="tall">DELIVERY +DL-4<\/font><\/b>$/);
+});
