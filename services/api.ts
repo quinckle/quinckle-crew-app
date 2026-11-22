@@ -1,4 +1,5 @@
 import type { LoyaltyNudge } from './invoiceTemplate';
+import type { KotOrderedBy } from './kotTemplate';
 import { API_BASE_URL } from '../constants/env';
 import type { CancelReason } from '../constants/adjustmentReasons';
 import type { LivenessTelemetry } from './face';
@@ -196,7 +197,7 @@ export const devApi = {
 // ── Kitchen (CHEF) ────────────────────────────────────────────────────────────
 
 export interface KitchenTicketItem { item_id: string; name: string; qty: number; note: string | null; modifiers_summary?: string | null; item_status: 'pending' | 'done'; }
-export interface KitchenTicket { order_id: string; table_number: number; status: 'received' | 'preparing'; channel?: Channel; pickup_token?: string | null; session_ref?: string | null; placed_at: string; items: KitchenTicketItem[]; }
+export interface KitchenTicket { order_id: string; table_number: number; status: 'received' | 'preparing'; channel?: Channel; pickup_token?: string | null; session_ref?: string | null; ordered_by?: KotOrderedBy | null; placed_at: string; items: KitchenTicketItem[]; }
 export interface KitchenCompletedPage { tickets: KitchenTicket[]; page: number; limit: number; hasMore: boolean; }
 
 export const kitchen = {
@@ -389,7 +390,7 @@ export interface BillOrderItem {
    */
   undo?: { action_id: string | null; from_qty: number; to_qty: number; ms_left: number } | null;
 }
-export interface BillOrder { order_id: string; placed_at: string; status: 'received' | 'preparing' | 'ready' | 'served'; items: BillOrderItem[]; order_total: number; }
+export interface BillOrder { order_id: string; placed_at: string; /** Who placed it (newer backends) — KOT "By:" line. */ ordered_by?: KotOrderedBy | null; status: 'received' | 'preparing' | 'ready' | 'served'; items: BillOrderItem[]; order_total: number; }
 /**
  * Canonical bill breakdown — same shape returned by /dine/cart/preview and
  * /checkout/staff-collect on the diner side. Always read from this object;

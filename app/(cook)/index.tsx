@@ -120,6 +120,7 @@ export default function CookDashboard() {
     channel:  normalizeChannel(t.channel),
     pickupToken: t.pickup_token ?? null,
     sessionRef: t.session_ref ?? null,
+    orderedBy: t.ordered_by ?? null,
     placedAt: t.placed_at,
     status:   isCompleted ? 'completed' : 'new',
     items: t.items.map((item: any) => ({
@@ -562,6 +563,7 @@ export default function CookDashboard() {
                   items: item.items.map((i) => parseItem(i.name, i.modifiersSummary)),
                   isAddOn: false,
                   reprint: { at: Date.now(), by: staffInfo?.name ?? null },
+                  orderedBy: item.orderedBy ?? undefined,
                 }, false, { force: true });
               } : undefined}
             />
