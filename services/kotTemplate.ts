@@ -33,20 +33,57 @@ export interface KotOrder {
   createdAt: string; // ISO string
   items: KotItem[];
   isAddOn?: boolean;
-  isUrgent?: boolean;
   channel?: 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY';
   pickupToken?: string;
+  /** Who placed it (backend `orderedBy`). Prints the "By:" line; omitted when unknown. */
+  orderedBy?: KotOrderedBy | null;
+  /** Present on a reprint: when it was asked for (ms or ISO) and by whom. */
+  reprint?: { at?: number | string | null; by?: string | null } | null;
+}
+
+export interface KotOrderedBy {
+  source: 'qr' | 'staff';
+  name: string | null;
 }
 
 // ── Layout helpers ─────────────────────────────────────────────────────────────
 
-function center(text: string, width: number): string {
-  const pad = Math.max(0, Math.floor((width - text.length) / 2));
-  return ' '.repeat(pad) + text;
+function divider(width: number, char = '-'): string {
+  return char.repeat(width);
 }
 
-function divider(width: number, char = '─'): string {
-  return char.repeat(width);
+/** `left` flush left, `right` flush right, exactly `width` chars. */
+function leftRight(left: string, right: string, width: number): string {
+  const maxLeft = Math.max(0, width - right.length - 1);
+  const l = left.length > maxLeft ? left.slice(0, Math.max(0, maxLeft - 2)) + '..' : left;
+  return l.padEnd(maxLeft) + ' ' + right;
+}
+
+/** Word-wrap to `width`; words longer than a line are hard-split. */
+function wrapText(text: string, width: number): string[] {
+  const w = Math.max(1, width);
+  const out: string[] = [];
+  let cur = '';
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    let rest = word;
+    while (rest.length > w) {
+      if (cur) { out.push(cur); cur = ''; }
+      out.push(rest.slice(0, w));
+      rest = rest.slice(w);
+    }
+    if (!cur) cur = rest;
+    else if ((cur + ' ' + rest).length <= w) cur += ' ' + rest;
+    else { out.push(cur); cur = rest; }
+  }
+  if (cur) out.push(cur);
+  return out.length ? out : [''];
+}
+
+/** "By: Rahul (crew)" / "By: Priya · Customer (QR)" / "By: Customer (QR)". */
+export function orderedByLabel(by: KotOrderedBy): string {
+  const name = by.name?.trim();
+  if (by.source === 'staff') return name ? `By: ${name} (crew)` : 'By: Crew';
+  return name ? `By: ${name} · Customer (QR)` : 'By: Customer (QR)';
 }
 
 function formatTime(iso: string): string {
@@ -80,41 +117,46 @@ export function buildKotText(order: KotOrder, paper: PaperProfile | number = 58)
   const D = divider(W, '=');
   const d = divider(W);
 
-  // ── Header ────────────────────────────────────────────────────────────────
-  lines.push(`[C]<b><font size="big">${order.restaurantName}</font></b>`);
-  lines.push(`[C]${D}`);
+  // ── Where + which ticket ──────────────────────────────────────────────────
+  // Line 1 (bold, double height — "tall" keeps normal width so leftRight's
+  // maths holds): table or token flush left, channel flush right.
+  // Off-premise covers takeaway AND delivery; a tokenless one still must not
+  // claim to be a table.
+  const offPremise = isOffPremise(order.channel);
+  const where = offPremise
+    ? (order.pickupToken?.trim() || '')
+    : `T${String(order.tableNumber).padStart(2, '0')}`;
+  const channel = offPremise ? channelLabel(order.channel).toUpperCase() : 'DINE-IN';
+  lines.push(`[L]<b><font size="tall">${where ? leftRight(where, channel, W) : channel}</font></b>`);
 
-  // ── Table / Takeaway + Order # ─────────────────────────────────────────────
-  // Off-premise covers takeaway AND delivery. Before this, a delivery order fell
-  // into the dine-in branch and the kitchen got a ticket reading "Tundefined".
-  if (isOffPremise(order.channel) && order.pickupToken) {
-    lines.push(`[C]<b><font size="big">${order.pickupToken}</font></b>`);
-    lines.push(`[C]${channelLabel(order.channel)}`);
-  } else if (isOffPremise(order.channel)) {
-    // Tokenless off-premise order — still must not claim to be a table.
-    lines.push(`[C]<b><font size="big">${channelLabel(order.channel).toUpperCase()}</font></b>`);
-  } else {
-    lines.push(`[C]<b><font size="big">T${String(order.tableNumber).padStart(2, '0')}</font></b>`);
-    lines.push('[C]Dine In');
-  }
-
-  // Use sequential day-counter when available; fall back to last-6-chars of id
+  // Line 2: KOT number + time the order was placed (a reprint keeps both, so
+  // the kitchen can match it to the first ticket).
   const ordNum = order.orderNumber != null
     ? `#${order.orderNumber}`
     : `#${order.id.slice(-6).toUpperCase()}`;
-  const timeStr = formatTime(order.createdAt);
-  lines.push(`[C]Order ${ordNum}`);
-  if (order.sessionRef) {
-    lines.push(`[C]Session ${order.sessionRef}`);
-  } else if (order.sessionId) {
-    lines.push(`[C]Session ${toSessionRef(order.sessionId)}`);
+  lines.push(`[L]<b>${leftRight(`KOT ${ordNum}`, formatTime(order.createdAt), W)}</b>`);
+  lines.push(`[L]${D}`);
+
+  // ── Band: REPRINT / ADD-ON, before anything gets cooked ──────────────────
+  if (order.reprint || order.isAddOn) {
+    const band = order.reprint ? (order.isAddOn ? 'REPRINT · ADD-ON' : 'REPRINT') : 'ADD-ON';
+    lines.push(`[C]<b><font size="tall">${band}</font></b>`);
+    if (order.reprint) {
+      const at = order.reprint.at != null ? new Date(order.reprint.at) : new Date();
+      const when = formatTime(Number.isNaN(at.getTime()) ? new Date().toISOString() : at.toISOString());
+      const by = order.reprint.by?.trim();
+      for (const ln of wrapText(`Reprinted ${when}${by ? ` by ${by}` : ''}`, W)) lines.push(`[C]${ln}`);
+    }
+    lines.push(`[L]${d}`);
   }
-  lines.push(`[C]${timeStr}`);
 
-  lines.push(`[L]${d}`);
+  // ── Who placed it ─────────────────────────────────────────────────────────
+  if (order.orderedBy) {
+    for (const ln of wrapText(orderedByLabel(order.orderedBy), W)) lines.push(`[L]<b>${ln}</b>`);
+    lines.push(`[L]${d}`);
+  }
 
-  // ── Items — grouped by category ───────────────────────────────────────────
-  // Build category buckets preserving insertion order
+  // ── Items — grouped by category, quantity in its own column ───────────────
   const categoryOrder: string[] = [];
   const categoryMap = new Map<string, KotItem[]>();
   for (const item of order.items) {
@@ -125,41 +167,47 @@ export function buildKotText(order: KotOrder, paper: PaperProfile | number = 58)
     }
     categoryMap.get(cat)!.push(item);
   }
-
   const hasCategories = categoryOrder.some(c => c !== '');
 
+  // " 2  Paneer Tikka": qty right-aligned in its column, names (and their
+  // wrapped lines, add-ons, notes) all start at the same indent.
+  const qtyW = Math.max(2, ...order.items.map(i => String(i.quantity).length));
+  const indent = ' '.repeat(qtyW + 2);
+  const textW = Math.max(8, W - indent.length);
+
   for (const cat of categoryOrder) {
-    const catItems = categoryMap.get(cat) ?? [];
-    if (hasCategories && cat) {
-      // Category header — small caps label
-      lines.push(`[L]<b>${cat.toUpperCase()}</b>`);
-    }
-    for (const item of catItems) {
-      lines.push(`[L]<b> ${item.quantity} x  ${item.name}</b>`);
+    if (hasCategories && cat) lines.push(`[L]<b>${cat.toUpperCase()}</b>`);
+    for (const item of categoryMap.get(cat) ?? []) {
+      wrapText(item.name, textW).forEach((ln, i) => {
+        const lead = i === 0 ? `${String(item.quantity).padStart(qtyW)}  ` : indent;
+        lines.push(`[L]<b>${lead}${ln}</b>`);
+      });
       // Variant / modifier summary (e.g. "Medium, Extra Shot")
-      if (item.modifiersSummary) {
-        lines.push(`[L]       * ${item.modifiersSummary}`);
-      } else if (item.modifiers?.length) {
-        for (const mod of item.modifiers) {
-          lines.push(`[L]       + ${mod.name}`);
-        }
+      const mods = item.modifiersSummary
+        ? [item.modifiersSummary]
+        : (item.modifiers ?? []).map(m => m.name);
+      for (const mod of mods) {
+        wrapText(`+ ${mod}`, textW).forEach((ln, i) => lines.push(`[L]${indent}${i === 0 ? '' : '  '}${ln}`));
       }
-      if (item.notes) {
-        lines.push(`[L]       — ${item.notes}`);
+      if (item.notes?.trim()) {
+        for (const ln of wrapText(`Note: ${item.notes.trim()}`, textW)) lines.push(`[L]${indent}${ln}`);
       }
-      lines.push('[L] ');
     }
   }
 
+  // ── Count, so the pass can check nothing's missing ────────────────────────
+  const itemCount = order.items.length;
+  const qtyTotal = order.items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0);
+  lines.push(`[L]${d}`);
+  lines.push(`[L]${leftRight(`${itemCount} ${itemCount === 1 ? 'item' : 'items'}`, `${qtyTotal} qty`, W)}`);
   lines.push(`[L]${d}`);
 
-  // ── Special tags ──────────────────────────────────────────────────────────
-  if (order.isAddOn) {
-    lines.push('[C]<b> *** ADD-ON ORDER *** </b>');
+  // ── Footer: venue + session, small ────────────────────────────────────────
+  if (order.restaurantName?.trim()) {
+    for (const ln of wrapText(order.restaurantName.trim(), W)) lines.push(`[C]${ln}`);
   }
-  if (order.isUrgent) {
-    lines.push('[C]<b> *** URGENT *** </b>');
-  }
+  const ref = order.sessionRef || (order.sessionId ? toSessionRef(order.sessionId) : '');
+  if (ref) lines.push(`[C]${ref}`);
 
   // Blank lines + cut
   lines.push('[L] ');

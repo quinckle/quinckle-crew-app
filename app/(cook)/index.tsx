@@ -331,6 +331,7 @@ export default function CookDashboard() {
             createdAt: data.createdAt ?? new Date().toISOString(),
             items,
             isAddOn: false,
+            orderedBy: data.orderedBy ?? undefined,
           }, false);
         }
       }
@@ -366,6 +367,8 @@ export default function CookDashboard() {
           createdAt: data.order.createdAt ?? new Date().toISOString(),
           items,
           isAddOn: false,
+          orderedBy: data.order.orderedBy ?? undefined,
+          reprint: { at: data.requestedAt ?? null, by: data.requestedByName ?? null },
         }, false, data.requestedAt != null
           // Shared key with the durable pull-queue fallback — same reprint
           // request never prints twice; a NEW request (new requestedAt) does.
@@ -558,6 +561,7 @@ export default function CookDashboard() {
                   createdAt: item.placedAt ?? new Date().toISOString(),
                   items: item.items.map((i) => parseItem(i.name, i.modifiersSummary)),
                   isAddOn: false,
+                  reprint: { at: Date.now(), by: staffInfo?.name ?? null },
                 }, false, { force: true });
               } : undefined}
             />
