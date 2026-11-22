@@ -11,6 +11,7 @@ import { watchForOtaUpdates } from '@/services/otaUpdate';
 import { OtaUpdateOverlay } from '@/components/ui/OtaUpdateOverlay';
 import { NewAppSheet } from '@/components/ui/NewAppSheet';
 import { isSpokenNewOrderNotification } from '@/services/voiceAlerts';
+import { alertsMuted } from '@/stores/offShift';
 import { installCrashReporting, setCrashRoute } from '@/services/crashReport';
 import CrashScreen from '@/components/ui/CrashScreen';
 
@@ -25,6 +26,8 @@ Notifications.setNotificationHandler({
     // Call Staff rings through its own full-screen alert while the app is open
     // (components/ui/StaffCallAlert) — a second banner + sound would double up.
     const isStaffCall = (n.request.content.data as any)?.type === 'staff_call';
+    // Off shift: nothing pops or sounds while the app is open (stores/offShift).
+    if (alertsMuted()) return { shouldShowAlert: false, shouldPlaySound: false, shouldSetBadge: false } as any;
     return {
       shouldShowAlert: !isStaffCall,
       shouldPlaySound: !isStaffCall && !isSpokenNewOrderNotification(n.request.content),

@@ -30,6 +30,7 @@ import { QuinckleColors as C } from '../../constants/Colors';
 import { useAuth } from '../../context/AuthContext';
 import { crewStaffCalls, type StaffCall } from '../../services/api';
 import { subscribeChannel } from '../../services/realtime';
+import { useOffShift } from '../../stores/offShift';
 
 /** One ring on the phone lasts this long; the server re-rings every 30s. */
 const LOCAL_RING_MS = 25_000;
@@ -133,6 +134,9 @@ export function StaffCallAlert() {
   const restaurantId = staffInfo?.restaurantId ?? null;
   const insets = useSafeAreaInsets();
   const { start: startRing, stop: stopRing } = useRinger();
+  // Off shift (clocked out at the station): calls stay listed for whoever is
+  // on, but this phone neither rings nor shows them.
+  const { alertsMuted: offShift } = useOffShift();
 
   const [calls, setCalls] = useState<StaffCall[]>([]);
   // Calls this waiter dismissed with "Not me" — quiet on this phone, still listed.
@@ -217,9 +221,9 @@ export function StaffCallAlert() {
     return () => { recv.remove(); resp.remove(); app.remove(); };
   }, [restaurantId, role, refresh]);
 
-  const active = calls.find(c => !(c.id in snoozed)) ?? null;
+  const active = offShift ? null : calls.find(c => !(c.id in snoozed)) ?? null;
   const othersWaiting = calls.filter(c => c.id !== active?.id).length;
-  const snoozedOpen = calls.filter(c => c.id in snoozed);
+  const snoozedOpen = offShift ? [] : calls.filter(c => c.id in snoozed);
 
   // Ring while there's an unsnoozed call on screen.
   const activeKey = active ? `${active.id}:${active.ring}` : null;

@@ -2481,6 +2481,22 @@ export const crewMyAttendance = {
     ),
 };
 
+/**
+ * Off shift (GET /api/crew/me/shift). When the venue ties alerts to the
+ * attendance station, `alertsMuted` is true while this staffer is clocked out
+ * and somebody else is clocked in. See stores/offShift.ts.
+ */
+export type MyShift = {
+  followsAttendance: boolean;
+  onShift: boolean;
+  since: string | null;
+  alertsMuted: boolean;
+};
+
+export const crewMyShift = {
+  get: () => request<{ success: boolean; data: MyShift }>('GET', '/api/crew/me/shift', undefined, true),
+};
+
 // ── Attendance station (ATTENDANCE_STATION) ───────────────────────────────────
 //
 // The station is a DEVICE mode, not a person. This device is signed in as the
