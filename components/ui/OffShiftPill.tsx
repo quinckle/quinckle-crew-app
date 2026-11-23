@@ -12,11 +12,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { QuinckleColors as C } from '../../constants/Colors';
 import { useOffShift } from '../../stores/offShift';
+import { useAnySheetOpen } from '../../stores/openSheets';
 
 export function OffShiftPill() {
   const { alertsMuted } = useOffShift();
+  const sheetOpen = useAnySheetOpen();
   const insets = useSafeAreaInsets();
-  if (!alertsMuted) return null;
+  // Drawn by the layout above every screen, so it would float over a
+  // BottomSheet. Step aside while one is open.
+  if (!alertsMuted || sheetOpen) return null;
   return (
     <View
       pointerEvents="none"
