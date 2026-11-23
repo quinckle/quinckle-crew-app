@@ -1,11 +1,12 @@
 import { useEffect } from 'react';
 
 import { subscribeChannel } from '../services/realtime';
+import { refreshMyClock, resetMyClock } from '../stores/myClock';
 import { refreshOffShift, resetOffShift } from '../stores/offShift';
 import { useResyncOnReturn } from './useResyncOnReturn';
 
 /**
- * Keep the off-shift store current while a role's screens are mounted: on
+ * Keep the off-shift and clock stores current while a role's screens are mounted: on
  * open, when someone clocks in or out at the station (Ably `shift_changed`),
  * and when the app comes back to the front. Event-driven, no polling.
  *
@@ -14,10 +15,11 @@ import { useResyncOnReturn } from './useResyncOnReturn';
 export function useOffShiftSync(channel: string | null): void {
   useEffect(() => {
     if (!channel) return;
-    void refreshOffShift();
-    const off = subscribeChannel(channel, 'shift_changed', () => { void refreshOffShift(); });
-    return () => { off(); resetOffShift(); };
+    const refresh = () => { void refreshOffShift(); void refreshMyClock(); };
+    refresh();
+    const off = subscribeChannel(channel, 'shift_changed', refresh);
+    return () => { off(); resetOffShift(); resetMyClock(); };
   }, [channel]);
 
-  useResyncOnReturn(channel, () => { void refreshOffShift(); });
+  useResyncOnReturn(channel, () => { void refreshOffShift(); void refreshMyClock(); });
 }

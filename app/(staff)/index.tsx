@@ -77,6 +77,8 @@ import { expiryLevel, type ExpiryLevel } from '../../constants/sessionExpiry';
 import { isOffPremise, channelLabel, locationLabel as channelLocationLabel } from '../../constants/channel';
 import { announceNewOrders, isSpokenNewOrderNotification } from '../../services/voiceAlerts';
 import { alertsMuted } from '../../stores/offShift';
+import { useMyClock } from '../../stores/myClock';
+import { AttendanceSheet } from '../../components/ui/AttendanceSheet';
 
 async function playSound(file: any) {
   // Every sound here is an alert (new order, item ready, collect cash).
@@ -320,6 +322,9 @@ const STATUS_META: Record<TableStatus, { label: string; color: string }> = {
 export default function StaffDashboard() {
   const insets = useSafeAreaInsets();
   const { staffInfo, capabilities } = useAuth();
+  // Swipe to clock in/out from this phone — icon shows once the venue turns it on.
+  const myClock = useMyClock();
+  const [showAttendance, setShowAttendance] = useState(false);
   const { width: winWidth, isTablet, isWide } = useResponsive();
   // A takeaway placed and paid on the order screen comes back here with what
   // happened — shown as a toast, then cleared so a refocus doesn't repeat it.
@@ -2415,6 +2420,22 @@ export default function StaffDashboard() {
             gives every icon the same height and centre line; the menu sits
             at the edge where people reach for it. */}
         <View style={styles.headerGroup}>
+          {/* Attendance — swipe to clock in/out, inside the venue only. */}
+          {myClock.enabled && (
+            <>
+              <TouchableOpacity
+                style={styles.headerGroupBtn}
+                onPress={() => setShowAttendance(true)}
+                activeOpacity={0.6}
+                accessibilityLabel={myClock.clockedInSince ? 'Attendance, clocked in' : 'Attendance, not clocked in'}
+              >
+                <Ionicons name="finger-print-outline" size={21} color={QuinckleColors.textPrimary} />
+                {!!myClock.clockedInSince && <View style={styles.clockedInDot} />}
+              </TouchableOpacity>
+              <View style={styles.headerGroupDivider} />
+            </>
+          )}
+
           {/* Google review card — only when the owner has set a review link. */}
           {reviewTarget && (
             <>
@@ -3248,6 +3269,15 @@ export default function StaffDashboard() {
         </BottomSheet>
       )}
 
+      {myClock.enabled && (
+        <AttendanceSheet
+          visible={showAttendance}
+          onClose={() => setShowAttendance(false)}
+          clock={myClock}
+          restaurantName={staffInfo?.restaurantName}
+        />
+      )}
+
       {reviewTarget && (
         <GoogleReviewCard
           visible={showReview}
@@ -3601,6 +3631,17 @@ const styles = StyleSheet.create({
     borderColor: QuinckleColors.border,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  clockedInDot: {
+    position: 'absolute',
+    top: 8,
+    right: 10,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: QuinckleColors.success,
+    borderWidth: 1.5,
+    borderColor: QuinckleColors.surface,
   },
   cashBadge: {
     position: 'absolute',

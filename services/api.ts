@@ -2498,6 +2498,25 @@ export const crewMyShift = {
   get: () => request<{ success: boolean; data: MyShift }>('GET', '/api/crew/me/shift', undefined, true),
 };
 
+/**
+ * Swipe to clock in/out from this phone (GET|POST /api/crew/me/clock). The
+ * server checks the GPS fix is inside the venue; it never returns distances.
+ * Refusals throw with `code`: OUTSIDE_VENUE, MOCKED_LOCATION,
+ * LOCATION_UNCERTAIN, PHONE_CLOCK_OFF, VENUE_LOCATION_MISSING, BAD_LOCATION.
+ */
+export type MyClock = {
+  enabled: boolean;
+  clockedInSince: string | null;
+  workedMinutesToday: number;
+  lastPunch: { kind: 'IN' | 'OUT'; at: string } | null;
+};
+
+export const crewMyClock = {
+  get: () => request<{ success: boolean; data: MyClock }>('GET', '/api/crew/me/clock', undefined, true),
+  clock: (body: { kind: 'IN' | 'OUT'; latitude: number; longitude: number; accuracy: number | null; mocked: boolean | null }) =>
+    request<{ success: boolean; data: MyClock & { alreadyRecorded: boolean } }>('POST', '/api/crew/me/clock', body, true),
+};
+
 // ── Attendance station (ATTENDANCE_STATION) ───────────────────────────────────
 //
 // The station is a DEVICE mode, not a person. This device is signed in as the

@@ -3,7 +3,7 @@
     "name": "QuinckleCrew",
     "slug": "QuinckleCrew",
     "owner": "quinckle",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "orientation": "default",
     "icon": "./assets/images/quinckle crew icon converted.png",
     "scheme": "quincklecrew",
@@ -15,7 +15,7 @@
     },
     "android": {
       "package": "com.quinckle.crew",
-      "versionCode": 2,
+      "versionCode": 3,
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#0A0A0B",
@@ -94,6 +94,14 @@
         {
           "cameraPermission": "Quinckle uses the camera only to check a staff member in at the attendance station. Images are never stored or uploaded.",
           "recordAudioAndroid": false
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Quinckle Crew checks your location only when you swipe to clock in or out, to confirm you're at the restaurant.",
+          "isAndroidBackgroundLocationEnabled": false,
+          "isIosBackgroundLocationEnabled": false
         }
       ]
     ],
