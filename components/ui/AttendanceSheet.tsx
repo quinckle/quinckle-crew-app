@@ -23,7 +23,7 @@ import {
 import { QuinckleColors as C, Radius, Spacing } from '../../constants/Colors';
 import { crewMyClock, type MyClock } from '../../services/api';
 import { setMyClock } from '../../stores/myClock';
-import { refreshOffShift } from '../../stores/offShift';
+import { refreshOffShift, useOffShift } from '../../stores/offShift';
 import { BottomSheet } from './BottomSheet';
 
 type Dir = 'in' | 'out';
@@ -181,6 +181,7 @@ export function AttendanceSheet({
     return () => { if (closeTimer.current) clearTimeout(closeTimer.current); };
   }, [visible]);
 
+  const { alertsMuted } = useOffShift();
   const clockedIn = !!clock.clockedInSince;
   const dir: Dir = clockedIn ? 'out' : 'in';
 
@@ -224,6 +225,11 @@ export function AttendanceSheet({
             <Text style={styles.date}>{today}</Text>
           </View>
           {!!restaurantName && <Text style={styles.venue}>{restaurantName}</Text>}
+          {alertsMuted && (
+            <Text style={styles.venue}>
+              <Text style={styles.offShift}>Off shift</Text> · alerts paused till you clock in
+            </Text>
+          )}
         </View>
 
         {lastAt && (
@@ -314,6 +320,7 @@ const styles = StyleSheet.create({
   statusText: { flex: 1, color: C.textPrimary, fontSize: 15, fontWeight: '600' },
   date: { color: C.textSecondary, fontSize: 13 },
   venue: { color: C.textSecondary, fontSize: 13, marginTop: 2, marginLeft: 18 },
+  offShift: { color: C.info, fontWeight: '600' },
 
   row: { flexDirection: 'row', gap: Spacing.sm },
   stat: {
