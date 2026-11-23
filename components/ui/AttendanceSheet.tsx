@@ -27,7 +27,7 @@ import { refreshOffShift } from '../../stores/offShift';
 import { BottomSheet } from './BottomSheet';
 
 type Dir = 'in' | 'out';
-type Problem = 'outside' | 'mocked' | 'noFix' | 'permission' | 'gpsOff' | 'offline' | 'turnedOff';
+type Problem = 'outside' | 'mocked' | 'noFix' | 'permission' | 'gpsOff' | 'offline' | 'turnedOff' | 'failed';
 type Phase =
   | { kind: 'idle' }
   | { kind: 'checking' }
@@ -46,6 +46,7 @@ function copy(problem: Problem, dir: Dir): { tone: 'err' | 'warn'; title: string
     case 'gpsOff': return { tone: 'warn', title: 'Location is off', body: "Turn on location in your phone's settings and try again." };
     case 'offline': return { tone: 'warn', title: 'No internet', body: 'Nothing was recorded. Check your connection and try again.' };
     case 'turnedOff': return { tone: 'warn', title: `Couldn't clock you ${dir}`, body: 'Clocking in from your phone is turned off for this restaurant.' };
+    case 'failed': return { tone: 'warn', title: 'Something went wrong', body: 'Nothing was recorded. Try again in a moment.' };
   }
 }
 
@@ -55,7 +56,10 @@ function problemFromError(e: unknown): Problem {
   if (code === 'MOCKED_LOCATION') return 'mocked';
   if (code === 'LOCATION_UNCERTAIN' || code === 'BAD_LOCATION') return 'noFix';
   if (code === 'PHONE_CLOCK_OFF' || code === 'VENUE_LOCATION_MISSING') return 'turnedOff';
-  return 'offline';
+  // fetch() itself failing (no connection) vs the server answering with an error.
+  const msg = String((e as { message?: string })?.message ?? '');
+  if (e instanceof TypeError || /network request failed|failed to fetch|warming up/i.test(msg)) return 'offline';
+  return 'failed';
 }
 
 const time = (d: Date) => d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true }).toUpperCase();
@@ -209,7 +213,7 @@ export function AttendanceSheet({
   const lastAt = last ? new Date(last.at) : null;
 
   return (
-    <BottomSheet visible={visible} onClose={() => { if (!busy) onClose(); }} title="Attendance" dismissible={!busy} disableInternalScroll maxWidth={480}>
+    <BottomSheet visible={visible} onClose={() => { if (!busy) onClose(); }} title="Attendance" dismissible={!busy} maxWidth={480}>
       <View style={styles.body}>
         <View>
           <View style={styles.statusRow}>
