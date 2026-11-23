@@ -34,6 +34,8 @@ import { applyAutoPrintSettings, kotAutoPrintFor, drainPendingPrintJobs, handleS
 import { getPrintDeviceId } from '../../services/printDevice';
 import { announceNewOrders } from '../../services/voiceAlerts';
 import { alertsMuted } from '../../stores/offShift';
+import { useMyClock } from '../../stores/myClock';
+import { AttendanceSheet } from '../../components/ui/AttendanceSheet';
 import { useAuth } from '../../context/AuthContext';
 import { QuinckleColors, Radius, Spacing } from '../../constants/Colors';
 import { BottomNavbar, type BottomNavTab } from '../../components/ui/BottomNavbar';
@@ -84,6 +86,9 @@ function getInitials(name: string | undefined | null): string {
 export default function CookDashboard() {
   const insets = useSafeAreaInsets();
   const { staffInfo } = useAuth();
+  // Swipe to clock in/out from this phone — icon shows once the venue turns it on.
+  const myClock = useMyClock();
+  const [showAttendance, setShowAttendance] = useState(false);
   const knownOrderIdsRef = useRef<Set<string>>(new Set());
   // Auto-print fires when this device holds the Bluetooth pairing AND the
   // restaurant's KOT auto-print toggle is on. We gate on the *local* printer
@@ -484,6 +489,18 @@ export default function CookDashboard() {
           </View>
         </View>
 
+        {myClock.enabled && (
+          <TouchableOpacity
+            style={styles.attendanceBtn}
+            onPress={() => setShowAttendance(true)}
+            activeOpacity={0.6}
+            accessibilityLabel={myClock.clockedInSince ? 'Attendance, clocked in' : 'Attendance, not clocked in'}
+          >
+            <Ionicons name="finger-print-outline" size={20} color={QuinckleColors.textPrimary} />
+            {!!myClock.clockedInSince && <View style={styles.clockedInDot} />}
+          </TouchableOpacity>
+        )}
+
         <TouchableOpacity
           style={styles.avatarBtn}
           onPress={() => router.push('/(cook)/profile')}
@@ -615,6 +632,15 @@ export default function CookDashboard() {
         />
       )}
 
+      {myClock.enabled && (
+        <AttendanceSheet
+          visible={showAttendance}
+          onClose={() => setShowAttendance(false)}
+          clock={myClock}
+          restaurantName={staffInfo?.restaurantName}
+        />
+      )}
+
       {/* ── Bottom nav (shared component) ──────────────────────────────── */}
       <BottomNavbar<CookTab>
         activeTab={navTab}
@@ -685,6 +711,28 @@ const styles = StyleSheet.create({
     color:      QuinckleColors.warning,
     fontSize:   11,
     fontWeight: '500',
+  },
+  attendanceBtn: {
+    width:          36,
+    height:         36,
+    borderRadius:   18,
+    marginRight:    Spacing.sm,
+    alignItems:     'center',
+    justifyContent: 'center',
+    backgroundColor: QuinckleColors.surface,
+    borderWidth:    1.5,
+    borderColor:    QuinckleColors.border,
+  },
+  clockedInDot: {
+    position:        'absolute',
+    top:             5,
+    right:           5,
+    width:           8,
+    height:          8,
+    borderRadius:    4,
+    backgroundColor: QuinckleColors.success,
+    borderWidth:     1.5,
+    borderColor:     QuinckleColors.surface,
   },
   avatarBtn: {
     width:        36,
