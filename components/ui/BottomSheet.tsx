@@ -25,6 +25,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QuinckleColors, Radius, Spacing, Typography } from '../../constants/Colors';
+import { registerOpenSheet } from '../../stores/openSheets';
 
 const { height: SCREEN_H } = Dimensions.get('window');
 const DISMISS_DISTANCE = 80;
@@ -146,6 +147,13 @@ export function BottomSheet({
       animateClose();
     }
   }, [visible]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Tell layout-level overlays (Off shift pill) to step aside while this
+  // sheet is on screen, closing animation included.
+  useEffect(() => {
+    if (!mounted) return;
+    return registerOpenSheet();
+  }, [mounted]);
 
   // ── First layout → open ──────────────────────────────────────────────────────
 
