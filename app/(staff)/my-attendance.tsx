@@ -564,41 +564,50 @@ function MonthGrid({ y, m0, days, todayKey, range, selected, now, onPick }: {
   for (let d = 1; d <= n; d++) cells.push(keyOf(y, m0, d));
   while (cells.length % 7) cells.push(null);
 
+  // One row per week. A single wrapping row of 1/7-width cells can fit only
+  // six on some screen widths (layout rounding), which slides every date
+  // under the wrong weekday.
+  const renderCell = (k: string | null, i: number) => {
+    if (!k) return <View key={`b${i}`} style={styles.cellWrap} />;
+    const day = days.get(k);
+    const future = k > todayKey;
+    const outOfRange = k < range.from || k > range.to;
+    const s = day ? shownStatus(day, todayKey) : null;
+    const isToday = k === todayKey;
+    const m = s ? STATUS_META[s] : null;
+    const sub = !day ? '' : s === 'A' ? 'ABS' : s === 'L' ? 'LV' : s === 'T' ? 'NOW' : s === 'H' ? '½' : `${Math.floor(workedNow(day, now) / 60)}h`;
+    const cellStyle = [
+      styles.cell,
+      s === 'P' && { backgroundColor: m!.soft },
+      s === 'A' && { backgroundColor: m!.soft },
+      s === 'H' && { backgroundColor: m!.soft, borderColor: m!.border },
+      s === 'L' && { borderColor: m!.border, borderStyle: 'dashed' as const },
+      (s === 'T' || (isToday && !day)) && { borderColor: QuinckleColors.primary, backgroundColor: QuinckleColors.primarySoft },
+      outOfRange && !future && { opacity: 0.3 },
+      selected === k && styles.cellSel,
+    ];
+    const color = m ? m.color : isToday ? QuinckleColors.primary : future ? QuinckleColors.textMuted : QuinckleColors.textSecondary;
+    return (
+      <View key={k} style={styles.cellWrap}>
+        <TouchableOpacity style={cellStyle} disabled={future} onPress={() => onPick(k)} activeOpacity={0.7}>
+          <Text style={[styles.cellNum, { color }]}>{parseKey(k).d}</Text>
+          {!!sub && <Text style={[styles.cellSub, { color }]}>{sub}</Text>}
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
   return (
     <View style={{ paddingHorizontal: 10, paddingBottom: 10 }}>
       <View style={styles.dowRow}>
         {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((c, i) => <Text key={i} style={styles.dowText}>{c}</Text>)}
       </View>
       <View style={styles.grid}>
-        {cells.map((k, i) => {
-          if (!k) return <View key={`b${i}`} style={styles.cellWrap} />;
-          const day = days.get(k);
-          const future = k > todayKey;
-          const outOfRange = k < range.from || k > range.to;
-          const s = day ? shownStatus(day, todayKey) : null;
-          const isToday = k === todayKey;
-          const m = s ? STATUS_META[s] : null;
-          const sub = !day ? '' : s === 'A' ? 'ABS' : s === 'L' ? 'LV' : s === 'T' ? 'NOW' : s === 'H' ? '½' : `${Math.floor(workedNow(day, now) / 60)}h`;
-          const cellStyle = [
-            styles.cell,
-            s === 'P' && { backgroundColor: m!.soft },
-            s === 'A' && { backgroundColor: m!.soft },
-            s === 'H' && { backgroundColor: m!.soft, borderColor: m!.border },
-            s === 'L' && { borderColor: m!.border, borderStyle: 'dashed' as const },
-            (s === 'T' || (isToday && !day)) && { borderColor: QuinckleColors.primary, backgroundColor: QuinckleColors.primarySoft },
-            outOfRange && !future && { opacity: 0.3 },
-            selected === k && styles.cellSel,
-          ];
-          const color = m ? m.color : isToday ? QuinckleColors.primary : future ? QuinckleColors.textMuted : QuinckleColors.textSecondary;
-          return (
-            <View key={k} style={styles.cellWrap}>
-              <TouchableOpacity style={cellStyle} disabled={future} onPress={() => onPick(k)} activeOpacity={0.7}>
-                <Text style={[styles.cellNum, { color }]}>{parseKey(k).d}</Text>
-                {!!sub && <Text style={[styles.cellSub, { color }]}>{sub}</Text>}
-              </TouchableOpacity>
-            </View>
-          );
-        })}
+        {Array.from({ length: cells.length / 7 }, (_, w) => (
+          <View key={w} style={styles.gridRow}>
+            {cells.slice(w * 7, w * 7 + 7).map((k, i) => renderCell(k, w * 7 + i))}
+          </View>
+        ))}
       </View>
     </View>
   );
@@ -851,8 +860,9 @@ const styles = StyleSheet.create({
   navBtn: { width: 28, height: 28, borderRadius: 8, borderWidth: 1, borderColor: QuinckleColors.border, alignItems: 'center', justifyContent: 'center' },
   dowRow: { flexDirection: 'row' },
   dowText: { flex: 1, textAlign: 'center', color: QuinckleColors.textTertiary, fontSize: 10.5, fontWeight: '700' },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 6 },
-  cellWrap: { width: `${100 / 7}%`, padding: 2.5 },
+  grid: { marginTop: 6 },
+  gridRow: { flexDirection: 'row' },
+  cellWrap: { flex: 1, padding: 2.5 },
   cell: {
     aspectRatio: 1 / 1.05, borderRadius: 10, borderWidth: 1.5, borderColor: 'transparent',
     alignItems: 'center', justifyContent: 'center',
