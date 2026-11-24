@@ -77,6 +77,12 @@ export function RangeCalendar({ from, to, onChange, maxDate }: RangeCalendarProp
   const cells: (number | null)[] = [];
   for (let i = 0; i < leadingBlanks; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+  while (cells.length % 7) cells.push(null);
+  // One row per week. A single wrapping row of 1/7-width cells can fit only
+  // six on some screen widths (layout rounding), which slides every date
+  // under the wrong weekday.
+  const weeks: (number | null)[][] = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
 
   return (
     <View style={styles.wrap}>
@@ -118,45 +124,47 @@ export function RangeCalendar({ from, to, onChange, maxDate }: RangeCalendarProp
       </View>
 
       {/* Day grid */}
-      <View style={styles.grid}>
-        {cells.map((day, idx) => {
-          if (day == null) return <View key={`b${idx}`} style={styles.cell} />;
-          const date = new Date(viewMonth.getFullYear(), viewMonth.getMonth(), day);
-          const disabled = date > max;
-          const isStart = sameDay(date, from);
-          const isEnd = sameDay(date, to);
-          const inRange = !!from && !!to && date > from && date < to;
-          const isEndpoint = isStart || isEnd;
-          return (
-            <TouchableOpacity
-              key={day}
-              style={styles.cell}
-              onPress={() => onPickDay(day)}
-              disabled={disabled}
-              activeOpacity={0.7}
-            >
-              <View
-                style={[
-                  styles.dayPill,
-                  inRange && styles.dayPillInRange,
-                  isEndpoint && styles.dayPillEndpoint,
-                ]}
+      {weeks.map((week, w) => (
+        <View key={w} style={styles.weekRow}>
+          {week.map((day, idx) => {
+            if (day == null) return <View key={`b${idx}`} style={styles.cell} />;
+            const date = new Date(viewMonth.getFullYear(), viewMonth.getMonth(), day);
+            const disabled = date > max;
+            const isStart = sameDay(date, from);
+            const isEnd = sameDay(date, to);
+            const inRange = !!from && !!to && date > from && date < to;
+            const isEndpoint = isStart || isEnd;
+            return (
+              <TouchableOpacity
+                key={day}
+                style={styles.cell}
+                onPress={() => onPickDay(day)}
+                disabled={disabled}
+                activeOpacity={0.7}
               >
-                <Text
+                <View
                   style={[
-                    styles.dayText,
-                    disabled && styles.dayTextDisabled,
-                    inRange && styles.dayTextInRange,
-                    isEndpoint && styles.dayTextEndpoint,
+                    styles.dayPill,
+                    inRange && styles.dayPillInRange,
+                    isEndpoint && styles.dayPillEndpoint,
                   ]}
                 >
-                  {day}
-                </Text>
-              </View>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
+                  <Text
+                    style={[
+                      styles.dayText,
+                      disabled && styles.dayTextDisabled,
+                      inRange && styles.dayTextInRange,
+                      isEndpoint && styles.dayTextEndpoint,
+                    ]}
+                  >
+                    {day}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      ))}
     </View>
   );
 }
@@ -181,9 +189,8 @@ const styles = StyleSheet.create({
   monthLabel: { color: QuinckleColors.textPrimary, fontSize: 14, fontWeight: '700' },
   weekRow: { flexDirection: 'row' },
   weekLabel: { color: QuinckleColors.textTertiary, fontSize: 11, fontWeight: '700' },
-  grid: { flexDirection: 'row', flexWrap: 'wrap' },
   cell: {
-    width: `${100 / 7}%`,
+    flex: 1,
     height: 40,
     alignItems: 'center',
     justifyContent: 'center',
