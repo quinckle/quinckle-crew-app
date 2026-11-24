@@ -256,33 +256,40 @@ function RangeCalendar({ start, end, onTap }: { start?: Date; end?: Date; onTap:
           <Ionicons name="chevron-forward" size={18} color={QuinckleColors.textPrimary} />
         </TouchableOpacity>
       </View>
-      <View style={styles.calGrid}>
+      {/* One row per week: a single wrapping row of 1/7-width cells can fit
+          only six on some screen widths, sliding dates under the wrong weekday. */}
+      <View style={styles.calRow}>
         {WEEKDAYS.map((w, i) => (
           <Text key={i} style={styles.calWeekday}>{w}</Text>
         ))}
-        {cells.map((d, i) => {
-          if (!d) return <View key={i} style={styles.calCell} />;
-          const future = d > today;
-          const edge = sameDay(d, start) || sameDay(d, end);
-          const mid = inRange(d);
-          return (
-            <TouchableOpacity key={i} style={styles.calCell} disabled={future} onPress={() => onTap(d)} activeOpacity={0.7}>
-              <View style={[styles.calDay, mid && styles.calDayMid, edge && styles.calDayEdge]}>
-                <Text
-                  style={[
-                    styles.calDayText,
-                    future && { color: QuinckleColors.textMuted, opacity: 0.4 },
-                    sameDay(d, today) && !edge && { color: QuinckleColors.primary },
-                    edge && { color: '#fff', fontWeight: '700' },
-                  ]}
-                >
-                  {d.getDate()}
-                </Text>
-              </View>
-            </TouchableOpacity>
-          );
-        })}
       </View>
+      {Array.from({ length: cells.length / 7 }, (_, w) => (
+        <View key={w} style={styles.calRow}>
+          {cells.slice(w * 7, w * 7 + 7).map((d, j) => {
+            const i = w * 7 + j;
+            if (!d) return <View key={i} style={styles.calCell} />;
+            const future = d > today;
+            const edge = sameDay(d, start) || sameDay(d, end);
+            const mid = inRange(d);
+            return (
+              <TouchableOpacity key={i} style={styles.calCell} disabled={future} onPress={() => onTap(d)} activeOpacity={0.7}>
+                <View style={[styles.calDay, mid && styles.calDayMid, edge && styles.calDayEdge]}>
+                  <Text
+                    style={[
+                      styles.calDayText,
+                      future && { color: QuinckleColors.textMuted, opacity: 0.4 },
+                      sameDay(d, today) && !edge && { color: QuinckleColors.primary },
+                      edge && { color: '#fff', fontWeight: '700' },
+                    ]}
+                  >
+                    {d.getDate()}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      ))}
     </View>
   );
 }
@@ -343,8 +350,6 @@ function FilterButton({ icon, label, on, onPress }: { icon: React.ComponentProps
   );
 }
 
-const CELL = `${100 / 7}%` as const;
-
 const styles = StyleSheet.create({
   // The sheet scrolls its own content; this only lines rows up with its title.
   sheetBody: { paddingHorizontal: Spacing.xl },
@@ -372,9 +377,9 @@ const styles = StyleSheet.create({
   calHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: Spacing.xs },
   calNav: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
   calTitle: { ...Typography.bodyStrong, color: QuinckleColors.textPrimary },
-  calGrid: { flexDirection: 'row', flexWrap: 'wrap' },
-  calWeekday: { width: CELL, textAlign: 'center', ...Typography.micro, color: QuinckleColors.textMuted, paddingVertical: 4 },
-  calCell: { width: CELL, aspectRatio: 1, alignItems: 'center', justifyContent: 'center' },
+  calRow: { flexDirection: 'row' },
+  calWeekday: { flex: 1, textAlign: 'center', ...Typography.micro, color: QuinckleColors.textMuted, paddingVertical: 4 },
+  calCell: { flex: 1, aspectRatio: 1, alignItems: 'center', justifyContent: 'center' },
   calDay: { width: '86%', height: '86%', borderRadius: Radius.pill, alignItems: 'center', justifyContent: 'center' },
   calDayMid: { backgroundColor: QuinckleColors.primarySoft, borderRadius: Radius.sm },
   calDayEdge: { backgroundColor: QuinckleColors.primary },
